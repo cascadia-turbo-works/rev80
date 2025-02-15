@@ -1,0 +1,25 @@
+# customer meta data
+date:
+customer:
+  name:
+  address:
+  contact:
+  CEO:
+machine:
+  name:
+  serial:
+  description: |
+    words
+  motor_info:
+    running_rate:
+  bearing_info:
+
+# recorded data
+tests:
+  time: 
+  fft:
+  trend:
+  ring:
+
+# processed data
+processed_data:
