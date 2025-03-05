@@ -48,15 +48,17 @@ Data capture file contents
 
 ### Active Features
 
-- [ ] Add manual/auto axes scaling
+- [ ] Add manual/auto axes scaling - Why is this so haaard?!?
 - [ ] Add freq binsize and limits
 - [ ] Replace fft process with endaq tools
 - [ ] Save data!
+- [ ] Set equipment running rate and visualize octaves
 
 ### BUGS
 
 - [ ] Isolate dataprocessing from VibrationDevice
 - [ ] multiple stream start/stop results in 'device not found'
+  - I think this is fixed, by using the GUI stop/start method instead of deivce
 
 ### Complete
 
