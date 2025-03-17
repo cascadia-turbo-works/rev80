@@ -4,22 +4,24 @@ def GenerateVibrationData(blocksize:int, samplerate:int, channels:int=None):
     # Generate sample data representing rotating equipment with faulty bearing
     t = np.arange(0,blocksize/samplerate,1/samplerate) # time vector
     nnoise = lambda a: a * np.random.randn(blocksize) # normal noise
-    signal = lambda a, f: a * np.sin(2*np.pi*f*t) # single frequency signal
+    signal = lambda a, f, p=0: a * np.sin(2*np.pi*f*t + p) # single frequency signal
 
     runningrate = 60 # hz, base freq
+    running_phase = np.random.rand() * 2*np.pi
     bearing_multiple = 6.243
     bearing_severity = 0.8
+    bearing_phase = np.random.rand() * 2*np.pi
 
     data = nnoise(0.8)
 
     # machine running rate and harmonics
 
     for k in range(1,11):
-        data += signal(1/(.5*k), runningrate*k)
+        data += signal(1/(.5*k), runningrate*k, running_phase)
     
     # Bearing defect and harmonics
     for k in range(1,11):
-        data += signal(bearing_severity/(0.4*k), runningrate*bearing_multiple*k)
+        data += signal(bearing_severity/(0.4*k), runningrate*bearing_multiple*k, bearing_phase)
 
     if channels:
         # convert to shape (blocksize, channels_count)

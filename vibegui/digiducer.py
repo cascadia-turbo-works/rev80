@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import sounddevice as sd
 import matplotlib.pyplot as plt
-import datetime
+from datetime import datetime as dt
 from sys import exit, platform
 import time
 import queue
@@ -69,7 +69,7 @@ def FindDigiducerDevice():
                             scale[ch] *= 1.0 / (eu_sen[ch] / 1000.0)
                             units[ch] = eu_units[ch]
 
-                    date = datetime.datetime.strptime(name[loc+28:loc+34], '%y%m%d') # Isolate the calibration date from the fullname string
+                    date = dt.strptime(name[loc+28:loc+34], '%y%m%d') # Isolate the calibration date from the fullname string
 
                 elif fmt == "1":
                     # These devices are acceleration
@@ -78,7 +78,7 @@ def FindDigiducerDevice():
                     sens = [int(name[loc+14:loc+19]), int(name[loc+19:loc+24])]
                     scale = np.array([855400.0/sens[0], 855400.0/sens[1]], dtype='float32') # scale to g's
                     units = ['g', 'g']
-                    date = datetime.datetime.strptime(name[loc+24:loc+30], '%y%m%d') # Isolate the calibration date from the fullname string
+                    date = dt.strptime(name[loc+24:loc+30], '%y%m%d') # Isolate the calibration date from the fullname string
                 else:
                       raise FormatError("Expecting 1, 2, or 3 format")
 
@@ -104,6 +104,8 @@ def FindDigiducerDevice():
     # Stop sensor stream
 
 class VibrationDevice:
+
+    SAMPLERATES = [8_000, 11_050, 16_000, 22_100, 32_000, 44_100, 48_000]
 
     def __init__(self, blocksize, samplerate, channel=0, simulate=None):
         # Acquisition config
@@ -151,7 +153,7 @@ class VibrationDevice:
                 "device": "Simulated Digiducer",
                 "model": "Simulated Model",
                 "serial_number": "-1",
-                "date": datetime.datetime.now(),
+                "date": dt.now(),
                 "format": 0,
                 "sensitivity": [100, 100],
                 "scale": np.array([1.0, 1.0]),
@@ -226,14 +228,14 @@ class VibrationDevice:
             del self.queue
             self.queue = queue.Queue()
 
-    def callback(self, data, frames, time, status):
-        sample = {'data': data[:,self.channel] * self.scale[self.channel],
-                  'units': self.units,
-                  'frames': frames,
-                  'time': time,
-                  'status': status}
-        self.queue.put(sample)
-        self.last_sample = sample
+    def callback(self, data, frames, timestamp, status):
+        self.last_sample = {'data': data[:,self.channel] * self.scale[self.channel],
+                            'blocksize': frames,
+                            'samplerate': self.samplerate,
+                            'units': self.units,
+                            'timestamp': timestamp,
+                            'status': status}
+        self.queue.put(self.last_sample)
 
         if isinstance(self.trend, pd.DataFrame):
             self.trend.append(self.sample_to_trend(sample), ignore_index=True)

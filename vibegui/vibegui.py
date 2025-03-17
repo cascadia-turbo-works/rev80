@@ -1,17 +1,22 @@
 import dearpygui.dearpygui as dpg
-from digiducer import VibrationDevice
+from digiducer import VibrationDevice, NoDevicesFound
 from vibetools import acceleration_to_velocity_fft
 from typing import Union, Tuple, List
 import threading
 import typing
 import numpy as np
 import endaq
+import numpy as np
+from tkinter import filedialog
+# from file_dialog.fdialog import FileDialog
 
+SAVEDIR = 'TESTDATA'
+
+def nextpow2(x:int):
+    # calculate the next power of two above some number x
+    return int( 2**np.ceil(np.log2(x)))
 
 class VibeGUI:
-
-    ICON_LARGE = '/usr/share/icons/manjaro/green/128x128.png'
-    ICON_SMALL = '/usr/share/icons/manjaro/green/24x24.png'
 
     def __init__(self):
         self.device:dict = None
@@ -29,42 +34,11 @@ class VibeGUI:
     def set_status_message(self, msg:str):
         dpg.set_item_label('status',msg)
 
-    def view_time_domain_data(self, x, y):
-        self.set_status_message("Displaying time-domain data...")
-        # dpg.delete_item("Freq", children_only=True)
-        # with dpg.plot_axis(dpg.mvXAxis, label="Time", parent="Freq") as x_axis:
-        #     pass
-        # with dpg.plot_axis(dpg.mvYAxis, label="Amplitude", parent="Time") as y_axis:
-        #     dpg.add_line_series(x, y, label="Time Domain", parent=y_axis)
-
-        dpg.set_value('plot', [x, y])
-
-        # Enable auto-scaling
-        dpg.set_axis_auto_fit("x_axis")
-        dpg.set_axis_auto_fit("y_axis")
-
     def save_time_domain_data(self):
         self.set_status_message("Saving time-domain data...")
 
-    def view_frequency_domain_data(self, x, y):
-        self.set_status_message("Displaying frequency-domain data...")
-        # Placeholder data for plot
-        
-        dpg.set_value('plot', [x, y])
-
     def save_frequency_domain_data(self):
         self.set_status_message("Saving frequency-domain data...")
-
-    def view_trend_data(sender, data):
-        dpg.set_item_label('status','Trend not supported yet')
-        # Placeholder data for plot
-        x = list(range(100))
-        y1 = [i*0.5 for i in x]
-        y2 = [i*0.2 for i in x]
-        clear_plot("Left Pane")
-        clear_plot("Right Pane")
-        add_line_series("Left Pane", "Trend 1", x, y1, weight=2)
-        add_line_series("Right Pane", "Trend 2", x, y2, weight=2)
 
     def save_trend_data(sender, data):
         self.set_status_message("Saving trend data...")
@@ -103,6 +77,7 @@ class VibeGUI:
     def stream_samples(self):
         while self.device.running:
             self.update_plot(self.device.get())
+            # time.sleep(0.1)
 
     def collect_sample(self):
         if self.device.running or self.stream:
@@ -118,22 +93,44 @@ class VibeGUI:
         self.update_plot(sample)
 
     def update_plot(self, sample):
-        T = self.device.time_axis
 
+        T = sample['time']
         F, A, V = acceleration_to_velocity_fft(sample['data'], self.device.samplerate)
 
         dpg.set_value('time_data', [T, A])
         dpg.set_axis_limits_auto('time_axis')
         dpg.set_axis_limits_auto('acc_axis')
 
-
         dpg.set_value('freq_data', [F, V])
         dpg.set_axis_limits_auto('freq_axis')
         dpg.set_axis_limits_auto('vel_axis')
-
+        
         if self.device.trend:
             X = np.array([0])
             Y = np.array([0])
+
+    def update_streaming_config(self, sender, data):
+        # Snapshot current values
+        Ns = dpg.get_value('Sample Count')
+        Fs = dpg.get_value('Sample Rate')
+        dF = dpg.get_value('BinSize')
+        Fmax = dpg.get_value('Max Freq')
+
+        match dpg.get_item_label(sender):
+            case 'Sample Count':
+                print('update sample count')
+
+            case 'Sample Rate':
+                print('update sample rate')
+            case 'Max Freq' | 'Bin Size':
+                print('update max freq, or bin size')
+                Fs_new = 2 * Fmax
+                Ns_new = nexpow2(Fs_new/dF)
+                print('Fs: {Fs_new}, Ns: {Ns_new}')
+
+    def set_savedir(self, sender, data):
+        print(data)
+        dpg.set_value('save_dir',data)
         
     def create_gui(self):
 
@@ -143,6 +140,11 @@ class VibeGUI:
         # with dpg.font_registry():
         #     nerd_font = dpg.add_font("/home/myco/CODE/reveng/vibegui/font/Inconsolata/InconsolataNerdFont-Regular.ttf", 18)  # Adjust the path and size
         # dpg.bind_font(nerd_font)  # Set as default font
+            
+        dpg.add_file_dialog(directory_selector=True,  show=False, callback=self.set_savedir, tag="folder_dialog", width=800 ,height=400)
+
+        with dpg.value_registry():
+            dpg.add_string_value(tag='save_dir')
 
         with dpg.window(label="Vibe Logger", width=1200, height=800):
             with dpg.group(horizontal=True):
@@ -173,15 +175,24 @@ class VibeGUI:
                             dpg.add_button(label="Save", callback=self.save_trend_data)
                         with dpg.tab(label='Configure'):
                             config_width = 100
-                            dpg.add_combo(label="Sample Size", items=list(map(int,np.pow(2, np.arange(8,15)))), default_value=2**10, 
-                                          width=config_width, callback=lambda sender, value: self.device.set_blocksize(int(value)))
-                            dpg.add_combo(label="Sample Rate", items=[8000, 11050, 16000, 22100, 32000, 44100, 48000], 
-                                          width=config_width, default_value=8000, callback=lambda sender, value: self.device.set_samplerate(int(value)))
-                            dpg.add_combo(label="Bin Size", items=sorted([.25, .5, 1, 2, 5, 10]), default_value=1, width=config_width)
-                            dpg.add_combo(label="Max Freq", items=[250, 500, 1000, 2000, 5000, 10_000], default_value=2000, width=config_width)
+                            dpg.add_combo(label="Sample Count", items=list(map(int,np.pow(2, np.arange(8,15)))),
+                                          width=config_width, default_value=2**10,
+                                          callback=self.update_streaming_config)
+                            dpg.add_combo(label="Sample Rate", items=VibrationDevice.SAMPLERATES, 
+                                          width=config_width, default_value=VibrationDevice.SAMPLERATES[0],
+                                          callback=self.update_streaming_config)
+                            dpg.add_combo(label="Bin Size", items=sorted([.5, 1, 2, 5, 10]),
+                                          default_value=1, width=config_width,
+                                          callback=self.update_streaming_config)
+                            dpg.add_combo(label="Max Freq", items=[250, 500, 1_000, 2_000, 5_000, 10_000],
+                                          default_value=2000, width=config_width,
+                                          callback=self.update_streaming_config)
                             with dpg.group(horizontal=True):
                                 dpg.add_input_double(label="Running Rate", tag='running_rate', default_value=0)
                                 dpg.add_combo(tag='running_rate_unit', items=['CPM', 'Hz'], default_value='Hz', width=50)
+
+                            dpg.add_text('None', label='record_path')
+                            dpg.add_button(label='browse..', callback=select_path)
                 # Right display window
                 with dpg.child_window(label="Display", autosize_x=True, autosize_y=True):
                     with dpg.tab_bar():
@@ -192,7 +203,7 @@ class VibeGUI:
                                 dpg.add_plot_axis(dpg.mvXAxis, label="Time, ms", tag="time_axis")
                                 dpg.add_plot_axis(dpg.mvYAxis, label="mm/s/s", tag="acc_axis")
 
-                                dpg.add_line_series(np.array([0]), np.array([0]), label=self.domain, parent="time_axis", tag="time_data")
+                                dpg.add_line_series(np.array([0]), np.array([0]), parent="time_axis", label="time_data")
 
                         with dpg.tab(label='Frequency Domain'):
                             with dpg.plot(label="Frequency Series", width=-1, height=600, tag='freq_plot'):
@@ -201,7 +212,7 @@ class VibeGUI:
                                 dpg.add_plot_axis(dpg.mvXAxis, label="Freq, hz", tag="freq_axis")
                                 dpg.add_plot_axis(dpg.mvYAxis, label="Velocity, mm/s", tag="vel_axis")
 
-                                dpg.add_line_series(np.array([0]), np.array([0]), label=self.domain, parent="freq_axis", tag="freq_data")
+                                dpg.add_line_series(np.array([0]), np.array([0]), parent="freq_axis", label="freq_data")
                         # with dpg.tab(label='Running Trend'):
                             # with dpg.plot(label="Trend", width=-1, height=600, tag='trend_plot'):
                             #     # Plot legend
@@ -226,12 +237,21 @@ class VibeGUI:
     def cleanup(self):
         self.stop_collection()
 
+def main():
 
-if __name__ == "__main__":
-
-    vd = VibrationDevice(blocksize=1024, samplerate=8000, simulate=False)
+    try:
+        # Attempt running with a real device if present.
+        vd = VibrationDevice(blocksize=1024, samplerate=8000, simulate=False)
+    except NoDevicesFound as e:
+        # Otherwise, simulate
+        print('No Device connection. Fallback to simulated device.')
+        vd = VibrationDevice(blocksize=1024, samplerate=8000, simulate=True)
 
     app = VibeGUI()
     app.set_device(vd)
 
     app.run()
+
+
+if __name__ == "__main__":
+    main()
