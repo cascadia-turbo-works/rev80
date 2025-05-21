@@ -82,7 +82,7 @@ def FindDigiducerDevice():
                 else:
                       raise FormatError("Expecting 1, 2, or 3 format")
 
-                 # Add new device to array   
+                # Add new device to array 
                 device_info.append({"device":      dev_num,
                                  "model":       model,
                                  "serial":      serialnum,
@@ -183,19 +183,18 @@ class VibrationDevice:
         self.last_sample = None
         self.start_stream()
 
-        while True:
-            sample = self.last_sample
-            if sample: break
+        while not self.last_sample:
+            time.sleep(0.01)
 
         self.stop_stream()
 
-        return sample
+        return self.last_sample
 
     def start_stream(self):
 
         if self.simulate:
             import threading
-            self.stream = threading.Thread(target=self._simulate_stream, daemon=True)
+            self.stream = threading.Thread(target=self._simulate_stream(self._generate_data), daemon=True)
             self.stream.start()
             
         else:   
@@ -212,19 +211,24 @@ class VibrationDevice:
     def _generate_data(self):
         return GenerateVibrationData(self.blocksize, self.samplerate, 2)
 
-    def _simulate_stream(self):
+    def _simulate_stream(self, source):
         self.running = True
         while self.running:
-            data = self._generate_data()
+            data = source()
             time.sleep(self.acquisitionperiod) # delay by sampling time
-            self.callback(data, self.blocksize, time.time(), "OK")
+            self.callback(data, self.blocksize, time.monotonic(), "OK")
+        
 
     def stop_stream(self):
-        self.running = False
         if self.simulate:
+            self.running = False
             self.stream.join()
+            self.stream = None
         else:
             self.stream.stop()
+            self.stream.close()
+            self.stream = None
+            self.running = False
             del self.queue
             self.queue = queue.Queue()
 
@@ -238,7 +242,7 @@ class VibrationDevice:
         self.queue.put(self.last_sample)
 
         if isinstance(self.trend, pd.DataFrame):
-            self.trend.append(self.sample_to_trend(sample), ignore_index=True)
+            self.trend.append(self.sample_to_trend(self.last_sample), ignore_index=True)
 
     def get(self):
         return self.queue.get()
@@ -324,13 +328,13 @@ def run_simulation(domain='TIME'):
                 Y = yfun(data)
                 # ax.set_ylim([max(min(Y), 1e-3), max(Y)])
 
-                if sample['time'] >= last_update_time + plot_update_period:
+                if sample['timestamp'] >= last_update_time + plot_update_period:
 
                     line.set_ydata(Y)
                     fig.canvas.draw()
                     fig.canvas.flush_events()
                     print(sample['status'], sample['data'].shape)
-                    last_update_time = sample['time']
+                    last_update_time = sample['timestamp']
 
         finally:
             vd.stop_stream()
@@ -339,29 +343,5 @@ def run_simulation(domain='TIME'):
         print(e)
         exit(1)
 
-def test_data_gen():
-
-    blocksize = 2048
-    samplerate = 8000
-
-    vd = VibrationDevice(blocksize, samplerate, simulate=True)
-
-    time_axis = np.arange(0, vd.blocksize*vd.sampleperiod, vd.sampleperiod)
-
-    mkdata = lambda: vd.callback(vd._generate_data(), vd.blocksize, time.time(), "OK")
-
-    mkdata()
-    mkdata()
-
-    sample1 = vd.get()
-    sample2 = vd.get()
-
-    data = sample2['data'][:,0]
-
-    plt.plot(time_axis, data)
-    plt.show()
-
-    print('done')
-
 if __name__ == "__main__":
-    run_simulation('FREQ')
+    run_simulation('TIME')

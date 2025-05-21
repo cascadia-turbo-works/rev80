@@ -8,14 +8,19 @@
 # MAN-0343 (USB Audio Interface Guide)
 #
 # Version 1.0 6/21/2022 TEC
-
+#
 import numpy as np
 import sounddevice as sd
 import matplotlib.pyplot as plt
 import datetime
-from sys import exit, platform
+from sys import platform
 import time
 import queue
+
+class NoDevicesFound(Exception):
+    pass
+class FormatError(Exception):
+    pass
 
 # define sensitivity for attached sensors if using digital signal conditioner
 # Units are mV / engineering units ie 100mV / g
@@ -24,17 +29,24 @@ import queue
 # Digital Accelerometers like the 333D01 return g's.  That can be scale to m/s^2
 eu_sen = np.array([100.0, 100.0])
 eu_units = ["g", "g"]
-blocksize = 4096 # Number of samples to acquire per block
-samplerate = 16000 # 48000, 44100, 32000, 22100, 16000, 11050, 8000
-sampleperiod = 1/samplerate
+blocksize = 1024 # Number of samples to acquire per block
+samplerate = 48000 # 48000, 44100, 32000, 22100, 16000, 11050, 8000
 
-class NoDevicesFound(Exception):
-    pass
-
-class FormatError(Exception):
-    pass
-
-def find_device():
+# TMSFindDevices
+#
+# returns an array of TMS compatible devices with associated information
+#
+# Returns dictionary items per device
+#   "device"        - Device number to be used by SoundDevice stream
+#   "model"         - Model number
+#   "serial_number" - Serial number
+#   "date"          - Calibration date
+#   "format"        - format of data from device, 0 - acceleration, 1 - voltage
+#   "sensitivity_int - Raw sensitivity as integer counts/EU ie Volta or m/s^2
+#   "scale"         - sensitiivty scaled to float for use with a
+#                     -1.0 to 1.0 scaled data.  Format returned with
+#                     'float32' format to SoundDevice stream.
+def TMSFindDevices():
     # The Modal Shop model number substrings
     models=["485B", "333D", "633A", "SDC0"]
     
@@ -92,13 +104,13 @@ def find_device():
                 else:
                       raise FormatError("Expecting 1, 2, or 3 format")
                  # Add new device to array   
-                dev_info.append({"device":dev_num,
-                                 "model":model,
-                                 "serial_number":serialnum,
-                                 "date":date,
-                                 "format":form,
-                                 "sensitivity_int":sens,
-                                 "scale":scale,
+                dev_info.append({"device":dev_num,\
+                                 "model":model,\
+                                 "serial_number":serialnum,\
+                                 "date":date,\
+                                 "format":form,\
+                                 "sensitivity_int":sens,\
+                                 "scale":scale,\
                                  })
         dev_num += 1
     if len(dev_info) == 0:
@@ -118,43 +130,14 @@ def callback(indata, frames, time, status):
 def time_ms():
     return int(time.monotonic_ns()/1000000)
 
-def auto_scale(X, Y=None, ax_scale=None):
-    if Y is None:
-        return [min(X), max(X), 1e-3, 1]
-
-    ymin = np.min(Y[np.logical_not(np.isnan(Y))])
-    ymax = np.max(Y[np.logical_not(np.isnan(Y))])
-    yrng = ymax-ymin
-    pad = 0.1
-    decay = 0.8
-
-    if ax_scale is None:
-        return [min(X), max(X), ymin - pad * yrng, ymax + pad * yrng]
-    
-    if ymin>=0:
-        ax_scale[2] = 1e-3
-        ax_scale[3] = max(ymax + pad * yrng, ax_scale[3] * decay)
-    else:
-        ax_scale[2] = min(ymin - pad * yrng, ax_scale[3] * decay)
-        ax_scale[3] = max(ymax + pad * yrng, ax_scale[3] * decay)
-
-    return ax_scale
-
-def on_close(event):
-    q.put('q')
-
 # Find compatible devices and extra parameters from the device name
-try:
-    info = find_device()
-except Exception as e:
-    print(e)
-    exit(1)
+info=TMSFindDevices()
 # This example just uses the first device for simplicity.
 if len(info) > 1:
-    print("Multiple devices connected, Using first device found.")
+    print("Using first device found.")
 
 # Default to first found - a selection could be added if needed from devices in info
-dev=0
+dev=0   
 
 # Determine data scaling
 units = ["Volts", "Volts"]
@@ -171,39 +154,15 @@ elif info[dev]['format'] == 0: # acceleration units
 q = queue.Queue() 
 
 # set up for example plot by defining the time axis
-TIME = np.linspace(0, (blocksize-1)*sampleperiod, blocksize)
-FREQ = np.fft.fftfreq(len(TIME),sampleperiod)[:blocksize//2]
-
-channel = 0
-domain = 'FREQ' # [freq, TIME]
-
-match domain:
-    case 'TIME':
-        X = TIME*1000
-        Y = np.ones_like(X) *  np.nan
-        yfun = lambda y: y
-        xlab = 'Time, ms'
-        ylab = units[channel]
-    case 'FREQ':
-        X = FREQ
-        Y = np.ones_like(X) *  np.nan
-        yfun = lambda y: np.abs(np.fft.fft(y,axis=0))[:blocksize//2]
-        xlab = 'Frequency, hz'
-        ylab = 'Amplitude'
-
-ax_scale = auto_scale(X)
-ax_scale[0] = 0
-ax_scale[1] = min(ax_scale[1], 2e3)
+x=np.linspace(0, (blocksize-1)/samplerate, blocksize)
 
 plt.ion() # to run GUI event loop
 figure, ax = plt.subplots()
-figure.canvas.mpl_connect('close_event', on_close)
 plt.title("The Modal Shop "+info[dev]['model'], fontsize=20)
-plt.grid(True)
-plt.xlabel(xlab)
-plt.ylabel(ylab)    # default to Ch 1
-plt.axis(ax_scale)
-line, = plt.plot(X,Y)
+plt.xlabel("Time (S)")
+plt.ylabel(units[0])    # default to Ch 1
+plt.axis([0, (blocksize-1)/samplerate, 0, 20])
+first=0
 
 stream = sd.InputStream(
         device=info[dev]['device'], channels=2,
@@ -211,39 +170,32 @@ stream = sd.InputStream(
         callback=callback)
 
 stream.start()
-last_update_time = time_ms()
-
 # Run for 200 blocks as an example
-for i in range(20000):
+for i in range(200):
     data = q.get()
-
-    if isinstance(data,str) and data == 'q':
-        # stop if window closes
-        print('Window Closed')
-        stream.stop()
-        break
-    # otherwise, data is 2*blocksize matrix
-
     # Note: data *= scale and using 'data' directly in the plot doesn't
     # always scale correctly.  Sometimes accesses unscaled data.
     sdata = data * scale # Scale the data by an array multiplication
+
     # sdata is scaled to engineering units (EU) and ready for processing
     # appropriate for your specific application
 
-    Y = yfun(sdata[:,channel])
-    ax_scale = auto_scale(X,Y,ax_scale)
     # Plot data just for an example
-    plt.axis(ax_scale) # crude autoscale
-
-    # reduce jittery display by only ploting every 100mS
-    if time_ms() >= last_update_time+100:
-        last_update_time += 100
-        line.set_xdata(X)
-        line.set_ydata(Y)
-        figure.canvas.draw()
-        figure.canvas.flush_events()
+    plt.axis([0, (blocksize-1)/samplerate,
+          np.min(sdata)*1.10, np.max(sdata)*1.10]) # crude autoscale
+    if first == 0:
+        line, = plt.plot(x, sdata[:,0])
+        start = time_ms()
+        first = 1
+    else:
+        # reduce jittery display by only ploting every 100mS
+        if time_ms() >= start+100:
+            start += 100
+            line.set_xdata(x)
+            line.set_ydata(sdata[:,0])
+            figure.canvas.draw()
+            figure.canvas.flush_events()
 
 # Stop the audio stream
 stream.stop()
-exit(0)
 
