@@ -1,84 +1,60 @@
 # Vibe logger
 
 import numpy as np
-import sounddevice as sd
-from dataclasses import dataclass
 from datetime import datetime as dt
 
-import threading
 import time
 import queue
 
-from vibetools_2 import GenerateVibrationData, FindDigiducerDevice, SAMPLERATES
-
-@dataclass
-class VibeDevice:
-    device_id: int
-    model_name: str
-    serial_number: str
-    manufacture_date: dt
-    format_id: int
-    sensitivity: list
-    scale: np.ndarray
-    units: list
-    active_channel: int
-    simulation: bool = False
-
-@dataclass
-class VibeSettings:
-    blocksize: int
-    samplerate: int
-    channel: int
-    units: str
-
-    pipeline = []
-
-def connect_sensor(dev:VibeDevice, callback=None):
-    '''
-    Connect to the device and return a stream object
-    '''
-    if dev.simulation:
-        # Simulate a device connection
-        raise Exception('Simulation not implemented yet')
-    else:
-        return sd.InputStream(
-                    device=dev.device_id, 
-                    channels=2, 
-                    samplerate=dev.samplerate, 
-                    dtype='float32', 
-                    blocksize=dev.blocksize,
-                    callback=callback
-                )
+from vibetools import VibeSensor,  AcquisitionSettings, SimulatedSensor, SAMPLERATES
 
 class VibeLogger:
     '''
     This class collects, analyzes, logs and loads data from the vibration sensor defined in    
     '''
+    sensor: VibeSensor = None
+    settings: AcquisitionSettings = None
+    stream = None
+    data: dict = {'last_sample': None, 'samples': 0, 'trend': [], 'queue': queue.Queue()}
 
     def __init__(self):
-        self.sensor = None
-        self.settings = VibeSettings(blocksize=1024, samplerate=1000, channel=0)
-        self.stream = None
-        self.data = {'last_sample': None, 'samples': 0, 'trend': [], 'queue': queue.Queue()}
+        pass
+
+    @property
+    def last_sample(self):
+        return self.data['last_sample']
 
     def select_sensor(self):
         '''
         Select the device to use for data collection
         '''
+
+        if self.stream is not None:
+            # Disconnect any connected sensor first
+            self.disconnect_sensor()
+
         try:
-            devices = FindDigiducerDevice()
+            devices = VibeSensor.find()
         except Exception as e:
             print(e)
         
         # Select the first device
         self.sensor = devices[0]
 
+        # TODO: Allow selection from multiple devices.
+
     def connect_sensor(self):
-        if self.device is None:
-            print('Select sensor first')
+        '''
+        Connect to the device and return a stream object
+        '''
+
+        if self.sensor is None:
+            print('Connect: No sensor connected')
+        if self.settings is None:
+            print('Connect: No settings implemented')
             return
         
-        self.stream = connect_sensor(self.sensor, self.raw_data_callback)
+        self.stream = self.sensor.connect(self.settings, self.raw_data_callback)
 
     def disconnect_sensor(self):
 
@@ -86,13 +62,15 @@ class VibeLogger:
             print('Disconnect: No sensor connected')
             return
         
-        self.stop_stream()
+        if self.stream.active:
+            self.stop_stream()
+
         self.stream.close()
         self.stream = None
 
     def start_stream(self):
         if self.stream is None:
-            print('Start: No sensor connected')
+            print('Start Stream: No sensor connected')
             return
         
         if self.stream.active:
@@ -104,10 +82,9 @@ class VibeLogger:
         except Exception as e:
             print(e)
 
-
     def stop_stream(self):
         if self.stream is None:
-            print('Start: No sensor connected')
+            print('Stop Stream: No sensor connected')
             return
         
         if not self.stream.active:
@@ -115,14 +92,14 @@ class VibeLogger:
             return
 
         try:
-            self.stream.start()
+            self.stream.stop()
         except Exception as e:
             print(e)
 
     def collect_sample(self):
         """Collects a single sample from the device."""
 
-        self.last_sample = None
+        self.data['last_sample'] = None
         self.start_stream()
 
         while not self.last_sample:
@@ -132,34 +109,47 @@ class VibeLogger:
 
         return self.last_sample
     
-    def update_settings(self, settings=None, blocksize=None, samplerate=None, channel=None):
+    def update_settings(self, settings:AcquisitionSettings):
         '''
         Update the settings for the device
         '''
+        # assert False, "Not supported - requires disconnect - reconnect"
+        # TODO: Implement
 
-        paused_running_stream = self.stream.active
-        if paused_running_stream:
-            self.stream.stop()
+        unwind = 1
 
-        if isinstance(settings, VibeSettings):
-            self.settings = settings
-        if isinstance(blocksize, int):
-            self.settings.blocksize = blocksize
-        if isinstance(samplerate, int):
-            self.settings.samplerate = samplerate
-        if isinstance(channel, int):
-            self.settings.channel = channel
+        if self.stream is not None:
+            unwind = unwind<<1
+            if self.stream.active:
+                unwind = unwind<<1
+                print('UpdateSettings: Stopping Stream')
+                self.stop_stream()
 
-        if paused_running_stream:
-            self.stream.start()
+            print('UpdateSettings: Disconnecting Sensor')
+            self.disconnect_sensor()
 
-    def raw_data_callback(self, indata, frames, time, status):
-        data = indata[:,self.settings.channel] * self.sensor['scale'][self.settings.channel]
-        self.last_sample = {'data': data,
+        print(f'UpdateSettings: Receiving settings: {settings}')
+        self.settings = settings
+
+        if unwind > 1:
+            unwind = unwind >> 1
+            print('UpdateSettings: Reconnecting sensor')
+            self.connect_sensor()
+        
+        if unwind > 1:
+            unwind = unwind >>1
+            print('UpdateSettings: Restarting stream')
+            self.start_stream()
+
+    def raw_data_callback(self, indata, frames, timestamp, status):
+
+        data = indata[:,self.settings.channel] * self.sensor.scale[self.settings.channel]
+
+        self.data['last_sample'] = {'data': data,
                             'blocksize': frames,
                             'samplerate': self.settings.samplerate,
-                            'units': self.settings.units,
-                            'timestamp': time,
+                            'units': self.sensor.units,
+                            'timestamp': timestamp.currentTime,
                             'status': status}
         
         self.data['queue'].put(self.last_sample)
@@ -167,8 +157,101 @@ class VibeLogger:
     def data_callback(self, sample: dict):
         pass
 
+def test_stream(domain='TIME'):
+    import matplotlib.pyplot as plt
 
-if __name__ == "__main__":
-    vs = VibeSettings()
+    channel = 0
 
+    # binsize = 1 # hz
+    # max_freq = 5000 # khz
+
+    # blocksize = max_freq // binsize
+    # samplerate = max_freq * 2
+
+    blocksize = 1024
+    samplerate = 8000
+
+    plot_update_period = 0.01
+    max_samples = 30
+    settings = AcquisitionSettings(blocksize, samplerate, channel)
+    vibr = VibeLogger()
+    vibr.update_settings(settings)
+    # vibr.sensor = VibeSensor.simulated()
+    vibr.select_sensor()
+    vibr.connect_sensor()
+
+    try:
+        sample = vibr.collect_sample()
+        last_update_time = 0. #sample['time']
+
+        ax_scale = [0,0,-1,1]
+        match domain:
+            case 'TIME':
+                X = np.arange(settings.blocksize) / settings.samplerate
+                yfun = lambda y: y
+                ax_scale = [X[0], X[-1], -4, 4]
+                xlab = 'Time, ms'
+                ylab = 'Amplitude'
+            case 'FREQ':
+                X = np.fft.fftfreq(settings.blocksize,1/settings.samplerate)[:settings.blocksize//2]
+                yfun = lambda y: np.abs(np.fft.fft(y))[:settings.blocksize//2]
+                ax_scale = [X[1], X[-1], 0, 100]
+                xlab = 'Frequency, Hz'
+                ylab = 'Amplitude'
+
+        Y = yfun(sample['data'])
+
+        plt.ion()
+        fig, ax = plt.subplots()
+        plt.title("Digiducer Stream: " + vibr.sensor.model_name, fontsize=20)
+        plt.xlabel(xlab)
+        plt.ylabel(ylab)
+        line, = plt.plot(X, Y)
+        # ax.set_xlim(ax_scale[:2])
+        # ax.set_ylim(ax_scale[2:])
+
+        vibr.start_stream()
+        for _ in range(max_samples):
+            if not plt.fignum_exists(fig.number):
+                print('Window closed!')
+                break
+
+            sample = vibr.data['queue'].get()
+
+            data = sample['data']
+
+            Y = yfun(data)
+            # ax.set_ylim([max(min(Y), 1e-3), max(Y)])
+
+            if sample['timestamp'] >= last_update_time + plot_update_period:
+
+                line.set_ydata(Y)
+                fig.canvas.draw()
+                fig.canvas.flush_events()
+                print(sample['status'], sample['data'].shape)
+                last_update_time = sample['timestamp']
+    
+
+    finally:
+        vibr.stop_stream()
+        vibr.disconnect_sensor()
+        plt.close(fig)
+    
+def test_save():
+    vs = AcquisitionSettings(1024, 8000, 0)
+
+    vl = VibeLogger()
+    vl.update_settings(vs)
+
+    vl.select_sensor()
+
+    vl.connect_sensor()
+    samp = vl.collect_sample()
+    vl.disconnect_sensor()
+
+    print(samp)
     print('done.')
+    
+if __name__ == "__main__":
+    test_stream('FREQ')
+    test_save()

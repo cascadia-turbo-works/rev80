@@ -1,5 +1,4 @@
 import dearpygui.dearpygui as dpg
-from digiducer import VibrationDevice, NoDevicesFound
 from vibetools import acceleration_to_velocity_fft
 from typing import Union, Tuple, List
 import threading
@@ -9,26 +8,17 @@ from datetime import datetime as dt
 import numpy as np
 import endaq
 import numpy as np
-from tkinter import filedialog
-# from file_dialog.fdialog import FileDialog
+
+from vibelogger import VibeLogger, SAMPLERATES
 
 SAVEDIR = 'DEVDATA'
 
-def nextpow2(x:int):
-    # calculate the next power of two above some number x
-    return int( 2**np.ceil(np.log2(x)))
-
 class VibeGUI:
-
+    logger: VibeLogger
     def __init__(self):
-        self.device = None
-        self.stream = None
-        self.last_stream = None
+        self.logger = VibeLogger()
 
         self.create_gui()
-
-    def set_device(self,device):
-        self.device = device
 
     def view_sensor_details(self):
         print(self.device.info)
@@ -187,8 +177,8 @@ class VibeGUI:
                             dpg.add_combo(label="Sample Count", tag='blocksize', items=list(map(int,np.pow(2, np.arange(8,15)))),
                                           width=config_width, default_value=2**10,
                                           callback=self.update_streaming_config)
-                            dpg.add_combo(label="Sample Rate", tag='samplerate', items=VibrationDevice.SAMPLERATES, 
-                                          width=config_width, default_value=VibrationDevice.SAMPLERATES[0],
+                            dpg.add_combo(label="Sample Rate", tag='samplerate', items=SAMPLERATES, 
+                                          width=config_width, default_value=SAMPLERATES[0],
                                           callback=self.update_streaming_config)
                             dpg.add_combo(label="Frequnecy Bin Size", tag='binsize', items=sorted([.5, 1, 2, 5, 10]),
                                           default_value=1, width=config_width,
@@ -267,19 +257,8 @@ class VibeGUI:
 
 def main():
 
-    try:
-        # Attempt running with a real device if present.
-        vd = VibrationDevice(blocksize=1024, samplerate=8000, simulate=False)
-    except NoDevicesFound as e:
-        # Otherwise, simulate
-        print('No Device connection. Fallback to simulated device.')
-        vd = VibrationDevice(blocksize=1024, samplerate=8000, simulate=True)
-
     app = VibeGUI()
-    app.set_device(vd)
-
     app.run()
-
 
 if __name__ == "__main__":
     main()
