@@ -1,86 +1,36 @@
 import dearpygui.dearpygui as dpg
 from vibetools import acceleration_to_velocity_fft
 from typing import Union, Tuple, List
+from pathlib import Path
 import threading
 import time
+
 import typing
 from datetime import datetime as dt
 import numpy as np
 import endaq
 import numpy as np
 
-from vibelogger import VibeLogger, SAMPLERATES
+from vibelogger import VibeLogger, VibeSensor, SAMPLERATES
 
 SAVEDIR = 'DEVDATA'
 
 class VibeGUI:
     logger: VibeLogger
+    found_sensors: List = {}
     def __init__(self):
         self.logger = VibeLogger()
-
+        self.logger.callbacks['plots'] = self.display_sample
         self.create_gui()
 
+        self.update_streaming_config()
+
     def view_sensor_details(self):
-        print(self.device.info)
+        print(self.logger.sensor)
     
     def set_status_message(self, msg:str):
         dpg.set_item_label('status',msg)
     
-    def stop_collection(self):
-        if self.device.running:
-            self.device.stop_stream()
-        else:
-            print('Already stopped!')
-
-        if self.stream:
-            self.stream.join()
-            self.lsat_stream = self.stream
-            self.stream = None
-    
-    def start_collection(self):
-        if self.device.running:
-            print('Already Running!')
-            return
-
-        try:
-            self.device.start_stream()
-        except Exception as e:
-            print(e)
-            print('Error connecting to device. Try again or try replugging.')
-            return
-
-        self.stream = threading.Thread(target=self.stream_samples)
-        self.stream.start()
-        
-    def toggle_collection(self):
-        if self.device.running:
-            self.stop_collection()
-        else:
-            self.start_collection()
-
-    def stream_samples(self):
-        max_rep_rate = 10 # Hz
-        while self.device.running:
-            tic = dt.now()
-            self.update_plot(self.device.get())
-            toc = dt.now()
-
-            elapsed_ms = (toc - tic).total_seconds()
-            time.sleep(max(0, (1/max_rep_rate) - elapsed_ms))
-
-    def collect_sample(self):
-        if self.device.running or self.stream:
-            print('Stopping stream..')
-            self.stop_collection()
-        
-        sample = self.device.collect_sample()
-
-        if not sample:
-            print('Invalid sample')
-            return
-
-        self.update_plot(sample)
-
     def update_sample_metadata(self, sample):
         # Update the display with the latest sample metadata
         # timestring = dt.fromtimestamp(sample['timestamp']).strftime('%Y-%m-%d %H:%M:%S')
@@ -90,69 +40,56 @@ class VibeGUI:
         dpg.set_value('disp_timestamp',  f'Time:        {timestring}')
         dpg.set_value('disp_blocksize',  f'Sample Size: {sample['blocksize'] }')
         dpg.set_value('disp_samplerate', f'Sample Rate: {sample['samplerate']} Hz')
-        dpg.set_value('disp_units',      f'Units:       {sample['units'][self.device.channel]}')
+        # TODO: Harmonize units
 
-    def update_plot(self, sample):
-
-        self.update_sample_metadata(sample)
-
-        # Generate time axis
-        T = np.arange(sample['data'].shape[0]) / self.device.samplerate
-
-        F, A, V = acceleration_to_velocity_fft(sample['data'], self.device.samplerate)
-
+    def update_time_plot(self,T,A):
         dpg.set_value('time_data', [T, A])
         dpg.set_axis_limits('time_axis', T[0], T[-1])
         dpg.set_axis_limits('acc_axis', np.min(A), np.max(A))
 
+    def update_freq_plot(self,F,V):
         dpg.set_value('freq_data', [F, V])
         dpg.set_axis_limits('freq_axis', F[0], F[-1])
         dpg.set_axis_limits('vel_axis', 0, np.max(V))
+
+    def update_trend_plot(self,T,RMS_A):
+        pass
+
+    def display_sample(self, sample):
+        self.update_sample_metadata(sample)
+
+        self.update_time_plot(sample.time, sample.acc_mmps2)
+        self.update_freq_plot(sample.freq, sample.vel_f)
         
-    def update_streaming_config(self, sender, data):
+    def update_streaming_config(self, sender=None, data=None):
         # Snapshot current values
         Ns = int(dpg.get_value('blocksize'))
         Fs = int(dpg.get_value('samplerate'))
-        # dF = int(dpg.get_value('binsize'))
-        # Fmax = int(dpg.get_value('maxfreq'))
 
-        # assert None not in [Fs, Ns, dF, Fmax], 'Invalid config values'
-        # print(Ns,Fs,dF,Fmax)
-
-        try:
-            match dpg.get_item_label(sender):
-                case 'Sample Count':
-                    print('update sample count')
-
-                case 'Sample Rate':
-                    print('update sample rate')
-
-                # case 'Max Freq' | 'Bin Size':
-                #     print('update max freq, or bin size')
-                #     Fs = 2 * Fmax
-                #     Ns = nextpow2(Fs/dF)
-                #     print('Fs: {Fs_new}, Ns: {Ns_new}')
-
-                case _:
-                    #do nothing.
-                    return
-        except Exception as e:
-            print(e)
-            
-        is_running_stream = self.device.running
-        if is_running_stream:
-            self.stop_collection()
-
-        self.device.blocksize = Ns
-        self.device.samplerate = Fs
-
-        if is_running_stream:
-            self.start_collection()
-
+        # TODO: new config
+        self.logger.update_settings(blocksize=Ns, samplerate=Fs)
 
     def set_savedir(self, sender, data):
-        print(data)
-        dpg.set_value('save_dir',data)
+        if Path(data).is_dir():
+            self.logger.datadir = data
+            print('Set_Savedir: valid path set')
+        
+    def connect_sensor(self, sender, data):
+        print(sender, data)
+        if dpg.get_item_alias(sender) == 'refresh_btn':
+            print('refresh')
+            self.found_sensors = { str(s.device_id) + ' '+ str(s.model_name): s for s in VibeSensor.find() }
+
+            dpg.configure_item('sensor_select', items=list(self.found_sensors.keys()))
+            
+        elif dpg.get_item_alias(sender) == 'sensor_select':
+            selected = self.found_sensors[data]
+            self.logger.select_sensor(selected)
+            self.logger.connect_sensor()
+
+    def dpg_debug(self):
+        dpg.show_item_registry()
+        print('Debugger. Break here')
         
     def create_gui(self):
 
@@ -173,6 +110,12 @@ class VibeGUI:
                 with dpg.child_window(label="Toolbar", width=300, autosize_y=True):
                     with dpg.tab_bar():
                         with dpg.tab(label='Acquire'):
+                            with dpg.group(horizontal=True):
+                                dpg.add_text("Select Device")
+                                dpg.add_button(label='Refresh', tag='refresh_btn', callback=self.connect_sensor)
+                            dpg.add_combo(label="Device Select", tag='sensor_select', items=['Dud'], callback=self.connect_sensor)
+                            # TODO, Indicate device info
+
                             config_width = 100
                             dpg.add_combo(label="Sample Count", tag='blocksize', items=list(map(int,np.pow(2, np.arange(8,15)))),
                                           width=config_width, default_value=2**10,
@@ -192,12 +135,12 @@ class VibeGUI:
 
                             dpg.add_separator()
 
-                            dpg.add_text('None', label='record_path')
+                            dpg.add_input_text(label='record_path', callback=self.set_savedir)
                             dpg.add_button(label='browse..', callback=lambda: print('not connected'))
                             dpg.add_text("Data Collection")
-                            dpg.add_button(label=u"Start", callback=self.start_collection)
-                            dpg.add_button(label=u"Stop", callback=self.stop_collection)
-                            dpg.add_button(label=u"Single", callback=self.collect_sample)
+                            dpg.add_button(label=u"Start", callback=self.logger.start_stream)
+                            dpg.add_button(label=u"Stop", callback=self.logger.stop_stream)
+                            dpg.add_button(label=u"Single", callback=self.logger.collect_sample)
 
                             dpg.add_separator()
 
@@ -206,7 +149,7 @@ class VibeGUI:
                             # dpg.add_separator()
 
                         with dpg.tab(label='Configure'):
-                            pass
+                            dpg.add_button(label='DEBUG DPG', callback=self.dpg_debug)
                 # Right display window
                 with dpg.child_window(label="Data Display", autosize_x=True, autosize_y=True):
                     with dpg.tab_bar():
@@ -249,11 +192,11 @@ class VibeGUI:
 
         dpg.start_dearpygui()  # App runs
 
-        self.cleanup()
+        self.cleanup() 
         dpg.destroy_context()
 
     def cleanup(self):
-        self.stop_collection()
+        self.logger.disconnect_sensor()
 
 def main():
 

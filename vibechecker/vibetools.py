@@ -122,8 +122,8 @@ def FindDigiducerDevice():
                                  "units": units
                                  })                  
         dev_num += 1
-    if len(device_info) == 0:
-        raise NoDevicesFound("No compatible devices found")
+    # if len(device_info) == 0:
+    #     raise NoDevicesFound("No compatible devices found")
     return device_info
 
 def acceleration_to_velocity_fft(accel, Fs):
@@ -143,6 +143,7 @@ def acceleration_to_velocity_fft(accel, Fs):
     dt = 1 / Fs     # Time step
     
     # Convert acceleration from g to mm/s²
+    times = np.arange(len(accel))/Fs
     accel_mms2 = accel * 9.81 * 1000  # (9.81 m/s² * 1000) -> mm/s²
 
     # Compute FFT of acceleration
@@ -163,7 +164,7 @@ def acceleration_to_velocity_fft(accel, Fs):
     # Keep only positive frequencies
     freqs = freqs[:N // 2]
     
-    return freqs, accel_mms2, vel_spectrum   
+    return times, freqs, accel_mms2, vel_spectrum   
 
 class NoDevicesFound(Exception):
     pass
@@ -207,7 +208,9 @@ class VibeSensor:
 
     @classmethod
     def find(cls):
-        return [cls(**dev) for dev in FindDigiducerDevice()]
+        stat = [cls(**dev) for dev in FindDigiducerDevice()]
+        stat.append(cls.simulated())
+        return stat
     
     @classmethod
     def simulated(cls):
@@ -258,7 +261,7 @@ class SimulatedSensor:
         return self._running
 
     def create_stream(self):
-        self.stream = threading.Thread(target=self._stream, daemon=True)
+        self._stream = threading.Thread(target=self._stream, daemon=True)
 
     def _generate_data(self):
         return GenerateVibrationData(self.settings.blocksize, self.settings.samplerate, self.channels)
@@ -270,17 +273,50 @@ class SimulatedSensor:
             t = time.monotonic()
             timestamp = mock_C_time(t, t, 0.0)
             time.sleep(self.settings.acquisitionperiod)
-            self.callback(data,self.blocksize, time.monotonic(), 'OK')
+            self.callback(data,self.blocksize, timestamp, 'OK')
 
     def start(self):
-        self.stream.start()
+        self._stream.start()
 
     def stop(self):
         self._running = False
-        self.stream.join()
-        self.stream = None
+        self._stream.join()
+        self._stream = None
         self.create_stream()
-
 
     def close(self):
         pass
+
+class VibeSample():
+    pass
+    # status: str
+    # timestamp: int = None
+    # settings: AcquisitionSettings = None
+
+    # time: np.array = None
+    # accel_g: np.array = None
+    # accel_mps2: np.array = None
+
+    # freq: np.array = None
+         
+
+'''
+time_axis
+accel_g
+accel_mmps2
+vel_mmps??
+
+freq_axis_hz
+freq_axis_cpm
+spectrum_g
+spectrum_mmps
+spectrum_ips
+
+
+self.data['last_sample'] = {'data': data,
+                    'blocksize': frames,
+                    'samplerate': self.settings.samplerate,
+                    'units': self.sensor.units,
+                    'timestamp': timestamp.currentTime,
+                     'status': status}
+'''                     
