@@ -4,36 +4,50 @@ import numpy as np
 import pandas as pd
 from datetime import datetime as dt
 
+from dataclasses import replace
+
 import os
 import time
 from queue import Queue
 from pathlib import Path
 
-from vibetools import VibeSensor, VibeSample, AcquisitionSettings, acceleration_to_velocity_fft, SAMPLERATES
+from vibechecker.vibetools import VibeSensor, VibeSample, AcquisitionSettings, SAMPLERATES, BLOCKSIZES
 
 class VibeLogger:
     '''
     This class collects, analyzes, logs and loads data from the vibration sensor defined in    
     '''
     sensor: VibeSensor = None
-    settings: AcquisitionSettings = None
+    config: AcquisitionSettings = None
     stream = None
     queue: Queue = None
     datadir: Path = Path('DEVDATA')
-    data: dict = {'meta': {}, 'last_sample': None, 'analysis': None, 'samples': 0, 'trend': []}
+    data: dict = None
     callbacks: dict = {}
 
-    def __init__(self, sensor:VibeSensor=None, settings:AcquisitionSettings=None):
+    def __init__(self, sensor:VibeSensor=None, config:AcquisitionSettings=None):
+
+        if config:
+            self.config = config
+        else:
+            # default settings
+            self.config = AcquisitionSettings()
+                
         if sensor is not None:
             self.select_sensor(sensor)
-            if settings:
-                self.update_settings(settings)
-            else:
-                # default settings
-                self.update_settings()
-                
             self.connect_sensor()
 
+        self.reset_data_store()
+
+    def reset_data_store(self):
+        self.data = {}
+        self.data['meta'] = []
+        self.data['sample'] = VibeSample.empty(self.sensor, self.config)
+        self.data['last_sample'] = None
+        self.data['sample_count'] = 0
+        self.data['trend'] = []
+        self.data['rolling_average'] = {'N':0, 'k': 0, 'samples': []}
+            
     @property
     def last_sample(self):
         return self.data['last_sample']
@@ -55,6 +69,7 @@ class VibeLogger:
         self.sensor = sensor
 
         # TODO: Allow selection from multiple devices.
+        # FYI, this is handled in the gui. Console selection not necessary?
 
     def connect_sensor(self):
         '''
@@ -63,11 +78,11 @@ class VibeLogger:
 
         if self.sensor is None:
             print('Connect: No sensor connected')
-        if self.settings is None:
-            print('Connect: No settings implemented')
+        if self.config is None:
+            print('Connect: No configuration implemented')
             return
         
-        self.stream = self.sensor.connect(self.settings, self.raw_data_callback)
+        self.stream = self.sensor.connect(self.config, self.raw_data_callback)
 
     def disconnect_sensor(self):
 
@@ -75,12 +90,10 @@ class VibeLogger:
             print('Disconnect: No sensor connected')
             return
         
-        if self.stream.active:
-            self.stop_stream()
-
+        self.stop_stream()
         self.stream.close()
         self.stream = None
-        self.flush_data_queue  # clear all items from the queue
+        self.kill_data_queue()  # clear all items from the queue
 
     def start_data_queue(self):
         if self.queue is None:
@@ -90,12 +103,13 @@ class VibeLogger:
 
     def get_data_queue(self):
         if self.queue is None:
-            print('VibeLogger:Get Data Queue:: Initiate queue')
-            return None
+            raise RuntimeError('VibeLogger:Get Data Queue:: Initilize queue before `get`')
         
-        return self.queue.queue.get()
+        return self.queue.get()
     
     def flush_data_queue(self):
+        if self.queue is None:
+            return
         self.queue.queue.clear()
 
     def kill_data_queue(self):
@@ -132,126 +146,148 @@ class VibeLogger:
 
     def collect_sample(self):
         """Collects a single sample from the device."""
-
-        self.data['last_sample'] = None
+         
+        self.start_data_queue()
         self.start_stream()
 
-        for _ in range(10):
-            if self.last_sample:
-                break
-            time.sleep(0.01)
+        try:
+            sample = self.get_data_queue()
+        except Exception as e:
+            sample = None
+            print(e)
 
-        self.stop_stream()
+        finally:
+            self.stop_stream()
+            self.kill_data_queue()
 
-        return self.last_sample
-    
-    def update_settings(self, blocksize:int=None, samplerate:int=None, channel:int=None, settings:AcquisitionSettings=None):
-        '''
-        Update the stream acquisition settings for the sensor
-        '''
+        return sample
 
-        if not settings:
-            if not blocksize:
-                blocksize = 1024
-            if not samplerate:
-                samplerate = SAMPLERATES[0]
-            if not channel:
-                channel = 0
-            settings = AcquisitionSettings(blocksize, samplerate, channel)
-        else:
-            assert isinstance(settings, AcquisitionSettings), "Invalid settings"
-
-        # apply new settings
-        unwind = 1
-
-        if self.stream is not None:
-            unwind = unwind<<1
-            if self.stream.active:
-                unwind = unwind<<1
-                print('UpdateSettings: Stopping Stream')
-                self.stop_stream()
-
-            print('UpdateSettings: Disconnecting Sensor')
-            self.disconnect_sensor()
-
-        print(f'UpdateSettings: Receiving settings: {settings}')
-        self.settings = settings
-
-        if unwind > 1:
-            unwind = unwind >> 1
-            print('UpdateSettings: Reconnecting sensor')
-            self.connect_sensor()
-        
-        if unwind > 1:
-            unwind = unwind >>1
-            print('UpdateSettings: Restarting stream')
-            self.start_stream()
-
-    def save_data(self, name=None):
+    def save_data(self, target:Path=None):
         ext = '.pkl'
+        default_name = dt.now().strftime('%Y-%m-%d_%H-%M-%S') + ext
 
-        if not target.exists():
-            print(f'Save: target does not exist {target}')
-            return
-        
-        if target.is_dir():
-            target = Path.joinpath(target, dt.now().strftime('%Y-%m-%d_%H-%M-%S') + ext)
-
-        if not target.name.endswith(ext):
-            target = Path(target.name + ext)    
+        if not target:
+            target = Path.joinpath(self.datadir, default_name)
+        elif isinstance(target, str):
+            if not target.endswith(ext):
+                target += ext 
+            target = Path.joinpath(self.datadir, target)
+        elif isinstance(target, Path):
+            if target.is_dir():
+                target = Path.joinpath(target, default_name)
+            elif not target.name.endswith(ext):
+                target = Path.joinpath(target.parent, target.name + ext)
 
         pd.to_pickle(self.data, target)
 
         return target
 
-    def load_data(self, name=None):
+    def load_data(self, target:Path=None):
         ext = '.pkl'
 
-        if not isinstance(name, Path):
-            target = Path.joinpath(self.datadir, name)
+        if not target:
+            print('TODO: load latest')
+            # TODO: LOAD Latest file
+        elif isinstance(target,str):
+            if not target.endswith(ext):
+                target += ext 
+            target = Path.joinpath(self.datadir, target)
 
-        if not ( target.is_file() and target.as_posix().endswith(ext) ):
-            print(f'Not a valid file path to a pickle file: ${target}')
-            return
+        assert target.is_file(), f'Load Data: target file does not exist {target}'
 
         self.data = pd.read_pickle(target)
 
-    def raw_data_callback(self, indata, frames, timestamp, status):
+    def raw_data_callback(self, indata:np.ndarray, frames:int, timestamp:float, status:str):
         '''log and analyze incoming data stream'''
-        g2mms2 = 9.81 * 1e3
-
-        sample = VibeSample()
-
-        sample.timestamp= timestamp.currentTime
-        sample.status   = status
-        sample.samplerate = self.settings.samplerate
-        sample.blocksize = frames
         
-        # TIME
-        sample.time = np.arange(frames) / sample.samplerate
-        sample.acc_mmps2  = g2mms2 * indata[:,self.settings.channel] * self.sensor.scale[self.settings.channel]
+        if not frames == self.config.blocksize:
+            print('Data Callback: Frames, blocksize missmatch')
 
-        # FREQ
-        freqs = np.fft.fftfreq(frames, 1/sample.samplerate)
-        acc_f = np.fft.fft(sample.acc_mmps2) / frames
-        vel_f = np.zeros_like(acc_f, dtype=np.complex128)
-        nonzero_freq = freqs!=0
-        vel_f[nonzero_freq] = acc_f[nonzero_freq]/ (1j * 2 * np.pi * freqs[nonzero_freq])
+        data = self.sensor.process_raw_data(self.config, indata)
 
-
-        sample.freq = freqs[:frames//2]
-        sample.acc_f = 2 * np.abs(acc_f[:frames//2])
-        sample.vel_f = 2 * np.abs(vel_f[:frames//2])
+        new_sample = VibeSample(sensor=self.sensor,
+                                config=replace(self.config),
+                                status=status,
+                                timestamp=timestamp.currentTime,
+                                data_raw=data
+                                )
         
-        self.data['last_sample'] = sample
+        self.data['last_sample'] = new_sample
 
         if self.queue is not None:
-            self.queue.put(sample)
+            self.queue.put(new_sample)
+        else:
+            self.data_callback(new_sample)
 
     def data_callback(self, sample):
-        for fn in self.callbacks.items():
+        for fn in self.callbacks.values():
             fn(sample)
+
+    def visualize_init(self, sample):  
+        import matplotlib.pyplot as plt      
+        plt.ion()
+        fig, ax = plt.subplots(2,1)
+
+        fig.suptitle("Digiducer Stream: " + self.sensor.model_name, fontsize=20)
+        ax[0].set_xlabel('Time, ms')
+        ax[0].set_ylabel('Acceleration, mm/s^2')
+        ax[1].set_xlabel('Frequency, Hz')
+        ax[1].set_ylabel('Velocity, mm/s/hz')
+
+        time_vec, acc_t_mmps2 = (sample.config.time_vec, sample.get_accel('mm/s^2'))
+        freq_vec, vel_f_mmps = (sample.config.freq_vec, sample.get_spectral_velocity('mm/s^2'))            
+        time_plot, = ax[0].plot(time_vec, acc_t_mmps2)
+        freq_plot, = ax[1].plot(freq_vec, vel_f_mmps)
+
+        vis = {'fig': fig,
+               'ax': ax,
+               'time_vec': time_vec,
+               'freq_vec': freq_vec,
+               'time_plot': time_plot,
+               'freq_plot': freq_plot}
+
+        return vis
+
+    def visualize_sample(self, sample, vis):
+        time_vec, acc_t_mmps2 = (sample.config.time_vec, sample.get_accel('mm/s^2'))
+        freq_vec, vel_f_mmps = (sample.config.freq_vec, sample.get_spectral_velocity('mm/s^2'))
+        
+        vis['time_plot'].set_data(time_vec, acc_t_mmps2)
+        vis['freq_plot'].set_data(freq_vec, vel_f_mmps)
+        
+        vis['fig'].canvas.draw()
+        vis['fig'].canvas.flush_events()
+        print(sample.status)
 
  
 if __name__ == "__main__":
-    print('Nothing to do. Run pytest.')
+    import matplotlib.pyplot as plt
+
+    sens = VibeSensor.find()
+    settings=AcquisitionSettings.from_freq_domain(1000, 1)
+    vibr = VibeLogger(sensor=sens[-1], config=settings)
+    
+    sample:VibeSample = vibr.collect_sample()
+    last_update_time = sample.timestamp
+    plot_update_period = 0.05
+    
+    vis = vibr.visualize_init(sample)
+
+    try:
+        vibr.start_stream()
+        for _ in range(100):
+            if not plt.fignum_exists(fig.number):
+                print('Window closed!')
+                break
+
+            sample = vibr.last_sample
+
+            if sample.timestamp >= last_update_time + plot_update_period:
+                vibr.visualize_sample(sample, vis)
+                plt.pause(plot_update_period)  # force GUI update
+                last_update_time = sample.timestamp
+    
+    finally:
+        vibr.stop_stream()
+        vibr.disconnect_sensor()
+        plt.close(vis['fig'])

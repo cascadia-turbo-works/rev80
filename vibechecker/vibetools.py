@@ -2,26 +2,135 @@ import time
 import threading
 
 import numpy as np
+from scipy.signal import find_peaks
 import sounddevice as sd
 
 from datetime import datetime as dt
 from sys import platform
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Tuple, List, Union
 
-
-SAMPLERATES = [8_000, 11_050, 16_000, 22_100, 32_000, 44_100, 48_000]
 
 eu_sen = np.array([100,100]) # if device returns volts, use this mV/g scale, set to 0 to return raw voltage
 eu_units = ['g', 'g']
+SAMPLERATES = [8_000, 11_050, 16_000, 22_100, 32_000, 44_100, 48_000]
+BLOCKSIZES = ( 2**np.arange(9,13) ).tolist()
+
+SUPPORTED_UNITS = ["g", "mm/s^2", "in/s^2"]
+
+UNIT_CONVERSION = {
+    ("g", "mm/s^2"): 9.80665 * 1000,
+    ("g", "in/s^2"): 9.80665 * 39.3701,
+    ("mm/s^2", "g"): 1 / (9.80665 * 1000),
+    ("in/s^2", "g"): 1 / (9.80665 * 39.3701),
+    ("mm/s^2", "in/s^2"): 39.3701,
+    ("in/s^2", "mm/s^2"): 1 / 39.3701,
+}
+
+
+class NoDevicesFound(Exception):
+    pass
+
+class FormatError(Exception):
+    pass
+
+@dataclass
+class AcquisitionSettings:
+    _domain: str = field(default="TIME", init=False)
+    _time_params: tuple = field(default=(BLOCKSIZES[3], SAMPLERATES[0]))  # (Ns, Fs)
+    _freq_params: tuple = field(default=(2000,1))    # (Fmax, dF)
+    channel:int = 0
+
+    def __post_init__(self):
+        match self._domain:
+            case "FREQ":
+                self._update_time_from_freq()
+            case "TIME":
+                self._update_freq_from_time()
+            case _:
+                raise ValueError(f"Acquisition Settings: Invalid domain {self._domain}")
+
+    @classmethod
+    def from_time_domain(cls, blocksize: int, samplerate: float):
+        inst = cls()
+        inst._time_params = (blocksize, samplerate)
+        inst._domain = "TIME"
+        inst._update_freq_from_time()
+        return inst
+
+    @classmethod
+    def from_freq_domain(cls, Fmax: float, dF: float):
+        inst = cls()
+        inst._freq_params = (float(Fmax), float(dF))
+        inst._domain = "FREQ"
+        inst._update_time_from_freq()
+        return inst
+
+    def _update_time_from_freq(self):
+        Fmax, dF = self._freq_params
+        Ns = (2*Fmax) // dF
+        Fs = 2 * Fmax
+        self._time_params = (Ns, Fs)
+
+    def _update_freq_from_time(self):
+        Ns, Fs = self._time_params
+        Fmax = Fs / 2
+        dF = Fs / Ns
+        self._freq_params = (Fmax, dF)
+
+    @property
+    def blocksize(self) -> int:
+        return self._time_params[0]
+
+    @property
+    def samplerate(self) -> float:
+        return self._time_params[1]
+
+    @property
+    def maxfreq(self) -> float:
+        return self._freq_params[0]
+
+    @property
+    def binsize(self) -> float:
+        return self._freq_params[1]
+
+    def set_time_params(self, blocksize:int = None, samplerate:int = None):
+        Ns = int(blocksize) or self._time_params[0]
+        Fs = int(samplerate) or self._time_params[1]
+        self._time_params = ( Ns, Fs )
+        self._update_freq_from_time()
+        self._domain = 'TIME'
+
+    def set_freq_params(self, maxfreq:int = None, binsize:int = None):
+        Fm = int(maxfreq) or self._freq_params[0]
+        Df = int(binsize) or self._freq_params[1]
+        self._freq_params = (Fm, Df)
+        self._update_time_from_freq()
+        self._domain = 'FREQ'
+
+    @property
+    def acquisition_period(self):
+        return 1.0/self.samplerate
+    
+    @property
+    def time_vec(self) -> np.ndarray:
+        Ns, Fs = self._time_params
+        return np.arange(Ns) / Fs
+
+    @property
+    def freq_vec(self) -> np.ndarray:
+        Ns, Fs = self._time_params
+        return np.fft.rfftfreq(Ns, d=1 / Fs)
 
 def nextpow2(x:int):
     # calculate the next power of two above some number x
     return int( 2**np.ceil(np.log2(x)))
 
-def GenerateVibrationData(blocksize:int, samplerate:int, channels:int=None):
+def GenerateVibrationData(config:AcquisitionSettings):
     # Generate sample data representing rotating equipment with faulty bearing
-    t = np.arange(0,blocksize/samplerate,1/samplerate) # time vector
-    nnoise = lambda a: a * np.random.randn(blocksize) # normal noise
+    t = np.arange(config.blocksize).reshape((config.blocksize, 1)) / config.samplerate # time vector
+
+    nnoise = lambda a: a * np.random.randn(config.blocksize).reshape((config.blocksize, 1)) # normal noise
     signal = lambda a, f, p=0: a * np.sin(2*np.pi*f*t + p) # single frequency signal
 
     runningrate = 60 # hz, base freq
@@ -30,7 +139,9 @@ def GenerateVibrationData(blocksize:int, samplerate:int, channels:int=None):
     bearing_severity = 0.8
     bearing_phase = np.random.rand() * 2*np.pi
 
-    data = nnoise(0.8)
+    data = np.zeros(shape=(config.blocksize, 1))
+
+    data += nnoise(0.8).reshape(data.shape)
 
     # machine running rate and harmonics
 
@@ -41,11 +152,11 @@ def GenerateVibrationData(blocksize:int, samplerate:int, channels:int=None):
     for k in range(1,11):
         data += signal(bearing_severity/(0.4*k), runningrate*bearing_multiple*k, bearing_phase)
 
-    if channels:
+    if config.channel is not None:
         # convert to shape (blocksize, channels_count)
-        data = np.matlib.repmat(data.reshape(blocksize,1), 1, channels)
+        data = np.tile(data, (1, max(1,config.channel)))
 
-    return data
+    return data 
  
 def FindDigiducerDevice():
     # The Modal Shop model number substrings
@@ -126,68 +237,15 @@ def FindDigiducerDevice():
     #     raise NoDevicesFound("No compatible devices found")
     return device_info
 
-def acceleration_to_velocity_fft(accel, Fs):
-    """
-    Convert time-domain acceleration signal to frequency-domain velocity using FFT.
-    
-    Parameters:
-    - accel: numpy array of acceleration samples in g (gravity units)
-    - Fs: Sampling frequency in Hz
-    
-    Returns:
-    - freqs: Frequency axis (Hz)
-    - accel_spectrum: One-sided acceleration amplitude spectrum (mm/s²)
-    - vel_spectrum: One-sided velocity amplitude spectrum (mm/s)
-    """
-    N = len(accel)  # Number of samples
-    dt = 1 / Fs     # Time step
-    
-    # Convert acceleration from g to mm/s²
-    times = np.arange(len(accel))/Fs
-    accel_mms2 = accel * 9.81 * 1000  # (9.81 m/s² * 1000) -> mm/s²
+def convert_units(data: np.ndarray, from_unit: str, to_unit: str) -> np.ndarray:
+    if from_unit == to_unit:
+        return data
+    try:
+        factor = UNIT_CONVERSION[(from_unit, to_unit)]
+        return data * factor
+    except KeyError:
+        raise ValueError(f"Unsupported conversion from {from_unit} to {to_unit}")
 
-    # Compute FFT of acceleration
-    A_f = np.fft.fft(accel_mms2) /N
-    freqs = np.fft.fftfreq(N, dt)  # Frequency axis
-
-    # Compute one-sided amplitude spectrum of acceleration
-    accel_spectrum = 2 * np.abs(A_f[:N // 2])
-
-    # Convert acceleration to velocity in the frequency domain
-    V_f = np.zeros_like(A_f, dtype=np.complex128)
-    nonzero_freqs = freqs != 0
-    V_f[nonzero_freqs] = A_f[nonzero_freqs] / (1j * 2 * np.pi * freqs[nonzero_freqs])
-    
-    # Compute one-sided amplitude spectrum of velocity
-    vel_spectrum = 2 * np.abs(V_f[:N // 2])  
-
-    # Keep only positive frequencies
-    freqs = freqs[:N // 2]
-    
-    return times, freqs, accel_mms2, vel_spectrum   
-
-class NoDevicesFound(Exception):
-    pass
-
-class FormatError(Exception):
-    pass
-
-
-@dataclass
-class AcquisitionSettings:
-    blocksize: int
-    samplerate: int
-    channel: int
-
-    pipeline = []
-
-    @property
-    def sampleperiod(self):
-        return 1 / self.samplerate
-    @property
-    def acquisitionperiod(self):
-        return self.blocksize/self.samplerate
-    
 @dataclass
 class mock_C_time:
     currentTime: float
@@ -208,8 +266,7 @@ class VibeSensor:
 
     @classmethod
     def find(cls):
-        stat = [cls(**dev) for dev in FindDigiducerDevice()]
-        stat.append(cls.simulated())
+        stat = [cls.simulated()] + [cls(**dev) for dev in FindDigiducerDevice()]
         return stat
     
     @classmethod
@@ -225,34 +282,36 @@ class VibeSensor:
                    is_simulation = True
                    )
     
-    def connect(self, settings: AcquisitionSettings, callback):
+    def connect(self, config: AcquisitionSettings, callback):
         '''Return stream object'''
 
         if self.is_simulation:
             # Simulate a device connection
-            return SimulatedSensor(settings, callback=callback)
+            return SimulatedSensor(config, sensor=self, callback=callback)
         else:
             return sd.InputStream(
                         device=self.device_id, 
                         channels=2, 
-                        samplerate=settings.samplerate, 
-                        blocksize=settings.blocksize,
+                        samplerate=config.samplerate, 
+                        blocksize=config.blocksize,
                         callback=callback,
-                        dtype='float32' 
+                        dtype='float32'
                     )
+        
+    def process_raw_data(self, config:AcquisitionSettings, raw_data:np.ndarray):
+        return raw_data[:, config.channel] * self.scale[config.channel]
 
 class SimulatedSensor:
 
-    def __init__(self,settings:AcquisitionSettings, callback):
+    def __init__(self, config:AcquisitionSettings, sensor, callback):
         self._running: bool = False
 
-        self.settings = settings
-
-        self.blocksize = settings.blocksize
-        self.samplerate = settings.samplerate
+        self.sensor = sensor
+        self.config = config
         self.channels = 2
-
         self.callback = callback
+
+        self.stream = None
 
         self.create_stream()
 
@@ -261,10 +320,10 @@ class SimulatedSensor:
         return self._running
 
     def create_stream(self):
-        self._stream = threading.Thread(target=self._stream, daemon=True)
+        self.stream = threading.Thread(target=self._stream, daemon=True)
 
     def _generate_data(self):
-        return GenerateVibrationData(self.settings.blocksize, self.settings.samplerate, self.channels)
+        return GenerateVibrationData(self.config)
     
     def _stream(self):
         self._running = True
@@ -272,51 +331,105 @@ class SimulatedSensor:
             data = self._generate_data()
             t = time.monotonic()
             timestamp = mock_C_time(t, t, 0.0)
-            time.sleep(self.settings.acquisitionperiod)
-            self.callback(data,self.blocksize, timestamp, 'OK')
+            time.sleep(0.95*self.config.acquisition_period)
+            self.callback(data,self.config.blocksize, timestamp, 'OK')
 
     def start(self):
-        self._stream.start()
+        self.stream.start()
 
     def stop(self):
         self._running = False
-        self._stream.join()
-        self._stream = None
+        self.stream.join()
+        self.stream = None
         self.create_stream()
+
+    def abort(self):
+        self.stop()
 
     def close(self):
         pass
+ 
+@dataclass
+class VibeSample:
+    sensor: VibeSensor
+    config: AcquisitionSettings
+    status: str
+    timestamp: float
+    target_unit: str = "mm/s^2"
+    data_raw: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
 
-class VibeSample():
-    pass
-    # status: str
-    # timestamp: int = None
-    # settings: AcquisitionSettings = None
+    @classmethod
+    def empty(cls, sensor:VibeSensor=None, config:AcquisitionSettings=None):
+        return VibeSample(sensor=sensor,
+                          config=config,
+                          status='EMPTY',
+                          timestamp=-1 )
 
-    # time: np.array = None
-    # accel_g: np.array = None
-    # accel_mps2: np.array = None
+    def set_sensor(self, sensor:VibeSensor):
+        self.sensor = sensor
 
-    # freq: np.array = None
-         
+    def set_config(self, config:AcquisitionSettings):
+        self.config = config
 
-'''
-time_axis
-accel_g
-accel_mmps2
-vel_mmps??
+    def push_sample(self, data:np.array, timestamp:float, status:str):
+        self.data_raw = data  # Assume single-channel
+        self.timestamp = timestamp
+        self.status = status
 
-freq_axis_hz
-freq_axis_cpm
-spectrum_g
-spectrum_mmps
-spectrum_ips
+    def get_accel(self, to_units: str = None) -> np.ndarray:
+        from_units = self.sensor.units[self.config.channel]
+        to_units = to_units or self.target_unit
+        return convert_units(self.data_raw, from_units, to_units)
 
+    def get_rms(self) -> float:
+        acc = self.get_accel()
+        return np.sqrt(np.mean(acc ** 2))
 
-self.data['last_sample'] = {'data': data,
-                    'blocksize': frames,
-                    'samplerate': self.settings.samplerate,
-                    'units': self.sensor.units,
-                    'timestamp': timestamp.currentTime,
-                     'status': status}
-'''                     
+    def get_fft(self) -> np.ndarray:
+        acc = self.get_accel()
+        spectrum = np.fft.rfft(acc)
+        spectral_density = np.abs(spectrum) / len(acc)
+        return spectral_density
+
+    def get_spectral_accel(self, unit: str = None) -> np.ndarray:
+        unit = unit or self.target_unit
+        accel_spec = self.get_fft()
+        return convert_units(accel_spec, self.target_unit, unit)
+
+    def get_spectral_velocity(self, unit: str = None) -> np.ndarray:
+        unit = unit or self.target_unit
+        freq = self.config.freq_vec
+        spectral_acc = self.get_spectral_accel(unit)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            vel = spectral_acc / (2 * np.pi * freq)
+            vel[0] = 0.0  # avoid division by zero at DC
+        return vel
+
+    def get_peak_velocity(self, unit: str = None) -> float:
+        velocity_spectrum = self.get_spectral_velocity(unit)
+        return np.max(np.abs(velocity_spectrum))
+    
+    def peaks(self):
+        spectrum = self.get_spectral_velocity()
+        peaks, properties = find_peaks(10*np.log10(spectrum), height=3, distance=5)
+        frequencies = self.settings.freq_vec[peaks]
+        amplitudes = spectrum[peaks]
+
+        return frequencies, amplitudes, properties
+    
+
+if __name__=="__main__":
+    print(AcquisitionSettings())
+    config = AcquisitionSettings.from_time_domain(BLOCKSIZES[3], SAMPLERATES[0])
+    # config = AcquisitionSettings.from_freq_domain(2000,1)
+    sensor = VibeSensor.find()[0]
+
+    stream = sensor.connect(config, lambda a,b,c,d,e: print(a,b,c,d,e))
+
+    stream.start()
+    time.sleep(.1)
+    stream.stop()
+
+    time.sleep(0.5)
+
+    print(stream)
