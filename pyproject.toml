@@ -1,0 +1,25 @@
+[project]
+name = "vibechecker"
+version = "0.1.0"
+description = "A Python toolkit for vibration sensing and logging"
+authors = [
+    { name="Henry Gotjen", email="hgotjen@gmail.com" }
+]
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "endaq",
+    "numpy",
+    "pandas",
+    "dearpygui",
+    "matplotlib",
+    "sounddevice",
+    "pytest",
+]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+pythonpath = "."

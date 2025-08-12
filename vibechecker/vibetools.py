@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 SAMPLERATES = [8_000, 11_050, 16_000, 22_100, 32_000, 44_100, 48_000]
 
-eu_scale = np.array([100,100]) # if device returns volts, use this mV/g scale, set to 0 to return raw voltage
+eu_sen = np.array([100,100]) # if device returns volts, use this mV/g scale, set to 0 to return raw voltage
 eu_units = ['g', 'g']
 
 def nextpow2(x:int):
