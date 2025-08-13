@@ -64,10 +64,10 @@ class VibeGUI:
         
     def update_streaming_config(self, sender=None, data=None):
         # Snapshot current values
-        ns = int(dpg.get_value('blocksize'))
-        fs = int(dpg.get_value('samplerate'))
-        fm = int(float(dpg.get_value('maxfreq')))
-        df = int(float(dpg.get_value('binsize')))
+        ns = int(float(dpg.get_value('blocksize')))
+        fs = float(dpg.get_value('samplerate'))
+        fm = float(dpg.get_value('maxfreq'))
+        df = float(dpg.get_value('binsize'))
 
         print(ns,fs,fm,df)
         print(sender, data)

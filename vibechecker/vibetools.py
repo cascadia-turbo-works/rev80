@@ -53,7 +53,7 @@ class AcquisitionSettings:
     @classmethod
     def from_time_domain(cls, blocksize: int, samplerate: float):
         inst = cls()
-        inst._time_params = (blocksize, samplerate)
+        inst._time_params = (int(blocksize), float(samplerate))
         inst._domain = "TIME"
         inst._update_freq_from_time()
         return inst
@@ -70,13 +70,13 @@ class AcquisitionSettings:
         Fmax, dF = self._freq_params
         Ns = (2*Fmax) // dF
         Fs = 2 * Fmax
-        self._time_params = (Ns, Fs)
+        self._time_params = (int(Ns), float(Fs))
 
     def _update_freq_from_time(self):
         Ns, Fs = self._time_params
         Fmax = Fs / 2
         dF = Fs / Ns
-        self._freq_params = (Fmax, dF)
+        self._freq_params = (float(Fmax), float(dF))
 
     @property
     def blocksize(self) -> int:
@@ -94,17 +94,17 @@ class AcquisitionSettings:
     def binsize(self) -> float:
         return self._freq_params[1]
 
-    def set_time_params(self, blocksize:int = None, samplerate:int = None):
-        Ns = int(blocksize) or self._time_params[0]
-        Fs = int(samplerate) or self._time_params[1]
-        self._time_params = ( Ns, Fs )
+    def set_time_params(self, blocksize:int = None, samplerate:float = None):
+        Ns = blocksize or self._time_params[0]
+        Fs = samplerate or self._time_params[1]
+        self._time_params = ( int(Ns), float(Fs) )
         self._update_freq_from_time()
         self._domain = 'TIME'
 
-    def set_freq_params(self, maxfreq:int = None, binsize:int = None):
-        Fm = int(maxfreq) or self._freq_params[0]
-        Df = int(binsize) or self._freq_params[1]
-        self._freq_params = (Fm, Df)
+    def set_freq_params(self, maxfreq:float = None, binsize:float = None):
+        Fm = maxfreq or self._freq_params[0]
+        Df = binsize or self._freq_params[1]
+        self._freq_params = (float(Fm), float(Df))
         self._update_time_from_freq()
         self._domain = 'FREQ'
 
@@ -128,10 +128,9 @@ def nextpow2(x:int):
 
 def GenerateVibrationData(config:AcquisitionSettings):
     # Generate sample data representing rotating equipment with faulty bearing
-    t = np.arange(config.blocksize).reshape((config.blocksize, 1)) / config.samplerate # time vector
 
-    nnoise = lambda a: a * np.random.randn(config.blocksize).reshape((config.blocksize, 1)) # normal noise
-    signal = lambda a, f, p=0: a * np.sin(2*np.pi*f*t + p) # single frequency signal
+    nnoise = lambda a: a * np.random.randn(config.time_vec.shape[0]) # normal noise
+    signal = lambda a, f, p=0: a * np.sin(2*np.pi*f*config.time_vec + p) # single frequency signal
 
     runningrate = 60 # hz, base freq
     running_phase = np.random.rand() * 2*np.pi
@@ -139,9 +138,9 @@ def GenerateVibrationData(config:AcquisitionSettings):
     bearing_severity = 0.8
     bearing_phase = np.random.rand() * 2*np.pi
 
-    data = np.zeros(shape=(config.blocksize, 1))
+    data = np.zeros_like(config.time_vec)
 
-    data += nnoise(0.8).reshape(data.shape)
+    data += nnoise(0.8)
 
     # machine running rate and harmonics
 
@@ -156,7 +155,7 @@ def GenerateVibrationData(config:AcquisitionSettings):
         # convert to shape (blocksize, channels_count)
         data = np.tile(data, (1, max(1,config.channel)))
 
-    return data 
+    return data.T 
  
 def FindDigiducerDevice():
     # The Modal Shop model number substrings
