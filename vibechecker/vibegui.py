@@ -158,6 +158,10 @@ class VibeGUI:
 
                             dpg.add_input_text(label='record_path', callback=self.set_savedir)
                             dpg.add_button(label='browse..', callback=lambda: print('not connected'))
+                            
+                            with dpg.group(horizontal=True):
+                                dpg.add_button(label="Save", callback=lambda: self.logger.save_data(name=dpg.get_value('record_path')))
+                                dpg.add_button(label='Load', callback=lambda: print('Load_Data: Not Connected'))
 
                             dpg.add_separator()
 

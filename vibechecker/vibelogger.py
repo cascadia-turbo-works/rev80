@@ -162,19 +162,21 @@ class VibeLogger:
 
         return sample
 
-    def save_data(self, target:Path=None):
+    def save_data(self, name=None, target:Path=None):
         ext = '.pkl'
-        default_name = dt.now().strftime('%Y-%m-%d_%H-%M-%S') + ext
+
+        if not name:
+            name = dt.now().strftime('%Y-%m-%d_%H-%M-%S')
 
         if not target:
-            target = Path.joinpath(self.datadir, default_name)
+            target = Path.joinpath(self.datadir, name)
         elif isinstance(target, str):
             if not target.endswith(ext):
                 target += ext 
             target = Path.joinpath(self.datadir, target)
         elif isinstance(target, Path):
             if target.is_dir():
-                target = Path.joinpath(target, default_name)
+                target = Path.joinpath(target, name+ext)
             elif not target.name.endswith(ext):
                 target = Path.joinpath(target.parent, target.name + ext)
 
