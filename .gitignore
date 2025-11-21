@@ -4,3 +4,7 @@ DEVDATA
 # python crumbs
 __pycache__
 .pytest_cache
+
+
+# dont pass through logs between machines
+log

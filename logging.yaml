@@ -1,0 +1,51 @@
+---
+version: 1
+disable_existing_loggers: False
+
+formatters:
+  default:
+    format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+handlers:
+  console:
+    class: logging.StreamHandler
+    level: INFO
+    formatter: default
+    stream: ext://sys.stdout
+
+  file_handler:
+    class: logging.handlers.RotatingFileHandler
+    level: INFO
+    formatter: default
+    filename: log/vibe.log
+    maxBytes: 10485760
+    backupCount: 5
+    encoding: utf8
+
+  err_file_handler:
+    class: logging.handlers.RotatingFileHandler
+    level: ERROR
+    formatter: default
+    filename: log/error.log
+    maxBytes: 10485760
+    backupCount: 5
+    encoding: utf8
+
+  dbg_file_handler:
+    class: logging.handlers.RotatingFileHandler
+    level: DEBUG
+    formatter: default
+    filename: log/debug.log
+    maxBytes: 10485760
+    backupCount: 5
+    encoding: utf8
+
+loggers:
+  vibe:
+    level: DEBUG          # all modules under vibe.* inherit this
+    handlers: [console, file_handler, err_file_handler, dbg_file_handler]
+    propagate: no
+
+root:
+  level: WARNING
+  handlers: [console]

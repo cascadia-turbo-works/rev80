@@ -4,8 +4,8 @@ from datetime import datetime as dt
 import vibechecker as vc
 
 @pytest.mark.parametrize('dev', vc.VibeSensor.find())
-def test_stream_cycle(dev):
-    vibr = vc.VibeLogger(dev)
+def test_stream_cycle(dev: vc.VibeSensor):
+    vibr = vc.DataCollector(dev)
     vibr.start_data_queue()
     
     for _ in range(2):
@@ -21,8 +21,8 @@ def test_stream_cycle(dev):
     assert vibr.stream is None, "Stream should be properly closed after test."
 
 @pytest.mark.parametrize('dev', vc.VibeSensor.find())
-def test_sample_capture(dev):
-    vibr = vc.VibeLogger(dev)
+def test_sample_capture(dev: vc.VibeSensor):
+    vibr = vc.DataCollector(dev)
 
     samples = []
     N = 5
@@ -39,12 +39,12 @@ def test_sample_capture(dev):
     assert vibr.stream is None, "Stream should be properly closed after test."
 
 @pytest.mark.parametrize('dev', vc.VibeSensor.find())
-def test_stream(dev):
+def test_stream(dev: vc.VibeSensor):
     import matplotlib.pyplot as plt
 
     sens = vc.VibeSensor.find()
     settings=vc.AcquisitionSettings.from_freq_domain(1000, 1)
-    vibr = vc.VibeLogger(sensor=sens[-1], config=settings)
+    vibr = vc.DataCollector(sensor=sens[-1], config=settings)
     
     sample:vc.VibeSample = vibr.collect_sample()
     last_update_time = sample.timestamp
@@ -73,12 +73,12 @@ def test_stream(dev):
         plt.close(vis['fig'])
 
 @pytest.mark.parametrize('dev', vc.VibeSensor.find())
-def test_save(dev):
+def test_save(dev: vc.VibeSensor):
 
     filename = 'pytest_data_' + dt.now().strftime('%Y-%m-%d_%H-%M-%S') + '.pkl'
     settings = vc.AcquisitionSettings()
 
-    vl = vc.VibeLogger(dev,settings)
+    vl = vc.DataCollector(dev,settings)
 
     samp = vl.collect_sample()
 

@@ -7,19 +7,15 @@ customer:
   CEO:
 machine:
   name:
+  type:
   serial:
   description: |
     words
   motor_info:
     running_rate:
   bearing_info:
-
-# recorded data
-tests:
-  time: 
-  fft:
-  trend:
-  ring:
-
-# processed data
-processed_data:
+  sample: # filepaths
+    - 
+      description:
+      running_rate: # if variable
+      filepath:

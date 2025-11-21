@@ -3,18 +3,21 @@ import threading
 
 import numpy as np
 from scipy.signal import find_peaks
-import sounddevice as sd
+import sounddevice
 
 from datetime import datetime as dt
 from sys import platform
 from dataclasses import dataclass, field
 from typing import Tuple, List, Union
 
+from vibechecker import logger
+
+log = logger.get_logger('util')
 
 eu_sen = np.array([100,100]) # if device returns volts, use this mV/g scale, set to 0 to return raw voltage
 eu_units = ['g', 'g']
 SAMPLERATES = [8_000, 11_050, 16_000, 22_100, 32_000, 44_100, 48_000]
-BLOCKSIZES = ( 2**np.arange(9,13) ).tolist()
+BLOCKSIZES = list(map(int,np.pow(2, np.arange(8,15))))
 
 SUPPORTED_UNITS = ["g", "mm/s^2", "in/s^2"]
 
@@ -70,7 +73,13 @@ class AcquisitionSettings:
         Fmax, dF = self._freq_params
         Ns = (2*Fmax) // dF
         Fs = 2 * Fmax
+
+        # snap to the nearest allowed samplerate
+        Fs = SAMPLERATES[np.argmin(np.abs(np.array(SAMPLERATES) - Fs))]
+
         self._time_params = (int(Ns), float(Fs))
+        
+        self._update_freq_from_time
 
     def _update_freq_from_time(self):
         Ns, Fs = self._time_params
@@ -81,18 +90,38 @@ class AcquisitionSettings:
     @property
     def blocksize(self) -> int:
         return self._time_params[0]
+    @blocksize.setter
+    def blocksize(self,bs):
+        self._time_params = (int(bs), self.samplerate)
+        self._update_freq_from_time()
+        self._domain = 'TIME'
 
     @property
     def samplerate(self) -> float:
         return self._time_params[1]
+    @samplerate.setter
+    def samplerate(self, fs):
+        self._time_params = (self.blocksize, float(fs))
+        self._update_freq_from_time()
+        self._domain = 'TIME'
 
     @property
     def maxfreq(self) -> float:
         return self._freq_params[0]
+    @maxfreq.setter
+    def maxfreq(self,fm):
+        self._freq_params = (float(fm), self.binsize)
+        self._update_time_from_freq()
+        self._domain = 'FREQ'
 
     @property
     def binsize(self) -> float:
         return self._freq_params[1]
+    @binsize.setter
+    def binsize(self,df):
+        self._freq_params = (self.maxfreq, float(df))
+        self._update_time_from_freq()
+        self._domain = 'FREQ'
 
     def set_time_params(self, blocksize:int = None, samplerate:float = None):
         Ns = blocksize or self._time_params[0]
@@ -155,6 +184,7 @@ def GenerateVibrationData(config:AcquisitionSettings):
         # convert to shape (blocksize, channels_count)
         data = np.tile(data, (1, max(1,config.channel)))
 
+    time.sleep(config.acquisition_period)
     return data.T 
  
 def FindDigiducerDevice():
@@ -166,7 +196,7 @@ def FindDigiducerDevice():
     # requested sample rates.  Windows Kernal Streaming allows direct control
     # so find devices using that API
     if platform == "win32":         # Windows...
-        hapis=sd.query_hostapis()
+        hapis=sounddevice.query_hostapis()
         api_num=0
         for api in hapis:
             if api['name'] == "Windows WDM-KS":
@@ -176,7 +206,7 @@ def FindDigiducerDevice():
         # Not Windows - other platforms don't have the issue with the API
         api_num=0
     # Return all available audio inputs
-    devices = sd.query_devices()
+    devices = sounddevice.query_devices()
     device_info = []   # Array to store info about each compa
     dev_num=0
     # Iterate through available devices and find ones named with a TMS model.
@@ -222,14 +252,14 @@ def FindDigiducerDevice():
                       raise FormatError("Expecting 1, 2, or 3 format")
 
                  # Add new device to array   
-                device_info.append({"device_id":dev_num,
-                                 "model_name":model,
-                                 "serial_number":serialnum,
-                                 "manufacture_date":date,
-                                 "format_id":form,
-                                 "sensitivity":sens,
-                                 "scale":scale,
-                                 "units": units
+                device_info.append({"device_id":    dev_num,
+                                 "model_name":      'Digiducer_'+model,
+                                 "serial_number":   serialnum,
+                                 "build_date":      date,
+                                 "format_id":       form,
+                                 "sensitivity":     sens,
+                                 "scale":           scale,
+                                 "units":           units
                                  })                  
         dev_num += 1
     # if len(device_info) == 0:
@@ -256,12 +286,15 @@ class VibeSensor:
     device_id: int
     model_name: str
     serial_number: str
-    manufacture_date: dt
+    build_date: dt
     format_id: int
     sensitivity: list
     scale: np.ndarray
     units: list
     is_simulation: bool = False
+
+    def __str__(self):
+        return f'{self.model_name} (sn:{self.serial_number}, id:{self.device_id})'
 
     @classmethod
     def find(cls):
@@ -273,7 +306,7 @@ class VibeSensor:
         return cls(device_id = '-1',
                    model_name = 'Simulated Vibration Sensor',
                    serial_number = '0000',
-                   manufacture_date = dt.now(),
+                   build_date = dt.now(),
                    format_id = 0,
                    sensitivity = [1,1],
                    scale = [1,1],
@@ -288,7 +321,7 @@ class VibeSensor:
             # Simulate a device connection
             return SimulatedSensor(config, sensor=self, callback=callback)
         else:
-            return sd.InputStream(
+            return sounddevice.InputStream(
                         device=self.device_id, 
                         channels=2, 
                         samplerate=config.samplerate, 
@@ -298,7 +331,7 @@ class VibeSensor:
                     )
         
     def process_raw_data(self, config:AcquisitionSettings, raw_data:np.ndarray):
-        return raw_data[:, config.channel] * self.scale[config.channel]
+        return raw_data[:config.blocksize, config.channel] * self.scale[config.channel]
 
 class SimulatedSensor:
 
@@ -381,8 +414,7 @@ class VibeSample:
         return convert_units(self.data_raw, from_units, to_units)
 
     def get_rms(self) -> float:
-        acc = self.get_accel()
-        return np.sqrt(np.mean(acc ** 2))
+        return np.sqrt(np.mean(np.pow(self.get_accel, 2)))
 
     def get_fft(self) -> np.ndarray:
         acc = self.get_accel()

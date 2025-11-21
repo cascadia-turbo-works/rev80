@@ -15,6 +15,7 @@ dependencies = [
     "matplotlib",
     "sounddevice",
     "pytest",
+    "pyyaml"
 ]
 
 [build-system]

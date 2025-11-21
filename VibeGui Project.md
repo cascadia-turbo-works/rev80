@@ -10,7 +10,8 @@ Requirements:
    1. bearing types
    2. running rate
 4. Time samples
-5. Processed fault frequency data.
+5
+5. Processed fault frequency data
 6. Luxury, startup, coastdown trend
 
 - [ ] frequency range and binsize
@@ -42,29 +43,43 @@ Data capture file contents
 
 ### Upcomming
 
-- Create metadata file format with required fields
-- Save data
-- Allow multiple device/simulated device selection in config tab
+- Implement RMS trend over recording window
+- [ ] add data loader to gui
 
 ### Active Features
 
-- [ ] Add manual/auto axes scaling - Why is this so haaard?!?
-- [ ] Add freq binsize and limits
+- [ ] Improve file saving with filename and path specification.
+- [ ] Create metadata file format with required fields
 - [ ] Replace fft process with endaq tools
-- [ ] Save data!
 - [ ] Set equipment running rate and visualize octaves
+- [ ] Detect peaks!
 
 ### BUGS
 
-- [ ] Isolate dataprocessing from VibrationDevice
-- [ ] multiple stream start/stop results in 'device not found'
-  - I think this is fixed, by using the GUI stop/start method instead of deivce
+- Updating
+- full crash when Digiducer is unplugged during connection.
+  - It doesn't seem like I can catch this error before it crashes the window. See log:
+
+```bash
+2025-11-20 20:48:18,362 - vibe.gui - INFO - Starting sensor stream with Digiducer_333D05 (sn:083938, id:7)
+Expression 'alsa_snd_pcm_prepare( stream->capture.pcm )' failed in 'src/hostapi/alsa/pa_linux_alsa.c', line: 2932
+Expression 'AlsaStart( stream, 0 )' failed in 'src/hostapi/alsa/pa_linux_alsa.c', line: 4244
+Expression 'alsa_snd_pcm_drop( stream->capture.pcm )' failed in 'src/hostapi/alsa/pa_linux_alsa.c', line: 3046
+2025-11-20 20:48:27,478 - vibe.gui - INFO - Cleanup app assets
+python: src/os/unix/pa_unix_util.c:510: PaUnixMutex_Terminate: Assertion `0 == paUtilErr_' failed.
+```
+
 
 ### Complete
 
-- Sample data from digiducer
-- Create digiducer simulator for offline production
-- Capture and display data in GUI
+- [x] Save data!
+- [x] Isolate dataprocessing from DataCollector
+- [x] Allow multiple device/simulated device selection in config tab
+- [x] Add manual/auto axes scaling - Why is this so haaard?!?
+- [x] Add freq binsize and limits
+- [x] Sample data from digiducer
+- [x] Create digiducer simulator for offline testing
+- [x] Capture and display data in GUI
   - [x] Stream start+stop and single capture.
   - [x] Time
   - [x] FFT

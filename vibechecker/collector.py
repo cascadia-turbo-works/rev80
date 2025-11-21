@@ -6,16 +6,17 @@ from datetime import datetime as dt
 
 from dataclasses import replace
 
-import os
-import time
 from queue import Queue
 from pathlib import Path
 
-from vibechecker.vibetools import VibeSensor, VibeSample, AcquisitionSettings, SAMPLERATES, BLOCKSIZES
+from vibechecker.util import VibeSensor, VibeSample, AcquisitionSettings
+from vibechecker import logger
 
-class VibeLogger:
+log = logger.get_logger('collector')
+
+class DataCollector:
     '''
-    This class collects, analyzes, logs and loads data from the vibration sensor defined in    
+    This class collects, analyzes, logs and loads data from the vibration sensor
     '''
     sensor: VibeSensor = None
     config: AcquisitionSettings = None
@@ -32,12 +33,20 @@ class VibeLogger:
         else:
             # default settings
             self.config = AcquisitionSettings()
-                
+
         if sensor is not None:
-            self.select_sensor(sensor)
-            self.connect_sensor()
+            self.connect_sensor(sensor)
 
         self.reset_data_store()
+
+    @property
+    def is_streaming(self):
+        try:
+            is_streaming = self.sensor and self.stream and self.stream.active
+        except Exception:
+            log.error('Device connection may be interrupted')
+            return False
+        return is_streaming
 
     def reset_data_store(self):
         self.data = {}
@@ -47,114 +56,131 @@ class VibeLogger:
         self.data['sample_count'] = 0
         self.data['trend'] = []
         self.data['rolling_average'] = {'N':0, 'k': 0, 'samples': []}
-            
+
+        log.info('Reset data store.')
+
     @property
     def last_sample(self):
         return self.data['last_sample']
-    
+
     @last_sample.setter
     def last_sample(self, sample):
         self.data['lastsample'] = sample
 
-    def select_sensor(self, sensor=None):
-        '''
-        Select the device to use for data collection
-        '''
-        assert isinstance(sensor, VibeSensor), "Select Sensor: Invalid sensor"
-
-        if self.stream is not None:
-            # Disconnect any connected sensor first
-            self.disconnect_sensor()
-        
-        self.sensor = sensor
-
-        # TODO: Allow selection from multiple devices.
-        # FYI, this is handled in the gui. Console selection not necessary?
-
-    def connect_sensor(self):
+    def connect_sensor(self, sensor:VibeSensor):
         '''
         Connect to the device and return a stream object
         '''
+        if not isinstance(sensor, VibeSensor):
+            raise TypeError(f"Attempted to select invalid sensor of {type(sensor)}")
 
-        if self.sensor is None:
-            print('Connect: No sensor connected')
+        if self.stream is not None or self.sensor is not None:
+            # Disconnect any connected sensor first
+            self.disconnect_sensor()
+        
         if self.config is None:
-            print('Connect: No configuration implemented')
+            log.error(f'Attempted to connect sensor {self.sensor} but no configuration implemented')
             return
         
-        self.stream = self.sensor.connect(self.config, self.raw_data_callback)
+        self.sensor = sensor
+        self.stream = self.sensor.connect(self.config, self.recieve_data)
+        log.debug(f'Connected sensor {self.sensor})')
 
     def disconnect_sensor(self):
 
-        if self.stream is None:
-            print('Disconnect: No sensor connected')
-            return
+        if self.is_streaming:
+            # stop active stream
+            self.stop_stream()
+
+        if self.stream is not None:
+            # close stream
+            self.stream.close()
+            self.stream = None
+
+        if self.queue is not None:    
+            self.kill_data_queue()  # clear all items from the queue
+
+        if self.sensor:
+            log.debug(f'Disconnecting sensor {self.sensor})')
+            self.sensor = None
+
+    def update_acquisition_settings(self,parameter, value):
+        match parameter:
+            case 'blocksize':
+                self.config.blocksize = value
+            case 'samplerate':
+                self.config.samplerate = value
+            case 'maxfreq':
+                self.config.maxfreq = value
+            case 'binsize':
+                self.config.binsize = value
         
-        self.stop_stream()
-        self.stream.close()
-        self.stream = None
-        self.kill_data_queue()  # clear all items from the queue
+        if self.sensor:
+            self.connect_sensor(self.sensor)
 
     def start_data_queue(self):
         if self.queue is None:
             self.queue = Queue()
+            log.debug('Data Queue initialized')
         else:
-            print('Start Data Queue: Queue is active')
+            log.warning('Data Queue is already active')
 
     def get_data_queue(self):
         if self.queue is None:
-            raise RuntimeError('VibeLogger:Get Data Queue:: Initilize queue before `get`')
+            raise RuntimeError('DataCollector:Get Data Queue:: Initilize queue before `get`')
         
         return self.queue.get()
     
     def flush_data_queue(self):
         if self.queue is None:
+            log.warning('Attempted to flush inactive queue')
             return
+        
+        qsize = self.queue.qsize()
         self.queue.queue.clear()
+        log.debug(f'Data Queue flushed ({qsize} items)')
 
     def kill_data_queue(self):
+        if self.queue is None:
+            log.warning('Attempted to kill inactive queue')
+            return
+
         self.flush_data_queue()
         self.queue = None
 
+        log.debug('Data Queue destroyed')
+
     def start_stream(self):
-        if self.stream is None:
-            print('Start Stream: No sensor connected')
-            return
-        
-        if self.stream.active:
-            print('Start Stream: Already Running')
+        '''Initiate sensor stream'''        
+        if self.is_streaming:
+            log.warning('Attempted Start Stream: Already Running')
             return
 
-        try:
-            self.stream.start()
-        except Exception as e:
-            print(e)
+        self.stream.start()
+        log.debug(f'Stream started')
 
     def stop_stream(self):
-        if self.stream is None:
-            print('Stop Stream: No sensor connected')
-            return
-        
-        if not self.stream.active:
-            print('Stop Stream: Not Running')
+        '''Terminate sensor stream'''
+        if not self.is_streaming:
+            log.warning('Attempted Stop Stream: No stream running')
             return
 
-        try:
-            self.stream.stop()
-        except Exception as e:
-            print(e)
+        self.stream.stop()
+        log.debug(f'Stream stopped')
 
     def collect_sample(self):
-        """Collects a single sample from the device."""
+        """Collect single sample from sensor"""
+        if self.is_streaming:
+            self.stop_stream()
          
         self.start_data_queue()
         self.start_stream()
 
         try:
             sample = self.get_data_queue()
-        except Exception as e:
+        except Exception:
             sample = None
-            print(e)
+            raise
 
         finally:
             self.stop_stream()
@@ -181,6 +207,7 @@ class VibeLogger:
                 target = Path.joinpath(target.parent, target.name + ext)
 
         pd.to_pickle(self.data, target)
+        log.info(f'Saved current data to {target}')
 
         return target
 
@@ -188,7 +215,8 @@ class VibeLogger:
         ext = '.pkl'
 
         if not target:
-            print('TODO: load latest')
+            log.error('TODO: load latest data not implemented')
+            return
             # TODO: LOAD Latest file
         elif isinstance(target,str):
             if not target.endswith(ext):
@@ -198,13 +226,11 @@ class VibeLogger:
         assert target.is_file(), f'Load Data: target file does not exist {target}'
 
         self.data = pd.read_pickle(target)
+        log.info(f'Loaded data sample {target}')
 
-    def raw_data_callback(self, indata:np.ndarray, frames:int, timestamp:float, status:str):
-        '''log and analyze incoming data stream'''
+    def recieve_data(self, indata:np.ndarray, frames:int, timestamp:float, status:str):
+        '''log and preprocess incoming data stream'''
         
-        if not frames == self.config.blocksize:
-            print('Data Callback: Frames, blocksize missmatch')
-
         data = self.sensor.process_raw_data(self.config, indata)
 
         new_sample = VibeSample(sensor=self.sensor,
@@ -259,7 +285,6 @@ class VibeLogger:
         
         vis['fig'].canvas.draw()
         vis['fig'].canvas.flush_events()
-        print(sample.status)
 
  
 if __name__ == "__main__":
@@ -267,7 +292,7 @@ if __name__ == "__main__":
 
     sens = VibeSensor.find()
     settings=AcquisitionSettings.from_freq_domain(1000, 1)
-    vibr = VibeLogger(sensor=sens[-1], config=settings)
+    vibr = DataCollector(sensor=sens[-1], config=settings)
     
     sample:VibeSample = vibr.collect_sample()
     last_update_time = sample.timestamp
@@ -278,7 +303,7 @@ if __name__ == "__main__":
     try:
         vibr.start_stream()
         for _ in range(100):
-            if not plt.fignum_exists(fig.number):
+            if not plt.fignum_exists(vis['fig'].number):
                 print('Window closed!')
                 break
 

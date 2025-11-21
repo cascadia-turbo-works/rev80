@@ -1,3 +1,4 @@
-from vibechecker.vibegui import VibeGUI
-from vibechecker.vibelogger import VibeLogger
-from vibechecker.vibetools import VibeSample, VibeSensor, AcquisitionSettings
+from vibechecker.gui import GUI
+from vibechecker.collector import DataCollector
+from vibechecker.util import VibeSample, VibeSensor, AcquisitionSettings
+from vibechecker import logger
