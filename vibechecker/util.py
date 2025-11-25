@@ -4,6 +4,7 @@ import threading
 import numpy as np
 from scipy.signal import find_peaks
 import sounddevice
+import endaq
 
 from datetime import datetime as dt
 from sys import platform
@@ -283,13 +284,13 @@ class mock_C_time:
     
 @dataclass
 class VibeSensor:
-    device_id: int
+    device_id: str
     model_name: str
     serial_number: str
     build_date: dt
     format_id: int
     sensitivity: list
-    scale: np.ndarray
+    scale: list
     units: list
     is_simulation: bool = False
 
@@ -383,38 +384,33 @@ class SimulatedSensor:
  
 @dataclass
 class VibeSample:
-    sensor: VibeSensor
     config: AcquisitionSettings
     status: str
     timestamp: float
     target_unit: str = "mm/s^2"
-    data_raw: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
+    raw_data: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
+    raw_unit: str = 'g'
 
     @classmethod
-    def empty(cls, sensor:VibeSensor=None, config:AcquisitionSettings=None):
-        return VibeSample(sensor=sensor,
-                          config=config,
+    def empty(cls, config:AcquisitionSettings=None):
+        return VibeSample(config=config,
                           status='EMPTY',
                           timestamp=-1 )
-
-    def set_sensor(self, sensor:VibeSensor):
-        self.sensor = sensor
 
     def set_config(self, config:AcquisitionSettings):
         self.config = config
 
-    def push_sample(self, data:np.array, timestamp:float, status:str):
-        self.data_raw = data  # Assume single-channel
+    def push_sample(self, data:np.ndarray, timestamp:float, status:str):
+        self.raw_data = data  # Assume single-channel
         self.timestamp = timestamp
         self.status = status
 
     def get_accel(self, to_units: str = None) -> np.ndarray:
-        from_units = self.sensor.units[self.config.channel]
         to_units = to_units or self.target_unit
-        return convert_units(self.data_raw, from_units, to_units)
+        return convert_units(self.raw_data, self.raw_unit, to_units)
 
     def get_rms(self) -> float:
-        return np.sqrt(np.mean(np.pow(self.get_accel, 2)))
+        return np.sqrt(np.mean(self.get_accel**2))
 
     def get_fft(self) -> np.ndarray:
         acc = self.get_accel()
@@ -425,6 +421,7 @@ class VibeSample:
     def get_spectral_accel(self, unit: str = None) -> np.ndarray:
         unit = unit or self.target_unit
         accel_spec = self.get_fft()
+        # endaq.calc.psd.welch(accel_spec)
         return convert_units(accel_spec, self.target_unit, unit)
 
     def get_spectral_velocity(self, unit: str = None) -> np.ndarray:
@@ -435,7 +432,7 @@ class VibeSample:
             vel = spectral_acc / (2 * np.pi * freq)
             vel[0] = 0.0  # avoid division by zero at DC
         return vel
-
+    
     def get_peak_velocity(self, unit: str = None) -> float:
         velocity_spectrum = self.get_spectral_velocity(unit)
         return np.max(np.abs(velocity_spectrum))
@@ -443,7 +440,7 @@ class VibeSample:
     def peaks(self):
         spectrum = self.get_spectral_velocity()
         peaks, properties = find_peaks(10*np.log10(spectrum), height=3, distance=5)
-        frequencies = self.settings.freq_vec[peaks]
+        frequencies = self.config.freq_vec[peaks]
         amplitudes = spectrum[peaks]
 
         return frequencies, amplitudes, properties

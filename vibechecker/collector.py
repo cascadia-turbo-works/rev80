@@ -51,8 +51,7 @@ class DataCollector:
     def reset_data_store(self):
         self.data = {}
         self.data['meta'] = []
-        self.data['sample'] = VibeSample.empty(self.sensor, self.config)
-        self.data['last_sample'] = None
+        self.data['sample'] = VibeSample.empty(self.config)
         self.data['sample_count'] = 0
         self.data['trend'] = []
         self.data['rolling_average'] = {'N':0, 'k': 0, 'samples': []}
@@ -60,11 +59,11 @@ class DataCollector:
         log.info('Reset data store.')
 
     @property
-    def last_sample(self):
-        return self.data['last_sample']
+    def sample(self) -> VibeSample:
+        return self.data['sample']
 
-    @last_sample.setter
-    def last_sample(self, sample):
+    @sample.setter
+    def sample(self, sample):
         self.data['lastsample'] = sample
 
     def connect_sensor(self, sensor:VibeSensor):
@@ -233,19 +232,21 @@ class DataCollector:
         
         data = self.sensor.process_raw_data(self.config, indata)
 
-        new_sample = VibeSample(sensor=self.sensor,
-                                config=replace(self.config),
-                                status=status,
-                                timestamp=timestamp.currentTime,
-                                data_raw=data
-                                )
+        # new_sample = VibeSample(config=replace(self.config),
+        #                         status=status,
+        #                         timestamp=timestamp.currentTime,
+        #                         data_raw=data
+        #                         )
         
-        self.data['last_sample'] = new_sample
+        # self.data['sample'] = new_sample
+
+        self.sample.push_sample(data, timestamp, status)
 
         if self.queue is not None:
-            self.queue.put(new_sample)
+            self.queue.put(self.sample)
         else:
-            self.data_callback(new_sample)
+            self.data_callback(self.sample)
+            self.data['sample_count'] += 1
 
     def data_callback(self, sample):
         for fn in self.callbacks.values():
@@ -307,7 +308,7 @@ if __name__ == "__main__":
                 print('Window closed!')
                 break
 
-            sample = vibr.last_sample
+            sample = vibr.sample
 
             if sample.timestamp >= last_update_time + plot_update_period:
                 vibr.visualize_sample(sample, vis)
