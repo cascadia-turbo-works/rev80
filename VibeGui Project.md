@@ -84,3 +84,42 @@ python: src/os/unix/pa_unix_util.c:510: PaUnixMutex_Terminate: Assertion `0 == p
   - [x] Time
   - [x] FFT
   - [ ] Trend - later
+
+## 11/25/26 meet with Carmen
+
+- Goal is to put the most useful features of Rev's more sophistocated vibe box 
+- Deployment
+  - IT police won't allow app on company computers
+
+- switch between m/s and m/s/s in freq domain. HF peaks are suppressed in velocity spectrum
+- Highlight top ten peaks
+  - Alta
+- Trend analysis
+  - Inches per second zero to peak
+  - Whole spectrum or specify freq window
+  - option for RMS
+
+- Download ENDAQ Free software
+
+PHASE 1:
+- [x] development so far!
+- $2k
+
+PHASE 2:
+- polish and deploy to windows
+- $1000
+
+PHASE 2:
+- Integrate BNC DAQ for prox probes!
+- $1000
+
+PHASE 3:
+- Sales!
+
+
+FUTURE:
+
+- two sensors simulaneous to show phasing from two sample points.
+- integrate proxprobes with DAQ?
+  - Need to find DAQ at low cost for 4 channel BNC
+- Sexy web portal for data sharing.
