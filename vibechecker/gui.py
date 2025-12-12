@@ -1,6 +1,6 @@
 import dearpygui.dearpygui as dpg
 
-from pathlib import Path
+from path import Path
 from typing import Union, Tuple, List
 from datetime import datetime as dt
 
@@ -13,6 +13,10 @@ from vibechecker.collector import DataCollector
 from vibechecker.util import VibeSensor, VibeSample, BLOCKSIZES, SAMPLERATES
 
 SAVEDIR = 'DEVDATA'
+EXT = '.pkl'
+UNITS = {'Earth Gravity - g': 'g',
+         'Metric - mm': 'mm',
+         'Imperial - in': 'in'}
 
 log = logger.get_logger('gui')
 
@@ -40,6 +44,13 @@ class GUI:
     
     def set_status_message(self, msg:str):
         dpg.set_item_label('status',msg)
+
+    def sample_unit_callback(self, sender, data):
+        if sender == 'sample_units':
+            self.collector.sample.target_unit = UNITS[data]
+
+        if not self.collector.is_streaming:
+            self.display_sample(self.collector.sample)
     
     def update_sample_metadata(self, sample:VibeSample):
         # Update the display with the latest sample metadata
@@ -51,12 +62,24 @@ class GUI:
         dpg.set_value('disp_samplerate', f'Sample Rate: {sample.config.samplerate} Hz')
         # TODO: Harmonize units. ex Hz, rpm
 
-    def update_time_plot(self,T,A):
+    def update_time_plot(self,sample:VibeSample):
+        T = sample.config.time_vec
+        A = sample.get_accel()
+
         dpg.set_value('time_data', [T, A])
         dpg.set_axis_limits('time_axis', T[0], T[-1])
         dpg.set_axis_limits('acc_axis', np.min(A), np.max(A))
 
-    def update_freq_plot(self,F,V):
+    def update_freq_plot(self,sample:VibeSample):
+
+        freq_unit = dpg.get_value('sample_integration')
+        if freq_unit == 'Velocity':
+            V = sample.get_spectral_velocity()
+        elif freq_unit == 'Acceleration':
+            V = sample.get_spectral_accel()
+
+        F = sample.config.freq_vec
+
         iicrop = F<self.collector.config.maxfreq
         F = F[iicrop]
         V = V[iicrop]
@@ -69,10 +92,13 @@ class GUI:
         pass
 
     def display_sample(self, sample:VibeSample):
+        if not sample.raw_data.size > 0:
+            return 
+        
         self.update_sample_metadata(sample)
 
-        self.update_time_plot(sample.config.time_vec, sample.get_accel())
-        self.update_freq_plot(sample.config.freq_vec, sample.get_spectral_velocity())
+        self.update_time_plot(sample)
+        self.update_freq_plot(sample)
 
         if self.collector.queue:
             dpg.set_value('debug',f'Stream queue len: {self.collector.queue.qsize()}')
@@ -96,7 +122,8 @@ class GUI:
         dpg.set_value('samplerate', self.collector.config.samplerate)
         dpg.set_value('blocksize', self.collector.config.blocksize)
 
-    def set_savedir(self, sender=None, data=None):
+    def set_savedir(self, sender=None, data=str):
+        p = Path(data)
         if Path(data).is_dir():
             self.collector.datadir = data
             log.info(f'Set datapath: valid path set to {data}')
@@ -109,8 +136,8 @@ class GUI:
         # This shouldn't be included in `FindDigiducers` function bc
         # it may break active streams if called a the wrong time.
         # This is necessary to acheieve hotplugging of sensors while app is open w/o restart
-        vibechecker.util.sounddevice._terminate()
-        vibechecker.util.sounddevice._initialize()
+        vibechecker.sounddevice._terminate()
+        vibechecker.sounddevice._initialize()
         # ENDHACK
 
         self.found_sensors = { str(s.device_id) + ' '+ str(s.model_name): s for s in VibeSensor.find() }
@@ -130,7 +157,7 @@ class GUI:
         try:
             log.info(f'Connecting sensor {sensor})')
             self.collector.connect_sensor(sensor)
-        except vibechecker.util.sounddevice.PortAudioError as e:
+        except vibechecker.sounddevice.PortAudioError as e:
             log.info('Selected device is not longer available, try again')
             self.disconnect_sensor()
             self.refresh_sensors()
@@ -166,6 +193,22 @@ class GUI:
         sample = self.collector.collect_sample()
         self.display_sample(sample)
 
+    def save_target(self) -> Path:
+        name = dpg.get_value('record_path')
+
+        if dpg.get_value('timestamp_savefile'):
+            name += '_' + str(dt.now().strftime('%Y-%m-%d_%H-%M-%S'))
+
+        name += EXT
+
+        return Path.joinpath(SAVEDIR, name)
+    
+    def load_target(self) -> Path:
+        name = dpg.get_value('record_path')
+        if not name.endswith(EXT):
+            name += EXT
+        return Path.joinpath(SAVEDIR, name)
+
     def dpg_debug(self):
         dpg.show_item_registry()
         log.debug('Debugger. Break here')
@@ -179,10 +222,12 @@ class GUI:
         #     nerd_font = dpg.add_font("/home/myco/CODE/reveng/gui/font/Inconsolata/InconsolataNerdFont-Regular.ttf", 18)  # Adjust the path and size
         # dpg.bind_font(nerd_font)  # Set as default font
             
-        #dpg.add_file_dialog(directory_selector=True,  show=False, callback=self.set_savedir, tag="folder_dialog", width=800 ,height=400)
+        dpg.add_file_dialog(show=False, default_path=Path(SAVEDIR),
+                            callback=lambda s,d: dpg.set_value('record_path', d.basename()),
+                            tag="folder_dialog", width=800 ,height=400)
 
         with dpg.value_registry():
-            dpg.add_string_value(tag='save_dir')
+            dpg.add_string_value(tag='save_file')
 
         with dpg.window(label="Vibe Logger", width=1200, height=800):
             with dpg.group(horizontal=True):
@@ -222,12 +267,14 @@ class GUI:
                             dpg.add_button(label=u"Stop", callback=self.stop_stream)
                             dpg.add_button(label=u"Single", callback=self.collect_sample)
 
-                            dpg.add_input_text(label='record_path', callback=self.set_savedir)
-                            dpg.add_button(label='browse..', callback=lambda: log.warning('File browser: not connected')) # TODO, implement file browsing
+                            with dpg.group(horizontal=True):
+                                dpg.add_input_text(label='', tag='record_path')
+                                dpg.add_button(label='browse..', callback=lambda: dpg.show_item('folder_dialog')) # TODO, implement file browsing
+                            dpg.add_checkbox(label='timestamp', tag='timestamp_savefile')
                             
                             with dpg.group(horizontal=True):
-                                dpg.add_button(label="Save", callback=lambda: self.collector.save_data(name=dpg.get_value('record_path')))
-                                dpg.add_button(label='Load', callback=lambda: log.warning('Load data Not Connected')) # TODO, implement data loader
+                                dpg.add_button(label="Save", callback=lambda: self.collector.save_data(self.save_target()))
+                                dpg.add_button(label='Load', callback=lambda: self.collector.load_data(self.load_target())) 
 
                             dpg.add_separator()
 
@@ -246,7 +293,7 @@ class GUI:
                                 dpg.add_plot_axis(dpg.mvXAxis, label="Time, ms", tag="time_axis")
                                 dpg.add_plot_axis(dpg.mvYAxis, label="mm/s/s", tag="acc_axis")
 
-                                dpg.add_line_series(np.array([0]), np.array([0]), parent="time_axis", label="Time Domain", tag="time_data")
+                                dpg.add_line_series([0.], [0.], parent="time_axis", label="Time Domain", tag="time_data")
                         with dpg.tab(label='Frequency Domain'):
                             with dpg.plot(label="Frequency Series", width=-1, height=600, tag='freq_plot'):
                                 # Plot legend
@@ -254,7 +301,12 @@ class GUI:
                                 dpg.add_plot_axis(dpg.mvXAxis, label="Freq, hz", tag="freq_axis")
                                 dpg.add_plot_axis(dpg.mvYAxis, label="Velocity, mm/s", tag="vel_axis")
 
-                                dpg.add_line_series(np.array([0]), np.array([0]), parent="freq_axis", label="Frequency Domain", tag="freq_data")
+                                dpg.add_line_series([0.], [0.], parent="freq_axis", label="Frequency Domain", tag="freq_data")
+
+                    dpg.add_combo(label='Sample Units', tag='sample_units', callback=self.sample_unit_callback,
+                                    items=list(UNITS.keys()), default_value='Earth Gravity - g')                                                
+                    dpg.add_combo(label="Sample Integration", tag='sample_integration', callback=self.sample_unit_callback,
+                                    items=['Velocity', 'Acceleration'], default_value='Acceleration')
 
                         # with dpg.tab(label='Running Trend'):
                             # with dpg.plot(label="Trend", width=-1, height=600, tag='trend_plot'):

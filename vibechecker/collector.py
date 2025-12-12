@@ -1,13 +1,13 @@
 # Vibe logger
 
 import numpy as np
-import pandas as pd
+import pickle
 from datetime import datetime as dt
 
 from dataclasses import replace
 
 from queue import Queue
-from pathlib import Path
+from path import Path
 
 from vibechecker.util import VibeSensor, VibeSample, AcquisitionSettings
 from vibechecker import logger
@@ -187,70 +187,44 @@ class DataCollector:
 
         return sample
 
-    def save_data(self, name=None, target:Path=None):
-        ext = '.pkl'
-
-        if not name:
-            name = dt.now().strftime('%Y-%m-%d_%H-%M-%S')
-
-        if not target:
-            target = Path.joinpath(self.datadir, name)
-        elif isinstance(target, str):
-            if not target.endswith(ext):
-                target += ext 
-            target = Path.joinpath(self.datadir, target)
-        elif isinstance(target, Path):
-            if target.is_dir():
-                target = Path.joinpath(target, name+ext)
-            elif not target.name.endswith(ext):
-                target = Path.joinpath(target.parent, target.name + ext)
-
-        pd.to_pickle(self.data, target)
+    def save_data(self, target:Path):
+        if target.is_file():
+            log.warning('Save target exists. Delete existing file before saving.')
+            return
+        
+        with open(target, 'wb') as f:
+            pickle.dump(self.data, f)
         log.info(f'Saved current data to {target}')
 
         return target
 
-    def load_data(self, target:Path=None):
-        ext = '.pkl'
+    def load_data(self, target:Path):
+        if not target.is_file():
+            log.error(f'load_data: file does not exist: {target}')
 
-        if not target:
-            log.error('TODO: load latest data not implemented')
-            return
-            # TODO: LOAD Latest file
-        elif isinstance(target,str):
-            if not target.endswith(ext):
-                target += ext 
-            target = Path.joinpath(self.datadir, target)
+        with open(target, 'rb') as f:
+            self.data = pickle.load(f)
 
-        assert target.is_file(), f'Load Data: target file does not exist {target}'
+        self.data_callback(self.sample)
 
-        self.data = pd.read_pickle(target)
         log.info(f'Loaded data sample {target}')
 
-    def recieve_data(self, indata:np.ndarray, frames:int, timestamp:float, status:str):
+    def recieve_data(self, indata:np.ndarray, frames:int, timestamp, status:str):
         '''log and preprocess incoming data stream'''
         
         data = self.sensor.process_raw_data(self.config, indata)
+        self.sample.push_sample(data, timestamp.currentTime, status)
 
-        # new_sample = VibeSample(config=replace(self.config),
-        #                         status=status,
-        #                         timestamp=timestamp.currentTime,
-        #                         data_raw=data
-        #                         )
-        
-        # self.data['sample'] = new_sample
+        self.data_callback(self.sample)
 
-        self.sample.push_sample(data, timestamp, status)
+    def data_callback(self, sample):
 
         if self.queue is not None:
             self.queue.put(self.sample)
         else:
-            self.data_callback(self.sample)
+            for fn in self.callbacks.values():
+                fn(sample)
             self.data['sample_count'] += 1
-
-    def data_callback(self, sample):
-        for fn in self.callbacks.values():
-            fn(sample)
 
     def visualize_init(self, sample):  
         import matplotlib.pyplot as plt      
@@ -263,8 +237,8 @@ class DataCollector:
         ax[1].set_xlabel('Frequency, Hz')
         ax[1].set_ylabel('Velocity, mm/s/hz')
 
-        time_vec, acc_t_mmps2 = (sample.config.time_vec, sample.get_accel('mm/s^2'))
-        freq_vec, vel_f_mmps = (sample.config.freq_vec, sample.get_spectral_velocity('mm/s^2'))            
+        time_vec, acc_t_mmps2 = (sample.config.time_vec, sample.get_accel())
+        freq_vec, vel_f_mmps = (sample.config.freq_vec, sample.get_spectral_velocity())            
         time_plot, = ax[0].plot(time_vec, acc_t_mmps2)
         freq_plot, = ax[1].plot(freq_vec, vel_f_mmps)
 
@@ -289,7 +263,6 @@ class DataCollector:
 
  
 if __name__ == "__main__":
-    import matplotlib.pyplot as plt
 
     sens = VibeSensor.find()
     settings=AcquisitionSettings.from_freq_domain(1000, 1)

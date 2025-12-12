@@ -2,7 +2,6 @@ import time
 import threading
 
 import numpy as np
-from scipy.signal import find_peaks
 import sounddevice
 import endaq
 
@@ -20,15 +19,15 @@ eu_units = ['g', 'g']
 SAMPLERATES = [8_000, 11_050, 16_000, 22_100, 32_000, 44_100, 48_000]
 BLOCKSIZES = list(map(int,np.pow(2, np.arange(8,15))))
 
-SUPPORTED_UNITS = ["g", "mm/s^2", "in/s^2"]
+SUPPORTED_UNITS = ["g", "mm","in"]
 
 UNIT_CONVERSION = {
-    ("g", "mm/s^2"): 9.80665 * 1000,
-    ("g", "in/s^2"): 9.80665 * 39.3701,
-    ("mm/s^2", "g"): 1 / (9.80665 * 1000),
-    ("in/s^2", "g"): 1 / (9.80665 * 39.3701),
-    ("mm/s^2", "in/s^2"): 39.3701,
-    ("in/s^2", "mm/s^2"): 1 / 39.3701,
+    ("g", "mm"): 9.80665 * 1000,
+    ("mm", "g"): 1 / (9.80665 * 1000),
+    ("g", "in"): 9.80665 * 1000 * 25.4,
+    ("in", "g"): 1 / (9.80665 * 1000 * 25.4),
+    ("mm", "in"): 25.4,
+    ("in", "mm"): 1 / 25.4
 }
 
 
@@ -156,11 +155,47 @@ def nextpow2(x:int):
     # calculate the next power of two above some number x
     return int( 2**np.ceil(np.log2(x)))
 
-def GenerateVibrationData(config:AcquisitionSettings):
+
+def GenerateVibrationData_SpectralMethod(config:AcquisitionSettings):
+    F = config.freq_vec
+    amplitude = np.zeros_like(F, dtype='complex128')
+
+    # Create exponential noise with random phase
+    N0 = 0.03
+    NR = 1000
+    amplitude +=  N0 * np.exp(-F/NR)  * np.exp(np.random.rand(*F.shape)*np.pi*2j)
+
+    running = np.zeros_like(F) * 1j
+    running_rate = 60
+    running_level = 1. * np.exp(np.random.rand() * np.pi*2j)
+    # running_overtones = 
+
+    for k in range(int(F[-1] // running_rate)):
+        running[np.argmin(np.abs(F-(k+1)*running_rate))] = running_level / (k+1)
+
+    bearing = np.zeros_like(F) * 1j
+    bearing_multiple = 9.23
+    bearing_severity = 0.5 * np.exp(np.random.rand() * np.pi*2j)
+
+    for k in range(int(F[-1] // bearing_multiple*running_rate)):
+        bearing[np.argmin(np.abs(F-(k+1)*running_rate*bearing_multiple))] = bearing_severity / (k+1)
+
+
+    amplitude = running + bearing + amplitude
+
+    signal = np.real(np.fft.ifft(np.concat((amplitude[-1:1:-1], amplitude))))
+
+    if config.channel is not None:
+        # convert to shape (blocksize, channels_count)
+        signal = np.tile(signal, (1, max(1,config.channel)))
+
+    return signal.T
+
+def GenerateVibrationData_TemporalMethod(config:AcquisitionSettings):
     # Generate sample data representing rotating equipment with faulty bearing
 
     nnoise = lambda a: a * np.random.randn(config.time_vec.shape[0]) # normal noise
-    signal = lambda a, f, p=0: a * np.sin(2*np.pi*f*config.time_vec + p) # single frequency signal
+    signal = lambda a, f, p=0.: a * np.sin(2*np.pi*f*config.time_vec + p) # single frequency signal
 
     runningrate = 60 # hz, base freq
     running_phase = np.random.rand() * 2*np.pi
@@ -356,7 +391,7 @@ class SimulatedSensor:
         self.stream = threading.Thread(target=self._stream, daemon=True)
 
     def _generate_data(self):
-        return GenerateVibrationData(self.config)
+        return GenerateVibrationData_SpectralMethod(self.config)
     
     def _stream(self):
         self._running = True
@@ -387,7 +422,7 @@ class VibeSample:
     config: AcquisitionSettings
     status: str
     timestamp: float
-    target_unit: str = "mm/s^2"
+    target_unit: str = "mm"
     raw_data: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
     raw_unit: str = 'g'
 
@@ -405,45 +440,36 @@ class VibeSample:
         self.timestamp = timestamp
         self.status = status
 
-    def get_accel(self, to_units: str = None) -> np.ndarray:
-        to_units = to_units or self.target_unit
-        return convert_units(self.raw_data, self.raw_unit, to_units)
+    def get_accel(self) -> np.ndarray:
+        return convert_units(self.raw_data, self.raw_unit, self.target_unit)
 
     def get_rms(self) -> float:
-        return np.sqrt(np.mean(self.get_accel**2))
+        return np.sqrt(np.mean(np.pow(self.get_accel(),2)))
 
-    def get_fft(self) -> np.ndarray:
+    def get_spectral_accel(self) -> np.ndarray:
         acc = self.get_accel()
-        spectrum = np.fft.rfft(acc)
-        spectral_density = np.abs(spectrum) / len(acc)
-        return spectral_density
+        spectrum = np.abs( np.fft.rfft(acc) ) / len(acc)
+        return spectrum
 
-    def get_spectral_accel(self, unit: str = None) -> np.ndarray:
-        unit = unit or self.target_unit
-        accel_spec = self.get_fft()
-        # endaq.calc.psd.welch(accel_spec)
-        return convert_units(accel_spec, self.target_unit, unit)
-
-    def get_spectral_velocity(self, unit: str = None) -> np.ndarray:
-        unit = unit or self.target_unit
+    def get_spectral_velocity(self) -> np.ndarray:
         freq = self.config.freq_vec
-        spectral_acc = self.get_spectral_accel(unit)
+        spectral_acc = self.get_spectral_accel()
         with np.errstate(divide='ignore', invalid='ignore'):
-            vel = spectral_acc / (2 * np.pi * freq)
-            vel[0] = 0.0  # avoid division by zero at DC
-        return vel
+            spectral_vel = spectral_acc / (2 * np.pi * freq)
+            spectral_vel[0] = 0.0  # avoid division by zero at DC
+        return spectral_vel
     
-    def get_peak_velocity(self, unit: str = None) -> float:
-        velocity_spectrum = self.get_spectral_velocity(unit)
+    def get_peak_velocity(self) -> float:
+        velocity_spectrum = self.get_spectral_velocity()
         return np.max(np.abs(velocity_spectrum))
     
-    def peaks(self):
-        spectrum = self.get_spectral_velocity()
-        peaks, properties = find_peaks(10*np.log10(spectrum), height=3, distance=5)
-        frequencies = self.config.freq_vec[peaks]
-        amplitudes = spectrum[peaks]
+    # def peaks(self):
+    #     spectrum = self.get_spectral_velocity()
+    #     peaks, properties = find_peaks(10*np.log10(spectrum), height=3, distance=5)
+    #     frequencies = self.config.freq_vec[peaks]
+    #     amplitudes = spectrum[peaks]
 
-        return frequencies, amplitudes, properties
+    #     return frequencies, amplitudes, properties
     
 
 if __name__=="__main__":

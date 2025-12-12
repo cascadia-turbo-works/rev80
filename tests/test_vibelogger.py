@@ -1,7 +1,11 @@
 import pytest
 import time
+from path import Path
 from datetime import datetime as dt
 import vibechecker as vc
+
+DATADIR = 'DEVDATA'
+log = vc.logger.get_logger('test')
 
 @pytest.mark.parametrize('dev', vc.VibeSensor.find())
 def test_stream_cycle(dev: vc.VibeSensor):
@@ -51,7 +55,7 @@ def test_stream(dev: vc.VibeSensor):
     plot_update_period = 0.05
     
     vis = vibr.visualize_init(sample)
-    plt.show()
+    # plt.show()
 
     try:
         vibr.start_stream()
@@ -60,12 +64,10 @@ def test_stream(dev: vc.VibeSensor):
                 print('Window closed!')
                 break
 
-            sample = vibr.last_sample
-
-            if sample.timestamp >= last_update_time + plot_update_period:
-                vibr.visualize_sample(sample, vis)
+            if vibr.sample.timestamp >= last_update_time + plot_update_period:
+                vibr.visualize_sample(vibr.sample, vis)
                 plt.pause(plot_update_period)  # force GUI update
-                last_update_time = sample.timestamp
+                last_update_time = vibr.sample.timestamp
     
     finally:
         vibr.stop_stream()
@@ -76,6 +78,8 @@ def test_stream(dev: vc.VibeSensor):
 def test_save(dev: vc.VibeSensor):
 
     filename = 'pytest_data_' + dt.now().strftime('%Y-%m-%d_%H-%M-%S') + '.pkl'
+    file = Path.joinpath(DATADIR,filename)
+
     settings = vc.AcquisitionSettings()
 
     vl = vc.DataCollector(dev,settings)
@@ -84,11 +88,11 @@ def test_save(dev: vc.VibeSensor):
 
     vl.disconnect_sensor()
 
-    vl.save_data(filename)
+    vl.save_data(file)
 
     time.sleep(0.5)
 
-    vl.load_data(filename)
+    vl.load_data(file)
 
     print(samp)
    

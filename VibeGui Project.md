@@ -94,6 +94,7 @@ python: src/os/unix/pa_unix_util.c:510: PaUnixMutex_Terminate: Assertion `0 == p
 - switch between m/s and m/s/s in freq domain. HF peaks are suppressed in velocity spectrum
 - Highlight top ten peaks
   - Alta
+- save and load data
 - Trend analysis
   - Inches per second zero to peak
   - Whole spectrum or specify freq window

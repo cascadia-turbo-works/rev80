@@ -1,7 +1,10 @@
+dearpygui
+endaq
+matplotlib
+numpy
+path
+pyyaml
+sounddevice
 pytest
-dearpygui==2.0.0
-endaq==1.5.3
-matplotlib==3.10.3
-numpy==2.2.5
-pytest==8.3.4
-sounddevice==0.5.1
+
+ipykernel
