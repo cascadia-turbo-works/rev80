@@ -1,16 +1,15 @@
+# Vibechecker frontend
+
 import dearpygui.dearpygui as dpg
 
 from path import Path
-from typing import Union, Tuple, List
+from typing import Union, Tuple, List, Literal
 from datetime import datetime as dt
 
 import endaq
 import numpy as np 
 
 import vibechecker
-from vibechecker import logger
-from vibechecker.collector import DataCollector
-from vibechecker.util import VibeSensor, VibeSample, BLOCKSIZES, SAMPLERATES
 
 SAVEDIR = 'DEVDATA'
 EXT = '.pkl'
@@ -18,14 +17,14 @@ UNITS = {'Earth Gravity - g': 'g',
          'Metric - mm': 'mm',
          'Imperial - in': 'in'}
 
-log = logger.get_logger('gui')
+log = vibechecker.get_logger('gui')
 
 class GUI:
-    collector: DataCollector
+    collector: vibechecker.DataCollector
     found_sensors: dict = {}
     def __init__(self):
         self.context = None
-        self.collector = DataCollector()
+        self.collector = vibechecker.DataCollector()
 
         self.collector.callbacks['plots'] = self.display_sample
         
@@ -46,13 +45,22 @@ class GUI:
         dpg.set_item_label('status',msg)
 
     def sample_unit_callback(self, sender, data):
+    
         if sender == 'sample_units':
             self.collector.sample.target_unit = UNITS[data]
 
         if not self.collector.is_streaming:
             self.display_sample(self.collector.sample)
+
+        freq_label = dpg.get_value('sample_units')
+        if dpg.get_value('sample_integration') == 'Acceleration':
+            freq_label += '/s^2'
+        elif dpg.get_value('sample_integration') == 'Velocity':
+            freq_label += '/s'
+
+        dpg.configure_item('freq_axis', label=freq_label)
     
-    def update_sample_metadata(self, sample:VibeSample):
+    def update_sample_metadata(self, sample:vibechecker.VibeSample):
         # Update the display with the latest sample metadata
         timestring = str(sample.timestamp)
 
@@ -62,25 +70,23 @@ class GUI:
         dpg.set_value('disp_samplerate', f'Sample Rate: {sample.config.samplerate} Hz')
         # TODO: Harmonize units. ex Hz, rpm
 
-    def update_time_plot(self,sample:VibeSample):
+    def update_time_plot(self,sample:vibechecker.VibeSample):
         T = sample.config.time_vec
-        A = sample.get_accel()
+        T, A = sample.get_accel()
 
         dpg.set_value('time_data', [T, A])
         dpg.set_axis_limits('time_axis', T[0], T[-1])
         dpg.set_axis_limits('acc_axis', np.min(A), np.max(A))
 
-    def update_freq_plot(self,sample:VibeSample):
+    def update_freq_plot(self,sample:vibechecker.VibeSample):
 
         freq_unit = dpg.get_value('sample_integration')
         if freq_unit == 'Velocity':
-            V = sample.get_spectral_velocity()
+            F, V = sample.get_spectral_velocity()
         elif freq_unit == 'Acceleration':
-            V = sample.get_spectral_accel()
+            F, V = sample.get_spectral_accel()
 
-        F = sample.config.freq_vec
-
-        iicrop = F<self.collector.config.maxfreq
+        iicrop = F < self.collector.config.maxfreq
         F = F[iicrop]
         V = V[iicrop]
 
@@ -91,7 +97,7 @@ class GUI:
     def update_trend_plot(self,T,RMS_A):
         pass
 
-    def display_sample(self, sample:VibeSample):
+    def display_sample(self, sample:vibechecker.VibeSample):
         if not sample.raw_data.size > 0:
             return 
         
@@ -124,8 +130,8 @@ class GUI:
 
     def set_savedir(self, sender=None, data=str):
         p = Path(data)
-        if Path(data).is_dir():
-            self.collector.datadir = data
+        if p.is_dir():
+            self.collector.datadir = p
             log.info(f'Set datapath: valid path set to {data}')
         
     def refresh_sensors(self, sender=None, data=None):
@@ -140,7 +146,7 @@ class GUI:
         vibechecker.sounddevice._initialize()
         # ENDHACK
 
-        self.found_sensors = { str(s.device_id) + ' '+ str(s.model_name): s for s in VibeSensor.find() }
+        self.found_sensors = { str(s.device_id) + ' '+ str(s.model_name): s for s in vibechecker.VibeSensor.find() }
         dpg.configure_item('sensor_select', items=list(self.found_sensors.keys()))
 
         log.info(f'Discovered {len(self.found_sensors)-1} sensors. IDs = {', '.join([str(s.device_id) for s in self.found_sensors.values()])}')
@@ -245,17 +251,17 @@ class GUI:
                             config_width = 100
                             dpg.add_separator()
                             dpg.add_text("Acquisition Settings")
-                            dpg.add_combo(label="Sample Count", tag='blocksize', items=BLOCKSIZES,
-                                          width=config_width, default_value=self.collector.config.blocksize,
+                            dpg.add_combo(label="Sample Count", tag='blocksize', items=tuple(map(str,vibechecker.BLOCKSIZES)),
+                                          width=config_width, default_value=str(self.collector.config.blocksize),
                                           callback=self.update_streaming_config)
-                            dpg.add_combo(label="Sample Rate", tag='samplerate', items=SAMPLERATES, 
-                                          width=config_width, default_value=self.collector.config.samplerate,
+                            dpg.add_combo(label="Sample Rate", tag='samplerate', items=tuple(map(str,vibechecker.SAMPLERATES)),
+                                          width=config_width, default_value=str(self.collector.config.samplerate),
                                           callback=self.update_streaming_config)
-                            dpg.add_combo(label="Maximum Frequency", tag='maxfreq', items=[250., 500., 1_000., 2_000., 5_000., 10_000.],
-                                          width=config_width, default_value=self.collector.config.maxfreq,
+                            dpg.add_combo(label="Maximum Frequency", tag='maxfreq', items=['250', '500', '1000', '2000', '5000', '10000'],
+                                          width=config_width, default_value=str(self.collector.config.maxfreq),
                                           callback=self.update_streaming_config)
-                            dpg.add_combo(label="Frequnecy Bin Size", tag='binsize', items=sorted([0.5, 1.0, 2.0, 5.0, 10.0]),
-                                          width=config_width, default_value=self.collector.config.binsize,
+                            dpg.add_combo(label="Frequnecy Bin Size", tag='binsize', items=['0.5', '1.0', '2.0', '5.0', '10.0'],
+                                          width=config_width, default_value=str(self.collector.config.binsize),
                                           callback=self.update_streaming_config)
                             with dpg.group(horizontal=True):
                                 dpg.add_input_double(label="Running Rate", tag='running_rate', default_value=0)

@@ -2,20 +2,20 @@ import time
 import threading
 
 import numpy as np
+import scipy.signal as signal
 import sounddevice
-import endaq
 
 from datetime import datetime as dt
 from sys import platform
 from dataclasses import dataclass, field
-from typing import Tuple, List, Union
+from typing import Union
 
 from vibechecker import logger
 
 log = logger.get_logger('util')
 
-eu_sen = np.array([100,100]) # if device returns volts, use this mV/g scale, set to 0 to return raw voltage
-eu_units = ['g', 'g']
+ENG_UNIT_SENSITIVITY = np.array([100,100]) # if device returns volts, use this mV/g scale, set to 0 to return raw voltage
+ENG_UNITS = ['g', 'g']
 SAMPLERATES = [8_000, 11_050, 16_000, 22_100, 32_000, 44_100, 48_000]
 BLOCKSIZES = list(map(int,np.pow(2, np.arange(8,15))))
 
@@ -123,14 +123,18 @@ class AcquisitionSettings:
         self._update_time_from_freq()
         self._domain = 'FREQ'
 
-    def set_time_params(self, blocksize:int = None, samplerate:float = None):
+    def set_time_params(self, 
+                        blocksize:Union[int,None] = None, 
+                        samplerate:Union[float,None] = None):
         Ns = blocksize or self._time_params[0]
         Fs = samplerate or self._time_params[1]
         self._time_params = ( int(Ns), float(Fs) )
         self._update_freq_from_time()
         self._domain = 'TIME'
 
-    def set_freq_params(self, maxfreq:float = None, binsize:float = None):
+    def set_freq_params(self, 
+                        maxfreq:Union[float,None] = None, 
+                        binsize:Union[float,None] = None):
         Fm = maxfreq or self._freq_params[0]
         Df = binsize or self._freq_params[1]
         self._freq_params = (float(Fm), float(Df))
@@ -171,14 +175,14 @@ def GenerateVibrationData_SpectralMethod(config:AcquisitionSettings):
     # running_overtones = 
 
     for k in range(int(F[-1] // running_rate)):
-        running[np.argmin(np.abs(F-(k+1)*running_rate))] = running_level / (k+1)
+        running[np.argmin(np.abs(F-(k+1)*running_rate))] = running_level / (k+1)**2
 
     bearing = np.zeros_like(F) * 1j
     bearing_multiple = 9.23
     bearing_severity = 0.5 * np.exp(np.random.rand() * np.pi*2j)
 
     for k in range(int(F[-1] // bearing_multiple*running_rate)):
-        bearing[np.argmin(np.abs(F-(k+1)*running_rate*bearing_multiple))] = bearing_severity / (k+1)
+        bearing[np.argmin(np.abs(F-(k+1)*running_rate*bearing_multiple))] = bearing_severity / (k+1)**2
 
 
     amplitude = running + bearing + amplitude
@@ -235,7 +239,7 @@ def FindDigiducerDevice():
         hapis=sounddevice.query_hostapis()
         api_num=0
         for api in hapis:
-            if api['name'] == "Windows WDM-KS":
+            if api['name'] == "Windows WDM-KS": # type: ignore
                 break
             api_num += 1
     else:
@@ -249,11 +253,11 @@ def FindDigiducerDevice():
     # Note this returns multiple instances of the same device, because there
     # are different audio API's available.
     for device in devices:
-        if (device['hostapi'] == api_num):
-            name = device['name']
+        if (device['hostapi'] == api_num): # type: ignore
+            name = device['name'] # type: ignore
             match = next((x for x in models if x in name), False)
             if match != False:
-                loc = name.find(match)
+                loc = name.find(match) # type: ignore
                 model = name[loc:loc+6] # Extract the model
                 fmt = name[loc+7:loc+8] # Extract the format of data
                 serialnum = name[loc+8:loc+14]  # Extract the serial number
@@ -263,16 +267,16 @@ def FindDigiducerDevice():
                     # Extract the sensitivity
                     sens = [int(name[loc+14:loc+21]), int(name[loc+21:loc+28])]
                     if fmt == "3":  # 50mV reference for format 3
-                        sens[0] *= 1/50e-3 # Convert to 1V reference
-                        sens[1] *= 1/50e-3
+                        sens[0] *= int(1/50e-3) # Convert to 1V reference
+                        sens[1] *= int(1/50e-3)
 
                     units = ['v', 'v']
                     scale = np.array([8388608.0/sens[0], 8388608.0/sens[1]], dtype='float32') # scale to volts
 
                     for ch in range(len(scale)):
-                        if eu_sen[ch] != 0.0:
-                            scale[ch] *= 1.0 / (eu_sen[ch] / 1000.0)
-                            units[ch] = eu_units[ch]
+                        if ENG_UNIT_SENSITIVITY[ch] != 0.0:
+                            scale[ch] *= 1.0 / (ENG_UNIT_SENSITIVITY[ch] / 1000.0)
+                            units[ch] = ENG_UNITS[ch]
 
                     date = dt.strptime(name[loc+28:loc+34], '%y%m%d') # Isolate the calibration date from the fullname string
 
@@ -365,9 +369,6 @@ class VibeSensor:
                         callback=callback,
                         dtype='float32'
                     )
-        
-    def process_raw_data(self, config:AcquisitionSettings, raw_data:np.ndarray):
-        return raw_data[:config.blocksize, config.channel] * self.scale[config.channel]
 
 class SimulatedSensor:
 
@@ -379,7 +380,7 @@ class SimulatedSensor:
         self.channels = 2
         self.callback = callback
 
-        self.stream = None
+        self.stream: threading.Thread
 
         self.create_stream()
 
@@ -390,13 +391,10 @@ class SimulatedSensor:
     def create_stream(self):
         self.stream = threading.Thread(target=self._stream, daemon=True)
 
-    def _generate_data(self):
-        return GenerateVibrationData_SpectralMethod(self.config)
-    
     def _stream(self):
         self._running = True
         while self._running:
-            data = self._generate_data()
+            data = GenerateVibrationData_TemporalMethod(self.config)
             t = time.monotonic()
             timestamp = mock_C_time(t, t, 0.0)
             time.sleep(0.95*self.config.acquisition_period)
@@ -408,7 +406,6 @@ class SimulatedSensor:
     def stop(self):
         self._running = False
         self.stream.join()
-        self.stream = None
         self.create_stream()
 
     def abort(self):
@@ -417,6 +414,7 @@ class SimulatedSensor:
     def close(self):
         pass
  
+
 @dataclass
 class VibeSample:
     config: AcquisitionSettings
@@ -427,7 +425,7 @@ class VibeSample:
     raw_unit: str = 'g'
 
     @classmethod
-    def empty(cls, config:AcquisitionSettings=None):
+    def empty(cls, config:AcquisitionSettings):
         return VibeSample(config=config,
                           status='EMPTY',
                           timestamp=-1 )
@@ -436,28 +434,37 @@ class VibeSample:
         self.config = config
 
     def push_sample(self, data:np.ndarray, timestamp:float, status:str):
-        self.raw_data = data  # Assume single-channel
+        self.raw_data = data  # single-channel
         self.timestamp = timestamp
         self.status = status
 
-    def get_accel(self) -> np.ndarray:
-        return convert_units(self.raw_data, self.raw_unit, self.target_unit)
+    def get_accel(self):
+        time = self.config.time_vec
+        accel = convert_units(self.raw_data, self.raw_unit, self.target_unit)
+        return time, accel
 
     def get_rms(self) -> float:
-        return np.sqrt(np.mean(np.pow(self.get_accel(),2)))
+        _, accel = self.get_accel()
+        return np.sqrt(np.mean(np.pow(accel,2)))
 
-    def get_spectral_accel(self) -> np.ndarray:
-        acc = self.get_accel()
-        spectrum = np.abs( np.fft.rfft(acc) ) / len(acc)
-        return spectrum
+    def get_spectral_accel(self):
+        fs = self.config.samplerate
+        df = self.config.binsize
+        _, accel = self.get_accel()
+        nperseg = min(len(accel), int(fs / df))
 
-    def get_spectral_velocity(self) -> np.ndarray:
-        freq = self.config.freq_vec
-        spectral_acc = self.get_spectral_accel()
+        freq, psd = signal.welch(accel, fs=fs, nperseg=nperseg)
+
+        psd = psd * 2 * freq[1]
+
+        return freq, psd
+
+    def get_spectral_velocity(self):
+        freq, spectral_acc = self.get_spectral_accel()
         with np.errstate(divide='ignore', invalid='ignore'):
             spectral_vel = spectral_acc / (2 * np.pi * freq)
-            spectral_vel[0] = 0.0  # avoid division by zero at DC
-        return spectral_vel
+        spectral_vel[0] = 0.0  # avoid division by zero at DC
+        return freq, spectral_vel
     
     def get_peak_velocity(self) -> float:
         velocity_spectrum = self.get_spectral_velocity()

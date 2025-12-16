@@ -1,3 +1,5 @@
+# Event Logging
+
 import os
 import sys
 import platform
@@ -19,10 +21,10 @@ def setup_logging(config_path="logging.yaml"):
 
     logging.config.dictConfig(config)
 
-def get_logger(name: str = None):
+def get_logger(name:str=''):
     """Return a sublogger under the 'vibe' namespace."""
-    base = "vibe"
-    logname = base
+ 
+    logname = 'vibe'
     if name:
         logname += '.' + name
 

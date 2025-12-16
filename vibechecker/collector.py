@@ -1,38 +1,38 @@
-# Vibe logger
+# Data Collector
 
 import numpy as np
 import pickle
 from datetime import datetime as dt
-
-from dataclasses import replace
-
 from queue import Queue
 from path import Path
+from typing import Union, Literal, List, Tuple, Dict
 
-from vibechecker.util import VibeSensor, VibeSample, AcquisitionSettings
-from vibechecker import logger
+import vibechecker
 
-log = logger.get_logger('collector')
+log = vibechecker.get_logger('collector')
 
 class DataCollector:
     '''
     This class collects, analyzes, logs and loads data from the vibration sensor
     '''
-    sensor: VibeSensor = None
-    config: AcquisitionSettings = None
+    sensor: Union[vibechecker.VibeSensor, None] = None
+    config: vibechecker.AcquisitionSettings
     stream = None
-    queue: Queue = None
-    datadir: Path = Path('DEVDATA')
-    data: dict = None
-    callbacks: dict = {}
+    queue: Union[Queue, None] = None
+    datadir: Union[Path, None] = Path('DEVDATA')
+    data: Dict = {}
+    callbacks: Dict = {}
 
-    def __init__(self, sensor:VibeSensor=None, config:AcquisitionSettings=None):
+    def __init__(self, 
+                 sensor: Union[vibechecker.VibeSensor, None] = None, 
+                 config: Union[vibechecker.AcquisitionSettings,None] = None
+                 ):
 
         if config:
             self.config = config
         else:
             # default settings
-            self.config = AcquisitionSettings()
+            self.config = vibechecker.AcquisitionSettings.from_time_domain(vibechecker.BLOCKSIZES[2], vibechecker.SAMPLERATES[0])
 
         if sensor is not None:
             self.connect_sensor(sensor)
@@ -42,16 +42,15 @@ class DataCollector:
     @property
     def is_streaming(self):
         try:
-            is_streaming = self.sensor and self.stream and self.stream.active
+            return self.sensor and self.stream and self.stream.active
         except Exception:
             log.error('Device connection may be interrupted')
             return False
-        return is_streaming
 
     def reset_data_store(self):
         self.data = {}
         self.data['meta'] = []
-        self.data['sample'] = VibeSample.empty(self.config)
+        self.data['sample'] = vibechecker.VibeSample.empty(self.config)
         self.data['sample_count'] = 0
         self.data['trend'] = []
         self.data['rolling_average'] = {'N':0, 'k': 0, 'samples': []}
@@ -59,18 +58,18 @@ class DataCollector:
         log.info('Reset data store.')
 
     @property
-    def sample(self) -> VibeSample:
+    def sample(self) -> vibechecker.VibeSample:
         return self.data['sample']
 
     @sample.setter
     def sample(self, sample):
         self.data['lastsample'] = sample
 
-    def connect_sensor(self, sensor:VibeSensor):
+    def connect_sensor(self, sensor:vibechecker.VibeSensor):
         '''
         Connect to the device and return a stream object
         '''
-        if not isinstance(sensor, VibeSensor):
+        if not isinstance(sensor, vibechecker.VibeSensor):
             raise TypeError(f"Attempted to select invalid sensor of {type(sensor)}")
 
         if self.stream is not None or self.sensor is not None:
@@ -154,13 +153,16 @@ class DataCollector:
         if self.is_streaming:
             log.warning('Attempted Start Stream: Already Running')
             return
+        
+        if not self.stream:
+            return
 
         self.stream.start()
         log.debug(f'Stream started')
 
     def stop_stream(self):
         '''Terminate sensor stream'''
-        if not self.is_streaming:
+        if not self.stream or not self.is_streaming:
             log.warning('Attempted Stop Stream: No stream running')
             return
 
@@ -211,9 +213,14 @@ class DataCollector:
 
     def recieve_data(self, indata:np.ndarray, frames:int, timestamp, status:str):
         '''log and preprocess incoming data stream'''
+
+        if self.sensor is None:
+            return
+
+        data = indata[:self.config.blocksize, self.config.channel]  # slice
+        data *= self.sensor.scale[self.config.channel]  # scale
         
-        data = self.sensor.process_raw_data(self.config, indata)
-        self.sample.push_sample(data, timestamp.currentTime, status)
+        self.sample.push_sample(data, timestamp.currentTime, status) 
 
         self.data_callback(self.sample)
 
@@ -231,14 +238,19 @@ class DataCollector:
         plt.ion()
         fig, ax = plt.subplots(2,1)
 
-        fig.suptitle("Digiducer Stream: " + self.sensor.model_name, fontsize=20)
+        if self.sensor:
+            title = "Digiducer Stream: " + self.sensor.model_name
+        else:
+            title = ''
+
+        fig.suptitle(title, fontsize=20)
         ax[0].set_xlabel('Time, ms')
         ax[0].set_ylabel('Acceleration, mm/s^2')
         ax[1].set_xlabel('Frequency, Hz')
         ax[1].set_ylabel('Velocity, mm/s/hz')
 
-        time_vec, acc_t_mmps2 = (sample.config.time_vec, sample.get_accel())
-        freq_vec, vel_f_mmps = (sample.config.freq_vec, sample.get_spectral_velocity())            
+        time_vec, acc_t_mmps2 = sample.get_accel()
+        freq_vec, vel_f_mmps = sample.get_spectral_velocity()         
         time_plot, = ax[0].plot(time_vec, acc_t_mmps2)
         freq_plot, = ax[1].plot(freq_vec, vel_f_mmps)
 
@@ -252,8 +264,8 @@ class DataCollector:
         return vis
 
     def visualize_sample(self, sample, vis):
-        time_vec, acc_t_mmps2 = (sample.config.time_vec, sample.get_accel('mm/s^2'))
-        freq_vec, vel_f_mmps = (sample.config.freq_vec, sample.get_spectral_velocity('mm/s^2'))
+        time_vec, acc_t_mmps2 = sample.get_accel('mm/s^2')
+        freq_vec, vel_f_mmps = sample.get_spectral_velocity('mm/s^2')
         
         vis['time_plot'].set_data(time_vec, acc_t_mmps2)
         vis['freq_plot'].set_data(freq_vec, vel_f_mmps)
@@ -261,34 +273,3 @@ class DataCollector:
         vis['fig'].canvas.draw()
         vis['fig'].canvas.flush_events()
 
- 
-if __name__ == "__main__":
-
-    sens = VibeSensor.find()
-    settings=AcquisitionSettings.from_freq_domain(1000, 1)
-    vibr = DataCollector(sensor=sens[-1], config=settings)
-    
-    sample:VibeSample = vibr.collect_sample()
-    last_update_time = sample.timestamp
-    plot_update_period = 0.05
-    
-    vis = vibr.visualize_init(sample)
-
-    try:
-        vibr.start_stream()
-        for _ in range(100):
-            if not plt.fignum_exists(vis['fig'].number):
-                print('Window closed!')
-                break
-
-            sample = vibr.sample
-
-            if sample.timestamp >= last_update_time + plot_update_period:
-                vibr.visualize_sample(sample, vis)
-                plt.pause(plot_update_period)  # force GUI update
-                last_update_time = sample.timestamp
-    
-    finally:
-        vibr.stop_stream()
-        vibr.disconnect_sensor()
-        plt.close(vis['fig'])
