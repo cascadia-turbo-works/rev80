@@ -25,8 +25,7 @@ class DataCollector:
 
     def __init__(self, 
                  sensor: Union[vibechecker.VibeSensor, None] = None, 
-                 config: Union[vibechecker.AcquisitionSettings,None] = None
-                 ):
+                 config: Union[vibechecker.AcquisitionSettings,None] = None):
 
         if config:
             self.config = config

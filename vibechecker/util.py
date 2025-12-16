@@ -443,7 +443,7 @@ class VibeSample:
         accel = convert_units(self.raw_data, self.raw_unit, self.target_unit)
         return time, accel
 
-    def get_rms(self) -> float:
+    def get_rms(self):
         _, accel = self.get_accel()
         return np.sqrt(np.mean(np.pow(accel,2)))
 
@@ -462,12 +462,12 @@ class VibeSample:
     def get_spectral_velocity(self):
         freq, spectral_acc = self.get_spectral_accel()
         with np.errstate(divide='ignore', invalid='ignore'):
-            spectral_vel = spectral_acc / (2 * np.pi * freq)
+            spectral_vel = np.abs(spectral_acc / (2j * np.pi * freq))
         spectral_vel[0] = 0.0  # avoid division by zero at DC
         return freq, spectral_vel
     
     def get_peak_velocity(self) -> float:
-        velocity_spectrum = self.get_spectral_velocity()
+        _, velocity_spectrum = self.get_spectral_velocity()
         return np.max(np.abs(velocity_spectrum))
     
     # def peaks(self):
