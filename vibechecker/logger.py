@@ -13,6 +13,10 @@ def setup_logging(config_path="logging.yaml"):
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
 
+    if isinstance(__package__, str):
+        config['loggers'][__package__] = config['loggers']['main']
+        del config['loggers']['main']
+
     # Ensure the log directory exists
     for handler in config.get("handlers", {}).values():
         fname = handler.get("filename")
@@ -22,12 +26,19 @@ def setup_logging(config_path="logging.yaml"):
     logging.config.dictConfig(config)
 
 def get_logger(name:str=''):
-    """Return a sublogger under the 'vibe' namespace."""
- 
-    logname = 'vibe'
-    if name:
-        logname += '.' + name
+    """Return a sublogger under the __package__ namespace."""
+    
+    tag = [] 
+    if isinstance(__package__, str):
+        tag.append(__package__)
+    else:
+        tag.append('main')
 
+    if name:
+        tag.append(name)
+
+    logname = '.'.join(tag)
+    
     return logging.getLogger(logname)
 
 baselog = get_logger()
@@ -39,8 +50,6 @@ def log_system_info():
     '''
     Log platform specific info to log.
     '''
-
-    baselog.info('Vibechecker Launched')
 
     sysinfo = f'''.
     ======== SYSTEM INFORMATION =======

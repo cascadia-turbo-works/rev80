@@ -8,14 +8,16 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
-    "endaq",
     "numpy",
+    "scipy",
     "pandas",
     "dearpygui",
     "matplotlib",
     "sounddevice",
+    "path",
     "pytest",
-    "pyyaml"
+    "pyyaml",
+    "ipykernel"
 ]
 
 [build-system]

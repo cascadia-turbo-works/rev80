@@ -7,6 +7,8 @@ if __name__=="__main__":
     vibechecker.log_system_info()
     sys.excepthook = vibechecker.exception_handler
 
+    vibechecker.get_logger().info('Vibechecker Launched')
+
     # Start App
     app = vibechecker.GUI()
     app.run()
