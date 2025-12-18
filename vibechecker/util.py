@@ -3,6 +3,7 @@ import threading
 
 import numpy as np
 import scipy.signal as signal
+import scipy.fft as fft
 import sounddevice
 
 from datetime import datetime as dt
@@ -32,6 +33,10 @@ UNIT_CONVERSION = {
 
 sd_needs_reset = threading.Event()
 
+def nextpow2(x) -> int:
+    # calculate the next power of two above some number x
+    return int( 2**np.ceil(np.log2(x)))
+
 class NoDevicesFound(Exception):
     pass
 
@@ -40,135 +45,63 @@ class FormatError(Exception):
 
 @dataclass
 class AcquisitionSettings:
-    _domain: str = field(default="TIME", init=False)
-    _time_params: tuple = field(default=(BLOCKSIZES[3], SAMPLERATES[0]))  # (Ns, Fs)
-    _freq_params: tuple = field(default=(2000,1))    # (Fmax, dF)
-    channel:int = 0
-
-    def __post_init__(self):
-        match self._domain:
-            case "FREQ":
-                self._update_time_from_freq()
-            case "TIME":
-                self._update_freq_from_time()
-            case _:
-                raise ValueError(f"Acquisition Settings: Invalid domain {self._domain}")
+    blocksize: int = BLOCKSIZES[2]
+    samplerate: int = SAMPLERATES[0]
+    channel: int = 0
 
     @classmethod
-    def from_time_domain(cls, blocksize: int, samplerate: float):
-        inst = cls()
-        inst._time_params = (int(blocksize), float(samplerate))
-        inst._domain = "TIME"
-        inst._update_freq_from_time()
-        return inst
-
-    @classmethod
-    def from_freq_domain(cls, Fmax: float, dF: float):
-        inst = cls()
-        inst._freq_params = (float(Fmax), float(dF))
-        inst._domain = "FREQ"
-        inst._update_time_from_freq()
-        return inst
-
-    def _update_time_from_freq(self):
-        Fmax, dF = self._freq_params
-        Ns = (2*Fmax) // dF
-        Fs = 2 * Fmax
-
-        # snap to the nearest allowed samplerate
-        Fs = SAMPLERATES[np.argmin(np.abs(np.array(SAMPLERATES) - Fs))]
-
-        self._time_params = (int(Ns), float(Fs))
-        
-        self._update_freq_from_time
-
-    def _update_freq_from_time(self):
-        Ns, Fs = self._time_params
-        Fmax = Fs / 2
-        dF = Fs / Ns
-        self._freq_params = (float(Fmax), float(dF))
-
-    @property
-    def blocksize(self) -> int:
-        return self._time_params[0]
-    @blocksize.setter
-    def blocksize(self,bs):
-        self._time_params = (int(bs), self.samplerate)
-        self._update_freq_from_time()
-        self._domain = 'TIME'
-
-    @property
-    def samplerate(self) -> float:
-        return self._time_params[1]
-    @samplerate.setter
-    def samplerate(self, fs):
-        self._time_params = (self.blocksize, float(fs))
-        self._update_freq_from_time()
-        self._domain = 'TIME'
+    def copy(cls, settings):
+        return cls(settings.blocksize, settings.samplerate)
 
     @property
     def maxfreq(self) -> float:
-        return self._freq_params[0]
-    @maxfreq.setter
-    def maxfreq(self,fm):
-        self._freq_params = (float(fm), self.binsize)
-        self._update_time_from_freq()
-        self._domain = 'FREQ'
+        return self.samplerate / 2
 
     @property
     def binsize(self) -> float:
-        return self._freq_params[1]
-    @binsize.setter
-    def binsize(self,df):
-        self._freq_params = (self.maxfreq, float(df))
-        self._update_time_from_freq()
-        self._domain = 'FREQ'
-
-    def set_time_params(self, 
-                        blocksize:Union[int,None] = None, 
-                        samplerate:Union[float,None] = None):
-        Ns = blocksize or self._time_params[0]
-        Fs = samplerate or self._time_params[1]
-        self._time_params = ( int(Ns), float(Fs) )
-        self._update_freq_from_time()
-        self._domain = 'TIME'
-
-    def set_freq_params(self, 
-                        maxfreq:Union[float,None] = None, 
-                        binsize:Union[float,None] = None):
-        Fm = maxfreq or self._freq_params[0]
-        Df = binsize or self._freq_params[1]
-        self._freq_params = (float(Fm), float(Df))
-        self._update_time_from_freq()
-        self._domain = 'FREQ'
+        return self.samplerate / self.blocksize
+    
+    @property
+    def sampleperiod(self) -> float:
+        return 1./self.samplerate
 
     @property
-    def acquisition_period(self):
-        return 1.0/self.samplerate
+    def acquisition_period(self) -> float:
+        return self.blocksize * self.sampleperiod
     
     @property
     def time_vec(self) -> np.ndarray:
-        Ns, Fs = self._time_params
-        return np.arange(Ns) / Fs
+        return np.arange(self.blocksize) * self.sampleperiod
 
     @property
     def freq_vec(self) -> np.ndarray:
-        Ns, Fs = self._time_params
-        return np.fft.rfftfreq(Ns, d=1 / Fs)
+        return fft.rfftfreq(self.blocksize, d=self.sampleperiod)
+    
+    def ensure_maxfreq(self, fm: int):
+        require_fs = 2 * fm
+        try:
+            fs = next(filter(lambda x: x > require_fs, SAMPLERATES))
+        except StopIteration:
+            fs = SAMPLERATES[-1]
+            log.warning(f'Cannot acheive max frequency {fm} hz. Defaulting to max samplerate {fs}')
 
-def nextpow2(x:int):
-    # calculate the next power of two above some number x
-    return int( 2**np.ceil(np.log2(x)))
+        self.samplerate = fs
+    
+    def ensure_binsize(self, df):
+        ns = nextpow2(self.samplerate / df)
+        
+        self.blocksize = nextpow2(ns)
+        log.debug(f'Set samplesize to {ns} hz to achieve {df} hz frequency resolution') 
 
 
 def GenerateVibrationData_SpectralMethod(config:AcquisitionSettings):
     F = config.freq_vec
-    amplitude = np.zeros_like(F, dtype='complex128')
+    spectrum = np.zeros_like(F, dtype='complex128')
 
     # Create exponential noise with random phase
     N0 = 0.03
     NR = 1000
-    amplitude +=  N0 * np.exp(-F/NR)  * np.exp(np.random.rand(*F.shape)*np.pi*2j)
+    spectrum +=  N0 * np.exp(-F/NR)  * np.exp(np.random.rand(*F.shape)*np.pi*2j)
 
     running = np.zeros_like(F) * 1j
     running_rate = 60
@@ -176,19 +109,17 @@ def GenerateVibrationData_SpectralMethod(config:AcquisitionSettings):
     # running_overtones = 
 
     for k in range(int(F[-1] // running_rate)):
-        running[np.argmin(np.abs(F-(k+1)*running_rate))] = running_level / (k+1)**2
+        running[np.argmin(np.abs(F-(k+1)*running_rate))] = running_level / (k+1)
 
     bearing = np.zeros_like(F) * 1j
     bearing_multiple = 9.23
     bearing_severity = 0.5 * np.exp(np.random.rand() * np.pi*2j)
 
     for k in range(int(F[-1] // bearing_multiple*running_rate)):
-        bearing[np.argmin(np.abs(F-(k+1)*running_rate*bearing_multiple))] = bearing_severity / (k+1)**2
+        bearing[np.argmin(np.abs(F-(k+1)*running_rate*bearing_multiple))] = bearing_severity / (k+1)
 
-
-    amplitude = running + bearing + amplitude
-
-    signal = np.real(np.fft.ifft(np.concat((amplitude[-1:1:-1], amplitude))))
+    spectrum = running + bearing + spectrum
+    signal = np.array(fft.irfft(spectrum))
 
     if config.channel is not None:
         # convert to shape (blocksize, channels_count)
@@ -429,26 +360,31 @@ class SimulatedSensor:
 
 @dataclass
 class VibeSample:
-    config: AcquisitionSettings
     status: str
     timestamp: float
-    target_unit: str = "mm"
-    raw_data: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
-    raw_unit: str = 'g'
+    raw_unit: SUPPORTED_UNITS
+    samplerate: int
+    raw_data: np.ndarray = field(default_factory=lambda: np.array([]))
+    target_unit: SUPPORTED_UNITS = field(default='g')
 
     @classmethod
-    def empty(cls, config:AcquisitionSettings):
-        return VibeSample(config=config,
-                          status='EMPTY',
-                          timestamp=-1 )
-
-    def set_config(self, config:AcquisitionSettings):
-        self.config = config
-
-    def push_sample(self, data:np.ndarray, timestamp:float, status:str):
+    def empty(cls):
+        return VibeSample(status='EMPTY',
+                          timestamp= -1,
+                          raw_unit='g',
+                          samplerate= -1)
+    
+    @property
+    def config(self):
+        assert self.samplerate > 0, 'No data in this sample. Use `VibeSample.push_sample()`'
+        return AcquisitionSettings(len(self.raw_data), self.samplerate)
+    
+    def push_sample(self, status:str, timestamp:float, raw_unit:SUPPORTED_UNITS, samplerate: int, data:np.ndarray):
+        self.status = status
+        self.raw_unit = raw_unit
+        self.samplerate = samplerate
         self.raw_data = data  # single-channel
         self.timestamp = timestamp
-        self.status = status
 
     def get_accel(self):
         time = self.config.time_vec
@@ -482,27 +418,3 @@ class VibeSample:
         _, velocity_spectrum = self.get_spectral_velocity()
         return np.max(np.abs(velocity_spectrum))
     
-    # def peaks(self):
-    #     spectrum = self.get_spectral_velocity()
-    #     peaks, properties = find_peaks(10*np.log10(spectrum), height=3, distance=5)
-    #     frequencies = self.config.freq_vec[peaks]
-    #     amplitudes = spectrum[peaks]
-
-    #     return frequencies, amplitudes, properties
-    
-
-if __name__=="__main__":
-    print(AcquisitionSettings())
-    config = AcquisitionSettings.from_time_domain(BLOCKSIZES[3], SAMPLERATES[0])
-    # config = AcquisitionSettings.from_freq_domain(2000,1)
-    sensor = VibeSensor.find()[0]
-
-    stream = sensor.connect(config, lambda a,b,c,d,e: print(a,b,c,d,e))
-
-    stream.start()
-    time.sleep(.1)
-    stream.stop()
-
-    time.sleep(0.5)
-
-    print(stream)

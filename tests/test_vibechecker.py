@@ -8,6 +8,7 @@ DATADIR = 'DEVDATA'
 log = vc.logger.get_logger('test')
 
 samples = []
+settings=vc.AcquisitionSettings()
 
 @pytest.mark.parametrize('dev', vc.VibeSensor.find())
 def test_stream_cycle(dev: vc.VibeSensor):
@@ -47,7 +48,6 @@ def test_stream(dev: vc.VibeSensor):
     import matplotlib.pyplot as plt
 
     sens = vc.VibeSensor.find()
-    settings=vc.AcquisitionSettings.from_freq_domain(1000, 1)
     vibr = vc.DataCollector(sensor=sens[-1], config=settings)
     
     sample:vc.VibeSample = vibr.collect_sample()
@@ -79,8 +79,6 @@ def test_save(dev: vc.VibeSensor):
 
     filename = 'pytest_data_' + dt.now().strftime('%Y-%m-%d_%H-%M-%S') + '.pkl'
     file = Path.joinpath(DATADIR,filename)
-
-    settings = vc.AcquisitionSettings()
 
     vl = vc.DataCollector(dev,settings)
 

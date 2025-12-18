@@ -16,6 +16,8 @@ class DataCollector:
     This class collects, analyzes, logs and loads data from the vibration sensor
     '''
     sensor: Union[vibechecker.VibeSensor, None] = None
+
+    # TODO: Make sensor take ownership of config. shouldn't be owned by collector
     config: vibechecker.AcquisitionSettings
     stream = None
     queue: Union[Queue, None] = None
@@ -31,7 +33,7 @@ class DataCollector:
             self.config = config
         else:
             # default settings
-            self.config = vibechecker.AcquisitionSettings.from_time_domain(vibechecker.BLOCKSIZES[2], vibechecker.SAMPLERATES[0])
+            self.config = vibechecker.AcquisitionSettings()
 
         if sensor is not None:
             self.connect_sensor(sensor)
@@ -49,7 +51,7 @@ class DataCollector:
     def reset_data_store(self):
         self.data = {}
         self.data['meta'] = []
-        self.data['sample'] = vibechecker.VibeSample.empty(self.config)
+        self.data['sample'] = vibechecker.VibeSample.empty()
         self.data['sample_count'] = 0
         self.data['trend'] = []
         self.data['rolling_average'] = {'N':0, 'k': 0, 'samples': []}
@@ -108,9 +110,9 @@ class DataCollector:
             case 'samplerate':
                 self.config.samplerate = value
             case 'maxfreq':
-                self.config.maxfreq = value
+                self.config.ensure_maxfreq(value)
             case 'binsize':
-                self.config.binsize = value
+                self.config.ensure_binsize(value)
         
         if self.sensor:
             self.connect_sensor(self.sensor)
@@ -219,11 +221,12 @@ class DataCollector:
         data = indata[:self.config.blocksize, self.config.channel]  # slice
         data *= self.sensor.scale[self.config.channel]  # scale
         
-        self.sample.push_sample(data,
+        # TODO: Push acq settings to sample at capture.
+        self.sample.push_sample(status,
                                 timestamp.currentTime,
+                                vibechecker.ENG_UNITS[self.config.channel], # type: ignore
                                 self.config.samplerate,
-                                status,
-                                self.sensor.units[self.config.channel]) 
+                                data) 
 
         self.data_callback(self.sample)
 
