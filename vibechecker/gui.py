@@ -199,6 +199,10 @@ class GUI:
         sample = self.collector.collect_sample()
         self.display_sample(sample)
 
+    def browser_handler(self, sender, data):
+        dpg.set_value('record_path', data['file_name'])
+        self.collector.load_data(self.load_target())
+
     def save_target(self) -> Path:
         name = dpg.get_value('record_path')
 
@@ -222,18 +226,12 @@ class GUI:
     def create_gui(self):
 
         dpg.create_context()
-
-        # set nerd font
-        # with dpg.font_registry():
-        #     nerd_font = dpg.add_font("/home/myco/CODE/reveng/gui/font/Inconsolata/InconsolataNerdFont-Regular.ttf", 18)  # Adjust the path and size
-        # dpg.bind_font(nerd_font)  # Set as default font
             
-        dpg.add_file_dialog(show=False, default_path=Path(SAVEDIR),
-                            callback=lambda s,d: dpg.set_value('record_path', d.basename()),
-                            tag="folder_dialog", width=800 ,height=400)
+        with dpg.file_dialog(show=False, default_path=SAVEDIR, callback=self.browser_handler, id="file_dialog", width=700 ,height=400):
+            dpg.add_file_extension("Vibe Samples (*.pkl){.pkl}", color=(150, 255, 150, 255))
+            dpg.add_file_extension(".*", color=(0, 150, 150, 150))
+            dpg.add_file_extension("", color=(150, 255, 150, 255))
 
-        with dpg.value_registry():
-            dpg.add_string_value(tag='save_file')
 
         with dpg.window(label="Vibe Logger", width=1200, height=800):
             with dpg.group(horizontal=True):
@@ -275,7 +273,7 @@ class GUI:
 
                             with dpg.group(horizontal=True):
                                 dpg.add_input_text(label='', tag='record_path')
-                                dpg.add_button(label='browse..', callback=lambda: dpg.show_item('folder_dialog')) # TODO, implement file browsing
+                                dpg.add_button(label='browse..', callback=lambda: dpg.show_item('file_dialog')) # TODO, implement file browsing
                             dpg.add_checkbox(label='timestamp', tag='timestamp_savefile')
                             
                             with dpg.group(horizontal=True):

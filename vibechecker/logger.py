@@ -7,12 +7,14 @@ import yaml
 import logging.config
 
 def setup_logging(config_path="logging.yaml"):
+
+    # load logging config
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Logging config not found: {config_path}")
-
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
 
+    # rename main logger to match package name
     if isinstance(__package__, str):
         config['loggers'][__package__] = config['loggers']['main']
         del config['loggers']['main']
@@ -23,6 +25,7 @@ def setup_logging(config_path="logging.yaml"):
         if fname:
             os.makedirs(os.path.dirname(fname), exist_ok=True)
 
+    # setup config
     logging.config.dictConfig(config)
 
 def get_logger(name:str=''):
