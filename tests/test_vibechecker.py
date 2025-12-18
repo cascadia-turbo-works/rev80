@@ -53,7 +53,10 @@ def test_sample_calcs():
         F,V = sample.get_spectral_velocity()
         assert isinstance(V, np.ndarray)
 
-        # rms = sample.get_rms()
+        assert T.flags['C_CONTIGUOUS'], 'Issue with T c-continuity'
+        assert A.flags['C_CONTIGUOUS'], 'Issue with T c-continuity'
+        assert F.flags['C_CONTIGUOUS'], 'Issue with T c-continuity'
+        assert V.flags['C_CONTIGUOUS'], 'Issue with T c-continuity'    
 
 @pytest.mark.parametrize('dev', vc.VibeSensor.find())
 def test_stream(dev: vc.VibeSensor):
