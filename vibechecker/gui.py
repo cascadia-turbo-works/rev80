@@ -11,11 +11,12 @@ import numpy as np
 
 import vibechecker
 
-SAVEDIR = 'DEVDATA'
+SAVEDIR = Path('DEVDATA')
 EXT = '.pkl'
 UNITS = {'Earth Gravity - g': 'g',
          'Metric - mm': 'mm',
          'Imperial - in': 'in'}
+UNITS_REV = {v:k for k,v in UNITS.items()}
 
 log = vibechecker.get_logger('gui')
 
@@ -47,7 +48,10 @@ class GUI:
     def sample_unit_callback(self, sender, data):
     
         if sender == 'sample_units':
-            self.collector.sample.target_unit = UNITS[data]
+            self.collector.sample.target_unit = UNITS[data] # type: ignore
+
+        # resulting_units = UNITS_REV[self.collector.sample.target_unit]
+        # dpg.set_value('sample_units', resulting_units)
 
         if not self.collector.is_streaming:
             self.display_sample(self.collector.sample)
@@ -68,7 +72,6 @@ class GUI:
         dpg.set_value('disp_timestamp',  f'Time:        {timestring}')
         dpg.set_value('disp_blocksize',  f'Sample Size: {sample.config.blocksize }')
         dpg.set_value('disp_samplerate', f'Sample Rate: {sample.config.samplerate} Hz')
-        # TODO: Harmonize units. ex Hz, rpm
 
     def update_time_plot(self,sample:vibechecker.VibeSample):
         T = sample.config.time_vec
@@ -99,8 +102,11 @@ class GUI:
 
     def display_sample(self, sample:vibechecker.VibeSample):
         if not sample.raw_data.size > 0:
-            return 
+            return
         
+        unit = UNITS[dpg.get_value('sample_units')]
+        self.collector.sample.target_unit = unit # type:ignore
+
         self.update_sample_metadata(sample)
 
         self.update_time_plot(sample)

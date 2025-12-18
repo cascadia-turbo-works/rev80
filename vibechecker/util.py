@@ -8,7 +8,7 @@ import sounddevice
 from datetime import datetime as dt
 from sys import platform
 from dataclasses import dataclass, field
-from typing import Union
+from typing import Union, Literal
 
 from vibechecker import logger
 
@@ -19,7 +19,7 @@ ENG_UNITS = ['g', 'g']
 SAMPLERATES = [8_000, 11_050, 16_000, 22_100, 32_000, 44_100, 48_000]
 BLOCKSIZES = list(map(int,np.pow(2, np.arange(8,15))))
 
-SUPPORTED_UNITS = ["g", "mm","in"]
+SUPPORTED_UNITS = Literal["g", "mm", "in"]
 
 UNIT_CONVERSION = {
     ("g", "mm"): 9.80665 * 1000,
