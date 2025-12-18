@@ -198,6 +198,17 @@ class GUI:
         self.display_sample(sample)
 
     def browser_handler(self, sender, data):
+        # example data:
+        # { 'file_path_name': '/home/hgg/CODE/reveng/vibegui/DEVDATA/pytest_data_2025-12-16_12-23-27.pkl',
+        #   'file_name': 'pytest_data_2025-12-16_12-23-27.pkl',
+        #   'current_path': '/home/hgg/CODE/reveng/vibegui/DEVDATA', 
+        #   'current_filter': 'Vibe Samples (*.pkl)', 
+        #   'min_size': [100.0, 100.0], 
+        #   'max_size': [30000.0, 30000.0], 
+        #   'selections': {
+        #       'pytest_data_2025-12-16_12-23-27.pkl': '/home/hgg/CODE/reveng/vibegui/DEVDATA/pytest_data_2025-12-16_12-23-27.pkl'
+        #   }
+        # }
         dpg.set_value('record_path', data['file_name'])
         self.collector.load_data(self.load_target())
 
@@ -229,7 +240,6 @@ class GUI:
             dpg.add_file_extension("Vibe Samples (*.pkl){.pkl}", color=(150, 255, 150, 255))
             dpg.add_file_extension(".*", color=(0, 150, 150, 150))
             dpg.add_file_extension("", color=(150, 255, 150, 255))
-
 
         with dpg.window(label="Vibe Logger", width=1200, height=800):
             with dpg.group(horizontal=True):

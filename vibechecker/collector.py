@@ -219,7 +219,11 @@ class DataCollector:
         data = indata[:self.config.blocksize, self.config.channel]  # slice
         data *= self.sensor.scale[self.config.channel]  # scale
         
-        self.sample.push_sample(data, timestamp.currentTime, status) 
+        self.sample.push_sample(data,
+                                timestamp.currentTime,
+                                self.config.samplerate,
+                                status,
+                                self.sensor.units[self.config.channel]) 
 
         self.data_callback(self.sample)
 
