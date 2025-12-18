@@ -52,24 +52,22 @@ class GUI:
             self.collector.sample.integration = data
         freq_label = dpg.get_value('sample_units')
 
-        if dpg.get_value('sample_integration') == 'Acceleration':
-            freq_label += '/s^2'
-        elif dpg.get_value('sample_integration') == 'Velocity':
-            freq_label += '/s'
+        if not freq_label == UNITS_REV['g']:
+            if dpg.get_value('sample_integration') == 'Acceleration':
+                freq_label += '/s^2'
+            elif dpg.get_value('sample_integration') == 'Velocity':
+                freq_label += '/s'
 
-        dpg.configure_item('freq_axis', label=freq_label)
+        dpg.configure_item('fft_axis', label=freq_label)
 
         self.redraw()
     
-    def update_sample_metadata(self, sample:vibechecker.VibeSample):
-        # Update the display with the latest sample metadata
-        dpg.set_value('disp_status',     f'Status:      {sample.status}')
-        dpg.set_value('disp_timestamp',  f'Time:        {sample.timestamp}')
-        dpg.set_value('disp_blocksize',  f'Sample Size: {sample.config.blocksize }')
-        dpg.set_value('disp_samplerate', f'Sample Rate: {sample.config.samplerate} Hz')
-
     def update_time_plot(self,sample:vibechecker.VibeSample):
         T, A = sample.get_accel()
+
+        if not (A.flags['C_CONTIGUOUS'] and T.flags['C_CONTIGUOUS']):
+            log.error('Time vectors are not C_CONTIGUOUS?!')
+            return
 
         dpg.set_value('time_data', [T, A])
         dpg.set_axis_limits('time_axis', T[0], T[-1])
@@ -78,13 +76,17 @@ class GUI:
     def update_freq_plot(self,sample:vibechecker.VibeSample):
         F, V = sample.get_spectrum()
 
+        if not (F.flags['C_CONTIGUOUS'] and V.flags['C_CONTIGUOUS']):
+            log.error('Freq vectors are not C_CONTIGUOUS?!')
+            return
+
         iicrop = F < float(dpg.get_value('maxfreq'))
         F = F[iicrop]
         V = V[iicrop]
 
         dpg.set_value('freq_data', [F, V])
         dpg.set_axis_limits('freq_axis', F[0], F[-1])
-        dpg.set_axis_limits('vel_axis', 0, np.max(V))
+        dpg.set_axis_limits('fft_axis', 0, np.max(V))
 
     def update_trend_plot(self,T,RMS_A):
         pass
@@ -95,8 +97,6 @@ class GUI:
         
         unit = UNITS[dpg.get_value('sample_units')]
         self.collector.sample.target_unit = unit # type:ignore
-
-        self.update_sample_metadata(sample)
 
         self.update_time_plot(sample)
         self.update_freq_plot(sample)
@@ -306,15 +306,15 @@ class GUI:
                                 dpg.add_plot_axis(dpg.mvXAxis, label="Time, ms", tag="time_axis")
                                 dpg.add_plot_axis(dpg.mvYAxis, label="mm/s/s", tag="acc_axis")
 
-                                dpg.add_line_series(np.array([]), np.array([]), parent="time_axis", label="Time Domain", tag="time_data")
+                                dpg.add_line_series([0.], [0.], parent="time_axis", label="Time Domain", tag="time_data")
                         with dpg.tab(label='Frequency Domain'):
                             with dpg.plot(label="Frequency Series", width=-1, height=600, tag='freq_plot'):
                                 # Plot legend
                                 dpg.add_plot_legend()
                                 dpg.add_plot_axis(dpg.mvXAxis, label="Freq, hz", tag="freq_axis")
-                                dpg.add_plot_axis(dpg.mvYAxis, label="Velocity, mm/s", tag="vel_axis")
+                                dpg.add_plot_axis(dpg.mvYAxis, label="Velocity, mm/s", tag="fft_axis")
 
-                                dpg.add_line_series(np.array([]), np.array([]), parent="freq_axis", label="Frequency Domain", tag="freq_data")
+                                dpg.add_line_series([0.], [0.], parent="freq_axis", label="Frequency Domain", tag="freq_data")
 
                     dpg.add_combo(label='Sample Units', tag='sample_units', callback=self.sample_unit_callback,
                                     items=list(UNITS.keys()), default_value='Earth Gravity - g')                                                
@@ -330,11 +330,6 @@ class GUI:
 
                             #     dpg.add_line_series(np.array([0]), np.array([0]), label=self.domain, parent="y_axis", tag="trend_data")
                         
-                    dpg.add_text('-', label='Status', tag='disp_status')
-                    dpg.add_text('', label='Last Sample', tag='disp_timestamp')
-                    dpg.add_text('', label='Frame Size', tag='disp_blocksize')
-                    dpg.add_text('', label='Sample Rate', tag='disp_samplerate')
-                    dpg.add_text('', label='Units', tag='disp_units')
                     dpg.add_text('', tag='debug')
 
     def run(self):

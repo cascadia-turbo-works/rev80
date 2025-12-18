@@ -218,19 +218,21 @@ class DataCollector:
         if self.sensor is None:
             return
 
-        data = indata[:self.config.blocksize, self.config.channel]  # slice
+        data = np.ascontiguousarray(indata[:, self.config.channel])  # slice
         data *= self.sensor.scale[self.config.channel]  # scale
         data_unit = self.sensor.units[self.config.channel]
 
-        self.sample = vibechecker.VibeSample(
-            status, timestamp.currentTime, self.config.samplerate, 
-            data_unit, data)
+        # self.sample = vibechecker.VibeSample(status,
+        #                                      timestamp.currentTime,
+        #                                      self.config.samplerate, 
+        #                                      data_unit,
+        #                                      data)
         
-        # self.sample.push_sample(status,
-        #                         timestamp.currentTime,
-        #                         data_unit, # type: ignore
-        #                         self.config.samplerate,
-        #                         data) 
+        self.sample.push_sample(status,
+                                timestamp.currentTime,
+                                self.config.samplerate,
+                                data_unit, # type: ignore
+                                data) 
 
         self.data_callback(self.sample)
 

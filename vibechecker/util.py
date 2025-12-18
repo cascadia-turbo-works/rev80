@@ -406,12 +406,12 @@ class VibeSample:
         assert self.samplerate > 0, 'No data in this sample. Use `VibeSample.push_sample()`'
         return AcquisitionSettings(len(self.raw_data), self.samplerate)
     
-    def push_sample(self, status:str, timestamp:float, raw_unit:SUPPORTED_UNITS, samplerate: int, data:np.ndarray):
+    def push_sample(self, status:str, timestamp:float,  samplerate: int, raw_unit:SUPPORTED_UNITS, raw_data:np.ndarray):
         self.status = status
-        self.raw_unit = raw_unit
-        self.samplerate = samplerate
-        self.raw_data = data  # single-channel
         self.timestamp = timestamp
+        self.samplerate = samplerate
+        self.raw_unit = raw_unit
+        self.raw_data = raw_data  # single-channel
 
         self.__dict__.pop('config',None)
 
