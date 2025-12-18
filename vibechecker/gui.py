@@ -46,35 +46,29 @@ class GUI:
         dpg.set_item_label('status',msg)
 
     def sample_unit_callback(self, sender, data):
-    
         if sender == 'sample_units':
             self.collector.sample.target_unit = UNITS[data] # type: ignore
-
-        # resulting_units = UNITS_REV[self.collector.sample.target_unit]
-        # dpg.set_value('sample_units', resulting_units)
-
-        if not self.collector.is_streaming:
-            self.display_sample(self.collector.sample)
-
+        if sender == 'sample_integration':
+            self.collector.sample.integration = data
         freq_label = dpg.get_value('sample_units')
+
         if dpg.get_value('sample_integration') == 'Acceleration':
             freq_label += '/s^2'
         elif dpg.get_value('sample_integration') == 'Velocity':
             freq_label += '/s'
 
         dpg.configure_item('freq_axis', label=freq_label)
+
+        self.redraw()
     
     def update_sample_metadata(self, sample:vibechecker.VibeSample):
         # Update the display with the latest sample metadata
-        timestring = str(sample.timestamp)
-
         dpg.set_value('disp_status',     f'Status:      {sample.status}')
-        dpg.set_value('disp_timestamp',  f'Time:        {timestring}')
+        dpg.set_value('disp_timestamp',  f'Time:        {sample.timestamp}')
         dpg.set_value('disp_blocksize',  f'Sample Size: {sample.config.blocksize }')
         dpg.set_value('disp_samplerate', f'Sample Rate: {sample.config.samplerate} Hz')
 
     def update_time_plot(self,sample:vibechecker.VibeSample):
-        T = sample.config.time_vec
         T, A = sample.get_accel()
 
         dpg.set_value('time_data', [T, A])
@@ -82,14 +76,9 @@ class GUI:
         dpg.set_axis_limits('acc_axis', np.min(A), np.max(A))
 
     def update_freq_plot(self,sample:vibechecker.VibeSample):
+        F, V = sample.get_spectrum()
 
-        freq_unit = dpg.get_value('sample_integration')
-        if freq_unit == 'Velocity':
-            F, V = sample.get_spectral_velocity()
-        elif freq_unit == 'Acceleration':
-            F, V = sample.get_spectral_accel()
-
-        iicrop = F < self.collector.config.maxfreq
+        iicrop = F < float(dpg.get_value('maxfreq'))
         F = F[iicrop]
         V = V[iicrop]
 
@@ -114,7 +103,11 @@ class GUI:
 
         if self.collector.queue:
             dpg.set_value('debug',f'Stream queue len: {self.collector.queue.qsize()}')
-        
+
+    def redraw(self):
+        if not self.collector.is_streaming:
+            self.display_sample(self.collector.sample)
+
     def update_streaming_config(self, parameter=None, value=None):
         '''Syncronize gui settings with sensor acquisition settings'''
 
@@ -123,16 +116,24 @@ class GUI:
             self.sync_acq_settings_from_collector()
             return
 
-        log.info(f'Setting {parameter} to {value}')
-        self.collector.update_acquisition_settings(parameter, value)
+        if value is not None:
+            log.info(f'Setting {parameter} to {value}')
+            self.collector.update_acquisition_settings(parameter, value)
+
         self.sync_acq_settings_from_collector()
+
+        self.redraw()
     
     def sync_acq_settings_from_collector(self):
         '''Retrieves aquisition settings from collector to display on GUI'''
-        dpg.set_value('maxfreq', self.collector.config.maxfreq)
-        dpg.set_value('binsize', self.collector.config.binsize)
-        dpg.set_value('samplerate', self.collector.config.samplerate)
         dpg.set_value('blocksize', self.collector.config.blocksize)
+        dpg.set_value('samplerate', self.collector.config.samplerate)
+
+        if (fm:=self.collector.config.maxfreq) < float(dpg.get_value('maxfreq')):
+            dpg.set_value('maxfreq', fm)
+
+        if (df:=self.collector.config.binsize) > float(dpg.get_value('binsize')):
+            dpg.set_value('binsize', df)
 
     def set_savedir(self, sender=None, data=str):
         p = Path(data)
@@ -263,10 +264,10 @@ class GUI:
                             dpg.add_combo(label="Sample Rate", tag='samplerate', items=tuple(map(str,vibechecker.SAMPLERATES)),
                                           width=config_width, default_value=str(self.collector.config.samplerate),
                                           callback=self.update_streaming_config)
-                            dpg.add_combo(label="Maximum Frequency", tag='maxfreq', items=['250', '500', '1000', '2000', '5000', '10000'],
+                            dpg.add_combo(label="Maximum Frequency", tag='maxfreq', items=tuple(map(str, vibechecker.MAXFREQS)),
                                           width=config_width, default_value=str(self.collector.config.maxfreq),
                                           callback=self.update_streaming_config)
-                            dpg.add_combo(label="Frequnecy Bin Size", tag='binsize', items=['0.5', '1.0', '2.0', '5.0', '10.0'],
+                            dpg.add_combo(label="Frequnecy Bin Size", tag='binsize', items=tuple(map(str,vibechecker.BINSIZES)),
                                           width=config_width, default_value=str(self.collector.config.binsize),
                                           callback=self.update_streaming_config)
                             with dpg.group(horizontal=True):
@@ -305,7 +306,7 @@ class GUI:
                                 dpg.add_plot_axis(dpg.mvXAxis, label="Time, ms", tag="time_axis")
                                 dpg.add_plot_axis(dpg.mvYAxis, label="mm/s/s", tag="acc_axis")
 
-                                dpg.add_line_series([0.], [0.], parent="time_axis", label="Time Domain", tag="time_data")
+                                dpg.add_line_series(np.array([]), np.array([]), parent="time_axis", label="Time Domain", tag="time_data")
                         with dpg.tab(label='Frequency Domain'):
                             with dpg.plot(label="Frequency Series", width=-1, height=600, tag='freq_plot'):
                                 # Plot legend
@@ -313,7 +314,7 @@ class GUI:
                                 dpg.add_plot_axis(dpg.mvXAxis, label="Freq, hz", tag="freq_axis")
                                 dpg.add_plot_axis(dpg.mvYAxis, label="Velocity, mm/s", tag="vel_axis")
 
-                                dpg.add_line_series([0.], [0.], parent="freq_axis", label="Frequency Domain", tag="freq_data")
+                                dpg.add_line_series(np.array([]), np.array([]), parent="freq_axis", label="Frequency Domain", tag="freq_data")
 
                     dpg.add_combo(label='Sample Units', tag='sample_units', callback=self.sample_unit_callback,
                                     items=list(UNITS.keys()), default_value='Earth Gravity - g')                                                

@@ -16,6 +16,8 @@ class DataCollector:
     This class collects, analyzes, logs and loads data from the vibration sensor
     '''
     sensor: Union[vibechecker.VibeSensor, None] = None
+
+    # TODO: Make sensor take ownership of config. shouldn't be owned by collector
     config: vibechecker.AcquisitionSettings
     stream = None
     queue: Union[Queue, None] = None
@@ -31,7 +33,7 @@ class DataCollector:
             self.config = config
         else:
             # default settings
-            self.config = vibechecker.AcquisitionSettings.from_time_domain(vibechecker.BLOCKSIZES[2], vibechecker.SAMPLERATES[0])
+            self.config = vibechecker.AcquisitionSettings()
 
         if sensor is not None:
             self.connect_sensor(sensor)
@@ -49,7 +51,7 @@ class DataCollector:
     def reset_data_store(self):
         self.data = {}
         self.data['meta'] = []
-        self.data['sample'] = vibechecker.VibeSample.empty(self.config)
+        self.data['sample'] = vibechecker.VibeSample.empty()
         self.data['sample_count'] = 0
         self.data['trend'] = []
         self.data['rolling_average'] = {'N':0, 'k': 0, 'samples': []}
@@ -59,10 +61,9 @@ class DataCollector:
     @property
     def sample(self) -> vibechecker.VibeSample:
         return self.data['sample']
-
     @sample.setter
     def sample(self, sample):
-        self.data['lastsample'] = sample
+        self.data['sample'] = sample
 
     def connect_sensor(self, sensor:vibechecker.VibeSensor):
         '''
@@ -108,11 +109,12 @@ class DataCollector:
             case 'samplerate':
                 self.config.samplerate = value
             case 'maxfreq':
-                self.config.maxfreq = value
+                self.config.ensure_maxfreq(value)
             case 'binsize':
-                self.config.binsize = value
+                self.config.ensure_binsize(value)
         
         if self.sensor:
+            # Reconnect sensor stream with updated settings.
             self.connect_sensor(self.sensor)
 
     def start_data_queue(self):
@@ -218,12 +220,17 @@ class DataCollector:
 
         data = indata[:self.config.blocksize, self.config.channel]  # slice
         data *= self.sensor.scale[self.config.channel]  # scale
+        data_unit = self.sensor.units[self.config.channel]
+
+        self.sample = vibechecker.VibeSample(
+            status, timestamp.currentTime, self.config.samplerate, 
+            data_unit, data)
         
-        self.sample.push_sample(data,
-                                timestamp.currentTime,
-                                self.config.samplerate,
-                                status,
-                                self.sensor.units[self.config.channel]) 
+        # self.sample.push_sample(status,
+        #                         timestamp.currentTime,
+        #                         data_unit, # type: ignore
+        #                         self.config.samplerate,
+        #                         data) 
 
         self.data_callback(self.sample)
 

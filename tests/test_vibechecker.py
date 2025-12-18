@@ -1,5 +1,6 @@
 import pytest
 import time
+import numpy as np
 from path import Path
 from datetime import datetime as dt
 import vibechecker as vc
@@ -8,6 +9,7 @@ DATADIR = 'DEVDATA'
 log = vc.logger.get_logger('test')
 
 samples = []
+settings=vc.AcquisitionSettings()
 
 @pytest.mark.parametrize('dev', vc.VibeSensor.find())
 def test_stream_cycle(dev: vc.VibeSensor):
@@ -42,12 +44,22 @@ def test_sample_capture(dev: vc.VibeSensor):
     
     assert vibr.stream is None, "Stream should be properly closed after test."
 
+def test_sample_calcs():
+    for sample in samples:
+        T,A = sample.get_accel()
+        assert isinstance(A, np.ndarray)
+
+        F,V = sample.get_spectral_accel()
+        F,V = sample.get_spectral_velocity()
+        assert isinstance(V, np.ndarray)
+
+        # rms = sample.get_rms()
+
 @pytest.mark.parametrize('dev', vc.VibeSensor.find())
 def test_stream(dev: vc.VibeSensor):
     import matplotlib.pyplot as plt
 
     sens = vc.VibeSensor.find()
-    settings=vc.AcquisitionSettings.from_freq_domain(1000, 1)
     vibr = vc.DataCollector(sensor=sens[-1], config=settings)
     
     sample:vc.VibeSample = vibr.collect_sample()
@@ -79,8 +91,6 @@ def test_save(dev: vc.VibeSensor):
 
     filename = 'pytest_data_' + dt.now().strftime('%Y-%m-%d_%H-%M-%S') + '.pkl'
     file = Path.joinpath(DATADIR,filename)
-
-    settings = vc.AcquisitionSettings()
 
     vl = vc.DataCollector(dev,settings)
 
