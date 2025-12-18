@@ -144,14 +144,6 @@ class GUI:
         if self.collector.is_streaming:
             log.warning('Sensor refresh may break active stream')
 
-        # HACK: Reset sounddevice module before listing new devices.
-        # This shouldn't be included in `FindDigiducers` function bc
-        # it may break active streams if called a the wrong time.
-        # This is necessary to acheieve hotplugging of sensors while app is open w/o restart
-        vibechecker.sounddevice._terminate()
-        vibechecker.sounddevice._initialize()
-        # ENDHACK
-
         self.found_sensors = { str(s.device_id) + ' '+ str(s.model_name): s for s in vibechecker.VibeSensor.find() }
         dpg.configure_item('sensor_select', items=list(self.found_sensors.keys()))
 

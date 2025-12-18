@@ -30,6 +30,7 @@ UNIT_CONVERSION = {
     ("in", "mm"): 1 / 25.4
 }
 
+sd_needs_reset = threading.Event()
 
 class NoDevicesFound(Exception):
     pass
@@ -246,6 +247,7 @@ def FindDigiducerDevice():
         # Not Windows - other platforms don't have the issue with the API
         api_num=0
     # Return all available audio inputs
+    sd_needs_reset.set()
     devices = sounddevice.query_devices()
     device_info = []   # Array to store info about each compa
     dev_num=0
@@ -338,9 +340,19 @@ class VibeSensor:
 
     @classmethod
     def find(cls):
+        if sd_needs_reset.is_set():
+            # HACK: Reset sounddevice module before listing new devices.
+            # This shouldn't be included in `FindDigiducers` function bc
+            # it may break active streams if called a the wrong time.
+            # This is necessary to acheieve hotplugging of sensors while app is open w/o restart
+            sounddevice._terminate()
+            sounddevice._initialize()
+            # ENDHACK
+            sd_needs_reset.clear()
+
         stat = [cls.simulated()] + [cls(**dev) for dev in FindDigiducerDevice()]
         return stat
-    
+
     @classmethod
     def simulated(cls):
         return cls(device_id = '-1',
