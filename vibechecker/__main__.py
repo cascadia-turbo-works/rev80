@@ -11,4 +11,6 @@ if __name__=="__main__":
 
     # Start App
     app = vibechecker.GUI()
+    app.initialize()
     app.run()
+    app.cleanup()

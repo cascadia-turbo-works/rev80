@@ -14,7 +14,7 @@ Requirements:
 5. Processed fault frequency data
 6. Luxury, startup, coastdown trend
 
-- [ ] frequency range and binsize
+- [x] frequency range and binsize
 - [x] normalize fft to IPS, or g
   - velocity is better than acc
 - [ ] smoothing
@@ -43,20 +43,20 @@ Data capture file contents
 
 ### Upcomming
 
-- Implement RMS trend over recording window
-- [ ] add data loader to gui
+- [ ] Implement RMS trend over recording window
+- [ ] Highpass filter sample kill DC below 10hz
+- [ ] TREND
+- [ ] Make better use of queue
+  - Make gui thread to continuously watch collector queue and consume data to plot.. rather than collector callbacks
 
 ### Active Features
 
-- [ ] Improve file saving with filename and path specification.
 - [ ] Create metadata file format with required fields
-- [ ] Replace fft process with endaq tools
 - [ ] Set equipment running rate and visualize octaves
-- [ ] Detect peaks!
+- [x] Detect peaks!
 
 ### BUGS
 
-- Updating
 - full crash when Digiducer is unplugged during connection.
   - It doesn't seem like I can catch this error before it crashes the window. See log:
 
@@ -83,40 +83,44 @@ python: src/os/unix/pa_unix_util.c:510: PaUnixMutex_Terminate: Assertion `0 == p
   - [x] Stream start+stop and single capture.
   - [x] Time
   - [x] FFT
-  - [ ] Trend - later
+- [x] add data loader to gui
+- [x] Improve file saving with filename and path specification.
+- [x] Replace fft process with scipy
+  - [x] Whole spectrum or specify freq window
+- [x] Highlight top  peaks
+  - Alta
 
 ## 11/25/26 meet with Carmen
 
+- [x] switch between m/s and m/s/s in freq domain. HF peaks are suppressed in velocity spectrum
 - Goal is to put the most useful features of Rev's more sophistocated vibe box 
 - Deployment
   - IT police won't allow app on company computers
 
-- switch between m/s and m/s/s in freq domain. HF peaks are suppressed in velocity spectrum
-- Highlight top ten peaks
-  - Alta
-- save and load data
 - Trend analysis
   - Inches per second zero to peak
-  - Whole spectrum or specify freq window
   - option for RMS
 
 - Download ENDAQ Free software
 
 PHASE 1:
+
 - [x] development so far!
 - $2k
 
 PHASE 2:
+
 - polish and deploy to windows
 - $1000
 
 PHASE 2:
+
 - Integrate BNC DAQ for prox probes!
 - $1000
 
 PHASE 3:
-- Sales!
 
+- Sales!
 
 FUTURE:
 

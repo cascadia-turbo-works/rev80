@@ -103,16 +103,17 @@ class DataCollector:
             self.sensor = None
 
     def update_acquisition_settings(self,parameter, value):
-        match parameter:
-            case 'blocksize':
-                self.config.blocksize = value
-            case 'samplerate':
-                self.config.samplerate = value
-            case 'maxfreq':
-                self.config.ensure_maxfreq(value)
-            case 'binsize':
-                self.config.ensure_binsize(value)
-        
+        if parameter == 'ACQ_BLOCKSIZE':
+            self.config.blocksize = int(value)
+        elif parameter == 'ACQ_SAMPLERATE':
+            self.config.samplerate = int(value)
+        elif parameter == 'ACQ_MAXFREQ':
+            self.config.maxfreq = float(value)
+        elif parameter == 'ACQ_BINSIZE':
+            self.config.binsize = float(value)
+        else:
+            raise ValueError(f'Cannot set {parameter}')  
+             
         if self.sensor:
             # Reconnect sensor stream with updated settings.
             self.connect_sensor(self.sensor)
@@ -261,8 +262,8 @@ class DataCollector:
         ax[1].set_xlabel('Frequency, Hz')
         ax[1].set_ylabel('Velocity, mm/s/hz')
 
-        time_vec, acc_t_mmps2 = sample.get_accel()
-        freq_vec, vel_f_mmps = sample.get_spectral_velocity()         
+        time_vec, acc_t_mmps2 = vibechecker.sample_accel(sample,self.config)
+        freq_vec, vel_f_mmps, peak = vibechecker.sample_spectrum(sample,self.config)
         time_plot, = ax[0].plot(time_vec, acc_t_mmps2)
         freq_plot, = ax[1].plot(freq_vec, vel_f_mmps)
 
@@ -276,8 +277,8 @@ class DataCollector:
         return vis
 
     def visualize_sample(self, sample, vis):
-        time_vec, acc_t_mmps2 = sample.get_accel('mm/s^2')
-        freq_vec, vel_f_mmps = sample.get_spectral_velocity('mm/s^2')
+        time_vec, acc_t_mmps2 = vibechecker.sample_accel(sample,self.config)
+        freq_vec, vel_f_mmps, peaks = vibechecker.sample_spectrum(sample,self.config)
         
         vis['time_plot'].set_data(time_vec, acc_t_mmps2)
         vis['freq_plot'].set_data(freq_vec, vel_f_mmps)

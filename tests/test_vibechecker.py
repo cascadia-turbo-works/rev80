@@ -4,12 +4,13 @@ import numpy as np
 from path import Path
 from datetime import datetime as dt
 import vibechecker as vc
+import dearpygui as dpg
 
 DATADIR = 'DEVDATA'
 log = vc.logger.get_logger('test')
 
 samples = []
-settings=vc.AcquisitionSettings()
+settings=vc.AcquisitionSettings(fft_integration=True)
 
 @pytest.mark.parametrize('dev', vc.VibeSensor.find())
 def test_stream_cycle(dev: vc.VibeSensor):
@@ -46,17 +47,17 @@ def test_sample_capture(dev: vc.VibeSensor):
 
 def test_sample_calcs():
     for sample in samples:
-        T,A = sample.get_accel()
-        assert isinstance(A, np.ndarray)
+        time_vec, accel = vc.sample_accel(sample, settings)
+        assert isinstance(accel, np.ndarray)
 
-        F,V = sample.get_spectral_accel()
-        F,V = sample.get_spectral_velocity()
-        assert isinstance(V, np.ndarray)
+        freq,psd_t = vc.sample_accel_spectrum(sample, settings)
+        _,psd_f = vc.integrate_accel_spectrum(freq,psd_t)
+        assert isinstance(psd_f, np.ndarray)
 
-        assert T.flags['C_CONTIGUOUS'], 'Issue with T c-continuity'
-        assert A.flags['C_CONTIGUOUS'], 'Issue with T c-continuity'
-        assert F.flags['C_CONTIGUOUS'], 'Issue with T c-continuity'
-        assert V.flags['C_CONTIGUOUS'], 'Issue with T c-continuity'    
+        assert time_vec.flags['C_CONTIGUOUS'], 'Issue with T c-continuity'
+        assert accel.flags['C_CONTIGUOUS'], 'Issue with T c-continuity'
+        assert freq.flags['C_CONTIGUOUS'], 'Issue with T c-continuity'
+        assert psd_f.flags['C_CONTIGUOUS'], 'Issue with T c-continuity'    
 
 @pytest.mark.parametrize('dev', vc.VibeSensor.find())
 def test_stream(dev: vc.VibeSensor):
@@ -108,6 +109,12 @@ def test_save(dev: vc.VibeSensor):
     vl.load_data(file)
 
     print(samp)
+
+def test_gui_build():
+    app = vc.GUI()
+    app.initialize()
+    time.sleep(1)
+    app.cleanup()
    
 if __name__ == "__main__":
     pytest.main()

@@ -28,10 +28,10 @@ SUPPORTED_UNITS = Literal["g", "mm", "in"]
 UNIT_CONVERSION = {
     ("g", "mm"): 9.80665 * 1000,
     ("mm", "g"): 1 / (9.80665 * 1000),
-    ("g", "in"): 9.80665 * 1000 * 25.4,
-    ("in", "g"): 1 / (9.80665 * 1000 * 25.4),
-    ("mm", "in"): 25.4,
-    ("in", "mm"): 1 / 25.4
+    ("g", "in"): 9.80665 * 1000 / 25.4,
+    ("in", "g"): 1 / (9.80665 * 1000 / 25.4),
+    ("mm", "in"): 1/ 25.4,
+    ("in", "mm"): 25.4
 }
 
 sd_needs_reset = threading.Event()
@@ -50,7 +50,11 @@ class FormatError(Exception):
 class AcquisitionSettings:
     _ns: int = BLOCKSIZES[2]
     _fs: int = SAMPLERATES[0]
+    _fm: float = MAXFREQS[3]
+    _df: float = BINSIZES[3]
     channel: int = 0
+    units: SUPPORTED_UNITS = 'g'
+    fft_integration: bool = False
 
     @classmethod
     def copy(cls, settings):
@@ -73,19 +77,34 @@ class AcquisitionSettings:
     @property
     def maxfreq(self) -> float:
         require_fm = self.samplerate / 2
+        if require_fm > self._fm:
+            return self._fm
+        
         try:
             return next(filter(lambda fm: fm <= require_fm, reversed(MAXFREQS)))
         except StopIteration:
-            return int(require_fm)
+            return require_fm
+        
+    @maxfreq.setter
+    def maxfreq(self, fm:float):
+        self.ensure_maxfreq(fm)
+        self._fm = float(fm)
 
     @property
     def binsize(self) -> float:
         require_df = self.samplerate / self.blocksize
+        if require_df > self._df:
+            return self._df
+        
         try:
             return next(filter(lambda df: df >= require_df, BINSIZES))
         except StopIteration:
             return require_df
-    
+        
+    @binsize.setter
+    def binsize(self, df:float):
+        self.ensure_binsize(df)
+        self._df = float(df)    
     @property
     def sampleperiod(self) -> float:
         return 1./self.samplerate
@@ -98,9 +117,6 @@ class AcquisitionSettings:
     def time_vec(self) -> np.ndarray:
         return np.arange(self.blocksize) * self.sampleperiod
 
-    @property
-    def freq_vec(self) -> np.ndarray:
-        return fft.rfftfreq(self.blocksize, d=self.sampleperiod)
     
     def ensure_maxfreq(self, fm: float):
         require_fs = 2 * float(fm)
@@ -120,28 +136,28 @@ class AcquisitionSettings:
 
 
 def GenerateVibrationData_SpectralMethod(config:AcquisitionSettings):
-    F = config.freq_vec
-    spectrum = np.zeros_like(F, dtype='complex128')
+    freqs = fft.rfftfreq(config.blocksize, d=config.sampleperiod)
+    spectrum = np.zeros_like(freqs, dtype='complex128')
 
     # Create exponential noise with random phase
     N0 = 0.03
     NR = 1000
-    spectrum +=  N0 * np.exp(-F/NR)  * np.exp(np.random.rand(*F.shape)*np.pi*2j)
+    spectrum +=  N0 * np.exp(-freqs/NR)  * np.exp(np.random.rand(*freqs.shape)*np.pi*2j)
 
-    running = np.zeros_like(F) * 1j
+    running = np.zeros_like(freqs) * 1j
     running_rate = 60
     running_level = 1. * np.exp(np.random.rand() * np.pi*2j)
     # running_overtones = 
 
-    for k in range(int(F[-1] // running_rate)):
-        running[np.argmin(np.abs(F-(k+1)*running_rate))] = running_level / (k+1)
+    for k in range(int(freqs[-1] // running_rate)):
+        running[np.argmin(np.abs(freqs-(k+1)*running_rate))] = running_level / (k+1)
 
-    bearing = np.zeros_like(F) * 1j
+    bearing = np.zeros_like(freqs) * 1j
     bearing_multiple = 9.23
     bearing_severity = 0.5 * np.exp(np.random.rand() * np.pi*2j)
 
-    for k in range(int(F[-1] // bearing_multiple*running_rate)):
-        bearing[np.argmin(np.abs(F-(k+1)*running_rate*bearing_multiple))] = bearing_severity / (k+1)
+    for k in range(int(freqs[-1] // bearing_multiple*running_rate)):
+        bearing[np.argmin(np.abs(freqs-(k+1)*running_rate*bearing_multiple))] = bearing_severity / (k+1)
 
     spectrum = running + bearing + spectrum
     signal = np.array(fft.irfft(spectrum))
@@ -155,7 +171,7 @@ def GenerateVibrationData_SpectralMethod(config:AcquisitionSettings):
 def GenerateVibrationData_TemporalMethod(config:AcquisitionSettings):
     # Generate sample data representing rotating equipment with faulty bearing
 
-    nnoise = lambda a: a * np.random.randn(config.time_vec.shape[0]) # normal noise
+    nnoise = lambda a: a * np.random.randn(config.blocksize) # normal noise
     signal = lambda a, f, p=0.: a * np.sin(2*np.pi*f*config.time_vec + p) # single frequency signal
 
     runningrate = 60 # hz, base freq
@@ -264,15 +280,6 @@ def FindDigiducerDevice():
     #     raise NoDevicesFound("No compatible devices found")
     return device_info
 
-def convert_units(data: np.ndarray, from_unit: str, to_unit: str) -> np.ndarray:
-    if from_unit == to_unit:
-        return data
-    try:
-        factor = UNIT_CONVERSION[(from_unit, to_unit)]
-        return data * factor
-    except KeyError:
-        raise ValueError(f"Unsupported conversion from {from_unit} to {to_unit}")
-
 @dataclass
 class mock_C_time:
     currentTime: float
@@ -335,8 +342,7 @@ class VibeSensor:
                         samplerate=config.samplerate, 
                         blocksize=config.blocksize,
                         callback=callback,
-                        dtype='float32'
-                    )
+                        dtype='float32')
 
 class SimulatedSensor:
 
@@ -389,8 +395,7 @@ class VibeSample:
     timestamp: float
     samplerate: int
     raw_unit: SUPPORTED_UNITS
-    raw_data: np.ndarray = field(default_factory=lambda: np.array([]))
-    target_unit: SUPPORTED_UNITS = field(default=SUPPORTED_UNITS.__args__[0])
+    raw_data: np.ndarray = field(default_factory=lambda: np.array([], dtype=np.float64))
 
     integration: Literal['acceleration', 'velocity'] = field(default='acceleration')
 
@@ -400,55 +405,78 @@ class VibeSample:
                           timestamp= -1,
                           raw_unit='g',
                           samplerate= -1,)
+   
+    @property
+    def blocksize(self) -> int:
+        return len(self.raw_data)
     
-    @property # TODO: Use functools.@cached_property. self.__dict__.pop('config',None) to invalidate
-    def config(self):
-        assert self.samplerate > 0, 'No data in this sample. Use `VibeSample.push_sample()`'
-        return AcquisitionSettings(len(self.raw_data), self.samplerate)
+    @property
+    def time_vec(self) -> np.ndarray:
+        return np.arange(self.blocksize) / self.samplerate
     
-    def push_sample(self, status:str, timestamp:float,  samplerate: int, raw_unit:SUPPORTED_UNITS, raw_data:np.ndarray):
+    def push_sample(self, 
+                    status:str, 
+                    timestamp:float,  
+                    samplerate: int, 
+                    raw_unit:SUPPORTED_UNITS, 
+                    raw_data:np.ndarray):
         self.status = status
         self.timestamp = timestamp
         self.samplerate = samplerate
         self.raw_unit = raw_unit
-        self.raw_data = raw_data  # single-channel
+        self.raw_data = raw_data
 
-        self.__dict__.pop('config',None)
+def convert_units(data: np.ndarray, from_unit: str, to_unit: str) -> np.ndarray:
+    if from_unit == to_unit:
+        return data
+    try:
+        factor = UNIT_CONVERSION[(from_unit, to_unit)]
+        return data * factor
+    except KeyError:
+        raise ValueError(f"Unsupported conversion from {from_unit} to {to_unit}")
 
-    def get_accel(self):
-        time = self.config.time_vec
-        accel = convert_units(self.raw_data, self.raw_unit, self.target_unit)
-        return time, accel
+def sample_accel(sample:VibeSample, config:AcquisitionSettings):
+    accel = convert_units(sample.raw_data, sample.raw_unit, config.units)
+    return sample.time_vec, accel
 
-    def get_rms(self):
-        _, accel = self.get_accel()
-        return np.sqrt(np.mean(np.pow(accel,2)))
+def sample_rms(sample:VibeSample, config:AcquisitionSettings):
+    _, accel = sample_accel(sample, config)
+    return np.sqrt(np.mean(np.pow(accel,2)))
 
-    def get_spectral_accel(self):
-        fs = self.config.samplerate
-        df = self.config.binsize
-        _, accel = self.get_accel()
-        nperseg = min(len(accel), int(fs / df))
+def sample_spectrum(sample:VibeSample, config:AcquisitionSettings):
+    freq, psd = sample_accel_spectrum(sample, config)
+    if config.fft_integration:
+        freq, psd = integrate_accel_spectrum(freq, psd)
 
-        freq, psd = signal.welch(accel, fs=fs, nperseg=nperseg)
+    iicrop = freq < config.maxfreq
+    freq = freq[iicrop]
+    psd =  psd[iicrop]
 
-        psd = psd * 2 * freq[1]
+    peaks = find_peaks(freq, psd)
 
-        return freq, psd
+    return freq, psd, peaks
 
-    def get_spectral_velocity(self):
-        freq, spectral_acc = self.get_spectral_accel()
-        with np.errstate(divide='ignore', invalid='ignore'):
-            spectral_vel = np.abs(spectral_acc / (2j * np.pi * freq))
-        spectral_vel[0] = 0.0  # avoid division by zero at DC
-        return freq, spectral_vel
-    
-    def get_spectrum(self):
-        if self.integration == 'Velocity':
-            return self.get_spectral_velocity()
-        return self.get_spectral_accel()
-    
-    def get_peak_velocity(self) -> float:
-        _, velocity_spectrum = self.get_spectral_velocity()
-        return np.max(np.abs(velocity_spectrum))
+def sample_accel_spectrum(sample:VibeSample, config:AcquisitionSettings):
+    _, accel = sample_accel(sample, config)
+    fs = sample.samplerate
+    df = config.binsize
+
+    nperseg = min(len(accel), int(fs / df))
+    freq, psd = signal.welch(accel, fs=fs, nperseg=nperseg, scaling='spectrum')
+
+    # Scaling
+    # psd = psd * 2 * freq[1]
+
+    return freq, psd
+
+def integrate_accel_spectrum(freq:np.ndarray, psd:np.ndarray):
+    with np.errstate(divide='ignore', invalid='ignore'):
+        spectral_vel = np.abs(psd / (2j * np.pi * freq))
+    spectral_vel[0] = 0.0  # avoid division by zero at DC
+
+    return freq, spectral_vel
+
+def find_peaks(freq:np.ndarray, psd:np.ndarray):
+    peaks, props = signal.find_peaks(psd, distance=len(freq)/20)
+    return peaks[np.argsort(-psd[peaks])]
     
