@@ -228,7 +228,8 @@ class DataCollector:
         #                                      self.config.samplerate, 
         #                                      data_unit,
         #                                      data)
-        
+    
+        # TODO: Push acq settings to sample at capture.
         self.sample.push_sample(status,
                                 timestamp.currentTime,
                                 self.config.samplerate,

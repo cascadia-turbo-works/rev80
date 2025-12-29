@@ -10,7 +10,7 @@ DATADIR = 'DEVDATA'
 log = vc.logger.get_logger('test')
 
 samples = []
-settings=vc.AcquisitionSettings(fft_integration=True)
+settings=vc.AcquisitionSettings()
 
 @pytest.mark.parametrize('dev', vc.VibeSensor.find())
 def test_stream_cycle(dev: vc.VibeSensor):
