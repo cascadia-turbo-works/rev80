@@ -247,7 +247,7 @@ class DataCollector:
                 fn(sample)
             self.data['sample_count'] += 1
 
-    def visualize_init(self, sample):  
+    def visualize_init(self, sample:vibechecker.VibeSample):  
         import matplotlib.pyplot as plt      
         plt.ion()
         fig, ax = plt.subplots(2,1)
@@ -263,8 +263,8 @@ class DataCollector:
         ax[1].set_xlabel('Frequency, Hz')
         ax[1].set_ylabel('Velocity, mm/s/hz')
 
-        time_vec, acc_t_mmps2 = vibechecker.sample_accel(sample,self.config)
-        freq_vec, vel_f_mmps, peak = vibechecker.sample_spectrum(sample,self.config)
+        time_vec, acc_t_mmps2 = sample.get_accel(self.config)
+        freq_vec, vel_f_mmps, peak = sample.get_spectrum(self.config)
         time_plot, = ax[0].plot(time_vec, acc_t_mmps2)
         freq_plot, = ax[1].plot(freq_vec, vel_f_mmps)
 
@@ -277,9 +277,9 @@ class DataCollector:
 
         return vis
 
-    def visualize_sample(self, sample, vis):
-        time_vec, acc_t_mmps2 = vibechecker.sample_accel(sample,self.config)
-        freq_vec, vel_f_mmps, peaks = vibechecker.sample_spectrum(sample,self.config)
+    def visualize_sample(self, sample:vibechecker.VibeSample, vis:dict):
+        time_vec, acc_t_mmps2 = sample.get_accel(self.config)
+        freq_vec, vel_f_mmps, peak = sample.get_spectrum(self.config)
         
         vis['time_plot'].set_data(time_vec, acc_t_mmps2)
         vis['freq_plot'].set_data(freq_vec, vel_f_mmps)
