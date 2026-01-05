@@ -71,12 +71,6 @@ def GenerateVibrationData_TemporalMethod(config:AcquisitionSettings):
     time.sleep(config.acquisition_period)
     return data.T 
 
-@dataclass
-class mock_C_time:
-    currentTime: float
-    inputBufferAdcTime: float
-    outputBufferDacTime: float
-
 class SimulatedSensor:
 
     def __init__(self, config:AcquisitionSettings, sensor, callback):
@@ -102,8 +96,7 @@ class SimulatedSensor:
         self._running = True
         while self._running:
             data = GenerateVibrationData_TemporalMethod(self.config)
-            t = time.monotonic()
-            timestamp = mock_C_time(t, t, 0.0)
+            timestamp = time.monotonic()
             time.sleep(0.95*self.config.acquisition_period)
             self.callback(data,self.config.blocksize, timestamp, 'OK')
 

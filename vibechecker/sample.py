@@ -22,7 +22,7 @@ class AcquisitionSettings:
     _df: float = BINSIZES[3]
     channel: int = 0
     units: SUPPORTED_UNITS = 'g'
-    fft_integration: bool = False
+    integrate: bool = False
 
     @classmethod
     def copy(cls, settings):
@@ -160,7 +160,7 @@ class VibeSample:
         fs = self.samplerate
         df = config.binsize
 
-        nperseg = min(len(accel), int(fs / df))
+        nperseg = min(self.blocksize, int(fs / df))
         freq, psd = signal.welch(accel, fs=fs, nperseg=nperseg, scaling='spectrum')
 
         # Crop to config window
@@ -173,13 +173,13 @@ class VibeSample:
     def get_spectrum(self, config:AcquisitionSettings):
         freq, psd = self.welch(config)
 
-        if config.fft_integration:
+        if config.integrate:
             # Integrate acceleration to velocity
             with np.errstate(divide='ignore', invalid='ignore'):
                 psd = np.abs(psd / (2j * np.pi * freq))
             psd[0] = 0.0  # avoid division by zero at DC
 
-        peaks, props = signal.find_peaks(psd, distance=len(freq)/20)
+        peaks, props = signal.find_peaks(psd, distance=min(len(freq)/20, 1))
         peaks = peaks[np.argsort(-psd[peaks])]
     
         return freq, psd, peaks

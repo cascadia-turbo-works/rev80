@@ -1,5 +1,6 @@
 import numpy as np
 from typing import Union, Literal
+import sounddevice
 
 SAMPLERATES = [8_000, 11_050, 16_000, 22_100, 32_000, 44_100, 48_000]
 BLOCKSIZES = list(map(int,np.pow(2, np.arange(8,15))))
@@ -7,6 +8,10 @@ MAXFREQS = [2e2, 5e2, 1e3, 2e3, 5e3, 1e4, 2e4, 5e4]
 BINSIZES = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0]
 
 SUPPORTED_UNITS = Literal["g", "mm", "in"]
+UNITS = {'Earth Gravity - g': 'g',
+         'Metric - mm': 'mm',
+         'Imperial - in': 'in'}
+UNITS_REV = {v:k for k,v in UNITS.items()}
 
 UNIT_CONVERSION = {
     ("g", "mm"): 9.80665 * 1000,
@@ -26,9 +31,21 @@ def convert_units(data: np.ndarray, from_unit: str, to_unit: str) -> np.ndarray:
     except KeyError:
         raise ValueError(f"Unsupported conversion from {from_unit} to {to_unit}")
 
+
 def nextpow2(x) -> int:
     # calculate the next power of two above some number x
     return int( 2**np.ceil(np.log2(x)))
+
+def parse_sd_status(sd_status:sounddevice.CallbackFlags):
+    if not sd_status._flags:
+        return 'OKAY'
+    
+    # Filters flags to build status string
+    status = ' '.join([s for s in filter(lambda s: not s.startswith('_'), dir(sd_status)) if sd_status.__getattribute__(s)])
+    if not status:
+        return 'ERROR'
+    return status
+
 
 class NoDevicesFound(Exception):
     pass
@@ -52,7 +69,8 @@ class UI_Elements:
     ACQ_STOP = 'ACQ_STOP'
     ACQ_SINGLE = 'ACQ_SINGLE'
     ACQ_UNITS = 'ACQ_UNITS'
-    ACQ_FFT_INTEGRATION = 'ACQ_FFT_INTEGRATION'
+    ACQ_INTEGRATE = 'ACQ_INTEGRATE'
+    ACQ_NORMALIZATION = 'ACQ_NORMALIZATION'
 
     FILE_NAME = 'FILE_NAME'
     FILE_TIMESTAMP = 'FILE_TIMESTAMP'
@@ -91,4 +109,4 @@ class UI_Elements:
                 self.ACQ_STOP,
                 self.ACQ_SINGLE,
                 self.ACQ_UNITS,
-                self.ACQ_FFT_INTEGRATION,]
+                self.ACQ_INTEGRATE,]

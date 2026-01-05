@@ -8,7 +8,7 @@ from vibechecker.util import NoDevicesFound, FormatError
 ENG_UNIT_SENSITIVITY = [100,100] # if device returns volts, use this mV/g scale, set to 0 to return raw voltage
 ENG_UNITS = ['g', 'g']
 
-def FindDigiducerDevice():
+def FindDigiducer():
     # The Modal Shop model number substrings
     models=["485B", "333D", "633A", "SDC0"]
     

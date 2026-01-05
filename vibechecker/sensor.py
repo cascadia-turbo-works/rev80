@@ -4,9 +4,7 @@ from datetime import datetime
 
 import sounddevice
 
-from vibechecker.digiducer import FindDigiducerDevice
-from vibechecker.simulation import SimulatedSensor
-from vibechecker.sample import AcquisitionSettings
+import vibechecker
 
 do_sounddevice_reset = threading.Event()
 
@@ -21,7 +19,7 @@ class VibeSensor:
     scale: list
     units: list
     is_simulation: bool = False
-    
+
     def __str__(self):
         return f'{self.model_name} (sn:{self.serial_number}, id:{self.device_id})'
 
@@ -37,7 +35,7 @@ class VibeSensor:
             # ENDHACK
             do_sounddevice_reset.clear()
 
-        stat = [cls.simulated()] + [cls(**dev) for dev in FindDigiducerDevice()]
+        stat = [cls.simulated()] + [cls(**dev) for dev in vibechecker.FindDigiducer()]
         return stat
 
     @classmethod
@@ -53,12 +51,12 @@ class VibeSensor:
                    is_simulation = True
                    )
     
-    def connect(self, config: AcquisitionSettings, callback):
+    def connect(self, config: vibechecker.AcquisitionSettings, callback):
         '''Return stream object'''
 
         if self.is_simulation:
             # Simulate a device connection
-            return SimulatedSensor(config, sensor=self, callback=callback)
+            return vibechecker.SimulatedSensor(config, sensor=self, callback=callback)
         else:
             return sounddevice.InputStream(
                         device=self.device_id, 

@@ -120,6 +120,10 @@ class DataCollector:
             self.config.maxfreq = float(value)
         elif parameter == ui.ACQ_BINSIZE:
             self.config.binsize = float(value)
+        elif parameter == ui.ACQ_UNITS:
+            self.config.units = vibechecker.UNITS[value] # type: ignore
+        elif parameter == ui.ACQ_INTEGRATE:
+            self.config.integrate = (value == 'Velocity')
         else:
             log.error('Acquisition arameter invalid')
              
@@ -229,25 +233,27 @@ class DataCollector:
 
         log.info(f'Loaded data sample {target}')
 
-    def recieve_data(self, indata:np.ndarray, frames:int, timestamp, status:str):
+    def recieve_data(self, indata:np.ndarray, frames:int, sd_timestamp, sd_status:str):
         '''log and preprocess incoming data stream'''
 
         if self.sensor is None:
             return
+        
+        if isinstance(sd_status, sounddevice.CallbackFlags):
+            status = vibechecker.parse_sd_status(sd_status)
+        else:
+            status = str(sd_status)
+        if str(type(sd_timestamp)) == "<class '_cffi_backend._CDataBase'>":
+            timestamp = sd_timestamp.currentTime
+        else:
+            timestamp = float(sd_timestamp)
 
         data = np.ascontiguousarray(indata[:, self.config.channel])  # slice
         data *= self.sensor.scale[self.config.channel]  # scale
         data_unit = self.sensor.units[self.config.channel]
-
-        # self.sample = vibechecker.VibeSample(status,
-        #                                      timestamp.currentTime,
-        #                                      self.config.samplerate, 
-        #                                      data_unit,
-        #                                      data)
     
-        # TODO: Push acq settings to sample at capture.
         self.sample.push_sample(status,
-                                timestamp.currentTime,
+                                timestamp,
                                 self.config.samplerate,
                                 data_unit, # type: ignore
                                 data) 
