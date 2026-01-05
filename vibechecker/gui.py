@@ -28,7 +28,6 @@ class GUI:
     def __init__(self):
         self.context = None
         self.collector = vibechecker.DataCollector()
-
         self.collector.callbacks['plots'] = self.display_sample
         
     def view_sensor_details(self):
@@ -120,11 +119,6 @@ class GUI:
     
     def update_streaming_config(self, parameter=None, value=None):
         '''Syncronize gui settings with sensor acquisition settings'''
-
-        if self.collector.is_streaming:
-            log.warning('Stop stream to update Acquisition Settings')
-            self.sync_acq_settings_from_collector()
-            return
 
         if value is None:
             self.sync_acq_settings_from_collector()

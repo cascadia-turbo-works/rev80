@@ -80,3 +80,15 @@ class UI_Elements:
     FFT_PEAKS_TABLE = 'FFT_PEAKS_TABLE'
 
     DEBUG_TXT = 'DEBUG_TXT'    
+
+    @property
+    def ACQ(self):
+        return [self.ACQ_BLOCKSIZE,
+                self.ACQ_SAMPLERATE,
+                self.ACQ_MAXFREQ,
+                self.ACQ_BINSIZE,
+                self.ACQ_START,
+                self.ACQ_STOP,
+                self.ACQ_SINGLE,
+                self.ACQ_UNITS,
+                self.ACQ_FFT_INTEGRATION,]

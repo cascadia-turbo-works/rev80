@@ -6,10 +6,12 @@ from datetime import datetime as dt
 from queue import Queue
 from path import Path
 from typing import Union, Literal, List, Tuple, Dict
+import sounddevice
 
 import vibechecker
 
 log = vibechecker.get_logger('collector')
+ui = vibechecker.UI_Elements()
 
 class DataCollector:
     '''
@@ -103,20 +105,30 @@ class DataCollector:
             self.sensor = None
 
     def update_acquisition_settings(self,parameter, value):
-        if parameter == 'ACQ_BLOCKSIZE':
+        if parameter not in ui.ACQ:
+            raise ValueError(f'Cannot set {parameter}') 
+        
+        stream_state = self.is_streaming
+        if stream_state:
+            self.stop_stream()
+
+        if parameter == ui.ACQ_BLOCKSIZE:
             self.config.blocksize = int(value)
-        elif parameter == 'ACQ_SAMPLERATE':
+        elif parameter == ui.ACQ_SAMPLERATE:
             self.config.samplerate = int(value)
-        elif parameter == 'ACQ_MAXFREQ':
+        elif parameter == ui.ACQ_MAXFREQ:
             self.config.maxfreq = float(value)
-        elif parameter == 'ACQ_BINSIZE':
+        elif parameter == ui.ACQ_BINSIZE:
             self.config.binsize = float(value)
         else:
-            raise ValueError(f'Cannot set {parameter}')  
+            log.error('Acquisition arameter invalid')
              
         if self.sensor:
             # Reconnect sensor stream with updated settings.
             self.connect_sensor(self.sensor)
+
+        if stream_state:
+            self.start_stream()
 
     def start_data_queue(self):
         if self.queue is None:
@@ -159,7 +171,11 @@ class DataCollector:
         if not self.stream:
             return
 
-        self.stream.start()
+        try:
+            self.stream.start()
+        except sounddevice.PortAudioError: # likely means sensor disconnected
+            self.disconnect_sensor()
+            log.error('Error starting stream: Sensor not found')
         log.debug(f'Stream started')
 
     def stop_stream(self):

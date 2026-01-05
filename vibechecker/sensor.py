@@ -21,13 +21,13 @@ class VibeSensor:
     scale: list
     units: list
     is_simulation: bool = False
-
+    
     def __str__(self):
         return f'{self.model_name} (sn:{self.serial_number}, id:{self.device_id})'
 
     @classmethod
     def find(cls):
-        if do_sounddevice_reset.is_set():
+        if do_sounddevice_reset.is_set() or True:
             # HACK: Reset sounddevice module before listing new devices.
             # This shouldn't be included in `FindDigiducers` function bc
             # it may break active streams if called a the wrong time.
