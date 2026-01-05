@@ -20,52 +20,7 @@ UNITS = {'Earth Gravity - g': 'g',
 UNITS_REV = {v:k for k,v in UNITS.items()}
 
 log = vibechecker.get_logger('gui')
-
-class UI_Elements:
-
-    SENSOR_SELECTOR = 'SENSOR_SELECTOR'
-    SENSOR_REFRESH = 'SENSOR_REFRESH'
-    SENSOR_CONNECT = 'SENSOR_CONNECT'
-    SENSOR_DISCONNECT = 'SENSOR_DISCONNECT'
-
-    ACQ_BLOCKSIZE = 'ACQ_BLOCKSIZE'
-    ACQ_SAMPLERATE = 'ACQ_SAMPLERATE'
-    ACQ_MAXFREQ = 'ACQ_MAXFREQ'
-    ACQ_BINSIZE = 'ACQ_BINSIZE'
-    ACQ_START = 'ACQ_START'
-    ACQ_STOP = 'ACQ_STOP'
-    ACQ_SINGLE = 'ACQ_SINGLE'
-    ACQ_UNITS = 'ACQ_UNITS'
-    ACQ_FFT_INTEGRATION = 'ACQ_FFT_INTEGRATION'
-
-    FILE_NAME = 'FILE_NAME'
-    FILE_TIMESTAMP = 'FILE_TIMESTAMP'
-    FILE_SAVE = 'FILE_SAVE'
-    FILE_LOAD = 'FILE_LOAD'
-    FILE_DIALOG = 'FILE_DIALOG'
-
-    PLT_SAMPLE = 'PLT_SAMPLE'
-    PLT_SAMPLE_AX_TIME = 'PLT_SAMPLE_AX_TIME'
-    PLT_SAMPLE_AX_ACCEL = 'PLT_SAMPLE_AX_ACCEL'
-    PLT_SAMPLE_DATA = 'PLT_SAMPLE_DATA'
-
-    PLT_FREQ = 'PLT_FREQ'
-    PLT_FREQ_AX_FREQ = 'PLT_FREQ_AX_FREQ'
-    PLT_FREQ_AX_ACCEL = 'PLT_FREQ_AX_ACCEL'
-    PLT_FREQ_DATA = 'PLT_FREQ_DATA'
-    PLT_FREQ_PEAKS = 'PLT_FREQ_PEAKS'
-
-    PLT_TREND = 'PLT_TREND'
-    PLT_TREND_AX_TIME = 'PLT_TREND_AX_TIME'
-    PLT_TREND_AX_RMS = 'PLT_TREND_AX_RMS'
-    PLT_TREND_DATA = 'PLT_TREND_DATA'
-
-    FFT_PEAKS_DISPLAY_COUNT = 'FFT_PEAK_DISPLAY_COUNT'
-    FFT_PEAKS_TABLE = 'FFT_PEAKS_TABLE'
-
-    DEBUG_TXT = 'DEBUG_TXT'
-
-ui = UI_Elements()
+ui = vibechecker.UI_Elements()
 
 class GUI:
     collector: vibechecker.DataCollector
@@ -306,7 +261,7 @@ class GUI:
             dpg.add_file_extension('.*', color=(0, 150, 150, 150))
             dpg.add_file_extension('', color=(150, 255, 150, 255))
 
-        with dpg.window(label='Vibe Logger', width=1200, height=800):
+        with dpg.window(label='Vibe Checkup', width=1200, height=800):
             with dpg.group(horizontal=True):
                 with dpg.child_window(label='Toolbar', width=300, autosize_y=True):
                     with dpg.tab_bar():
