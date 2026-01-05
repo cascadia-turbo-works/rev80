@@ -5,6 +5,7 @@ import dearpygui.dearpygui as dpg
 from path import Path
 from typing import Union, Tuple, List, Literal
 from datetime import datetime as dt
+import sounddevice
 
 import numpy as np 
 import pandas as pd
@@ -98,14 +99,14 @@ class GUI:
                                                             # each row/column combination
 
     def update_time_plot(self,sample:vibechecker.VibeSample):
-        time_vec, accel = vibechecker.sample_accel(sample, self.collector.config)
+        time_vec, accel = sample.get_accel(self.collector.config)
         
         dpg.set_value(ui.PLT_SAMPLE_DATA, [time_vec, accel])
         dpg.set_axis_limits(ui.PLT_SAMPLE_AX_TIME, time_vec[0], time_vec[-1])
         dpg.set_axis_limits(ui.PLT_SAMPLE_AX_ACCEL, np.min(accel), np.max(accel))
 
     def update_freq_plot(self,sample:vibechecker.VibeSample):
-        freq, psd, peaks = vibechecker.sample_spectrum(sample, self.collector.config)
+        freq, psd, peaks = sample.get_spectrum(self.collector.config)
         # TODO: Draw peaks
         # TODO: add N-peaks setting
 
@@ -225,7 +226,7 @@ class GUI:
         try:
             log.info(f'Connecting sensor {sensor})')
             self.collector.connect_sensor(sensor)
-        except vibechecker.sounddevice.PortAudioError as e:
+        except sounddevice.PortAudioError as e:
             log.info('Selected device is not longer available, try again')
             self.disconnect_sensor()
             self.refresh_sensors()

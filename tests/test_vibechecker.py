@@ -7,7 +7,7 @@ import vibechecker as vc
 import dearpygui as dpg
 
 DATADIR = 'DEVDATA'
-log = vc.logger.get_logger('test')
+log = vc.get_logger('test')
 
 samples = []
 settings=vc.AcquisitionSettings()
@@ -47,11 +47,11 @@ def test_sample_capture(dev: vc.VibeSensor):
 
 def test_sample_calcs():
     for sample in samples:
-        time_vec, accel = vc.sample_accel(sample, settings)
+        time_vec, accel = sample.get_accel(settings)
         assert isinstance(accel, np.ndarray)
 
-        freq,psd_t = vc.sample_accel_spectrum(sample, settings)
-        _,psd_f = vc.integrate_accel_spectrum(freq,psd_t)
+        freq,psd_t = sample.welch(settings)
+        _,psd_f,peaks = sample.get_spectrum(settings)
         assert isinstance(psd_f, np.ndarray)
 
         assert time_vec.flags['C_CONTIGUOUS'], 'Issue with T c-continuity'
