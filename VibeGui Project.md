@@ -128,3 +128,18 @@ FUTURE:
 - integrate proxprobes with DAQ?
   - Need to find DAQ at low cost for 4 channel BNC
 - Sexy web portal for data sharing.
+
+
+## 12/30/26 Carmen meet
+
+Looks clean!
+
+Critical
+
+- Overall viberation energy IPS zero to peak (0-p)
+  - Plot trend over time
+- Fix units - IPS is large by around 200x
+
+Future
+
+- Prox probe only need to integrate one sensor.
