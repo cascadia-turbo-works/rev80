@@ -12,9 +12,6 @@ import pandas as pd
 
 import vibechecker
 
-SAVEDIR = Path('DEVDATA')
-EXT = '.pkl'
-
 log = vibechecker.get_logger('gui')
 ui = vibechecker.UI_Elements()
 
@@ -56,27 +53,32 @@ class GUI:
         dpg.set_axis_limits(ui.PLT_SAMPLE_AX_ACCEL, np.min(accel), np.max(accel))
 
     def update_freq_plot(self,sample:vibechecker.VibeSample):
-        freq, psd, peaks = sample.get_spectrum(self.collector.config)
-        # TODO: Draw peaks
-        # TODO: add N-peaks setting
+        df, peaks, rms = sample.fft(self.collector.config)
+
+        freq = df.freq.to_numpy()
+
+        if self.collector.config.integrate:
+            psd = df.psd_v.to_numpy()
+        else:
+            psd = df.psd.to_numpy()
 
         peak_limit = dpg.get_value(ui.FFT_PEAKS_DISPLAY_COUNT)
         show_peaks = freq[peaks[:peak_limit]]
-
-        tab = pd.DataFrame({'Frequency (hz)':freq[peaks], 'Amplitude': psd[peaks]})
-        self.update_fft_peaks_table(tab)
-
+        
         dpg.set_value(ui.PLT_FREQ_DATA, [freq, psd])
         dpg.set_axis_limits(ui.PLT_FREQ_AX_FREQ, freq[0], freq[-1])
-        dpg.set_axis_limits(ui.PLT_FREQ_AX_ACCEL, 0, np.max(psd))
+        dpg.set_axis_limits(ui.PLT_FREQ_AX_ACCEL, 0, 1.05 * np.max(psd))
 
         dpg.set_value(ui.PLT_FREQ_PEAKS, [show_peaks])
+
+        df.columns = ['Frequency (hz)', 'Acceleration 0-P', 'Velocity 0-P']
+        self.update_fft_peaks_table(df)
 
     def update_trend_plot(self,T,RMS_A):
         pass
 
     def display_sample(self, sample:vibechecker.VibeSample):
-        if not sample.raw_data.size > 0:
+        if not sample.blocksize > 0:
             return
         
         self.collector.config.units = vibechecker.UNITS[dpg.get_value(ui.ACQ_UNITS)] # type:ignore
@@ -131,16 +133,6 @@ class GUI:
         dpg.set_value(ui.ACQ_BINSIZE,   self.collector.config.binsize)
         dpg.set_value(ui.ACQ_UNITS,     vibechecker.UNITS_REV[self.collector.config.units])
         dpg.set_value(ui.ACQ_INTEGRATE, 'Velocity' if self.collector.config.integrate else 'Acceleration')
-
-    def set_savedir(self, sender=None, data=str):
-        p = Path(data)
-
-        if not p.is_dir():
-            log.error(f'Failed to set datapath. {p} does not exist')
-            return
-        
-        self.collector.datadir = p
-        log.info(f'Set datapath: valid path set to {p}')
         
     def refresh_sensors(self, sender=None, data=None, autoconnect=False):
         if self.collector.is_streaming:
@@ -226,15 +218,15 @@ class GUI:
         if dpg.get_value(ui.FILE_TIMESTAMP):
             name += '_' + str(dt.now().strftime('%Y-%m-%d_%H-%M-%S'))
 
-        name += EXT
+        name += vibechecker.EXT
 
-        return Path.joinpath(SAVEDIR, name)
+        return Path.joinpath(vibechecker.SAVEDIR, name)
     
     def load_target(self) -> Path:
         name = dpg.get_value(ui.FILE_NAME)
-        if not name.endswith(EXT):
-            name += EXT
-        return Path.joinpath(SAVEDIR, name)
+        if not name.endswith(vibechecker.EXT):
+            name += vibechecker.EXT
+        return Path.joinpath(vibechecker.SAVEDIR, name)
 
     def dpg_debug(self):
         dpg.show_item_registry()
@@ -244,8 +236,8 @@ class GUI:
 
         dpg.create_context()
             
-        with dpg.file_dialog(show=False, default_path=SAVEDIR, callback=self.browser_handler, tag=ui.FILE_DIALOG, width=700 ,height=400):
-            dpg.add_file_extension('Vibe Samples (*.pkl){.pkl}', color=(150, 255, 150, 255))
+        with dpg.file_dialog(show=False, default_path=str(vibechecker.SAVEDIR), callback=self.browser_handler, tag=ui.FILE_DIALOG, width=700 ,height=400):
+            dpg.add_file_extension('Vibe Samples (*.h5){.h5}', color=(150, 255, 150, 255))
             dpg.add_file_extension('.*', color=(0, 150, 150, 150))
             dpg.add_file_extension('', color=(150, 255, 150, 255))
 
@@ -363,3 +355,8 @@ class GUI:
         dpg.destroy_context()
 
         log.info('App Exit')
+
+    def serve(self):
+        self.initialize()
+        self.run()
+        self.cleanup()

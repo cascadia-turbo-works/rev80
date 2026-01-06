@@ -1,10 +1,11 @@
 import numpy as np
+from path import Path
 from typing import Union, Literal
 import sounddevice
 
 SAMPLERATES = [8_000, 11_050, 16_000, 22_100, 32_000, 44_100, 48_000]
 BLOCKSIZES = list(map(int,np.pow(2, np.arange(8,15))))
-MAXFREQS = [2e2, 5e2, 1e3, 2e3, 5e3, 1e4, 2e4, 5e4]
+MAXFREQS = [2e2, 5e2, 1e3, 2e3, 5e3, 1e4, 2e4, 2.4e4]
 BINSIZES = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0]
 
 SUPPORTED_UNITS = Literal["g", "mm", "in"]
@@ -22,6 +23,9 @@ UNIT_CONVERSION = {
     ("in", "mm"): 25.4
 }
 
+SAVEDIR = Path('DEVDATA')
+EXT = '.h5'
+
 def convert_units(data: np.ndarray, from_unit: str, to_unit: str) -> np.ndarray:
     if from_unit == to_unit:
         return data
@@ -37,6 +41,12 @@ def nextpow2(x) -> int:
     return int( 2**np.ceil(np.log2(x)))
 
 def parse_sd_status(sd_status:sounddevice.CallbackFlags):
+    '''
+    Parse sounddevice callbackflags objet to string
+    
+    :param sd_status: Sounddevice status object
+    :type sd_status: sounddevice.CallbackFlags
+    '''
     if not sd_status._flags:
         return 'OKAY'
     

@@ -46,6 +46,7 @@ Data capture file contents
 - [ ] Implement RMS trend over recording window
 - [ ] Highpass filter sample kill DC below 10hz
 - [ ] TREND
+- [ ] GUI should run a thread that watches collector queue for samples.. rather than passing samples directly.
 - [ ] Make better use of queue
   - Make gui thread to continuously watch collector queue and consume data to plot.. rather than collector callbacks
 

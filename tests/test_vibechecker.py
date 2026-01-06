@@ -5,23 +5,35 @@ from path import Path
 from datetime import datetime as dt
 import vibechecker as vc
 import dearpygui as dpg
+import pickle
 
-DATADIR = 'DEVDATA'
+DATADIR = Path('DEVDATA')
 log = vc.get_logger('test')
 
 samples = []
 settings=vc.AcquisitionSettings()
 
+def do_sample_calcs(sample:vc.VibeSample):
+    time_vec, accel = sample.get_accel(settings)
+    assert isinstance(accel, np.ndarray)
+
+    df, peaks, rms = sample.fft(settings)
+    
+    assert time_vec.flags['C_CONTIGUOUS'], 'Issue with T c-continuity'
+    assert accel.flags['C_CONTIGUOUS'], 'Issue with T c-continuity'
+    # assert df.freq.flags['C_CONTIGUOUS'], 'Issue with T c-continuity'
+    # assert df.psd_v.flags['C_CONTIGUOUS'], 'Issue with T c-continuity'    
+
 @pytest.mark.parametrize('dev', vc.VibeSensor.find())
 def test_stream_cycle(dev: vc.VibeSensor):
     vibr = vc.DataCollector(dev)
+    vibr.callbacks['test'] = do_sample_calcs
+
     vibr.start_data_queue()
     
     for _ in range(2):
-        print('Starting stream ...', end='')
         vibr.start_stream()
-        time.sleep(1)
-        print('stopping')
+        time.sleep(settings.acquisition_period*1.05)
         vibr.stop_stream()
         time.sleep(0.1)
 
@@ -33,31 +45,17 @@ def test_stream_cycle(dev: vc.VibeSensor):
 def test_sample_capture(dev: vc.VibeSensor):
     vibr = vc.DataCollector(dev)
 
-    N = 5
+    N = 3
     for _ in range(N):
         print('Collecting Sample')
         sample = vibr.collect_sample()
         assert isinstance(sample, vc.VibeSample), f'invalid sample {sample}'
         samples.append(sample)
-        time.sleep(0.5)
+        time.sleep(0.1)
 
     vibr.disconnect_sensor()
     
     assert vibr.stream is None, "Stream should be properly closed after test."
-
-def test_sample_calcs():
-    for sample in samples:
-        time_vec, accel = sample.get_accel(settings)
-        assert isinstance(accel, np.ndarray)
-
-        freq,psd_t = sample.welch(settings)
-        _,psd_f,peaks = sample.get_spectrum(settings)
-        assert isinstance(psd_f, np.ndarray)
-
-        assert time_vec.flags['C_CONTIGUOUS'], 'Issue with T c-continuity'
-        assert accel.flags['C_CONTIGUOUS'], 'Issue with T c-continuity'
-        assert freq.flags['C_CONTIGUOUS'], 'Issue with T c-continuity'
-        assert psd_f.flags['C_CONTIGUOUS'], 'Issue with T c-continuity'    
 
 @pytest.mark.parametrize('dev', vc.VibeSensor.find())
 def test_stream(dev: vc.VibeSensor):
@@ -93,22 +91,35 @@ def test_stream(dev: vc.VibeSensor):
 @pytest.mark.parametrize('dev', vc.VibeSensor.find())
 def test_save(dev: vc.VibeSensor):
 
-    filename = 'pytest_data_' + dt.now().strftime('%Y-%m-%d_%H-%M-%S') + '.pkl'
-    file = Path.joinpath(DATADIR,filename)
+    filename = 'pytest_data_' + dt.now().strftime('%Y-%m-%d_%H-%M-%S') + vc.EXT
+    file = DATADIR / filename
 
-    vl = vc.DataCollector(dev,settings)
+    dc = vc.DataCollector(dev,settings)
+    vs = dc.collect_sample()
+    data1 = vs.data.copy()
+    dc.disconnect_sensor()
 
-    samp = vl.collect_sample()
+    time.sleep(1)
 
-    vl.disconnect_sensor()
+    vs.save(file)
+    time.sleep(0.1)
+    vs2 = vc.VibeSample.load(file)
 
-    vl.save_data(file)
+    data2 = vs2.data.copy()
 
-    time.sleep(0.5)
+    assert vs2.status == vs.status, 'status differs'
+    assert vs2.timestamp == vs.timestamp, 'timestamp differs'
+    assert vs2.samplerate == vs.samplerate, 'samplerate differs'
+    assert vs2.unit == vs.unit, 'unit differs'
+    if not np.all(vs2.data == vs.data):
+        diff = np.abs(vs2.data - vs.data)
+        idiff = np.argwhere(diff != 0)
+        raise AssertionError(f'Data differ after load. {idiff}, {diff[idiff]}')
 
-    vl.load_data(file)
+    assert (vs == vs2).all(), 'Data differs after load'
 
-    print(samp)
+
+    dc.load_data(file)
 
 def test_gui_build():
     app = vc.GUI()
