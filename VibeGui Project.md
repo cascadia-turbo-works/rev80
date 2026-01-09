@@ -57,17 +57,7 @@ Data capture file contents
 
 ### BUGS
 
-- full crash when Digiducer is unplugged during connection.
-  - It doesn't seem like I can catch this error before it crashes the window. See log:
-
-```bash
-2025-11-20 20:48:18,362 - vibe.gui - INFO - Starting sensor stream with Digiducer_333D05 (sn:083938, id:7)
-Expression 'alsa_snd_pcm_prepare( stream->capture.pcm )' failed in 'src/hostapi/alsa/pa_linux_alsa.c', line: 2932
-Expression 'AlsaStart( stream, 0 )' failed in 'src/hostapi/alsa/pa_linux_alsa.c', line: 4244
-Expression 'alsa_snd_pcm_drop( stream->capture.pcm )' failed in 'src/hostapi/alsa/pa_linux_alsa.c', line: 3046
-2025-11-20 20:48:27,478 - vibe.gui - INFO - Cleanup app assets
-python: src/os/unix/pa_unix_util.c:510: PaUnixMutex_Terminate: Assertion `0 == paUtilErr_' failed.
-```
+- none!
 
 
 ### Complete
@@ -143,3 +133,52 @@ Critical
 Future
 
 - Prox probe only need to integrate one sensor.
+
+## DAQ System
+
+### option 1
+
+- [ni-9239 DAQ](https://www.ni.com/en-us/shop/model/ni-9239.html) DAQ
+  - 1,428.00
+  - Maximum Number of Differential Analog Input Channels: 4
+  - Analog Input Voltage Range: -10 V to 10 V
+  - Enclosed: Yes
+  - Analog Input Resolution: 24 bits
+  - Maximum Sample Rate: 50 kS/s/ch
+- [cDAQ9181](https://www.ni.com/en-us/shop/model/cdaq-9181.html) Chassis
+  - $ 675.00
+  - Bus Connector: Ethernet
+  - Operating Temperature Range: 0 °C to 55 °C
+  - Slot Count: 1
+  - Onboard Trigger: No
+  - Synchronization Enabled: No
+  - Counter included on chassis but we need a multifunction card to access it.
+
+### Option 2
+
+- [cDAQ-SV1101](https://www.ni.com/en-us/shop/model/cdaq-sv1101-bundle.html) Bundle
+  - $ 2,916.00
+  - 1-Slot, 4-Channel, 51.2 kS/s/channel, �5 V, CompactDAQ Sound and Vibration Measurement Bundle
+  - Fails voltage range, but we could use an attenuator?
+ 
+### Option 3
+ 
+- [MCC USB-1808X](https://digilent.com/shop/mcc-usb-1808x-high-speed-high-precision-simultaneous-usb-daq-device/) High-Speed, High-Precision, Simultaneous USB DAQ Device
+  - $989.00
+  - 8 SE/8 DIFF simultaneous analog inputs
+  - 18-bit resolution
+  - 200 kS/s/ch sample rate
+  - ±10 V, ±5 V, 0-10 V, 0-5 V input ranges
+  - Two 16-bit analog outputs
+  - Four digital I/O
+  - Two counter inputs
+  - Two quadrature encoder inputs
+  - Two timer outputs
+  - No external power required
+- [MCC 172](https://digilent.com/shop/mcc-172-iepe-measurement-daq-hat-for-raspberry-pi/) IEPE Measurement DAQ HAT for Raspberry Pi]
+  - $399.00
+
+### option 4
+
+- [MCC USB-1608FS-Plus](https://digilent.com/shop/mcc-usb-1608fs-plus-simultaneous-usb-daq-device/): Simultaneous USB DAQ Device
+  = $459.00
