@@ -12,60 +12,8 @@ import pandas as pd
 
 import vibechecker
 
-SAVEDIR = Path('DEVDATA')
-EXT = '.pkl'
-UNITS = {'Earth Gravity - g': 'g',
-         'Metric - mm': 'mm',
-         'Imperial - in': 'in'}
-UNITS_REV = {v:k for k,v in UNITS.items()}
-
 log = vibechecker.get_logger('gui')
-
-class UI_Elements:
-
-    SENSOR_SELECTOR = 'SENSOR_SELECTOR'
-    SENSOR_REFRESH = 'SENSOR_REFRESH'
-    SENSOR_CONNECT = 'SENSOR_CONNECT'
-    SENSOR_DISCONNECT = 'SENSOR_DISCONNECT'
-
-    ACQ_BLOCKSIZE = 'ACQ_BLOCKSIZE'
-    ACQ_SAMPLERATE = 'ACQ_SAMPLERATE'
-    ACQ_MAXFREQ = 'ACQ_MAXFREQ'
-    ACQ_BINSIZE = 'ACQ_BINSIZE'
-    ACQ_START = 'ACQ_START'
-    ACQ_STOP = 'ACQ_STOP'
-    ACQ_SINGLE = 'ACQ_SINGLE'
-    ACQ_UNITS = 'ACQ_UNITS'
-    ACQ_FFT_INTEGRATION = 'ACQ_FFT_INTEGRATION'
-
-    FILE_NAME = 'FILE_NAME'
-    FILE_TIMESTAMP = 'FILE_TIMESTAMP'
-    FILE_SAVE = 'FILE_SAVE'
-    FILE_LOAD = 'FILE_LOAD'
-    FILE_DIALOG = 'FILE_DIALOG'
-
-    PLT_SAMPLE = 'PLT_SAMPLE'
-    PLT_SAMPLE_AX_TIME = 'PLT_SAMPLE_AX_TIME'
-    PLT_SAMPLE_AX_ACCEL = 'PLT_SAMPLE_AX_ACCEL'
-    PLT_SAMPLE_DATA = 'PLT_SAMPLE_DATA'
-
-    PLT_FREQ = 'PLT_FREQ'
-    PLT_FREQ_AX_FREQ = 'PLT_FREQ_AX_FREQ'
-    PLT_FREQ_AX_ACCEL = 'PLT_FREQ_AX_ACCEL'
-    PLT_FREQ_DATA = 'PLT_FREQ_DATA'
-    PLT_FREQ_PEAKS = 'PLT_FREQ_PEAKS'
-
-    PLT_TREND = 'PLT_TREND'
-    PLT_TREND_AX_TIME = 'PLT_TREND_AX_TIME'
-    PLT_TREND_AX_RMS = 'PLT_TREND_AX_RMS'
-    PLT_TREND_DATA = 'PLT_TREND_DATA'
-
-    FFT_PEAKS_DISPLAY_COUNT = 'FFT_PEAK_DISPLAY_COUNT'
-    FFT_PEAKS_TABLE = 'FFT_PEAKS_TABLE'
-
-    DEBUG_TXT = 'DEBUG_TXT'
-
-ui = UI_Elements()
+ui = vibechecker.UI_Elements()
 
 class GUI:
     collector: vibechecker.DataCollector
@@ -73,7 +21,6 @@ class GUI:
     def __init__(self):
         self.context = None
         self.collector = vibechecker.DataCollector()
-
         self.collector.callbacks['plots'] = self.display_sample
         
     def view_sensor_details(self):
@@ -106,30 +53,35 @@ class GUI:
         dpg.set_axis_limits(ui.PLT_SAMPLE_AX_ACCEL, np.min(accel), np.max(accel))
 
     def update_freq_plot(self,sample:vibechecker.VibeSample):
-        freq, psd, peaks = sample.get_spectrum(self.collector.config)
-        # TODO: Draw peaks
-        # TODO: add N-peaks setting
+        df, peaks, rms = sample.fft(self.collector.config)
+
+        freq = df.freq.to_numpy()
+
+        if self.collector.config.integrate:
+            psd = df.psd_v.to_numpy()
+        else:
+            psd = df.psd.to_numpy()
 
         peak_limit = dpg.get_value(ui.FFT_PEAKS_DISPLAY_COUNT)
         show_peaks = freq[peaks[:peak_limit]]
-
-        tab = pd.DataFrame({'Frequency (hz)':freq[peaks], 'Amplitude': psd[peaks]})
-        self.update_fft_peaks_table(tab)
-
+        
         dpg.set_value(ui.PLT_FREQ_DATA, [freq, psd])
         dpg.set_axis_limits(ui.PLT_FREQ_AX_FREQ, freq[0], freq[-1])
-        dpg.set_axis_limits(ui.PLT_FREQ_AX_ACCEL, 0, np.max(psd))
+        dpg.set_axis_limits(ui.PLT_FREQ_AX_ACCEL, 0, 1.05 * np.max(psd))
 
         dpg.set_value(ui.PLT_FREQ_PEAKS, [show_peaks])
+
+        df.columns = ['Frequency (hz)', 'Acceleration 0-P', 'Velocity 0-P']
+        self.update_fft_peaks_table(df)
 
     def update_trend_plot(self,T,RMS_A):
         pass
 
     def display_sample(self, sample:vibechecker.VibeSample):
-        if not sample.raw_data.size > 0:
+        if not sample.blocksize > 0:
             return
         
-        self.collector.config.units = UNITS[dpg.get_value(ui.ACQ_UNITS)] # type:ignore
+        self.collector.config.units = vibechecker.UNITS[dpg.get_value(ui.ACQ_UNITS)] # type:ignore
 
         self.update_time_plot(sample)
         self.update_freq_plot(sample)
@@ -137,50 +89,41 @@ class GUI:
         if self.collector.queue:
             dpg.set_value('debug',f'Stream queue len: {self.collector.queue.qsize()}')
 
-    def redraw(self):
+    def redraw(self, sender=None, data=None):
         if not self.collector.is_streaming:
             self.display_sample(self.collector.sample)
+        
+        if sender in [ui.ACQ_UNITS, ui.ACQ_INTEGRATE]:
+            self.update_axes_label()
 
-    def sample_unit_callback(self, sender, data):
-        if sender == ui.ACQ_UNITS:
-            self.collector.config.units = UNITS[data] # type: ignore
-        if sender == ui.ACQ_FFT_INTEGRATION:
-            self.collector.config.fft_integration = (data == 'Velocity')
-
-        freq_label = f'{dpg.get_value(ui.ACQ_FFT_INTEGRATION)} - {self.collector.config.units}'
+    def update_axes_label(self):
+        freq_label = f'{dpg.get_value(ui.ACQ_INTEGRATE)} - {self.collector.config.units}'
         time_label = f'Acceleration - {self.collector.config.units}'
 
         if self.collector.config.units == 'g':
-            if self.collector.config.fft_integration:
+            if self.collector.config.integrate:
                 freq_label += '*s'
         else:
             freq_label += '/s'
-            if not self.collector.config.fft_integration:
+            if not self.collector.config.integrate:
                 freq_label += '^2'
 
         dpg.configure_item(ui.PLT_SAMPLE_AX_ACCEL, label=time_label)
         dpg.configure_item(ui.PLT_FREQ_AX_ACCEL, label=freq_label)
-
-        self.redraw()
     
-    def update_streaming_config(self, parameter=None, value=None):
+    def update_streaming_config(self, sender=None, data=None):
         '''Syncronize gui settings with sensor acquisition settings'''
 
-        if self.collector.is_streaming:
-            log.warning('Stop stream to update Acquisition Settings')
-            self.sync_acq_settings_from_collector()
-            return
-
-        if value is None:
+        if data is None:
             self.sync_acq_settings_from_collector()
             return
         
-        log.info(f'Setting {parameter} to {value}')
-        self.collector.update_acquisition_settings(parameter, value)
+        log.info(f'Setting {sender} to {data}')
+        self.collector.update_acquisition_settings(sender, data)
 
         self.sync_acq_settings_from_collector()
 
-        self.redraw()
+        self.redraw(sender)
     
     def sync_acq_settings_from_collector(self):
         '''Retrieves aquisition settings from collector to display on GUI'''
@@ -188,16 +131,8 @@ class GUI:
         dpg.set_value(ui.ACQ_SAMPLERATE,self.collector.config.samplerate)
         dpg.set_value(ui.ACQ_MAXFREQ,   self.collector.config.maxfreq)
         dpg.set_value(ui.ACQ_BINSIZE,   self.collector.config.binsize)
-
-    def set_savedir(self, sender=None, data=str):
-        p = Path(data)
-
-        if not p.is_dir():
-            log.error(f'Failed to set datapath. {p} does not exist')
-            return
-        
-        self.collector.datadir = p
-        log.info(f'Set datapath: valid path set to {p}')
+        dpg.set_value(ui.ACQ_UNITS,     vibechecker.UNITS_REV[self.collector.config.units])
+        dpg.set_value(ui.ACQ_INTEGRATE, 'Velocity' if self.collector.config.integrate else 'Acceleration')
         
     def refresh_sensors(self, sender=None, data=None, autoconnect=False):
         if self.collector.is_streaming:
@@ -283,15 +218,15 @@ class GUI:
         if dpg.get_value(ui.FILE_TIMESTAMP):
             name += '_' + str(dt.now().strftime('%Y-%m-%d_%H-%M-%S'))
 
-        name += EXT
+        name += vibechecker.EXT
 
-        return Path.joinpath(SAVEDIR, name)
+        return Path.joinpath(vibechecker.SAVEDIR, name)
     
     def load_target(self) -> Path:
         name = dpg.get_value(ui.FILE_NAME)
-        if not name.endswith(EXT):
-            name += EXT
-        return Path.joinpath(SAVEDIR, name)
+        if not name.endswith(vibechecker.EXT):
+            name += vibechecker.EXT
+        return Path.joinpath(vibechecker.SAVEDIR, name)
 
     def dpg_debug(self):
         dpg.show_item_registry()
@@ -301,12 +236,12 @@ class GUI:
 
         dpg.create_context()
             
-        with dpg.file_dialog(show=False, default_path=SAVEDIR, callback=self.browser_handler, tag=ui.FILE_DIALOG, width=700 ,height=400):
-            dpg.add_file_extension('Vibe Samples (*.pkl){.pkl}', color=(150, 255, 150, 255))
+        with dpg.file_dialog(show=False, default_path=str(vibechecker.SAVEDIR), callback=self.browser_handler, tag=ui.FILE_DIALOG, width=700 ,height=400):
+            dpg.add_file_extension('Vibe Samples (*.h5){.h5}', color=(150, 255, 150, 255))
             dpg.add_file_extension('.*', color=(0, 150, 150, 150))
             dpg.add_file_extension('', color=(150, 255, 150, 255))
 
-        with dpg.window(label='Vibe Logger', width=1200, height=800):
+        with dpg.window(label='Vibe Checkup', width=1200, height=800):
             with dpg.group(horizontal=True):
                 with dpg.child_window(label='Toolbar', width=300, autosize_y=True):
                     with dpg.tab_bar():
@@ -386,9 +321,9 @@ class GUI:
                             #     dpg.add_line_series(np.array([0]), np.array([0]), label=self.domain, parent='y_axis', tag=ui.PLT_TREND_DATA)
 
                     dpg.add_input_int(label='# Peaks', tag=ui.FFT_PEAKS_DISPLAY_COUNT, default_value=1, callback=self.redraw)
-                    dpg.add_combo(label='Sample Units', tag=ui.ACQ_UNITS, callback=self.sample_unit_callback,
-                                    items=list(UNITS.keys()), default_value='Earth Gravity - g')                                                
-                    dpg.add_combo(label='Sample Integration', tag=ui.ACQ_FFT_INTEGRATION, callback=self.sample_unit_callback,
+                    dpg.add_combo(label='Sample Units', tag=ui.ACQ_UNITS, callback=self.update_streaming_config,
+                                    items=list(vibechecker.UNITS.keys()), default_value=vibechecker.UNITS_REV['g'])                                                
+                    dpg.add_combo(label='Sample Integration', tag=ui.ACQ_INTEGRATE, callback=self.update_streaming_config,
                                     items=['Velocity', 'Acceleration'], default_value='Acceleration')
 
                     
@@ -397,9 +332,10 @@ class GUI:
                     dpg.add_text('', tag=ui.DEBUG_TXT)
 
     def initialize(self):
-
         self.create_gui()
         self.update_streaming_config()
+        self.update_axes_label()
+
         self.refresh_sensors(autoconnect=True)
 
         log.info('Setup GUI')
@@ -419,3 +355,8 @@ class GUI:
         dpg.destroy_context()
 
         log.info('App Exit')
+
+    def serve(self):
+        self.initialize()
+        self.run()
+        self.cleanup()

@@ -8,7 +8,7 @@ from vibechecker.util import NoDevicesFound, FormatError
 ENG_UNIT_SENSITIVITY = [100,100] # if device returns volts, use this mV/g scale, set to 0 to return raw voltage
 ENG_UNITS = ['g', 'g']
 
-def FindDigiducerDevice():
+def FindDigiducer():
     # The Modal Shop model number substrings
     models=["485B", "333D", "633A", "SDC0"]
     
@@ -51,13 +51,13 @@ def FindDigiducerDevice():
                         sens[0] *= int(1/50e-3) # Convert to 1V reference
                         sens[1] *= int(1/50e-3)
 
-                    units = ['v', 'v']
+                    unit = ['v', 'v']
                     scale = np.array([8388608.0/sens[0], 8388608.0/sens[1]], dtype='float32') # scale to volts
 
                     for ch in range(len(scale)):
                         if ENG_UNIT_SENSITIVITY[ch] != 0.0:
                             scale[ch] *= 1.0 / (ENG_UNIT_SENSITIVITY[ch] / 1000.0)
-                            units[ch] = ENG_UNITS[ch]
+                            unit[ch] = ENG_UNITS[ch]
 
                     date = datetime.strptime(name[loc+28:loc+34], '%y%m%d') # Isolate the calibration date from the fullname string
 
@@ -67,7 +67,7 @@ def FindDigiducerDevice():
                     # Extract the sensitivity
                     sens = [int(name[loc+14:loc+19]), int(name[loc+19:loc+24])]
                     scale = np.array([855400.0/sens[0], 855400.0/sens[1]], dtype='float32') # scale to g's
-                    units = ['g', 'g']
+                    unit = ENG_UNITS
                     date = datetime.strptime(name[loc+24:loc+30], '%y%m%d') # Isolate the calibration date from the fullname string
                 else:
                       raise FormatError("Expecting 1, 2, or 3 format")
@@ -80,7 +80,7 @@ def FindDigiducerDevice():
                                  "format_id":       form,
                                  "sensitivity":     sens,
                                  "scale":           scale,
-                                 "units":           units
+                                 "unit":           unit
                                  })                  
         dev_num += 1
     # if len(device_info) == 0:

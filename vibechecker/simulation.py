@@ -6,6 +6,8 @@ import numpy as np
 
 from vibechecker import AcquisitionSettings
 
+N_CHANNELS = 2
+
 def GenerateVibrationData_SpectralMethod(config:AcquisitionSettings):
     freqs = fft.rfftfreq(config.blocksize, d=config.sampleperiod)
     spectrum = np.zeros_like(freqs, dtype='complex128')
@@ -33,17 +35,13 @@ def GenerateVibrationData_SpectralMethod(config:AcquisitionSettings):
     spectrum = running + bearing + spectrum
     signal = np.array(fft.irfft(spectrum))
 
-    if config.channel is not None:
-        # convert to shape (blocksize, channels_count)
-        signal = np.tile(signal, (1, max(1,config.channel)))
-
-    return signal.T
+    return signal
 
 def GenerateVibrationData_TemporalMethod(config:AcquisitionSettings):
     # Generate sample data representing rotating equipment with faulty bearing
 
     nnoise = lambda a: a * np.random.randn(config.blocksize) # normal noise
-    signal = lambda a, f, p=0.: a * np.sin(2*np.pi*f*config.time_vec + p) # single frequency signal
+    tone = lambda a, f, p=0.: a * np.sin(2*np.pi*f*config.time_vec + p) # single frequency tone
 
     runningrate = 60 # hz, base freq
     running_phase = np.random.rand() * 2*np.pi
@@ -51,31 +49,21 @@ def GenerateVibrationData_TemporalMethod(config:AcquisitionSettings):
     bearing_severity = 0.8
     bearing_phase = np.random.rand() * 2*np.pi
 
-    data = np.zeros_like(config.time_vec)
+    signal = np.zeros_like(config.time_vec)
 
-    data += nnoise(0.8)
+    signal += nnoise(0.8)
 
     # machine running rate and harmonics
 
     for k in range(1,11):
-        data += signal(1/(.5*k), runningrate*k, running_phase)
+        signal += tone(1/(.5*k), runningrate*k, running_phase)
     
     # Bearing defect and harmonics
     for k in range(1,11):
-        data += signal(bearing_severity/(0.4*k), runningrate*bearing_multiple*k, bearing_phase)
-
-    if config.channel is not None:
-        # convert to shape (blocksize, channels_count)
-        data = np.tile(data, (1, max(1,config.channel)))
+        signal += tone(bearing_severity/(0.4*k), runningrate*bearing_multiple*k, bearing_phase)
 
     time.sleep(config.acquisition_period)
-    return data.T 
-
-@dataclass
-class mock_C_time:
-    currentTime: float
-    inputBufferAdcTime: float
-    outputBufferDacTime: float
+    return signal
 
 class SimulatedSensor:
 
@@ -101,11 +89,11 @@ class SimulatedSensor:
     def _stream(self):
         self._running = True
         while self._running:
-            data = GenerateVibrationData_TemporalMethod(self.config)
-            t = time.monotonic()
-            timestamp = mock_C_time(t, t, 0.0)
-            time.sleep(0.95*self.config.acquisition_period)
-            self.callback(data,self.config.blocksize, timestamp, 'OK')
+            signal = GenerateVibrationData_TemporalMethod(self.config)
+            data = np.tile(signal, (max(self.config.channel,N_CHANNELS),1)).T
+            timestamp = time.monotonic()
+            time.sleep(self.config.acquisition_period)
+            self.callback(data,self.config.blocksize, timestamp, 'OKAY')
 
     def start(self):
         self.stream.start()

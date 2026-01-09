@@ -1,14 +1,15 @@
 import threading
+import numpy as np
 from dataclasses import dataclass
 from datetime import datetime
 
 import sounddevice
 
-from vibechecker.digiducer import FindDigiducerDevice
-from vibechecker.simulation import SimulatedSensor
-from vibechecker.sample import AcquisitionSettings
+import vibechecker
 
 do_sounddevice_reset = threading.Event()
+
+log = vibechecker.get_logger(__name__)
 
 @dataclass
 class VibeSensor:
@@ -19,15 +20,16 @@ class VibeSensor:
     format_id: int
     sensitivity: list
     scale: list
-    units: list
+    unit: list
     is_simulation: bool = False
+    callback = None
 
     def __str__(self):
         return f'{self.model_name} (sn:{self.serial_number}, id:{self.device_id})'
 
     @classmethod
     def find(cls):
-        if do_sounddevice_reset.is_set():
+        if do_sounddevice_reset.is_set() or True:
             # HACK: Reset sounddevice module before listing new devices.
             # This shouldn't be included in `FindDigiducers` function bc
             # it may break active streams if called a the wrong time.
@@ -37,7 +39,7 @@ class VibeSensor:
             # ENDHACK
             do_sounddevice_reset.clear()
 
-        stat = [cls.simulated()] + [cls(**dev) for dev in FindDigiducerDevice()]
+        stat = [cls.simulated()] + [cls(**dev) for dev in vibechecker.FindDigiducer()]
         return stat
 
     @classmethod
@@ -49,21 +51,47 @@ class VibeSensor:
                    format_id = 0,
                    sensitivity = [1,1],
                    scale = [1,1],
-                   units = ['mm','mm'],
+                   unit = ['mm','mm'],
                    is_simulation = True
                    )
     
-    def connect(self, config: AcquisitionSettings, callback):
+    def connect(self, config: vibechecker.AcquisitionSettings, callback):
         '''Return stream object'''
+
+        self.callback = callback
 
         if self.is_simulation:
             # Simulate a device connection
-            return SimulatedSensor(config, sensor=self, callback=callback)
+            return vibechecker.SimulatedSensor(config, sensor=self, callback=self._callback)
         else:
             return sounddevice.InputStream(
                         device=self.device_id, 
                         channels=2, 
                         samplerate=config.samplerate, 
                         blocksize=config.blocksize,
-                        callback=callback,
+                        callback=self._callback,
                         dtype='float32')
+        
+    def _callback(self, sd_data:np.ndarray, frames:int, sd_timestamp, sd_status:str):
+        
+        # Parse C objects to python
+        if isinstance(sd_status, sounddevice.CallbackFlags):
+            status = vibechecker.parse_sd_status(sd_status)
+        else:
+            status = str(sd_status)
+        if str(type(sd_timestamp)) == "<class '_cffi_backend._CDataBase'>":
+            timestamp = sd_timestamp.currentTime
+        else:
+            timestamp = float(sd_timestamp)
+
+        # scale data
+        data = sd_data.copy() * self.scale
+
+        sample = {'status': status,
+                  'timestamp': timestamp,
+                  'unit': self.unit,
+                  'data': data}
+        
+        if self.callback:
+            self.callback(sample)
+    
