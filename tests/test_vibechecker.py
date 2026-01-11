@@ -4,8 +4,6 @@ import numpy as np
 from path import Path
 from datetime import datetime as dt
 import vibechecker as vc
-import dearpygui as dpg
-import pickle
 
 DATADIR = Path('DEVDATA')
 log = vc.get_logger('test')
@@ -14,15 +12,14 @@ samples = []
 settings=vc.AcquisitionSettings()
 
 def do_sample_calcs(sample:vc.VibeSample):
-    time_vec, accel = sample.get_accel(settings)
-    assert isinstance(accel, np.ndarray)
+    acc, rms = sample.get_accel(settings)
 
-    df, peaks, rms = sample.fft(settings)
+    fft, peaks = sample.fft(settings)
     
-    assert time_vec.flags['C_CONTIGUOUS'], 'Issue with T c-continuity'
-    assert accel.flags['C_CONTIGUOUS'], 'Issue with T c-continuity'
-    # assert df.freq.flags['C_CONTIGUOUS'], 'Issue with T c-continuity'
-    # assert df.psd_v.flags['C_CONTIGUOUS'], 'Issue with T c-continuity'    
+    assert acc.time.to_numpy().flags['C_CONTIGUOUS'], 'Issue with T c-continuity'
+    assert acc.signal.to_numpy().flags['C_CONTIGUOUS'], 'Issue with T c-continuity'
+    # assert fft.freq.to_numpy().flags['C_CONTIGUOUS'], 'Issue with T c-continuity'
+    # assert fft.acc_spectrum.to_numpy().flags['C_CONTIGUOUS'], 'Issue with T c-continuity'    
 
 @pytest.mark.parametrize('dev', vc.VibeSensor.find())
 def test_stream_cycle(dev: vc.VibeSensor):
@@ -58,64 +55,30 @@ def test_sample_capture(dev: vc.VibeSensor):
     assert vibr.stream is None, "Stream should be properly closed after test."
 
 @pytest.mark.parametrize('dev', vc.VibeSensor.find())
-def test_stream(dev: vc.VibeSensor):
-    import matplotlib.pyplot as plt
-
-    sens = vc.VibeSensor.find()
-    vibr = vc.DataCollector(sensor=sens[-1], config=settings)
-    
-    sample:vc.VibeSample = vibr.collect_sample()
-    plot_update_period = 0.1
-    
-    vis = vibr.visualize_init(sample)
-    # plt.show()
-
-    try:
-        vibr.start_data_queue()
-        vibr.start_stream()
-        for _ in range(100):
-            if not plt.fignum_exists(vis['fig'].number):
-                print('Window closed!')
-                break
-
-            vibr.visualize_sample(vibr.get_data_queue(), vis)
-            # plt.pause(plot_update_period)  # force GUI update
-    
-    finally:
-        vibr.stop_stream()
-        vibr.disconnect_sensor()
-        plt.close(vis['fig'])
-
-@pytest.mark.parametrize('dev', vc.VibeSensor.find())
 def test_save(dev: vc.VibeSensor):
-
-    filename = 'pytest_data_' + dt.now().strftime('%Y-%m-%d_%H-%M-%S') + vc.EXT
-    file = DATADIR / filename
-
     dc = vc.DataCollector(dev,settings)
-    vs = dc.collect_sample()
-    data1 = vs.data.copy()
+    vs1 = dc.collect_sample()
     dc.disconnect_sensor()
 
-    time.sleep(1)
+    assert isinstance(vs1, vc.VibeSample)
+    time.sleep(0.5)
+    vs1.label = 'pytest_data'
+    fname = vs1.save()
 
-    vs.save(file)
-    time.sleep(0.1)
-    vs2 = vc.VibeSample.load(file)
+    time.sleep(0.5)
+    vs2 = vc.VibeSample.load(fname)
 
-    data2 = vs2.data.copy()
-
-    assert vs2.status == vs.status, 'status differs'
-    assert vs2.timestamp == vs.timestamp, 'timestamp differs'
-    assert vs2.samplerate == vs.samplerate, 'samplerate differs'
-    assert vs2.unit == vs.unit, 'unit differs'
-    if not np.all(vs2.data == vs.data):
-        diff = np.abs(vs2.data - vs.data)
+    assert vs2.status == vs1.status, 'status differs'
+    assert vs2.timestamp == vs1.timestamp, 'timestamp differs'
+    assert vs2.samplerate == vs1.samplerate, 'samplerate differs'
+    assert vs2.unit == vs1.unit, 'unit differs'
+    if not np.all(vs2.data == vs1.data):
+        diff = np.abs(vs2.data - vs1.data)
         idiff = np.argwhere(diff != 0)
         raise AssertionError(f'Data differ after load. {idiff}, {diff[idiff]}')
 
     # Touch collector load method
-    dc.load_data(file)
+    dc.load_data(fname)
 
 def test_gui_build():
     app = vc.GUI()

@@ -46,39 +46,47 @@ class GUI:
                                                             # each row/column combination
 
     def update_time_plot(self,sample:vibechecker.VibeSample):
-        time_vec, accel = sample.get_accel(self.collector.config)
+        acc, rms = sample.get_accel(self.collector.config)
+
+        time = acc.time.to_numpy()
+        signal = acc.signal.to_numpy()
         
-        dpg.set_value(ui.PLT_SAMPLE_DATA, [time_vec, accel])
-        dpg.set_axis_limits(ui.PLT_SAMPLE_AX_TIME, time_vec[0], time_vec[-1])
-        dpg.set_axis_limits(ui.PLT_SAMPLE_AX_ACCEL, np.min(accel), np.max(accel))
+        dpg.set_value(ui.PLT_SAMPLE_DATA, [time, signal])
+        dpg.set_axis_limits(ui.PLT_SAMPLE_AX_TIME, time[0], time[-1])
+        dpg.set_axis_limits(ui.PLT_SAMPLE_AX_ACCEL, np.min(signal), np.max(signal))
 
     def update_freq_plot(self,sample:vibechecker.VibeSample):
-        df, peaks, rms = sample.fft(self.collector.config)
+        fft, peaks = sample.fft(self.collector.config)
+        if fft is None or peaks is None:
+            return
 
-        freq = df.freq.to_numpy()
+        freq = fft.freq.to_numpy()
 
         if self.collector.config.integrate:
-            psd = df.psd_v.to_numpy()
+            psd = fft.vel_0p.to_numpy()
         else:
-            psd = df.psd.to_numpy()
+            psd = fft.acc_0p.to_numpy()
 
-        peak_limit = dpg.get_value(ui.FFT_PEAKS_DISPLAY_COUNT)
-        show_peaks = freq[peaks[:peak_limit]]
-        
+
         dpg.set_value(ui.PLT_FREQ_DATA, [freq, psd])
         dpg.set_axis_limits(ui.PLT_FREQ_AX_FREQ, freq[0], freq[-1])
         dpg.set_axis_limits(ui.PLT_FREQ_AX_ACCEL, 0, 1.05 * np.max(psd))
 
-        dpg.set_value(ui.PLT_FREQ_PEAKS, [show_peaks])
+        # Draw peaks
+        peak_limit = dpg.get_value(ui.FFT_PEAKS_DISPLAY_COUNT)
+        fft_disp = fft[['freq','acc_0p', 'vel_0p']].loc[peaks[:peak_limit]]
+        fft_disp.columns = [f'Frequency (hz)',
+                            f'Acceleration {sample.unit} 0-P',
+                            f'Velocity {sample.unit} 0-P']
 
-        df.columns = ['Frequency (hz)', 'Acceleration 0-P', 'Velocity 0-P']
-        self.update_fft_peaks_table(df)
+        dpg.set_value(ui.PLT_FREQ_PEAKS, [freq[peaks[:peak_limit]]])
+        self.update_fft_peaks_table(fft_disp)
 
     def update_trend_plot(self,T,RMS_A):
         pass
 
     def display_sample(self, sample:vibechecker.VibeSample):
-        if not sample.blocksize > 0:
+        if sample.blocksize <= 1:
             return
         
         self.collector.config.units = vibechecker.UNITS[dpg.get_value(ui.ACQ_UNITS)] # type:ignore

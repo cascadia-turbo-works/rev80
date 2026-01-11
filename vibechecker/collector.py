@@ -2,6 +2,7 @@
 
 import numpy as np
 import scipy.signal
+import pandas as pd
 from datetime import datetime as dt
 from queue import Queue
 from path import Path
@@ -192,7 +193,7 @@ class DataCollector:
         self.stream.stop()
         log.debug(f'Stream stopped')
 
-    def collect_sample(self):
+    def collect_sample(self) -> vibechecker.VibeSample|None:
         """Collect single sample from sensor"""
         if self.is_streaming:
             self.stop_stream()
@@ -271,7 +272,13 @@ class DataCollector:
             for fn in self.callbacks.values():
                 fn(sample)
 
-    def visualize_init(self, sample:vibechecker.VibeSample):  
+    def visualize_init(self, sample:vibechecker.VibeSample):
+
+        acc, rms = sample.get_accel(self.config)
+        fft, pkk = sample.fft(self.config)
+        if fft is None:
+            return
+
         import matplotlib.pyplot as plt      
         plt.ion()
         fig, ax = plt.subplots(2,1)
@@ -283,32 +290,40 @@ class DataCollector:
 
         fig.suptitle(title, fontsize=20)
         ax[0].set_xlabel('Time, ms')
-        ax[0].set_ylabel('Acceleration, mm/s^2')
+        ax[0].set_ylabel(f'Acceleration, {self.config.units}/s^2')
         ax[1].set_xlabel('Frequency, Hz')
-        ax[1].set_ylabel('Velocity, mm/s/hz')
+        ax[1].set_ylabel(f'Velocity, {self.config.units}/s')
 
-        df,_,_ = sample.fft(self.config)
-
-        time_vec, acc_t_mmps2 = sample.get_accel(self.config)
-        time_plot, = ax[0].plot(time_vec, acc_t_mmps2)
-        freq_plot, = ax[1].plot(df.freq, df.psd)
+        time_plot, = ax[0].plot(acc.time, acc.signal)
+        freq_plot, = ax[1].plot(fft.freq, fft.vel_0p)
 
         vis = {'fig': fig,
                'ax': ax,
-               'time_vec': time_vec,
-               'freq_vec': df.freq,
                'time_plot': time_plot,
-               'freq_plot': freq_plot}
+               'freq_plot': freq_plot,
+               'acc': acc,
+               'rms': rms,
+               'fft': fft,
+               'peak': pkk}
 
         return vis
 
     def visualize_sample(self, sample:vibechecker.VibeSample, vis:dict):
-        time_vec, acc_t_mmps2 = sample.get_accel(self.config)
-        df,_,_ = sample.fft(self.config)
+        acc, rms = sample.get_accel(self.config)
+        fft, pkk = sample.fft(self.config)
+        if fft is None:
+            return
         
-        vis['time_plot'].set_data(time_vec, acc_t_mmps2)
-        vis['freq_plot'].set_data(df.freq, df.psd)
+        vis['time_plot'].set_data(acc.time, acc.signal)
+        vis['freq_plot'].set_data(fft.freq, fft.vel_0p)
         
         vis['fig'].canvas.draw()
         vis['fig'].canvas.flush_events()
+
+        vis['acc'] = acc
+        vis['rms'] = rms
+        vis['fft'] = fft
+        vis['peak'] = pkk
+
+        return vis
 

@@ -1,10 +1,12 @@
 from dataclasses import dataclass, field
 from typing import Literal, Union
 from datetime import datetime
+
 import numpy as np
 import pandas as pd
+from scipy import signal
+
 from path import Path
-import scipy.signal as signal
 import h5py
 
 import vibechecker
@@ -20,7 +22,7 @@ log = vibechecker.get_logger(__name__)
 
 @dataclass
 class AcquisitionSettings:
-    _ns: int = BLOCKSIZES[2]
+    _ns: int = BLOCKSIZES[3]
     _fs: int = SAMPLERATES[0]
     _fm: float = MAXFREQS[3]
     _df: float = BINSIZES[3]
@@ -100,10 +102,10 @@ class AcquisitionSettings:
             log.warning(f'Cannot acheive max frequency {fm} hz. Defaulting to max samplerate {fs}')
 
         self.samplerate = fs
+        self.ensure_binsize(self.binsize)
     
     def ensure_binsize(self, df:float):
-        require_ns = self.samplerate / float(df)
-        
+        require_ns = 2 * int(self.samplerate / float(df))
         self.blocksize = nextpow2(require_ns)
         log.debug(f'Set samplesize to {self.blocksize} hz to achieve {df} hz frequency resolution') 
 
@@ -145,41 +147,6 @@ class VibeSample:
     @property
     def time_vec(self) -> np.ndarray:
         return np.arange(self.blocksize) / self.samplerate
-    
-    def fft(self, config:AcquisitionSettings):
-        if self.blocksize <= 1:
-            # sample too small. Empty?
-            df = pd.DataFrame({'freq':  [0],
-                               'psd':   [0],
-                               'psd_v': [0]}), 
-            return df, [0], 0
-        _, accel = self.get_accel(config)
-        
-        rms = np.sqrt(np.mean(np.pow( accel,2)))
-
-        fs = float(self.samplerate)
-        df = config.binsize
-
-        nperseg = min(self.blocksize, int(fs / df))
-        freq, psd = signal.welch(accel, fs=fs, nperseg=nperseg, scaling='spectrum')
-
-        # Integrate acceleration to velocity
-        with np.errstate(divide='ignore', invalid='ignore'):
-            psd_v = np.abs(psd / (2j * np.pi * freq))
-        psd_v[0] = 0.0  # avoid division by zero at DC
-
-        # normalize to zero-peak units per bin
-        psd = np.sqrt(psd) / 2
-        psd_v = np.sqrt(psd_v) / 2
-
-        df = pd.DataFrame({'freq':freq,
-                           'psd': psd,
-                           'psd_v': psd_v})
-        
-        peaks, _ = signal.find_peaks(psd, distance=min(len(freq)/20, 1))
-        peaks = peaks[np.argsort(-psd[peaks])]
-
-        return df[df.freq<=config.maxfreq], peaks, rms
     
     @classmethod
     def load(cls, h5filename:Path):
@@ -231,49 +198,66 @@ class VibeSample:
         accel = convert_units(self.data, self.unit, config.units)
 
         # Butterworth filter - causes lagg
-        # sos = signal.butter(10, 10, 'hp', fs=self.samplerate, output='sos')
-        # accel = np.ascontiguousarray(signal.sosfiltfilt(sos, accel))
+        # sos = accel.butter(10, 10, 'hp', fs=self.samplerate, output='sos')
+        # accel = np.ascontiguousarray(accel.sosfiltfilt(sos, accel))
 
         # Remove mean
-        accel = accel - accel.mean()
+        # accel = accel - accel.mean()
 
-        return self.time_vec, accel
+        rms = np.sqrt(np.mean(np.square(accel)))
 
-    def get_rms(self, config:AcquisitionSettings):
-        _, accel = self.get_accel(config)
-        return np.sqrt(np.mean(np.pow(accel,2)))
+        tab = {'time': self.time_vec, 'signal': accel}
+        return pd.DataFrame(tab), rms
 
-    # def welch(self, config:AcquisitionSettings):
-    #     _, accel = self.get_accel(config)
-    #     fs = float(self.samplerate)
-    #     df = config.binsize
+    def fft(self, config:AcquisitionSettings):
+        if self.blocksize <= 1:
+            log.error('Attempt to fft an EMPTY sample')
+            return None, None
+        
+        accel, _ = self.get_accel(config)
 
-    #     nperseg = min(self.blocksize, int(fs / df))
-    #     freq, psd = signal.welch(accel, fs=fs, nperseg=nperseg, scaling='spectrum')
+        fs = self.samplerate
+        df = config.binsize
 
-    #     # normalize to zero-peak units per bin
-    #     psd = np.sqrt(psd) / 2
+        nfft = int(fs/df)
+        nperseg = nfft
+        noverlap = min(self.blocksize,int(nperseg / 2)) # 50% overlap
+        freq, acc_spectrum = signal.welch(accel.signal.to_numpy(),
+                                 fs = float(fs),
+                                 window = 'hann',
+                                 nperseg = nperseg,
+                                 noverlap = noverlap,
+                                 nfft = nfft,
+                                 scaling = 'spectrum',
+                                 detrend = 'constant',
+                                 average = 'mean')
 
-    #     # Crop to config window
-    #     iicrop = freq < config.maxfreq
-    #     freq = freq[iicrop]
-    #     psd =  psd[iicrop]
+        # Integrate acceleration to velocity
+        omega = np.square(2*np.pi*freq)
+        omega[0] = np.inf
+        vel_spectrum = acc_spectrum / omega
 
-    #     return freq, psd
+        # with np.errstate(divide='ignore', invalid='ignore'):
+        #     vel_spectrum = np.abs(acc_spectrum / (2*np.pi*freq))
+        #     vel_spectrum[0] = 0.0
+
+        # normalize to rms and zero-peak units per bin
+        acc_rms = np.sqrt(acc_spectrum)
+        vel_rms = np.sqrt(vel_spectrum)
+        acc_0p = acc_rms * np.sqrt(2)
+        vel_0p = vel_rms * np.sqrt(2)
+
+        df = pd.DataFrame({'freq':freq,
+                           'acc_spectrum': acc_spectrum,
+                           'vel_spectrum': vel_spectrum,
+                           'acc_rms': acc_rms,
+                           'vel_rms': vel_rms,
+                           'acc_0p': acc_0p,
+                           'vel_0p': vel_0p})
+        
+        peaks, _ = signal.find_peaks(acc_0p, distance=min(len(freq)/50, 1))
+        peaks = np.array(peaks[np.argsort(-acc_0p[peaks])])
+
+        return df[df.freq<=config.maxfreq], \
+               peaks[freq[peaks]<=config.maxfreq]
     
-    # def integrate_spectrum(self, freq, psd):
-    #     # Integrate acceleration to velocity
-    #     with np.errstate(divide='ignore', invalid='ignore'):
-    #         psd = np.abs(psd / (2j * np.pi * freq))
-    #     psd[0] = 0.0  # avoid division by zero at DC
-    
-    # def get_spectrum(self, config:AcquisitionSettings):
-    #     freq, psd = self.welch(config)
-
-    #     if config.integrate:
-    #         _, psd_v = self.integrate_spectrum(freq,psd)
-
-    #     peaks, props = signal.find_peaks(psd, distance=min(len(freq)/20, 1))
-    #     peaks = peaks[np.argsort(-psd[peaks])]
-    
-    #     return freq, psd, peaks
