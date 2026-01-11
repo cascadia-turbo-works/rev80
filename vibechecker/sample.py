@@ -1,21 +1,22 @@
 from dataclasses import dataclass, field
 from typing import Literal, Union
+from datetime import datetime
 import numpy as np
 import pandas as pd
 from path import Path
 import scipy.signal as signal
 import h5py
 
-from vibechecker.util import BLOCKSIZES, \
-                             SAMPLERATES, \
-                             MAXFREQS, \
-                             BINSIZES, \
-                             SUPPORTED_UNITS, \
-                             convert_units, \
-                             nextpow2
-from vibechecker.logger import get_logger
+import vibechecker
+from vibechecker import BLOCKSIZES, \
+                        SAMPLERATES, \
+                        MAXFREQS, \
+                        BINSIZES, \
+                        SUPPORTED_UNITS, \
+                        convert_units, \
+                        nextpow2
 
-log = get_logger(__name__)
+log = vibechecker.get_logger(__name__)
 
 @dataclass
 class AcquisitionSettings:
@@ -109,17 +110,33 @@ class AcquisitionSettings:
 @dataclass
 class VibeSample:
     status: str
-    timestamp: float
+    _timestamp: datetime
     samplerate: int
     unit: SUPPORTED_UNITS
     data: np.ndarray = field(default_factory=lambda: np.array([0], dtype=np.float64))
+    rel_time: float = field(default=0)
+    label: str = field(default='')
 
     @classmethod
     def empty(cls):
         return VibeSample(status='EMPTY',
-                          timestamp= -1,
+                          _timestamp=datetime.now(),
                           samplerate= -1,
                           unit = 'g')
+    
+    @property
+    def timestamp(self) -> str:
+        return self._timestamp.isoformat()
+    @timestamp.setter
+    def timestamp(self, ts:str|datetime):
+        if isinstance(ts, datetime):
+            self._timestamp = ts
+            return
+        
+        try:
+            self._timestamp = datetime.fromisoformat(ts)
+        except ValueError:
+            log.error(f'VibeSample got invalid iso timestamp {ts}')
 
     @property
     def blocksize(self) -> int:
@@ -130,6 +147,12 @@ class VibeSample:
         return np.arange(self.blocksize) / self.samplerate
     
     def fft(self, config:AcquisitionSettings):
+        if self.blocksize <= 1:
+            # sample too small. Empty?
+            df = pd.DataFrame({'freq':  [0],
+                               'psd':   [0],
+                               'psd_v': [0]}), 
+            return df, [0], 0
         _, accel = self.get_accel(config)
         
         rms = np.sqrt(np.mean(np.pow( accel,2)))
@@ -160,24 +183,46 @@ class VibeSample:
     
     @classmethod
     def load(cls, h5filename:Path):
+        log.debug(f'Loading {h5filename}')
         decode = lambda x: x.decode() if isinstance(x,bytes) else x
         with h5py.File(h5filename, 'r') as f:
             data = {k: decode(v[()]) for k,v in f.items()}
+
+        data['_timestamp'] = datetime.now() # default
+        if 'timestamp' in data.keys():
+            timestamp = data.pop('timestamp')
+            try:
+                data['_timestamp'] = datetime.fromisoformat(timestamp)
+            except TypeError:
+                log.error(f'Failed to parse timestamp {timestamp} in file ')
+        
         return cls(**data) # type: ignore
     
-    def save(self, h5filename:Path):
+    def save(self, h5filename:Path|None=None):
+        if h5filename is None:
+            stem = self.label if self.label else 'vibedata'
+            h5filename = vibechecker.SAVEDIR / (stem + '_' + self.timestamp + vibechecker.EXT)
         with h5py.File(h5filename, 'w') as f:
-            for k in self.__dataclass_fields__.keys():
-                f.create_dataset(k, data=self.__getattribute__(k))
-
+            for key in self.__dataclass_fields__.keys():
+                val = self.__getattribute__(key)
+                if key == '_timestamp':
+                    val = self.timestamp
+                    key = 'timestamp'
+                try:
+                    f.create_dataset(key, data=val)
+                except TypeError as e:
+                    log.error(f'H5 failed to save {key} = {val} ({type(val)})')
+        return h5filename
+    
     def push_sample(self, 
                     status: str, 
-                    timestamp: float,  
+                    rel_time: float,  
                     samplerate: int, 
                     unit:SUPPORTED_UNITS, 
                     data:np.ndarray):
         self.status = status
-        self.timestamp = timestamp
+        self._timestamp = datetime.now()
+        self.rel_time = rel_time
         self.samplerate = samplerate
         self.unit = unit
         self.data = data

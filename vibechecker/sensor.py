@@ -72,23 +72,24 @@ class VibeSensor:
                         callback=self._callback,
                         dtype='float32')
         
-    def _callback(self, sd_data:np.ndarray, frames:int, sd_timestamp, sd_status:str):
+    def _callback(self, sd_data:np.ndarray, frames:int, sd_time, sd_status:str):
         
         # Parse C objects to python
         if isinstance(sd_status, sounddevice.CallbackFlags):
             status = vibechecker.parse_sd_status(sd_status)
         else:
             status = str(sd_status)
-        if str(type(sd_timestamp)) == "<class '_cffi_backend._CDataBase'>":
-            timestamp = sd_timestamp.currentTime
+        if str(type(sd_time)) == "<class '_cffi_backend._CDataBase'>":
+            rel_time = sd_time.currentTime
         else:
-            timestamp = float(sd_timestamp)
+            rel_time = float(sd_time)
 
         # scale data
         data = sd_data.copy() * self.scale
 
         sample = {'status': status,
-                  'timestamp': timestamp,
+                  'rel_time': rel_time,
+                  'timestamp': datetime.now(),
                   'unit': self.unit,
                   'data': data}
         

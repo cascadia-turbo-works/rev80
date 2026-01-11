@@ -66,6 +66,7 @@ class DataCollector:
     @sample.setter
     def sample(self, sample):
         self.data['sample'] = sample
+        self.data['sample_count'] += 1
 
     def connect_sensor(self, sensor:vibechecker.VibeSensor):
         '''
@@ -215,7 +216,7 @@ class DataCollector:
         if target.exists():
             log.warning('Save target exists. Delete existing file before saving.')
             return
-        
+
         self.sample.save(target)
 
     def load_data(self, target:Path):
@@ -252,7 +253,8 @@ class DataCollector:
                                 samp['timestamp'],
                                 self.config.samplerate,
                                 unit,
-                                np.ascontiguousarray(data))
+                                np.ascontiguousarray(data),
+                                samp['rel_time'])
         # self.sample.push_sample(sample['status'],
         #                         sample['timestamp'],
         #                         self.config.samplerate,
@@ -268,7 +270,6 @@ class DataCollector:
             self.sample = sample
             for fn in self.callbacks.values():
                 fn(sample)
-            self.data['sample_count'] += 1
 
     def visualize_init(self, sample:vibechecker.VibeSample):  
         import matplotlib.pyplot as plt      

@@ -65,23 +65,21 @@ def test_stream(dev: vc.VibeSensor):
     vibr = vc.DataCollector(sensor=sens[-1], config=settings)
     
     sample:vc.VibeSample = vibr.collect_sample()
-    last_update_time = sample.timestamp
-    plot_update_period = 0.05
+    plot_update_period = 0.1
     
     vis = vibr.visualize_init(sample)
     # plt.show()
 
     try:
+        vibr.start_data_queue()
         vibr.start_stream()
         for _ in range(100):
             if not plt.fignum_exists(vis['fig'].number):
                 print('Window closed!')
                 break
 
-            if vibr.sample.timestamp >= last_update_time + plot_update_period:
-                vibr.visualize_sample(vibr.sample, vis)
-                plt.pause(plot_update_period)  # force GUI update
-                last_update_time = vibr.sample.timestamp
+            vibr.visualize_sample(vibr.get_data_queue(), vis)
+            # plt.pause(plot_update_period)  # force GUI update
     
     finally:
         vibr.stop_stream()
@@ -116,9 +114,7 @@ def test_save(dev: vc.VibeSensor):
         idiff = np.argwhere(diff != 0)
         raise AssertionError(f'Data differ after load. {idiff}, {diff[idiff]}')
 
-    assert (vs == vs2).all(), 'Data differs after load'
-
-
+    # Touch collector load method
     dc.load_data(file)
 
 def test_gui_build():

@@ -212,15 +212,16 @@ class GUI:
         dpg.set_value(ui.FILE_NAME, data['file_name'])
         self.collector.load_data(self.load_target())
 
+    def set_sample_label(self, sender, data):
+        self.collector.sample.label = data
+        
     def save_target(self) -> Path:
-        name = dpg.get_value(ui.FILE_NAME)
+        name:str = dpg.get_value(ui.FILE_NAME)
 
         if dpg.get_value(ui.FILE_TIMESTAMP):
-            name += '_' + str(dt.now().strftime('%Y-%m-%d_%H-%M-%S'))
+            name += '_' + dt.now().isoformat()
 
-        name += vibechecker.EXT
-
-        return Path.joinpath(vibechecker.SAVEDIR, name)
+        return (vibechecker.SAVEDIR / name).with_suffix(vibechecker.EXT)
     
     def load_target(self) -> Path:
         name = dpg.get_value(ui.FILE_NAME)
@@ -277,7 +278,7 @@ class GUI:
                             dpg.add_button(label=u'Single', tag=ui.ACQ_SINGLE, callback=self.collect_sample)
 
                             with dpg.group(horizontal=True):
-                                dpg.add_input_text(label='', tag=ui.FILE_NAME)
+                                dpg.add_input_text(label='', tag=ui.FILE_NAME, callback=self.set_sample_label)
                                 dpg.add_button(label='browse..', callback=lambda: dpg.show_item(ui.FILE_DIALOG)) # TODO, implement file browsing
                             dpg.add_checkbox(label='timestamp', tag=ui.FILE_TIMESTAMP)
                             
