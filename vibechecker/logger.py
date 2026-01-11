@@ -6,7 +6,7 @@ import platform
 import yaml
 import logging.config
 
-def setup_logging(config_path="logging.yaml"):
+def setup_logging(config_path="logging.yaml", debug:bool=False):
 
     # load logging config
     if not os.path.exists(config_path):
@@ -25,6 +25,9 @@ def setup_logging(config_path="logging.yaml"):
         if fname:
             os.makedirs(os.path.dirname(fname), exist_ok=True)
 
+    if debug:
+        config['handlers']['console']['level'] = logging.DEBUG
+        
     # setup config
     logging.config.dictConfig(config)
 

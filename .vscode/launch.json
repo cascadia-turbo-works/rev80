@@ -9,6 +9,7 @@
             "type": "debugpy",
             "request": "launch",
             "module": "vibechecker",
+            "args": "--debug",
             "console": "integratedTerminal"
         }
     ]
