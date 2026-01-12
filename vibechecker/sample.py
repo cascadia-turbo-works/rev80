@@ -168,7 +168,8 @@ class VibeSample:
     def save(self, h5filename:Path|None=None):
         if h5filename is None:
             stem = self.label if self.label else 'vibedata'
-            h5filename = vibechecker.SAVEDIR / (stem + '_' + self.timestamp + vibechecker.EXT)
+            ts = self._timestamp.isoformat().replace(':','-')
+            h5filename = vibechecker.SAVEDIR / (stem + '_' + ts + vibechecker.EXT)
         with h5py.File(h5filename, 'w') as f:
             for key in self.__dataclass_fields__.keys():
                 val = self.__getattribute__(key)
@@ -204,7 +205,7 @@ class VibeSample:
         # Remove mean
         # accel = accel - accel.mean()
 
-        rms = np.sqrt(np.mean(np.square(accel)))
+        rms = np.sqrt(np.mean(np.square(accel))) * np.sqrt(2)
 
         tab = {'time': self.time_vec, 'signal': accel}
         return pd.DataFrame(tab), rms

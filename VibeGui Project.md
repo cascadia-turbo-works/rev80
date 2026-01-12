@@ -183,3 +183,17 @@ Future
 
 - [MCC USB-1608FS-Plus](https://digilent.com/shop/mcc-usb-1608fs-plus-simultaneous-usb-daq-device/): Simultaneous USB DAQ Device
   = $459.00
+
+## Meeting 2026-01-11
+
+DAQ: Purchased Option 4
+
+Vibegui:
+
+- added overall 0-P vibration (acc and vel)
+  - Add trend should be easy now.
+  - #TODO confirm overall values are right. Sometimes OVERALL is greater than single peaks
+- Bin selecter behaves poorly
+- Changed timestamp format in sample.save to replace ':' (invalid on FAT32 system)
+- UI/UX, language and jargon should match Alta
+- Demo screenshots for website

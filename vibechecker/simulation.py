@@ -99,7 +99,7 @@ class SimulatedSensor:
     def _sample(self):
         # HACK: to acomplish FFT units testing
         args = self.source[1:] if len(self.source)>1 else []
-        signal = self.source[0].__call__(self.config, *args)
+        signal = self.source[0].__call__(self.config, *args) # type: ignore
 
         data = np.tile(signal, (max(self.config.channel,N_CHANNELS),1)).T
         return data

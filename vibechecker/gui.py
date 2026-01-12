@@ -63,21 +63,23 @@ class GUI:
         freq = fft.freq.to_numpy()
 
         if self.collector.config.integrate:
-            psd = fft.vel_0p.to_numpy()
+            signal = fft.vel_0p.to_numpy()
         else:
-            psd = fft.acc_0p.to_numpy()
+            signal = fft.acc_0p.to_numpy()
 
+        overall = np.sqrt(np.sum(np.square(signal))) * np.sqrt(2)/2
 
-        dpg.set_value(ui.PLT_FREQ_DATA, [freq, psd])
+        dpg.set_value(ui.PLT_FREQ_DATA, [freq, signal])
+        dpg.set_value(ui.PLT_SAMPLE_OVERALL, f'{overall:.4f}')
         dpg.set_axis_limits(ui.PLT_FREQ_AX_FREQ, freq[0], freq[-1])
-        dpg.set_axis_limits(ui.PLT_FREQ_AX_ACCEL, 0, 1.05 * np.max(psd))
+        dpg.set_axis_limits(ui.PLT_FREQ_AX_ACCEL, 0, 1.05 * np.max(signal))
 
         # Draw peaks
         peak_limit = dpg.get_value(ui.FFT_PEAKS_DISPLAY_COUNT)
         fft_disp = fft[['freq','acc_0p', 'vel_0p']].loc[peaks[:peak_limit]]
         fft_disp.columns = [f'Frequency (hz)',
-                            f'Acceleration {sample.unit} 0-P',
-                            f'Velocity {sample.unit} 0-P']
+                            f'Acceleration {self.collector.config.units} 0-P',
+                            f'Velocity {self.collector.config.units} 0-P']
 
         dpg.set_value(ui.PLT_FREQ_PEAKS, [freq[peaks[:peak_limit]]])
         self.update_fft_peaks_table(fft_disp)
@@ -203,7 +205,8 @@ class GUI:
         
         log.info(f'Trigger single sample with {self.collector.sensor}')
         sample = self.collector.collect_sample()
-        self.display_sample(sample)
+        if sample is not None:
+            self.display_sample(sample)
 
     def browser_handler(self, sender, data):
         # example data:
@@ -259,7 +262,7 @@ class GUI:
                             dpg.add_text('Select Device')
                             dpg.add_combo(label='Device Select', tag=ui.SENSOR_SELECTOR, items=['<Trigger Refresh>'], callback=self.connect_sensor)
                             with dpg.group(horizontal=True):
-                                dpg.add_button(label='⟳', tag=ui.SENSOR_REFRESH, callback=self.refresh_sensors)
+                                dpg.add_button(label='Refresh', tag=ui.SENSOR_REFRESH, callback=self.refresh_sensors)
                                 dpg.add_button(label='Connect', tag=ui.SENSOR_CONNECT, callback=self.connect_sensor)
                                 dpg.add_button(label='Disconnect', tag=ui.SENSOR_DISCONNECT, callback=self.disconnect_sensor)
 
@@ -335,7 +338,8 @@ class GUI:
                     dpg.add_combo(label='Sample Integration', tag=ui.ACQ_INTEGRATE, callback=self.update_streaming_config,
                                     items=['Velocity', 'Acceleration'], default_value='Acceleration')
 
-                    
+                    dpg.add_input_text(label='Overall Vibration 0-P', tag = ui.PLT_SAMPLE_OVERALL,
+                                        default_value='0.0')
                     dpg.add_table(header_row=True, row_background=True, borders_innerV=True,
                                    no_host_extendX=True, tag=ui.FFT_PEAKS_TABLE)
                     dpg.add_text('', tag=ui.DEBUG_TXT)
