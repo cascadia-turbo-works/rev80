@@ -29,6 +29,7 @@ class AcquisitionSettings:
     channel: int = 0
     units: SUPPORTED_UNITS = 'g'
     integrate: bool = False
+    oversample: int = 2
     butter_fc: float | None = 10
 
     @classmethod
@@ -67,7 +68,7 @@ class AcquisitionSettings:
 
     @property
     def binsize(self) -> float:
-        require_df = self.samplerate / self.blocksize
+        require_df = self.oversample * self.samplerate / self.blocksize
         if require_df > self._df:
             return self._df
         
@@ -92,7 +93,6 @@ class AcquisitionSettings:
     def time_vec(self) -> np.ndarray:
         return np.arange(self.blocksize) * self.sampleperiod
 
-    
     def ensure_maxfreq(self, fm: float):
         require_fs = 2 * float(fm)
         try:
@@ -105,7 +105,7 @@ class AcquisitionSettings:
         self.ensure_binsize(self.binsize)
     
     def ensure_binsize(self, df:float):
-        require_ns = 2 * int(self.samplerate / float(df))
+        require_ns = self.oversample * int(self.samplerate / float(df))
         self.blocksize = nextpow2(require_ns)
         log.debug(f'Set samplesize to {self.blocksize} hz to achieve {df} hz frequency resolution') 
 
