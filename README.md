@@ -1,6 +1,6 @@
 # vibechecker
 
-A Python desktop application for capturing, analyzing, and recording vibration data from industrial rotating equipment. Designed for predictive maintenance workflows using MEMS accelerometers connected via USB audio interfaces (Digiducer) or USB DAQ hardware.
+A Python desktop application for capturing, analyzing, and recording vibration data from industrial rotating equipment. Designed for predictive maintenance workflows using MEMS accelerometers and voltage-output sensors connected via USB oscilloscopes (PicoScope 4000A series) or USB audio interfaces (Digiducer legacy).
 
 ---
 
@@ -17,6 +17,7 @@ A Python desktop application for capturing, analyzing, and recording vibration d
 - [Simulated Sensor](#simulated-sensor)
 - [Data Storage](#data-storage)
 - [Configuration](#configuration)
+- [PicoScope Integration](#picoscope-integration)
 - [Testing](#testing)
 
 ---
@@ -272,6 +273,65 @@ HDF5 datasets stored per file: `data`, `samplerate`, `unit`, `timestamp`, `rel_t
 No persistent config file — settings live in the `AcquisitionSettings` object and are reset on each launch. Hardware is auto-detected via `VibeSensor.find()` on startup; device selection and all acquisition parameters are adjustable from the GUI sidebar.
 
 Logging is configured via `logging.yaml` in the project root. Log files are written to `log/`.
+
+---
+
+## PicoScope Integration
+
+> **Branch:** `feature/picoscope` — replaces the Digiducer/sounddevice acquisition layer with
+> a PicoScope 4000A backend. This enables any voltage-output sensor (ICP accelerometers,
+> proximity probes, microphones) to stream through the same pipeline.
+
+### Architecture change
+
+`digiducer.py` / `sounddevice.InputStream` are replaced by two new components in
+`vibechecker/picoscope.py`:
+
+| Component | Role |
+| --- | --- |
+| `FindPicoScope()` | Enumerates connected PS4000A units; returns dicts compatible with `VibeSensor` |
+| `PicoScopeStream` | Background polling thread — wraps `ps4000aRunStreaming`, accumulates ADC chunks, fires `DataCollector.recieve_data` with `blocksize`-aligned blocks |
+
+`VibeSensor.find()` now calls `FindPicoScope()` instead of `FindDigiducer()`. No changes are
+required in `DataCollector`, `VibeSample`, or the GUI.
+
+### New `AcquisitionSettings` fields
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `voltage_range` | `8` (PS4000A_5V) | PS4000A range index passed to `ps4000aSetChannel` and `adc2mV` |
+| `coupling` | `'AC'` | `'AC'` or `'DC'` — Channel A input coupling |
+
+### Data flow (Phase 1 — raw voltage)
+
+```text
+PicoScopeStream (polling thread)
+  ps4000aRunStreaming → streaming_callback
+  ADC counts → mV (adc2mV) → accumulator
+  accumulator flush → callback(dict)  unit=['mV']
+        ↓
+DataCollector.recieve_data   (unchanged)
+        ↓
+VibeSample  unit='mV'        (unchanged)
+        ↓
+GUI plots in mV              (unchanged)
+```
+
+### Phase 2 roadmap (not yet implemented)
+
+- `SensorConfig` dataclass: sensitivity (mV/EU), modality (acceleration / velocity / displacement), engineering unit
+- Sensitivity applied in `DataCollector.recieve_data` to convert mV → g / mm / in before `VibeSample` is created
+- GUI sensor library panel to save/load sensor configurations as JSON
+- `butter_fc` default driven by modality (`None` for proximity probes, `10 Hz` for accelerometers)
+
+### Dependencies
+
+```bash
+pip install picosdk
+```
+
+The `picosdk` package must be installed and the PicoScope 4000A driver (`ps4000a.dll` / `.so`)
+must be present on the system path.
 
 ---
 

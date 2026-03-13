@@ -1,17 +1,19 @@
 import numpy as np
 from path import Path
 from typing import Union, Literal
-import sounddevice
 
-SAMPLERATES = [8_000, 11_050, 16_000, 22_100, 32_000, 44_100, 48_000]
+# Audio interface rates + PicoScope-relevant rates (100 kHz – 1 MHz)
+SAMPLERATES = [8_000, 11_050, 16_000, 22_100, 32_000, 44_100, 48_000,
+               100_000, 200_000, 500_000, 1_000_000]
 BLOCKSIZES = list(map(int,np.pow(2, np.arange(8,18))))
 MAXFREQS = [2e2, 5e2, 1e3, 2e3, 5e3, 1e4, 2e4, 2.4e4]
 BINSIZES = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0]
 
-SUPPORTED_UNITS = Literal["g", "mm", "in"]
+SUPPORTED_UNITS = Literal["g", "mm", "in", "mV"]
 UNITS = {'Earth Gravity - g': 'g',
          'Metric - mm': 'mm',
-         'Imperial - in': 'in'}
+         'Imperial - in': 'in',
+         'Voltage - mV': 'mV'}
 UNITS_REV = {v:k for k,v in UNITS.items()}
 
 UNIT_CONVERSION = {
@@ -40,7 +42,7 @@ def nextpow2(x:int) -> int:
     # calculate the next power of two above some number x
     return int( 2**np.ceil(np.log2(x)))
 
-def parse_sd_status(sd_status:sounddevice.CallbackFlags):
+def parse_sd_status(sd_status):
     '''
     Parse sounddevice callbackflags objet to string
     

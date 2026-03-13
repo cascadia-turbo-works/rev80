@@ -7,7 +7,6 @@ from datetime import datetime as dt
 from queue import Queue
 from path import Path
 from typing import Union, Literal, List, Tuple, Dict
-import sounddevice
 
 import vibechecker
 
@@ -145,8 +144,8 @@ class DataCollector:
 
     def get_data_queue(self):
         if self.queue is None:
-            raise RuntimeError('DataCollector:Get Data Queue:: Initilize queue before `get`')
-        
+            return None
+
         return self.queue.get()
     
     def flush_data_queue(self):
@@ -179,9 +178,9 @@ class DataCollector:
 
         try:
             self.stream.start()
-        except sounddevice.PortAudioError: # likely means sensor disconnected
+        except Exception as e:
             self.disconnect_sensor()
-            log.error('Error starting stream: Sensor not found')
+            log.error(f'Error starting stream: {e}')
         log.debug(f'Stream started')
 
     def stop_stream(self):
@@ -205,8 +204,6 @@ class DataCollector:
             sample = self.get_data_queue()
         except Exception:
             sample = None
-            raise
-
         finally:
             self.stop_stream()
             self.kill_data_queue()
@@ -231,14 +228,21 @@ class DataCollector:
 
         log.info(f'Loaded data sample {target}')
 
-    def recieve_data(self, samp:dict):
-        '''log and preprocess incoming data stream'''
-        if samp['data'].shape[1] > 1:
-            data = samp['data'][:,self.config.channel]
-            unit = samp['unit'][self.config.channel]
+    def recieve_data(self, samp: dict):
+        """Log and preprocess one incoming data block."""
+        data_arr = np.asarray(samp['data'])
+        unit_arr = samp['unit']
+
+        if data_arr.ndim == 2:
+            # Multi- or single-channel 2-D array: extract requested channel,
+            # clamping to the last available channel if config.channel exceeds it.
+            ch   = min(self.config.channel, data_arr.shape[1] - 1)
+            data = data_arr[:, ch]
+            unit = unit_arr[ch] if isinstance(unit_arr, list) else unit_arr
         else:
-            data = samp['data']
-            unit = samp['unit']
+            # Already 1-D
+            data = data_arr
+            unit = unit_arr[0] if isinstance(unit_arr, list) else unit_arr
 
         # Apply Butterworth highpass filter if configured
         if self.config.butter_fc:

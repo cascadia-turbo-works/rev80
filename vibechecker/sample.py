@@ -31,6 +31,9 @@ class AcquisitionSettings:
     integrate: bool = False
     oversample: int = 2
     butter_fc: float | None = 10
+    # PicoScope channel settings (ignored by sounddevice / SimulatedSensor paths)
+    voltage_range: int = 8    # PS4000A range index: 8 = PS4000A_5V (±5 V)
+    coupling: str = 'AC'      # 'AC' or 'DC'
 
     @classmethod
     def copy(cls, settings):
@@ -195,8 +198,13 @@ class VibeSample:
         self.unit = unit
         self.data = data
 
-    def get_accel(self, config:AcquisitionSettings):
-        accel = convert_units(self.data, self.unit, config.units)
+    def get_accel(self, config: AcquisitionSettings):
+        try:
+            accel = convert_units(self.data, self.unit, config.units)
+        except ValueError:
+            # Conversion not defined (e.g. 'mV' → 'g' before sensitivity is applied).
+            # Pass through raw data — Phase 2 will apply proper EU conversion.
+            accel = self.data
 
         # Butterworth filter - causes lagg
         # sos = accel.butter(10, 10, 'hp', fs=self.samplerate, output='sos')
