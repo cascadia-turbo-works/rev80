@@ -36,6 +36,52 @@ _PICO_BATCH_AND_SERIAL  = 4   # batch + serial string e.g. "CMY12/345"
 # Rolling driver buffer size (samples). Independent of blocksize.
 _DRIVER_BUFFER_SAMPLES = 1000
 
+# Device open / reconnect tuning
+_MAX_OPEN_ATTEMPTS      = 3     # retries for ps4000aOpenUnit at detection / start
+_OPEN_RETRY_DELAY_S     = 0.5   # seconds between open attempts
+
+# Streaming watchdog / recovery tuning
+_WATCHDOG_TIMEOUT_S     = 5.0   # seconds of silence → assume device hung
+_MAX_RECONNECT_ATTEMPTS = 3     # recovery attempts before giving up
+_OVERFLOW_LOG_INTERVAL  = 2.0   # minimum seconds between overflow log lines
+
+
+def _open_unit(chandle) -> bool:
+    """
+    Call ps4000aOpenUnit with USB-2 power-source handling and up to
+    _MAX_OPEN_ATTEMPTS retries.  Returns True on success, False on failure.
+    Leaves chandle populated on success.
+    """
+    for attempt in range(1, _MAX_OPEN_ATTEMPTS + 1):
+        raw_status = ps.ps4000aOpenUnit(ctypes.byref(chandle), None)
+
+        if raw_status in (282, 286):
+            # 282 = PICO_USB3_0_DEVICE_NON_USB3_0_PORT
+            # 286 = PICO_POWER_SUPPLY_NOT_CONNECTED
+            chg = ps.ps4000aChangePowerSource(chandle, raw_status)
+            try:
+                assert_pico_ok(chg)
+                return True
+            except Exception as e:
+                log.warning(
+                    f'PicoScope: power-source change failed '
+                    f'(attempt {attempt}/{_MAX_OPEN_ATTEMPTS}, open_status={raw_status}): {e}'
+                )
+        else:
+            try:
+                assert_pico_ok(raw_status)
+                return True
+            except Exception as e:
+                log.info(
+                    f'PicoScope: open failed '
+                    f'(attempt {attempt}/{_MAX_OPEN_ATTEMPTS}, status={raw_status}): {e}'
+                )
+
+        if attempt < _MAX_OPEN_ATTEMPTS:
+            time.sleep(_OPEN_RETRY_DELAY_S)
+
+    return False
+
 
 def FindPicoScope() -> list:
     """
@@ -45,22 +91,9 @@ def FindPicoScope() -> list:
     detected unit.  Returns an empty list if no scope is found (does not raise).
     """
     chandle = ctypes.c_int16()
-    raw_status = ps.ps4000aOpenUnit(ctypes.byref(chandle), None)
-
-    # Handle USB-only / non-USB3 power states before checking status
-    if raw_status in (282, 286):
-        chg = ps.ps4000aChangePowerSource(chandle, raw_status)
-        try:
-            assert_pico_ok(chg)
-        except Exception as e:
-            log.warning(f'FindPicoScope: power source change failed: {e}')
-            return []
-    else:
-        try:
-            assert_pico_ok(raw_status)
-        except Exception as e:
-            log.info(f'FindPicoScope: no scope found ({e})')
-            return []
+    if not _open_unit(chandle):
+        log.info('FindPicoScope: no scope detected after retries')
+        return []
 
     def _query_info(info_id: int) -> str:
         buf      = ctypes.create_string_buffer(32)
@@ -99,6 +132,14 @@ class PicoScopeStream:
 
     The app callback receives a dict matching DataCollector.recieve_data's
     expected format on every accumulated blocksize-worth of samples.
+
+    Resilience features
+    -------------------
+    * OpenUnit is retried up to _MAX_OPEN_ATTEMPTS times on transient failures.
+    * A watchdog in the poll loop detects data-silent hangs (e.g. after
+      overvoltage) and triggers an automatic stop/reopen/restart recovery cycle.
+    * ADC overflow (signal clipping) is logged at WARNING level, rate-limited
+      to one line per _OVERFLOW_LOG_INTERVAL seconds.
     """
 
     def __init__(self, config, callback, siggen_config: dict | None = None):
@@ -134,6 +175,11 @@ class PicoScopeStream:
         self._acc_ptr       = 0
         self._stream_start  = 0.0
 
+        # Watchdog: updated by _streaming_callback whenever data arrives
+        self._last_data_time    = 0.0
+        # Rate-limit overflow warnings
+        self._last_overflow_log = 0.0
+
     # ------------------------------------------------------------------
     # Public interface
     # ------------------------------------------------------------------
@@ -151,10 +197,11 @@ class PicoScopeStream:
         self._configure_channel()
         self._start_streaming()
 
-        # Reset accumulator state
-        self._acc_ptr      = 0
-        self._accumulator  = np.zeros(self.config.blocksize * 2, dtype=np.float64)
-        self._stream_start = time.monotonic()
+        # Reset accumulator and watchdog state
+        self._acc_ptr        = 0
+        self._accumulator    = np.zeros(self.config.blocksize * 2, dtype=np.float64)
+        self._stream_start   = time.monotonic()
+        self._last_data_time = time.monotonic()
 
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._poll_loop, daemon=True,
@@ -193,18 +240,16 @@ class PicoScopeStream:
         log.debug('PicoScopeStream closed')
 
     # ------------------------------------------------------------------
-    # Device setup (called from start())
+    # Device setup (called from start() and _try_recover())
     # ------------------------------------------------------------------
 
     def _open_device(self):
         if self._device_open:
             return
-        raw_status = ps.ps4000aOpenUnit(ctypes.byref(self._chandle), None)
-        if raw_status in (282, 286):
-            assert_pico_ok(ps.ps4000aChangePowerSource(self._chandle, raw_status))
-        else:
-            assert_pico_ok(raw_status)
-
+        if not _open_unit(self._chandle):
+            raise RuntimeError(
+                f'PicoScope: could not open device after {_MAX_OPEN_ATTEMPTS} attempts'
+            )
         assert_pico_ok(ps.ps4000aMaximumValue(self._chandle,
                                                ctypes.byref(self._maxADC)))
         self._device_open = True
@@ -221,7 +266,7 @@ class PicoScopeStream:
             ps.PS4000A_CHANNEL['PS4000A_CHANNEL_A'],
             1,                               # enabled
             coupling,
-            self.config.voltage_range,       # range index (e.g. 8 = PS4000A_5V)
+            self.config.voltage_range,       # range index (e.g. 10 = PS4000A_20V)
             0.0,                             # analogue offset
         ))
 
@@ -307,6 +352,20 @@ class PicoScopeStream:
         if noOfSamples == 0:
             return
 
+        # Watchdog heartbeat
+        self._last_data_time = time.monotonic()
+
+        # Log ADC overflow (signal exceeds voltage range), rate-limited
+        if overflow:
+            now = time.monotonic()
+            if now - self._last_overflow_log >= _OVERFLOW_LOG_INTERVAL:
+                log.warning(
+                    f'PicoScopeStream: ADC overflow — signal exceeds ±'
+                    f'{ps.PICO_VOLTAGE_RANGE.get(self.config.voltage_range, "?")}V range; '
+                    f'data clipped'
+                )
+                self._last_overflow_log = now
+
         # Convert ADC counts → mV for this chunk
         chunk_adc = self._driver_buffer[startIndex:startIndex + noOfSamples]
         chunk_mv  = np.array(
@@ -346,18 +405,79 @@ class PicoScopeStream:
             except Exception as e:
                 log.error(f'PicoScopeStream: app callback error: {e}')
 
+    def _try_recover(self) -> bool:
+        """
+        Attempt to stop, close, reopen, and restart streaming after a hang or
+        driver error.  Returns True if streaming was successfully restarted.
+        """
+        log.warning('PicoScopeStream: attempting recovery...')
+
+        # Tear down current state
+        try:
+            ps.ps4000aStop(self._chandle)
+        except Exception:
+            pass
+        try:
+            ps.ps4000aCloseUnit(self._chandle)
+        except Exception:
+            pass
+        self._device_open = False
+
+        for attempt in range(1, _MAX_RECONNECT_ATTEMPTS + 1):
+            log.info(f'PicoScopeStream: reconnect attempt '
+                     f'{attempt}/{_MAX_RECONNECT_ATTEMPTS}')
+            time.sleep(1.0)
+            try:
+                self._open_device()
+                self._configure_channel()
+                self._start_streaming()
+                # Reset accumulator so stale partial data isn't carried forward
+                self._acc_ptr        = 0
+                self._accumulator    = np.zeros(self.config.blocksize * 2,
+                                                dtype=np.float64)
+                self._last_data_time = time.monotonic()
+                log.info('PicoScopeStream: recovery successful')
+                return True
+            except Exception as e:
+                log.warning(f'PicoScopeStream: reconnect attempt {attempt} failed: {e}')
+
+        log.error(
+            f'PicoScopeStream: recovery failed after {_MAX_RECONNECT_ATTEMPTS} attempts'
+        )
+        return False
+
     def _poll_loop(self):
         """Background thread: poll driver for new streaming data."""
         c_func_ptr = ps.StreamingReadyType(self._streaming_callback)
         log.debug('PicoScopeStream poll loop started')
 
         while not self._stop_event.is_set():
+            # Poll the driver
             try:
                 ps.ps4000aGetStreamingLatestValues(self._chandle, c_func_ptr, None)
             except Exception as e:
                 log.error(f'PicoScopeStream: GetStreamingLatestValues error: {e}')
-                self._active = False
-                break
+                if not self._try_recover():
+                    self._active = False
+                    break
+                # Recovery re-registered buffers; rebuild the C callback pointer
+                c_func_ptr = ps.StreamingReadyType(self._streaming_callback)
+                continue
+
+            # Watchdog: if the callback hasn't fired in a while, the device
+            # has silently stopped (e.g. internal reset after overvoltage).
+            silent_s = time.monotonic() - self._last_data_time
+            if silent_s > _WATCHDOG_TIMEOUT_S:
+                log.error(
+                    f'PicoScopeStream: no data for {silent_s:.1f}s — '
+                    f'device appears hung, triggering recovery'
+                )
+                if not self._try_recover():
+                    self._active = False
+                    break
+                c_func_ptr = ps.StreamingReadyType(self._streaming_callback)
+                continue
+
             time.sleep(0.001)
 
         log.debug('PicoScopeStream poll loop exited')

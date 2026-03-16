@@ -32,7 +32,7 @@ class AcquisitionSettings:
     oversample: int = 2
     butter_fc: float | None = 10
     # PicoScope channel settings (ignored by sounddevice / SimulatedSensor paths)
-    voltage_range: int = 8    # PS4000A range index: 8 = PS4000A_5V (±5 V)
+    voltage_range: int = 10   # PS4000A range index: 10 = PS4000A_20V (±20 V, hardware max)
     coupling: str = 'AC'      # 'AC' or 'DC'
 
     @classmethod
