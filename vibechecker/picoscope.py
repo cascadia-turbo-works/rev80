@@ -37,8 +37,9 @@ _PICO_BATCH_AND_SERIAL  = 4   # batch + serial string e.g. "CMY12/345"
 _DRIVER_BUFFER_SAMPLES = 1000
 
 # Device open / reconnect tuning
-_MAX_OPEN_ATTEMPTS      = 3     # retries for ps4000aOpenUnit at detection / start
-_OPEN_RETRY_DELAY_S     = 0.5   # seconds between open attempts
+_MAX_OPEN_ATTEMPTS      = 5     # retries for ps4000aOpenUnit at detection / start
+_OPEN_RETRY_DELAY_S     = 1.0   # seconds between open attempts
+_NOT_RESPONDING_DELAY_S = 2.0   # longer pause after PICO_NOT_RESPONDING (device resetting)
 
 # Streaming watchdog / recovery tuning
 _WATCHDOG_TIMEOUT_S     = 5.0   # seconds of silence → assume device hung
@@ -51,13 +52,21 @@ def _open_unit(chandle) -> bool:
     Call ps4000aOpenUnit with USB-2 power-source handling and up to
     _MAX_OPEN_ATTEMPTS retries.  Returns True on success, False on failure.
     Leaves chandle populated on success.
+
+    After any partially-successful open (status 282/286), the driver holds
+    the handle open even if ChangePowerSource fails.  We must call CloseUnit
+    before retrying, otherwise subsequent OpenUnit calls return PICO_NOT_FOUND.
     """
+    # PICO_NOT_RESPONDING status value (14 = 0x0E hex in picosdk error table)
+    _PICO_NOT_RESPONDING = 14
+
     for attempt in range(1, _MAX_OPEN_ATTEMPTS + 1):
         raw_status = ps.ps4000aOpenUnit(ctypes.byref(chandle), None)
 
         if raw_status in (282, 286):
             # 282 = PICO_USB3_0_DEVICE_NON_USB3_0_PORT
             # 286 = PICO_POWER_SUPPLY_NOT_CONNECTED
+            # Device was found but needs to be told to run on USB power only.
             chg = ps.ps4000aChangePowerSource(chandle, raw_status)
             try:
                 assert_pico_ok(chg)
@@ -67,6 +76,12 @@ def _open_unit(chandle) -> bool:
                     f'PicoScope: power-source change failed '
                     f'(attempt {attempt}/{_MAX_OPEN_ATTEMPTS}, open_status={raw_status}): {e}'
                 )
+                # Release the partially-open handle so the next OpenUnit succeeds.
+                try:
+                    ps.ps4000aCloseUnit(chandle)
+                except Exception:
+                    pass
+                delay = _NOT_RESPONDING_DELAY_S if chg == _PICO_NOT_RESPONDING else _OPEN_RETRY_DELAY_S
         else:
             try:
                 assert_pico_ok(raw_status)
@@ -76,9 +91,10 @@ def _open_unit(chandle) -> bool:
                     f'PicoScope: open failed '
                     f'(attempt {attempt}/{_MAX_OPEN_ATTEMPTS}, status={raw_status}): {e}'
                 )
+            delay = _OPEN_RETRY_DELAY_S
 
         if attempt < _MAX_OPEN_ATTEMPTS:
-            time.sleep(_OPEN_RETRY_DELAY_S)
+            time.sleep(delay)
 
     return False
 
