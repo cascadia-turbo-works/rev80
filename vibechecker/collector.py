@@ -9,6 +9,7 @@ from path import Path
 from typing import Union, Literal, List, Tuple, Dict
 
 import vibechecker
+from vibechecker.scope_sensor import ScopeSensor
 
 log = vibechecker.get_logger('collector')
 ui = vibechecker.UI_Elements()
@@ -27,8 +28,8 @@ class DataCollector:
     data: Dict = {}
     callbacks: Dict = {}
 
-    def __init__(self, 
-                 sensor: Union[vibechecker.VibeSensor, None] = None, 
+    def __init__(self,
+                 sensor: Union[vibechecker.VibeSensor, None] = None,
                  config: Union[vibechecker.AcquisitionSettings,None] = None):
 
         if config:
@@ -37,10 +38,19 @@ class DataCollector:
             # default settings
             self.config = vibechecker.AcquisitionSettings()
 
+        self.scope_sensors: dict[int, ScopeSensor] = {}
+
         if sensor is not None:
             self.connect_sensor(sensor)
 
         self.reset_data_store()
+
+    def set_scope_sensor(self, channel: int, sensor: ScopeSensor | None) -> None:
+        """Assign or clear a ScopeSensor on a PicoScope channel for mV→EU conversion."""
+        if sensor is None:
+            self.scope_sensors.pop(channel, None)
+        else:
+            self.scope_sensors[channel] = sensor
 
     @property
     def is_streaming(self):
@@ -68,7 +78,8 @@ class DataCollector:
         self.data['sample'] = sample
         self.data['sample_count'] += 1
 
-    def connect_sensor(self, sensor:vibechecker.VibeSensor):
+    def connect_sensor(self, sensor: vibechecker.VibeSensor,
+                       siggen_config: dict | None = None):
         '''
         Connect to the device and return a stream object
         '''
@@ -78,13 +89,14 @@ class DataCollector:
         if self.stream is not None or self.sensor is not None:
             # Disconnect any connected sensor first
             self.disconnect_sensor()
-        
+
         if self.config is None:
             log.error(f'Attempted to connect sensor {self.sensor} but no configuration implemented')
             return
-        
+
         self.sensor = sensor
-        self.stream = self.sensor.connect(self.config, self.recieve_data)
+        self.stream = self.sensor.connect(self.config, self.recieve_data,
+                                           siggen_config=siggen_config)
         log.debug(f'Connected sensor {self.sensor})')
 
     def disconnect_sensor(self):
@@ -241,8 +253,16 @@ class DataCollector:
             unit = unit_arr[ch] if isinstance(unit_arr, list) else unit_arr
         else:
             # Already 1-D
+            ch   = 0
             data = data_arr
             unit = unit_arr[0] if isinstance(unit_arr, list) else unit_arr
+
+        # Apply ScopeSensor mV → EU scaling if a sensor is assigned to this channel
+        if unit == 'mV':
+            scope_sensor = self.scope_sensors.get(ch)
+            if scope_sensor is not None:
+                data = np.asarray(data, dtype=np.float64) * scope_sensor.sensitivity
+                unit = scope_sensor.engineering_units
 
         # Apply Butterworth highpass filter if configured
         if self.config.butter_fc:

@@ -101,7 +101,7 @@ class PicoScopeStream:
     expected format on every accumulated blocksize-worth of samples.
     """
 
-    def __init__(self, config, callback):
+    def __init__(self, config, callback, siggen_config: dict | None = None):
         """
         Parameters
         ----------
@@ -109,13 +109,20 @@ class PicoScopeStream:
             Provides samplerate, blocksize, voltage_range, coupling.
         callback : callable
             DataCollector.recieve_data — called with sample dict on each block.
+        siggen_config : dict | None
+            Optional signal generator parameters applied on every start().
+            Keys: freq_hz (float), pktopk_uv (int), offset_uv (int),
+                  wave_type (str, default 'PS4000A_SINE').
+            Intended for hardware testing (siggen loopback) and calibration.
         """
         self.config        = config
         self._app_callback = callback
+        self._siggen_config = siggen_config
 
         self._chandle      = ctypes.c_int16()
         self._maxADC       = ctypes.c_int16()
         self._active       = False
+        self._device_open  = False
         self._stop_event   = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -177,10 +184,12 @@ class PicoScopeStream:
     def close(self):
         if self._active:
             self.stop()
-        try:
-            ps.ps4000aCloseUnit(self._chandle)
-        except Exception as e:
-            log.warning(f'PicoScopeStream: ps4000aCloseUnit error: {e}')
+        if self._device_open:
+            try:
+                ps.ps4000aCloseUnit(self._chandle)
+            except Exception as e:
+                log.warning(f'PicoScopeStream: ps4000aCloseUnit error: {e}')
+            self._device_open = False
         log.debug('PicoScopeStream closed')
 
     # ------------------------------------------------------------------
@@ -188,6 +197,8 @@ class PicoScopeStream:
     # ------------------------------------------------------------------
 
     def _open_device(self):
+        if self._device_open:
+            return
         raw_status = ps.ps4000aOpenUnit(ctypes.byref(self._chandle), None)
         if raw_status in (282, 286):
             assert_pico_ok(ps.ps4000aChangePowerSource(self._chandle, raw_status))
@@ -196,6 +207,7 @@ class PicoScopeStream:
 
         assert_pico_ok(ps.ps4000aMaximumValue(self._chandle,
                                                ctypes.byref(self._maxADC)))
+        self._device_open = True
         log.debug(f'PicoScope opened, maxADC={self._maxADC.value}')
 
     def _configure_channel(self):
@@ -225,7 +237,33 @@ class PicoScopeStream:
         log.debug(f'Channel A configured: {coupling_key}, '
                   f'range index={self.config.voltage_range}')
 
+    def _setup_siggen(self):
+        """Start the built-in signal generator if siggen_config was provided."""
+        cfg = self._siggen_config
+        if cfg is None:
+            return
+        wave_type_key = cfg.get('wave_type', 'PS4000A_SINE')
+        assert_pico_ok(ps.ps4000aSetSigGenBuiltIn(
+            self._chandle,
+            int(cfg.get('offset_uv', 0)),
+            int(cfg['pktopk_uv']),
+            ps.PS4000A_WAVE_TYPE[wave_type_key],
+            float(cfg['freq_hz']),
+            float(cfg['freq_hz']),
+            0, 1,
+            ps.PS4000A_SWEEP_TYPE['PS4000A_UP'],
+            0, 0, 0,
+            ps.PS4000A_SIGGEN_TRIG_TYPE['PS4000A_SIGGEN_RISING'],
+            ps.PS4000A_SIGGEN_TRIG_SOURCE['PS4000A_SIGGEN_NONE'],
+            ctypes.c_int16(0),
+        ))
+        log.debug(f'PicoScope siggen started: {cfg["freq_hz"]} Hz, '
+                  f'{cfg["pktopk_uv"]} µV pk-pk')
+
     def _start_streaming(self):
+        # Configure signal generator if requested (before streaming starts)
+        self._setup_siggen()
+
         # Register the rolling buffer with the driver
         assert_pico_ok(ps.ps4000aSetDataBuffers(
             self._chandle,
@@ -244,7 +282,7 @@ class PicoScopeStream:
             ctypes.byref(sample_interval_us),
             ps.PS4000A_TIME_UNITS['PS4000A_US'],
             0,                               # maxPreTriggerSamples
-            1_000_000_000,                   # maxPostTriggerSamples — large; autoStop=0 makes this irrelevant
+            self.config.blocksize * 4,       # maxPostTriggerSamples — driver buffer budget; autoStop=0 streams continuously regardless
             0,                               # autoStop = 0  → continuous
             1,                               # downsampleRatio
             ps.PS4000A_RATIO_MODE['PS4000A_RATIO_MODE_NONE'],

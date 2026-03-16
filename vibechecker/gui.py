@@ -7,10 +7,12 @@ from typing import Union, Tuple, List, Literal
 from datetime import datetime as dt
 import sounddevice
 
-import numpy as np 
+import numpy as np
 import pandas as pd
 
 import vibechecker
+from vibechecker.scope_sensor import ScopeSensor
+from vibechecker.scope_sensor_registry import ScopeSensorRegistry
 
 log = vibechecker.get_logger('gui')
 ui = vibechecker.UI_Elements()
@@ -22,6 +24,8 @@ class GUI:
         self.context = None
         self.collector = vibechecker.DataCollector()
         self.collector.callbacks['plots'] = self.display_sample
+        self.registry = ScopeSensorRegistry()
+        self._editing_scope_sensor_id: str | None = None
         
     def view_sensor_details(self):
         print(self.collector.sensor)
@@ -243,7 +247,94 @@ class GUI:
     def dpg_debug(self):
         dpg.show_item_registry()
         log.debug('Debugger. Break here')
-        
+
+    # ------------------------------------------------------------------
+    # Scope sensor registry helpers
+    # ------------------------------------------------------------------
+
+    def _refresh_scope_registry_list(self):
+        names = self.registry.names()
+        dpg.configure_item(ui.SCOPE_REGISTRY_LIST, items=names)
+        dpg.configure_item(ui.SCOPE_CH0_SENSOR, items=['(none)'] + names)
+
+    def _get_selected_scope_sensor(self) -> ScopeSensor | None:
+        name = dpg.get_value(ui.SCOPE_REGISTRY_LIST)
+        if not name:
+            return None
+        return self.registry.find_by_name(name)
+
+    def _on_ch0_sensor_change(self, sender=None, data=None):
+        name = dpg.get_value(ui.SCOPE_CH0_SENSOR)
+        if not name or name == '(none)':
+            self.collector.set_scope_sensor(0, None)
+            self.registry.save_channel_assignments({})
+        else:
+            sensor = self.registry.find_by_name(name)
+            if sensor:
+                self.collector.set_scope_sensor(0, sensor)
+                self.registry.save_channel_assignments({0: sensor.id})
+
+    def _on_scope_add(self, sender=None, data=None):
+        self._editing_scope_sensor_id = None
+        dpg.set_value(ui.SCOPE_DIALOG_NAME, '')
+        dpg.set_value(ui.SCOPE_DIALOG_MODALITY, 'acceleration')
+        dpg.set_value(ui.SCOPE_DIALOG_UNITS, 'g')
+        dpg.set_value(ui.SCOPE_DIALOG_SENSITIVITY, 0.0)
+        dpg.set_value(ui.SCOPE_DIALOG_NOTES, '')
+        dpg.show_item(ui.SCOPE_SENSOR_DIALOG)
+
+    def _on_scope_edit(self, sender=None, data=None):
+        sensor = self._get_selected_scope_sensor()
+        if sensor is None:
+            return
+        if sensor.id.startswith('builtin-'):
+            log.warning('Cannot edit builtin sensors')
+            return
+        self._editing_scope_sensor_id = sensor.id
+        dpg.set_value(ui.SCOPE_DIALOG_NAME, sensor.name)
+        dpg.set_value(ui.SCOPE_DIALOG_MODALITY, sensor.modality)
+        dpg.set_value(ui.SCOPE_DIALOG_UNITS, sensor.engineering_units)
+        dpg.set_value(ui.SCOPE_DIALOG_SENSITIVITY, sensor.sensitivity)
+        dpg.set_value(ui.SCOPE_DIALOG_NOTES, sensor.notes)
+        dpg.show_item(ui.SCOPE_SENSOR_DIALOG)
+
+    def _on_scope_delete(self, sender=None, data=None):
+        sensor = self._get_selected_scope_sensor()
+        if sensor is None:
+            return
+        if sensor.id.startswith('builtin-'):
+            log.warning('Cannot delete builtin sensors')
+            return
+        self.registry.delete(sensor.id)
+        self._refresh_scope_registry_list()
+
+    def _on_scope_dialog_ok(self, sender=None, data=None):
+        name = dpg.get_value(ui.SCOPE_DIALOG_NAME).strip()
+        if not name:
+            return
+        modality = dpg.get_value(ui.SCOPE_DIALOG_MODALITY)
+        units = dpg.get_value(ui.SCOPE_DIALOG_UNITS)
+        sensitivity = float(dpg.get_value(ui.SCOPE_DIALOG_SENSITIVITY))
+        notes = dpg.get_value(ui.SCOPE_DIALOG_NOTES).strip()
+
+        if self._editing_scope_sensor_id is None:
+            sensor = ScopeSensor(name=name, modality=modality,
+                                 engineering_units=units,
+                                 sensitivity=sensitivity, notes=notes)
+            self.registry.add(sensor)
+        else:
+            sensor = ScopeSensor(name=name, modality=modality,
+                                 engineering_units=units,
+                                 sensitivity=sensitivity,
+                                 id=self._editing_scope_sensor_id, notes=notes)
+            self.registry.update(sensor)
+
+        self._refresh_scope_registry_list()
+        dpg.hide_item(ui.SCOPE_SENSOR_DIALOG)
+
+    def _on_scope_dialog_cancel(self, sender=None, data=None):
+        dpg.hide_item(ui.SCOPE_SENSOR_DIALOG)
+
     def create_gui(self):
 
         dpg.create_context()
@@ -252,6 +343,24 @@ class GUI:
             dpg.add_file_extension('Vibe Samples (*.h5){.h5}', color=(150, 255, 150, 255))
             dpg.add_file_extension('.*', color=(0, 150, 150, 150))
             dpg.add_file_extension('', color=(150, 255, 150, 255))
+
+        with dpg.window(label='Sensor', modal=True, show=False,
+                        tag=ui.SCOPE_SENSOR_DIALOG, width=380, no_resize=True):
+            dpg.add_input_text(label='Name', tag=ui.SCOPE_DIALOG_NAME, width=200)
+            dpg.add_combo(label='Modality', tag=ui.SCOPE_DIALOG_MODALITY,
+                          items=['acceleration', 'velocity', 'displacement'],
+                          default_value='acceleration', width=200)
+            dpg.add_combo(label='Units', tag=ui.SCOPE_DIALOG_UNITS,
+                          items=['g', 'mm', 'in'], default_value='g', width=200)
+            dpg.add_input_float(label='Sensitivity (eu/mV)', tag=ui.SCOPE_DIALOG_SENSITIVITY,
+                                default_value=0.0, format='%.6f', width=200)
+            dpg.add_input_text(label='Notes', tag=ui.SCOPE_DIALOG_NOTES, width=200)
+            dpg.add_separator()
+            with dpg.group(horizontal=True):
+                dpg.add_button(label='OK', tag=ui.SCOPE_DIALOG_OK,
+                               callback=self._on_scope_dialog_ok)
+                dpg.add_button(label='Cancel', tag=ui.SCOPE_DIALOG_CANCEL,
+                               callback=self._on_scope_dialog_cancel)
 
         with dpg.window(label='Vibe Checkup', width=1200, height=800):
             with dpg.group(horizontal=True):
@@ -304,6 +413,25 @@ class GUI:
                         with dpg.tab(label='Configure'):
                             dpg.add_button(label='DEBUG DPG', callback=self.dpg_debug)
                             dpg.add_button(label='Trigger Error', callback=lambda: exec('raise Exception(\'Fake Error\')'))
+
+                            dpg.add_separator()
+                            dpg.add_text('Channel A Sensor')
+                            dpg.add_combo(label='', tag=ui.SCOPE_CH0_SENSOR,
+                                          items=['(none)'] + self.registry.names(),
+                                          default_value='(none)',
+                                          callback=self._on_ch0_sensor_change, width=-1)
+
+                            dpg.add_separator()
+                            dpg.add_text('Sensor Registry')
+                            dpg.add_listbox(label='', tag=ui.SCOPE_REGISTRY_LIST,
+                                            items=self.registry.names(), num_items=6, width=-1)
+                            with dpg.group(horizontal=True):
+                                dpg.add_button(label='Add', tag=ui.SCOPE_REGISTRY_ADD,
+                                               callback=self._on_scope_add)
+                                dpg.add_button(label='Edit', tag=ui.SCOPE_REGISTRY_EDIT,
+                                               callback=self._on_scope_edit)
+                                dpg.add_button(label='Delete', tag=ui.SCOPE_REGISTRY_DELETE,
+                                               callback=self._on_scope_delete)
                 # Right display window
                 with dpg.child_window(label='Data Display', autosize_x=True, autosize_y=True):
                     with dpg.tab_bar():
@@ -348,6 +476,16 @@ class GUI:
         self.create_gui()
         self.update_streaming_config()
         self.update_axes_label()
+
+        # Restore scope channel assignments from disk
+        self._refresh_scope_registry_list()
+        assignments = self.registry.load_channel_assignments()
+        for ch, sensor_id in assignments.items():
+            sensor = self.registry.find_by_id(sensor_id)
+            if sensor:
+                self.collector.set_scope_sensor(ch, sensor)
+                if ch == 0:
+                    dpg.set_value(ui.SCOPE_CH0_SENSOR, sensor.name)
 
         self.refresh_sensors(autoconnect=True)
 

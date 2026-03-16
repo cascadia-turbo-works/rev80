@@ -41,7 +41,8 @@ class VibeSensor:
                    is_simulation = True
                    )
     
-    def connect(self, config: vibechecker.AcquisitionSettings, callback):
+    def connect(self, config: vibechecker.AcquisitionSettings, callback,
+                siggen_config: dict | None = None):
         """Return a stream object with .start() / .stop() / .close() / .active."""
         self.callback = callback   # app callback — DataCollector.recieve_data
 
@@ -51,7 +52,7 @@ class VibeSensor:
             return vibechecker.SimulatedSensor(config, sensor=self, callback=self._sd_callback)
 
         from vibechecker.picoscope import PicoScopeStream
-        return PicoScopeStream(config, callback=callback)
+        return PicoScopeStream(config, callback=callback, siggen_config=siggen_config)
 
     def _sd_callback(self, sd_data: np.ndarray, frames: int, sd_time, sd_status: str):
         """sounddevice / SimulatedSensor callback — packages raw data into a dict
