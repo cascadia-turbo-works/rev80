@@ -379,7 +379,7 @@ class TestAcquisitionSettingsPicoFields:
 
     def test_default_voltage_range(self):
         config = vc.AcquisitionSettings()
-        assert config.voltage_range == 8    # PS4000A_5V
+        assert config.voltage_range == 10   # PS4000A_20V (hardware max)
 
     def test_default_coupling(self):
         config = vc.AcquisitionSettings()
