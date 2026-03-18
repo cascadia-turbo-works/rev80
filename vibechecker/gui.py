@@ -71,12 +71,7 @@ class GUI:
             return
 
         freq = fft.freq.to_numpy()
-        display_units = self.collector.config.units
-
-        if self.collector.config.integrate:
-            signal = fft.vel_0p.to_numpy()
-        else:
-            signal = fft.acc_0p.to_numpy()
+        signal = fft.display_0p.to_numpy()
 
         overall = np.sqrt(np.sum(np.square(signal))) * np.sqrt(2)/2
 
@@ -86,11 +81,11 @@ class GUI:
         dpg.set_axis_limits(ui.PLT_FREQ_AX_ACCEL, 0, 1.05 * np.max(signal))
 
         # Draw peaks
+        target = self.collector.config.integrate.capitalize()
         peak_limit = dpg.get_value(ui.FFT_PEAKS_DISPLAY_COUNT)
-        fft_disp = fft[['freq','acc_0p', 'vel_0p']].loc[peaks[:peak_limit]]
+        fft_disp = fft[['freq','display_0p']].loc[peaks[:peak_limit]]
         fft_disp.columns = [f'Frequency (hz)',
-                            f'Acceleration {display_units} 0-P',
-                            f'Velocity {display_units} 0-P']
+                            f'{target} 0-P']
 
         dpg.set_value(ui.PLT_FREQ_PEAKS, [freq[peaks[:peak_limit]]])
         self.update_fft_peaks_table(fft_disp)
@@ -119,16 +114,21 @@ class GUI:
 
     def update_axes_label(self):
         display_units = self.collector.config.units
-        freq_label = f'{dpg.get_value(ui.ACQ_INTEGRATE)} - {display_units}'
-        time_label = f'Acceleration - {display_units}'
+        target = self.collector.config.integrate  # 'acceleration', 'velocity', 'displacement'
 
+        # Build unit suffix based on modality and unit system
+        # g-system: g, g*s, g*s²  |  metric: mm/s², mm/s, mm  |  imperial: in/s², in/s, in
         if display_units == 'g':
-            if self.collector.config.integrate:
-                freq_label += '*s'
+            suffix_map = {'acceleration': 'g', 'velocity': 'g*s', 'displacement': 'g*s\u00b2'}
         else:
-            freq_label += '/s'
-            if not self.collector.config.integrate:
-                freq_label += '^2'
+            suffix_map = {
+                'acceleration': f'{display_units}/s\u00b2',
+                'velocity': f'{display_units}/s',
+                'displacement': f'{display_units}',
+            }
+
+        freq_label = f'{target.capitalize()} - {suffix_map.get(target, display_units)}'
+        time_label = f'Source - {suffix_map.get("acceleration", display_units)}'
 
         dpg.configure_item(ui.PLT_SAMPLE_AX_ACCEL, label=time_label)
         dpg.configure_item(ui.PLT_FREQ_AX_ACCEL, label=freq_label)
@@ -154,7 +154,7 @@ class GUI:
         dpg.set_value(ui.ACQ_MAXFREQ,   self.collector.config.maxfreq)
         dpg.set_value(ui.ACQ_BINSIZE,   self.collector.config.binsize)
         dpg.set_value(ui.ACQ_UNITS,     vibechecker.UNITS_REV[self.collector.config.units])
-        dpg.set_value(ui.ACQ_INTEGRATE, 'Velocity' if self.collector.config.integrate else 'Acceleration')
+        dpg.set_value(ui.ACQ_INTEGRATE, self.collector.config.integrate.capitalize())
         dpg.set_value(ui.ACQ_EU_DISPLAY, f'Source: {self.collector.get_active_eu()}')
 
     def refresh_sensors(self, sender=None, data=None, autoconnect=False):
@@ -288,9 +288,6 @@ class GUI:
         sensor = self._get_selected_scope_sensor()
         if sensor is None:
             return
-        if sensor.id.startswith('builtin-'):
-            log.warning('Cannot edit builtin sensors')
-            return
         self._editing_scope_sensor_id = sensor.id
         dpg.set_value(ui.SCOPE_DIALOG_NAME, sensor.name)
         dpg.set_value(ui.SCOPE_DIALOG_MODALITY, sensor.modality)
@@ -302,9 +299,6 @@ class GUI:
     def _on_scope_delete(self, sender=None, data=None):
         sensor = self._get_selected_scope_sensor()
         if sensor is None:
-            return
-        if sensor.id.startswith('builtin-'):
-            log.warning('Cannot delete builtin sensors')
             return
         self.registry.delete(sensor.id)
         self._refresh_scope_registry_list()
@@ -353,7 +347,7 @@ class GUI:
                           default_value='acceleration', width=200)
             dpg.add_combo(label='Units', tag=ui.SCOPE_DIALOG_UNITS,
                           items=['g', 'mm', 'in'], default_value='g', width=200)
-            dpg.add_input_float(label='Sensitivity (eu/mV)', tag=ui.SCOPE_DIALOG_SENSITIVITY,
+            dpg.add_input_float(label='Sensitivity (mV/eu)', tag=ui.SCOPE_DIALOG_SENSITIVITY,
                                 default_value=0.0, format='%.6f', width=200)
             dpg.add_input_text(label='Notes', tag=ui.SCOPE_DIALOG_NOTES, width=200)
             dpg.add_separator()
@@ -408,7 +402,7 @@ class GUI:
                                           default_value=vibechecker.UNITS_REV['g'], width=config_width)
                             dpg.add_combo(label='Integration', tag=ui.ACQ_INTEGRATE,
                                           callback=self.update_streaming_config,
-                                          items=['Velocity', 'Acceleration'],
+                                          items=['Acceleration', 'Velocity', 'Displacement'],
                                           default_value='Acceleration', width=config_width)
 
                             dpg.add_separator()

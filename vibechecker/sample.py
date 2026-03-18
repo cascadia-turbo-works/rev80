@@ -20,6 +20,9 @@ from vibechecker import BLOCKSIZES, \
 
 log = vibechecker.get_logger(__name__)
 
+# Derivative order: integrate (+) or differentiate (-) in freq domain
+MODALITY_ORDER = {'acceleration': 0, 'velocity': 1, 'displacement': 2}
+
 @dataclass
 class AcquisitionSettings:
     _ns: int = BLOCKSIZES[3]
@@ -28,7 +31,7 @@ class AcquisitionSettings:
     _df: float = BINSIZES[3]
     channel: int = 0
     units: SUPPORTED_UNITS = 'g'
-    integrate: bool = False
+    integrate: str = 'acceleration'    # target modality: acceleration, velocity, displacement
     oversample: int = 2
     butter_fc: float | None = 10
     # PicoScope channel settings (ignored by sounddevice / SimulatedSensor paths)
@@ -121,6 +124,7 @@ class VibeSample:
     data: np.ndarray = field(default_factory=lambda: np.array([0], dtype=np.float64))
     rel_time: float = field(default=0)
     label: str = field(default='')
+    modality: str = field(default='acceleration')
 
     @classmethod
     def empty(cls):
@@ -221,8 +225,8 @@ class VibeSample:
         if self.blocksize <= 1:
             log.error('Attempt to fft an EMPTY sample')
             return None, None
-        
-        accel, _ = self.get_accel(config)
+
+        converted, _ = self.get_accel(config)
 
         fs = self.samplerate
         df = config.binsize
@@ -230,7 +234,7 @@ class VibeSample:
         nfft = int(fs/df)
         nperseg = nfft
         noverlap = min(self.blocksize,int(nperseg / 2)) # 50% overlap
-        freq, acc_spectrum = signal.welch(accel.signal.to_numpy(),
+        freq, source_spectrum = signal.welch(converted.signal.to_numpy(),
                                  fs = float(fs),
                                  window = 'hann',
                                  nperseg = nperseg,
@@ -240,32 +244,41 @@ class VibeSample:
                                  detrend = 'constant',
                                  average = 'mean')
 
-        # Integrate acceleration to velocity
-        omega = np.square(2*np.pi*freq)
-        omega[0] = np.inf
-        vel_spectrum = acc_spectrum / omega
+        # Determine number of integrations from source → target modality
+        source_order = MODALITY_ORDER.get(self.modality, 0)
+        target_order = MODALITY_ORDER.get(config.integrate, 0)
+        n_integrations = target_order - source_order
 
-        # with np.errstate(divide='ignore', invalid='ignore'):
-        #     vel_spectrum = np.abs(acc_spectrum / (2*np.pi*freq))
-        #     vel_spectrum[0] = 0.0
+        # Apply frequency-domain integration/differentiation
+        # Each integration: divide PSD by (2πf)²
+        # Each differentiation: multiply PSD by (2πf)²
+        omega_sq = np.square(2 * np.pi * freq)
+
+        if n_integrations > 0:
+            # Integration: zero DC to avoid infinity
+            omega_factor = np.power(np.where(omega_sq > 0, omega_sq, np.inf),
+                                    n_integrations)
+            display_spectrum = source_spectrum / omega_factor
+        elif n_integrations < 0:
+            # Differentiation
+            omega_factor = np.power(omega_sq, abs(n_integrations))
+            display_spectrum = source_spectrum * omega_factor
+        else:
+            display_spectrum = source_spectrum.copy()
 
         # normalize to rms and zero-peak units per bin
-        acc_rms = np.sqrt(acc_spectrum)
-        vel_rms = np.sqrt(vel_spectrum)
-        acc_0p = acc_rms * np.sqrt(2)
-        vel_0p = vel_rms * np.sqrt(2)
+        source_0p = np.sqrt(source_spectrum) * np.sqrt(2)
+        display_0p = np.sqrt(np.maximum(display_spectrum, 0)) * np.sqrt(2)
 
-        df = pd.DataFrame({'freq':freq,
-                           'acc_spectrum': acc_spectrum,
-                           'vel_spectrum': vel_spectrum,
-                           'acc_rms': acc_rms,
-                           'vel_rms': vel_rms,
-                           'acc_0p': acc_0p,
-                           'vel_0p': vel_0p})
-        
-        peaks, _ = signal.find_peaks(acc_0p, distance=min(len(freq)/50, 1))
-        peaks = np.array(peaks[np.argsort(-acc_0p[peaks])])
+        result = pd.DataFrame({'freq': freq,
+                           'source_spectrum': source_spectrum,
+                           'display_spectrum': display_spectrum,
+                           'source_0p': source_0p,
+                           'display_0p': display_0p})
 
-        return df[df.freq<=config.maxfreq], \
+        peaks, _ = signal.find_peaks(display_0p, distance=min(len(freq)/50, 1))
+        peaks = np.array(peaks[np.argsort(-display_0p[peaks])])
+
+        return result[result.freq<=config.maxfreq], \
                peaks[freq[peaks]<=config.maxfreq]
     

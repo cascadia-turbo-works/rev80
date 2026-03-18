@@ -149,7 +149,7 @@ class DataCollector:
         elif parameter == ui.ACQ_UNITS:
             self.config.units = vibechecker.UNITS[value] # type: ignore
         elif parameter == ui.ACQ_INTEGRATE:
-            self.config.integrate = (value == 'Velocity')
+            self.config.integrate = value.lower()
         else:
             log.error('Acquisition arameter invalid')
              
@@ -271,11 +271,13 @@ class DataCollector:
             unit = unit_arr[0] if isinstance(unit_arr, list) else unit_arr
 
         # Apply ScopeSensor mV → EU scaling if a sensor is assigned to this channel
+        modality = 'acceleration'  # default for audio / simulated sensors
         if unit == 'mV':
             scope_sensor = self.scope_sensors.get(ch)
             if scope_sensor is not None:
-                data = np.asarray(data, dtype=np.float64) * scope_sensor.sensitivity
+                data = np.asarray(data, dtype=np.float64) / scope_sensor.sensitivity
                 unit = scope_sensor.engineering_units
+                modality = scope_sensor.modality
 
         # Apply Butterworth highpass filter if configured
         if self.config.butter_fc:
@@ -292,7 +294,8 @@ class DataCollector:
                                 self.config.samplerate,
                                 unit,
                                 np.ascontiguousarray(data),
-                                samp['rel_time'])
+                                samp['rel_time'],
+                                modality=modality)
         # self.sample.push_sample(sample['status'],
         #                         sample['timestamp'],
         #                         self.config.samplerate,

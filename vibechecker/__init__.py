@@ -5,7 +5,7 @@ from vibechecker.picoscope import FindPicoScope
 from vibechecker.sample import AcquisitionSettings, VibeSample
 from vibechecker.sensor import VibeSensor
 from vibechecker.simulation import SimulatedSensor, GenerateTone
-from vibechecker.scope_sensor import ScopeSensor, BUILTIN_SENSORS
+from vibechecker.scope_sensor import ScopeSensor
 from vibechecker.scope_sensor_registry import ScopeSensorRegistry
 from vibechecker.collector import DataCollector
 from vibechecker.gui import GUI

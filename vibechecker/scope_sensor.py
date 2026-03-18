@@ -1,9 +1,10 @@
 """ScopeSensor — describes an IEPE sensor connected to a PicoScope channel.
 
-sensitivity is stored as engineering-units per millivolt (eu/mV).
-To convert raw mV data to engineering units: eu_data = mv_data * sensor.sensitivity
+sensitivity is stored as millivolts per engineering-unit (mV/eu),
+matching the industry-standard datasheet convention.
+To convert raw mV data to engineering units: eu_data = mv_data / sensor.sensitivity
 
-Example: PCB 352C33 datasheet says 10.2 mV/g → sensitivity = 1/10.2 ≈ 0.098 g/mV
+Example: PCB 352C33 datasheet says 10.2 mV/g → sensitivity = 10.2
 """
 
 from dataclasses import dataclass, field
@@ -19,7 +20,7 @@ class ScopeSensor:
     name: str
     modality: Modality
     engineering_units: EngineeringUnit
-    sensitivity: float          # eu / mV  (= 1 / datasheet_mV_per_eu)
+    sensitivity: float          # mV / eu  (datasheet value, e.g. 10.2 mV/g)
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     notes: str = ''
 
@@ -43,32 +44,3 @@ class ScopeSensor:
             id=d.get('id', str(uuid.uuid4())),
             notes=d.get('notes', ''),
         )
-
-
-# Common IEPE accelerometers — always available, cannot be edited or deleted.
-BUILTIN_SENSORS: list[ScopeSensor] = [
-    ScopeSensor(
-        name='PCB 352C33',
-        modality='acceleration',
-        engineering_units='g',
-        sensitivity=1.0 / 10.2,    # 10.2 mV/g
-        id='builtin-pcb-352c33',
-        notes='PCB Piezotronics 352C33, 10.2 mV/g IEPE accelerometer',
-    ),
-    ScopeSensor(
-        name='Wilcoxon 786A',
-        modality='acceleration',
-        engineering_units='g',
-        sensitivity=1.0 / 100.0,   # 100 mV/g
-        id='builtin-wilcoxon-786a',
-        notes='Wilcoxon Research 786A, 100 mV/g IEPE accelerometer',
-    ),
-    ScopeSensor(
-        name='Generic IEPE 10 mV/g',
-        modality='acceleration',
-        engineering_units='g',
-        sensitivity=1.0 / 10.0,    # 10 mV/g
-        id='builtin-generic-iepe-10mvg',
-        notes='Generic IEPE accelerometer, 10 mV/g',
-    ),
-]

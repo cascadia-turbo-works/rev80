@@ -6,7 +6,7 @@ import numpy as np
 from pathlib import Path
 
 import vibechecker as vc
-from vibechecker.scope_sensor import ScopeSensor, BUILTIN_SENSORS
+from vibechecker.scope_sensor import ScopeSensor
 from vibechecker.scope_sensor_registry import ScopeSensorRegistry
 
 
@@ -56,10 +56,8 @@ def registry(tmp_path):
     return ScopeSensorRegistry(path=sensors_file)
 
 
-def test_registry_all_includes_builtins(registry):
-    all_sensors = registry.all()
-    builtin_ids = {s.id for s in BUILTIN_SENSORS}
-    assert builtin_ids.issubset({s.id for s in all_sensors})
+def test_registry_starts_empty(registry):
+    assert registry.all() == []
 
 
 def test_registry_add_and_find(registry):
@@ -98,26 +96,6 @@ def test_registry_delete(registry):
 
     registry.delete(s.id)
     assert registry.find_by_id(s.id) is None
-
-
-def test_registry_cannot_add_builtin_id(registry):
-    s = ScopeSensor(name='Fake Builtin', modality='acceleration',
-                    engineering_units='g', sensitivity=0.1,
-                    id='builtin-pcb-352c33')
-    with pytest.raises(ValueError):
-        registry.add(s)
-
-
-def test_registry_cannot_update_builtin(registry):
-    builtin = BUILTIN_SENSORS[0]
-    with pytest.raises(ValueError):
-        registry.update(builtin)
-
-
-def test_registry_cannot_delete_builtin(registry):
-    builtin = BUILTIN_SENSORS[0]
-    with pytest.raises(ValueError):
-        registry.delete(builtin.id)
 
 
 def test_registry_update_nonexistent_raises(registry):
@@ -180,13 +158,16 @@ def test_pipeline_no_scope_sensor_unit_unchanged(dev: vc.VibeSensor):
 
 
 def test_pipeline_scope_sensor_scales_mv_data():
-    """When unit=='mV' and a ScopeSensor is assigned, data is scaled and unit changes."""
+    """When unit=='mV' and a ScopeSensor is assigned, data is scaled and unit changes.
+
+    Sensitivity is in mV/eu (industry standard): eu = mV / sensitivity.
+    """
     sim_sensor = vc.VibeSensor.simulated()
     # Disable Butterworth filter so we can check exact scaled values
     config = vc.AcquisitionSettings(butter_fc=None)
     collector = vc.DataCollector(sim_sensor, config=config)
 
-    sensitivity = 0.1  # 0.1 g/mV
+    sensitivity = 10.0  # 10 mV/g (datasheet value)
 
     scope_sensor = ScopeSensor(
         name='ScaleTest',
@@ -213,7 +194,8 @@ def test_pipeline_scope_sensor_scales_mv_data():
     assert len(received) == 1
     sample = received[0]
     assert sample.unit == 'g'
-    assert np.allclose(sample.data, raw_mv * sensitivity, atol=1e-6)
+    # 50 mV / 10 mV/g = 5 g
+    assert np.allclose(sample.data, raw_mv / sensitivity, atol=1e-6)
 
 
 def test_pipeline_scope_sensor_clear():
