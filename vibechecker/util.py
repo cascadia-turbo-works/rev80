@@ -127,11 +127,11 @@ class UI_Elements:
     SCOPE_DIALOG_OK = 'SCOPE_DIALOG_OK'
     SCOPE_DIALOG_CANCEL = 'SCOPE_DIALOG_CANCEL'
 
+    ACQ_EU_DISPLAY = 'ACQ_EU_DISPLAY'
+
     @property
     def ACQ(self):
-        return [self.ACQ_BLOCKSIZE,
-                self.ACQ_SAMPLERATE,
-                self.ACQ_MAXFREQ,
+        return [self.ACQ_MAXFREQ,
                 self.ACQ_BINSIZE,
                 self.ACQ_START,
                 self.ACQ_STOP,

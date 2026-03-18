@@ -202,8 +202,7 @@ class VibeSample:
         try:
             accel = convert_units(self.data, self.unit, config.units)
         except ValueError:
-            # Conversion not defined (e.g. 'mV' → 'g' before sensitivity is applied).
-            # Pass through raw data — Phase 2 will apply proper EU conversion.
+            log.warning(f'Unit conversion from {self.unit!r} to {config.units!r} not defined; passing through raw data')
             accel = self.data
 
         # Butterworth filter - causes lagg

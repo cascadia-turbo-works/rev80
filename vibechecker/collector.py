@@ -52,6 +52,23 @@ class DataCollector:
         else:
             self.scope_sensors[channel] = sensor
 
+    def get_active_eu(self) -> str:
+        """Return the engineering unit of the active data source.
+
+        Priority: scope sensor on active channel > VibeSensor unit > config.units fallback.
+        """
+        ch = self.config.channel
+        scope_sensor = self.scope_sensors.get(ch)
+        if scope_sensor is not None:
+            return scope_sensor.engineering_units
+        if self.sensor is not None:
+            unit = getattr(self.sensor, 'unit', None)
+            if isinstance(unit, list):
+                return unit[min(ch, len(unit) - 1)]
+            if unit is not None:
+                return unit
+        return self.config.units
+
     @property
     def is_streaming(self):
         try:
@@ -125,11 +142,7 @@ class DataCollector:
         if stream_state:
             self.stop_stream()
 
-        if parameter == ui.ACQ_BLOCKSIZE:
-            self.config.blocksize = int(value)
-        elif parameter == ui.ACQ_SAMPLERATE:
-            self.config.samplerate = int(value)
-        elif parameter == ui.ACQ_MAXFREQ:
+        if parameter == ui.ACQ_MAXFREQ:
             self.config.maxfreq = float(value)
         elif parameter == ui.ACQ_BINSIZE:
             self.config.binsize = float(value)

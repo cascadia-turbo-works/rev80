@@ -8,3 +8,4 @@ __pycache__
 
 # dont pass through logs between machines
 log
+**/.ipynb_checkpoints
