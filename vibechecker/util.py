@@ -9,20 +9,27 @@ BLOCKSIZES = list(map(int,np.pow(2, np.arange(8,18))))
 MAXFREQS = [2e2, 5e2, 1e3, 2e3, 5e3, 1e4, 2e4, 2.4e4]
 BINSIZES = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0]
 
-SUPPORTED_UNITS = Literal["g", "mm", "in", "mV"]
+SUPPORTED_UNITS = Literal["g", "mm", "in", "mil", "mV"]
 UNITS = {'Earth Gravity - g': 'g',
          'Metric - mm': 'mm',
          'Imperial - in': 'in',
+         'Imperial - mil': 'mil',
          'Voltage - mV': 'mV'}
 UNITS_REV = {v:k for k,v in UNITS.items()}
 
 UNIT_CONVERSION = {
-    ("g", "mm"): 9.80665 * 1000,
+    ("g", "mm"): 9.80665 * 1000,                       # 9806.65
     ("mm", "g"): 1 / (9.80665 * 1000),
-    ("g", "in"): 9.80665 * 1000 / 25.4,
+    ("g", "in"): 9.80665 * 1000 / 25.4,                # 386.089
     ("in", "g"): 1 / (9.80665 * 1000 / 25.4),
-    ("mm", "in"): 1/ 25.4,
-    ("in", "mm"): 25.4
+    ("g", "mil"): 9.80665 * 1000 / 25.4 * 1000,        # 386088.58
+    ("mil", "g"): 1 / (9.80665 * 1000 / 25.4 * 1000),
+    ("mm", "in"): 1 / 25.4,                             # 0.03937
+    ("in", "mm"): 25.4,
+    ("mm", "mil"): 1 / 25.4 * 1000,                     # 39.3701
+    ("mil", "mm"): 25.4 / 1000,                          # 0.0254
+    ("in", "mil"): 1000,
+    ("mil", "in"): 1 / 1000,
 }
 
 SAVEDIR = Path('DEVDATA')

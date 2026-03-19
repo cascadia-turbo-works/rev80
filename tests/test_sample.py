@@ -139,13 +139,15 @@ def test_differentiation_vel_to_acc(freq):
 
 # ── Task 3: Unit conversion tests ────────────────────────────────────
 
-G_TO_MM = 9.80665 * 1000       # 1 g = 9806.65 mm/s²
-G_TO_IN = 9.80665 * 1000 / 25.4  # 1 g = 386.089 in/s²
+G_TO_MM = 9.80665 * 1000                # 1 g = 9806.65 mm/s²
+G_TO_IN = 9.80665 * 1000 / 25.4         # 1 g = 386.089 in/s²
+G_TO_MIL = 9.80665 * 1000 / 25.4 * 1000 # 1 g = 386088.58 mil/s²
 
 
 @pytest.mark.parametrize('target_unit, factor', [
     ('mm', G_TO_MM),
     ('in', G_TO_IN),
+    ('mil', G_TO_MIL),
 ])
 @pytest.mark.parametrize('freq', [500, 1000])
 def test_unit_conversion_acc_spectrum(target_unit, factor, freq):

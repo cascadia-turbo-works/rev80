@@ -346,7 +346,7 @@ class GUI:
                           items=['acceleration', 'velocity', 'displacement'],
                           default_value='acceleration', width=200)
             dpg.add_combo(label='Units', tag=ui.SCOPE_DIALOG_UNITS,
-                          items=['g', 'mm', 'in'], default_value='g', width=200)
+                          items=['g', 'mm', 'in', 'mil'], default_value='g', width=200)
             dpg.add_input_float(label='Sensitivity (mV/eu)', tag=ui.SCOPE_DIALOG_SENSITIVITY,
                                 default_value=0.0, format='%.6f', width=200)
             dpg.add_input_text(label='Notes', tag=ui.SCOPE_DIALOG_NOTES, width=200)

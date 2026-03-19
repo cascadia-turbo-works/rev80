@@ -12,7 +12,7 @@ from typing import Literal
 import uuid
 
 Modality = Literal['acceleration', 'velocity', 'displacement']
-EngineeringUnit = Literal['g', 'mm', 'in']
+EngineeringUnit = Literal['g', 'mm', 'in', 'mil']
 
 
 @dataclass
