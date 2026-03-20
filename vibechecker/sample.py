@@ -247,21 +247,15 @@ class VibeSample:
         # Determine number of integrations from source → target modality
         source_order = MODALITY_ORDER.get(self.modality, 0)
         target_order = MODALITY_ORDER.get(config.integrate, 0)
-        n_integrations = target_order - source_order
+        n_integrations = source_order - target_order
 
         # Apply frequency-domain integration/differentiation
         # Each integration: divide PSD by (2πf)²
         # Each differentiation: multiply PSD by (2πf)²
-        omega_sq = np.square(2 * np.pi * freq)
 
-        if n_integrations > 0:
+        if not n_integrations == 0:
             # Integration: zero DC to avoid infinity
-            omega_factor = np.power(np.where(omega_sq > 0, omega_sq, np.inf),
-                                    n_integrations)
-            display_spectrum = source_spectrum / omega_factor
-        elif n_integrations < 0:
-            # Differentiation
-            omega_factor = np.power(omega_sq, abs(n_integrations))
+            omega_factor = np.power(np.where(freq > 0, 2 * np.pi * freq, np.inf), 2 * n_integrations)
             display_spectrum = source_spectrum * omega_factor
         else:
             display_spectrum = source_spectrum.copy()
