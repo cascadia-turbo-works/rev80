@@ -33,7 +33,7 @@ TOTAL_SAMPLES        = int(CAPTURE_WINDOW_MS * 1000 / SAMPLE_INTERVAL_US)  # 500
 BUFFER_SIZE          = 500         # samples per driver-registered rolling buffer
 NUM_BUFFERS          = TOTAL_SAMPLES // BUFFER_SIZE  # 10
 
-SIGGEN_PKTOPK_UV     = 1_000_000   # 2 × 0.5 V = 1.0 Vpp in µV
+SIGGEN_PKTOPK_UV     = 1_000   # 2 × 0.5 V = 1.0 Vpp in µV
 # PS4000A siggen output is clamped to ±2 V.  The constraint is:
 #   |offsetVoltage| + pkToPk/2 ≤ 2,000,000 µV
 # 1,400,000 + 500,000 = 1,900,000 µV ≤ 2,000,000 µV ✓

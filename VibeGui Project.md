@@ -197,3 +197,13 @@ Vibegui:
 - Changed timestamp format in sample.save to replace ':' (invalid on FAT32 system)
 - UI/UX, language and jargon should match Alta
 - Demo screenshots for website
+
+## 2026 - 03 -18 TODO
+
+- Multi channel
+  - Toggle on and off channel display with 2+ channels
+  - Two channel phase relationship
+- Time domain window, ex zoom to 5ms of time domain
+- Track down velocity integration low freq noise
+- Windows functional
+  - Package exe
