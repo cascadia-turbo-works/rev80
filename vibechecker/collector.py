@@ -102,6 +102,40 @@ class DataCollector:
         self.init_trend_channels()
         log.info('Reset data store.')
 
+    def reset_channel_config(self, num_channels: int) -> None:
+        """Prune all per-channel state to match a new device's channel count.
+
+        Removes scope_sensors, voltage range, and coupling entries for
+        channels >= num_channels, then resets the data store so no stale
+        multi-channel frames or trend data carry over to the new device.
+        Enabled channels are clamped to the valid range; if none survive,
+        channel 0 is re-enabled as a safe default.
+        """
+        valid = set(range(num_channels))
+
+        # Prune scope_sensors
+        for ch in list(self.scope_sensors):
+            if ch not in valid:
+                self.scope_sensors.pop(ch)
+
+        # Prune per-channel acquisition settings
+        for ch in list(self.config.channel_voltage_ranges):
+            if ch not in valid:
+                del self.config.channel_voltage_ranges[ch]
+        for ch in list(self.config.channel_couplings):
+            if ch not in valid:
+                del self.config.channel_couplings[ch]
+
+        # Clamp enabled_channels
+        self.config.enabled_channels = sorted(
+            ch for ch in self.config.enabled_channels if ch in valid
+        )
+        if not self.config.enabled_channels:
+            self.config.enabled_channels = [0]
+
+        self.reset_data_store()
+        log.info(f'Channel config reset for {num_channels}-channel device.')
+
     def init_trend_channels(self):
         """(Re-)initialise trend store keyed by current enabled_channels.
 

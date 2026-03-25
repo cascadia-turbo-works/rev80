@@ -638,6 +638,10 @@ class GUI:
             try:
                 self.collector.connect_sensor(sensor)
                 self._num_channels = sensor.num_channels
+                # Purge all stale series before config reset so no ghost traces remain
+                for _ch in range(_MAX_CHANNELS):
+                    self._remove_channel_series(_ch)
+                self.collector.reset_channel_config(sensor.num_channels)
                 self._restore_channel_assignments()
                 self.collector.reconnect_stream()
                 self._set_device_status('connected')
