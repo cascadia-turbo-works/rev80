@@ -170,6 +170,7 @@ class UI_Elements:
     ACQ_SINGLE         = 'ACQ_SINGLE'
     ACQ_AUTOSCALE      = 'ACQ_AUTOSCALE'       # fit all plot axes to data
     ACQ_CLEAR_CACHE    = 'ACQ_CLEAR_CACHE'     # wipe frame cache + trend
+    CHANNELS_GEN_LINE  = 'CHANNELS_GEN_LINE'   # "Gen : wave : freq x amp" text
     ACQ_BROWSE_PREV    = 'ACQ_BROWSE_PREV'     # ← older frame
     ACQ_BROWSE_NEXT    = 'ACQ_BROWSE_NEXT'     # → newer frame
     ACQ_BROWSE_LABEL   = 'ACQ_BROWSE_LABEL'    # "Frame N / M" text

@@ -26,6 +26,8 @@ _MAX_CHANNELS         = 8
 _DEFAULT_NUM_CHANNELS = 4
 # Height of each per-channel result card so 4 cards fit the default window height
 _RESULTS_CARD_HEIGHT  = (WINDOW_HEIGHT - 70) // 4   # ≈ 232 px
+# Width of paired buttons side-by-side in the left control panel
+_BTN_HALF = (CONTROLS_WIDTH - 22) // 2              # ≈ 139 px
 
 def _c(key: str, alpha: int = 255) -> tuple:
     """Shorthand: THEME_COLORS[key] → DPG RGBA tuple."""
@@ -417,6 +419,23 @@ class GUI:
                         f'Ch {chr(65+ch)} : {sname} : {tunit}',
                         parent=ui.CONN_CHANNEL_SUMMARY,
                     )
+                # Signal generator summary line
+                sigcfg = self.collector.siggen_config
+                if sigcfg:
+                    wave = next(
+                        (k for k, v in _SIGGEN_WAVE_TYPES.items()
+                         if v == sigcfg.get('wave_type')), 'Sine')
+                    freq_hz   = float(sigcfg.get('freq_hz', 0))
+                    pktopk_mv = float(sigcfg.get('pktopk_uv', 0)) / 1000.0
+                    freq_str = (f'{freq_hz/1000:.3g} kHz' if freq_hz >= 1000
+                                else f'{freq_hz:.0f} Hz')
+                    amp_str  = (f'{pktopk_mv/1000:.3g} V' if pktopk_mv >= 1000
+                                else f'{pktopk_mv:.0f} mV')
+                    gen_text = f'Gen : {wave} : {freq_str} x {amp_str}'
+                else:
+                    gen_text = 'Gen : Off'
+                dpg.add_text(gen_text, parent=ui.CONN_CHANNEL_SUMMARY,
+                             color=_c('ON_SURFACE'))
 
     # ------------------------------------------------------------------
     # Spectrum info display
@@ -1218,11 +1237,11 @@ class GUI:
                 # ── Controls column (left) ────────────────────────────
                 with dpg.child_window(width=CONTROLS_WIDTH, autosize_y=True):
 
-                    # ── Connection Status ─────────────────────────────
+                    # ── Device ───────────────────────────────────────
                     with dpg.child_window(border=True, autosize_x=True,
-                                          height=220) as _s1:
+                                          autosize_y=True) as _s1:
                         dpg.bind_item_theme(_s1, self._sect_theme)
-                        dpg.add_text('Connection Status')
+                        dpg.add_text('Device')
                         dpg.add_separator()
                         with dpg.group(horizontal=True):
                             with dpg.drawlist(width=16, height=16,
@@ -1234,14 +1253,24 @@ class GUI:
                                 )
                             dpg.add_text('Not Connected', tag=ui.CONN_STATUS_TEXT)
                         dpg.add_text('', tag=ui.CONN_DEVICE_NAME)
-                        with dpg.group(tag=ui.CONN_CHANNEL_SUMMARY):
-                            pass
                         dpg.add_spacer(height=2)
                         dpg.add_button(label='Device Setup',
                                        tag=ui.BTN_DEVICE_SETUP,
                                        callback=lambda: self._open_config_dialog(
                                            ui.CONFIG_TAB_DEVICE),
                                        width=-1)
+
+                    dpg.add_spacer(height=6)
+
+                    # ── Channels ─────────────────────────────────────
+                    with dpg.child_window(border=True, autosize_x=True,
+                                          autosize_y=True) as _s_ch:
+                        dpg.bind_item_theme(_s_ch, self._sect_theme)
+                        dpg.add_text('Channels')
+                        dpg.add_separator()
+                        with dpg.group(tag=ui.CONN_CHANNEL_SUMMARY):
+                            pass
+                        dpg.add_spacer(height=2)
                         dpg.add_button(label='Sensor Setup',
                                        tag=ui.BTN_SENSOR_SETUP,
                                        callback=lambda: self._open_config_dialog(
@@ -1252,8 +1281,7 @@ class GUI:
 
                     # ── Acquisition (stream control + spectrum info) ──
                     with dpg.child_window(border=True, autosize_x=True,
-                                          autosize_y=False, height=340,
-                                          no_scrollbar=True) as _s2:
+                                          autosize_y=True) as _s2:
                         dpg.bind_item_theme(_s2, self._sect_theme)
                         dpg.add_text('Acquisition')
                         dpg.add_separator()
@@ -1275,16 +1303,16 @@ class GUI:
                             dpg.add_button(label='Single',
                                            tag=ui.ACQ_SINGLE,
                                            callback=self._collect_sample,
-                                           width=-1)
+                                           width=_BTN_HALF)
                             dpg.add_button(label='Autoscale',
                                            tag=ui.ACQ_AUTOSCALE,
                                            callback=self._autoscale_plots,
-                                           width=-1)
+                                           width=_BTN_HALF)
                         with dpg.group(horizontal=True):
                             dpg.add_button(label='Clear Cache',
                                            tag=ui.ACQ_CLEAR_CACHE,
                                            callback=self._clear_cache,
-                                           width=-1)
+                                           width=_BTN_HALF)
                         dpg.add_spacer(height=2)
                         with dpg.group(horizontal=True):
                             dpg.add_button(label='<', tag=ui.ACQ_BROWSE_PREV,
@@ -1299,8 +1327,8 @@ class GUI:
                         dpg.add_text('Spectrum Setup', color=_c('ON_SURFACE'))
                         dpg.add_input_text(tag=ui.SPECTRUM_INFO_TEXT,
                                            multiline=True, readonly=True,
-                                           default_value='', width=-1, height=112)
-                        dpg.add_button(label='Spectrum Setup',
+                                           default_value='', width=-1, height=120)
+                        dpg.add_button(label='Acquisition Setup',
                                        tag=ui.BTN_SPECTRUM_SETUP,
                                        callback=lambda: self._open_config_dialog(
                                            ui.CONFIG_TAB_SPECTRUM),
@@ -1310,16 +1338,18 @@ class GUI:
 
                     # ── File Handling ─────────────────────────────────
                     with dpg.child_window(border=True, autosize_x=True,
-                                          height=78, no_scrollbar=True) as _s4:
+                                          autosize_y=True) as _s4:
                         dpg.bind_item_theme(_s4, self._sect_theme)
                         dpg.add_text('File Handling')
                         dpg.add_separator()
                         with dpg.group(horizontal=True):
                             dpg.add_button(label='Save', tag=ui.FILE_SAVE,
-                                           callback=self._on_save_click, width=-1)
+                                           callback=self._on_save_click,
+                                           width=_BTN_HALF)
                             dpg.add_button(label='Load', tag=ui.FILE_LOAD,
-                                           callback=lambda: dpg.show_item(ui.DLG_LOAD_FILE),
-                                           width=-1)
+                                           callback=lambda: dpg.show_item(
+                                               ui.DLG_LOAD_FILE),
+                                           width=_BTN_HALF)
 
                 # ── Main column (center — plots) ──────────────────────
                 with dpg.child_window(width=-RESULTS_WIDTH, autosize_y=True,
@@ -1407,7 +1437,7 @@ class GUI:
                     # _update_results_section_visibility shows enabled ones)
                     for _ch in range(_MAX_CHANNELS):
                         with dpg.child_window(border=True, autosize_x=True,
-                                              height=_RESULTS_CARD_HEIGHT,
+                                              autosize_y=True,
                                               tag=ui.ch_result_section(_ch),
                                               show=False) as _sr:
                             dpg.bind_item_theme(_sr, self._sect_theme)
