@@ -56,8 +56,9 @@ def test_collect_sample_returns_dict():
     collector.disconnect_sensor()
 
     assert isinstance(result, dict), f'Expected dict, got {type(result)}'
-    assert len(result) > 0
-    for sample in result.values():
+    ch_data = {k: v for k, v in result.items() if isinstance(k, int)}
+    assert len(ch_data) > 0
+    for sample in ch_data.values():
         assert isinstance(sample, VibeSample), f'invalid sample {sample}'
         assert sample.blocksize > 1
 
@@ -68,7 +69,7 @@ def test_collect_sample_signal_processing():
     result = collector.collect_sample()
     collector.disconnect_sensor()
 
-    for sample in result.values():
+    for sample in (v for k, v in result.items() if isinstance(k, int)):
         acc, rms = sample.get_accel()
         assert acc.time.to_numpy().flags['C_CONTIGUOUS']
         assert acc.signal.to_numpy().flags['C_CONTIGUOUS']
@@ -87,7 +88,7 @@ def test_save_load_roundtrip():
     collector.disconnect_sensor()
 
     assert result, 'collect_sample returned empty dict'
-    first_sample = next(iter(result.values()))
+    first_sample = next(v for k, v in result.items() if isinstance(k, int))
     assert isinstance(first_sample, VibeSample)
 
     # Save via DataCollector (new multi-channel format)

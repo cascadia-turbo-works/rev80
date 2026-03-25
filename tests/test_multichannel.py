@@ -24,6 +24,11 @@ from vibechecker.scope_sensor import ScopeSensor
 # Helpers
 # ---------------------------------------------------------------------------
 
+def ch_samples(frame: dict) -> dict:
+    """Return only the channel:VibeSample entries, excluding metadata keys."""
+    return {k: v for k, v in frame.items() if isinstance(k, int)}
+
+
 def _make_multichannel_samp(n, channels, value_per_channel=None):
     """Build a raw dict as produced by PicoScopeStream for N channels."""
     if value_per_channel is None:
@@ -65,7 +70,7 @@ class TestRecieveDataMultiChannel:
         result = _collect(collector, _make_multichannel_samp(n, [0, 1]))
 
         assert isinstance(result, dict)
-        assert set(result.keys()) == {0, 1}
+        assert set(ch_samples(result).keys()) == {0, 1}
 
     def test_each_value_is_vibesample(self):
         collector = DataCollector()
@@ -74,7 +79,7 @@ class TestRecieveDataMultiChannel:
 
         result = _collect(collector, _make_multichannel_samp(n, [0, 1]))
 
-        for sample in result.values():
+        for sample in ch_samples(result).values():
             assert isinstance(sample, VibeSample)
 
     def test_channel_data_values_are_independent(self):
@@ -97,8 +102,8 @@ class TestRecieveDataMultiChannel:
 
         result = _collect(collector, _make_multichannel_samp(n, [0, 1, 2, 3]))
 
-        assert len(result) == 4
-        assert set(result.keys()) == {0, 1, 2, 3}
+        assert len(ch_samples(result)) == 4
+        assert set(ch_samples(result).keys()) == {0, 1, 2, 3}
 
     def test_single_enabled_channel_only(self):
         """When only one channel is in the payload, exactly one sample returned."""
@@ -108,7 +113,7 @@ class TestRecieveDataMultiChannel:
 
         result = _collect(collector, _make_multichannel_samp(n, [0]))
 
-        assert list(result.keys()) == [0]
+        assert list(ch_samples(result).keys()) == [0]
 
     def test_non_contiguous_channels(self):
         """Channels [0, 2] (B disabled) returns keys 0 and 2 only."""
@@ -118,7 +123,7 @@ class TestRecieveDataMultiChannel:
 
         result = _collect(collector, _make_multichannel_samp(n, [0, 2]))
 
-        assert set(result.keys()) == {0, 2}
+        assert set(ch_samples(result).keys()) == {0, 2}
 
     def test_channel_a_only_no_b(self):
         """Disabling channel B: only channel A data returned."""
@@ -289,7 +294,7 @@ class TestFrameCache:
         self._push(collector, n_blocks=1)
         frame = collector.data['frame_cache'][-1]
         assert isinstance(frame, dict)
-        for sample in frame.values():
+        for sample in ch_samples(frame).values():
             assert isinstance(sample, VibeSample)
 
     def test_browse_frame_moves_cursor(self):

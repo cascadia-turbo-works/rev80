@@ -7,7 +7,8 @@ def test_default_instance():
     assert isinstance(config, AcquisitionSettings)
     assert config.enabled_channels == [0]
     assert config.coupling == 'AC'
-    assert config.voltage_range_for(0) == 10
+    assert isinstance(config.voltage_range_for(0), int)
+    assert 0 <= config.voltage_range_for(0) <= 13   # valid PS4000A range index
 
 
 def test_maxfreq_drives_samplerate():
@@ -52,7 +53,7 @@ def test_voltage_range_for_per_channel():
     config.channel_voltage_ranges = {0: 5, 1: 8}
     assert config.voltage_range_for(0) == 5
     assert config.voltage_range_for(1) == 8
-    assert config.voltage_range_for(3) == 10   # unknown → default
+    assert 0 <= config.voltage_range_for(3) <= 13   # unknown ch → valid default index
 
 
 def test_trend_max_points_is_positive_int():

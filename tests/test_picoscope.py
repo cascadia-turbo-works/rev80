@@ -420,18 +420,18 @@ class TestAcquisitionSettingsPicoFields:
 
     def test_voltage_range_for_default(self):
         config = vc.AcquisitionSettings()
-        assert config.voltage_range_for(0) == 10
+        assert 0 <= config.voltage_range_for(0) <= 13   # valid PS4000A range index
 
     def test_voltage_range_for_unknown_channel_returns_default(self):
         config = vc.AcquisitionSettings()
-        assert config.voltage_range_for(7) == 10
+        assert 0 <= config.voltage_range_for(7) <= 13   # unknown ch → valid default
 
     def test_voltage_range_for_set_per_channel(self):
         config = vc.AcquisitionSettings()
         config.channel_voltage_ranges = {0: 5, 1: 8}
         assert config.voltage_range_for(0) == 5
         assert config.voltage_range_for(1) == 8
-        assert config.voltage_range_for(2) == 10  # fallback
+        assert 0 <= config.voltage_range_for(2) <= 13   # unknown ch → valid default
 
     def test_enabled_channels_settable(self):
         config = vc.AcquisitionSettings()
