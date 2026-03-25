@@ -46,6 +46,9 @@ _CH_COLORS = [
 _MAXFREQ_LABELS = [f'{int(f)} Hz' for f in vibechecker.MAXFREQS]
 _BINSIZE_LABELS  = [f'{b} Hz/bin' for b in vibechecker.BINSIZES]
 
+# Welch FFT window options (scipy.signal.welch 'window' argument strings)
+_FFT_WINDOWS = ['hann', 'blackmanharris', 'flattop', 'hamming', 'boxcar', 'bartlett']
+
 # Signal generator waveform names → PS4000A wave type string
 _SIGGEN_WAVE_TYPES: dict[str, str] = {
     'Sine':     'PS4000A_SINE',
@@ -437,7 +440,8 @@ class GUI:
             f'{cfg.binsize:.2f} Hz/bin\n'
             f'{cfg.blocksize} samples\n'
             f'Sample Rate: {fs_ks:.1f} kS/sec\n'
-            f'Collection time: {t_col:.3f} sec'
+            f'Collection time: {t_col:.3f} sec\n'
+            f'Window: {cfg.fft_window}'
         )
         if dpg.does_item_exist(ui.SPECTRUM_INFO_TEXT):
             dpg.set_value(ui.SPECTRUM_INFO_TEXT, info)
@@ -711,6 +715,10 @@ class GUI:
                 self.collector.config.binsize = vibechecker.BINSIZES[_BINSIZE_LABELS.index(bs_str)]
             except (ValueError, IndexError):
                 pass
+        if dpg.does_item_exist(ui.SPEC_DLG_WINDOW):
+            win = dpg.get_value(ui.SPEC_DLG_WINDOW)
+            if win in _FFT_WINDOWS:
+                self.collector.config.fft_window = win
         if dpg.does_item_exist(ui.SPEC_DLG_TREND_FMIN):
             self.collector.config.trend_fmin = float(dpg.get_value(ui.SPEC_DLG_TREND_FMIN) or 0.0)
         if dpg.does_item_exist(ui.SPEC_DLG_TREND_FMAX):
@@ -767,6 +775,8 @@ class GUI:
         if dpg.does_item_exist(ui.SPEC_DLG_BINSIZE):
             if curr_bs in _BINSIZE_LABELS:
                 dpg.set_value(ui.SPEC_DLG_BINSIZE, curr_bs)
+        if dpg.does_item_exist(ui.SPEC_DLG_WINDOW):
+            dpg.set_value(ui.SPEC_DLG_WINDOW, cfg.fft_window)
         if dpg.does_item_exist(ui.SPEC_DLG_TREND_FMIN):
             dpg.set_value(ui.SPEC_DLG_TREND_FMIN, cfg.trend_fmin)
         if dpg.does_item_exist(ui.SPEC_DLG_TREND_FMAX):
@@ -794,6 +804,10 @@ class GUI:
         self.collector.config.binsize = binsize
         self.collector.config.trend_fmin = trend_fmin
         self.collector.config.trend_fmax = trend_fmax if trend_fmax > 0 else None
+        if dpg.does_item_exist(ui.SPEC_DLG_WINDOW):
+            win = dpg.get_value(ui.SPEC_DLG_WINDOW)
+            if win in _FFT_WINDOWS:
+                self.collector.config.fft_window = win
         if self.collector.sensor is not None:
             self.collector.reconnect_stream()
         if was_streaming:
@@ -1133,6 +1147,9 @@ class GUI:
                     dpg.add_text('Bin Size')
                     dpg.add_listbox(items=_BINSIZE_LABELS, tag=ui.SPEC_DLG_BINSIZE,
                                     num_items=len(_BINSIZE_LABELS), width=-1)
+                    dpg.add_spacer(height=6)
+                    dpg.add_combo(label='FFT Window', tag=ui.SPEC_DLG_WINDOW,
+                                  items=_FFT_WINDOWS, default_value='hann', width=160)
                     dpg.add_spacer(height=6)
                     dpg.add_text('Trend Frequency Window')
                     with dpg.group(horizontal=True):

@@ -35,6 +35,7 @@ class AcquisitionSettings:
     trend_max_points: int = 500
     trend_fmin: float = 0.0
     trend_fmax: float | None = None   # None → clamp to maxfreq at compute time
+    fft_window: str = 'hann'
 
     def voltage_range_for(self, ch: int) -> int:
         """Return the PS4000A voltage range index for a given channel (default ±2V)."""
@@ -249,7 +250,7 @@ class VibeSample:
         freq, source_spectrum = signal.welch(
             self.data,
             fs=float(fs),
-            window='hann',
+            window=config.fft_window,
             nperseg=nperseg,
             noverlap=noverlap,
             nfft=nfft,
