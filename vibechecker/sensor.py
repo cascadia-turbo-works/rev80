@@ -48,26 +48,24 @@ class VibeSensor:
         self.callback = callback   # app callback — DataCollector.receive_data
 
         if self.is_simulation:
-            # SimulatedSensor fires _sd_callback (sounddevice-style args) which
-            # packages the dict and forwards to self.callback.
-            return vibechecker.SimulatedSensor(config, sensor=self, callback=self._sd_callback)
+            return vibechecker.SimulatedSensor(config, sensor=self, callback=self._callback)
 
         from vibechecker.picoscope import PicoScopeStream
         return PicoScopeStream(config, callback=callback, siggen_config=siggen_config)
 
-    def _sd_callback(self, sd_data: np.ndarray, frames: int, sd_time, sd_status: str):
-        """sounddevice / SimulatedSensor callback — packages raw data into a dict
-        and forwards to the registered app callback (DataCollector.receive_data)."""
-        status = str(sd_status)
+    def _callback(self, raw_data: np.ndarray, frames: int, cb_time, cb_status):
+        """SimulatedSensor callback — packages raw data into a dict and forwards
+        to the registered app callback (DataCollector.receive_data)."""
+        status = str(cb_status)
         try:
-            rel_time = float(sd_time)
+            rel_time = float(cb_time)
         except (TypeError, ValueError):
             rel_time = 0.0
 
-        data = sd_data.copy() * self.scale
+        data = raw_data.copy() * self.scale
 
         # Derive channel list from data shape (columns = sequential channels).
-        # sounddevice always returns 2-D (frames, N); SimulatedSensor matches.
+        # Data is 2-D (frames, channels); SimulatedSensor matches this layout.
         channels = list(range(data.shape[1])) if data.ndim == 2 else [0]
 
         sample = {

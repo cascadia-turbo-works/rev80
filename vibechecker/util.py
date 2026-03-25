@@ -177,9 +177,12 @@ class UI_Elements:
     FILE_LOAD = 'FILE_LOAD'
 
     # ── Dialogs ────────────────────────────────────────────────────────────
-    DLG_DEVICE_SETUP    = 'DLG_DEVICE_SETUP'
-    DLG_SPECTRUM_SETUP  = 'DLG_SPECTRUM_SETUP'
-    DLG_SENSOR_REGISTRY = 'DLG_SENSOR_REGISTRY'
+    DLG_CONFIG           = 'DLG_CONFIG'
+    CONFIG_TAB_BAR       = 'CONFIG_TAB_BAR'
+    CONFIG_TAB_DEVICE    = 'CONFIG_TAB_DEVICE'
+    CONFIG_TAB_CHANNELS  = 'CONFIG_TAB_CHANNELS'
+    CONFIG_TAB_SENSORS   = 'CONFIG_TAB_SENSORS'
+    CONFIG_TAB_SPECTRUM  = 'CONFIG_TAB_SPECTRUM'
     DLG_SAVE_FILE       = 'DLG_SAVE_FILE'
     DLG_LOAD_FILE       = 'DLG_LOAD_FILE'
 
@@ -215,6 +218,9 @@ class UI_Elements:
     FFT_PEAKS_DISPLAY_COUNT = 'FFT_PEAK_DISPLAY_COUNT'
     FFT_PEAKS_TABLE         = 'FFT_PEAKS_TABLE'
 
+    # ── Results pane ────────────────────────────────────────────────────────
+    CH_WARNINGS_SECTION = 'CH_WARNINGS_SECTION'
+
     # ── Per-channel dynamic tags ───────────────────────────────────────────
     @staticmethod
     def scope_ch_enabled(ch: int) -> str:
@@ -223,6 +229,26 @@ class UI_Elements:
     @staticmethod
     def scope_ch_sensor(ch: int) -> str:
         return f'SCOPE_CH{ch}_SENSOR'
+
+    @staticmethod
+    def scope_ch_range(ch: int) -> str:
+        return f'SCOPE_CH{ch}_RANGE'
+
+    @staticmethod
+    def ch_overflow_warning(ch: int) -> str:
+        return f'CH{ch}_OVERFLOW'
+
+    @staticmethod
+    def ch_result_section(ch: int) -> str:
+        return f'CH{ch}_RESULT_SECTION'
+
+    @staticmethod
+    def ch_overall_value(ch: int) -> str:
+        return f'CH{ch}_OVERALL'
+
+    @staticmethod
+    def ch_peaks_table(ch: int) -> str:
+        return f'CH{ch}_PEAKS_TABLE'
 
     @staticmethod
     def plt_time_series(ch: int) -> str:

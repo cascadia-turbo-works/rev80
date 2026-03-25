@@ -453,12 +453,13 @@ class PicoScopeStream:
             status   = 'OVERFLOW' if overflow else 'OKAY'
 
             samp = {
-                'status':    status,
-                'rel_time':  rel_time,
-                'timestamp': datetime.now(),
-                'unit':      ['mV'] * N,
-                'channels':  list(self._enabled_channels),
-                'data':      block,                         # shape (blocksize, N)
+                'status':        status,
+                'overflow_mask': int(overflow),  # bitmask: bit n set → Ch n clipped
+                'rel_time':      rel_time,
+                'timestamp':     datetime.now(),
+                'unit':          ['mV'] * N,
+                'channels':      list(self._enabled_channels),
+                'data':          block,           # shape (blocksize, N)
             }
             try:
                 self._app_callback(samp)

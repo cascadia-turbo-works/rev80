@@ -29,15 +29,15 @@ class AcquisitionSettings:
     # PicoScope channel settings (ignored by sounddevice / SimulatedSensor paths)
     coupling: str = 'AC'      # 'AC' or 'DC'
     enabled_channels: list = field(default_factory=lambda: [0])
-    channel_voltage_ranges: dict = field(default_factory=lambda: {0: 10})
+    channel_voltage_ranges: dict = field(default_factory=lambda: {0: 7})
     # Trend history settings
     trend_max_points: int = 500
     trend_fmin: float = 0.0
     trend_fmax: float | None = None   # None → clamp to maxfreq at compute time
 
     def voltage_range_for(self, ch: int) -> int:
-        """Return the PS4000A voltage range index for a given channel (default ±20V)."""
-        return self.channel_voltage_ranges.get(ch, 10)
+        """Return the PS4000A voltage range index for a given channel (default ±2V)."""
+        return self.channel_voltage_ranges.get(ch, 7)
 
     @classmethod
     def copy(cls, settings):

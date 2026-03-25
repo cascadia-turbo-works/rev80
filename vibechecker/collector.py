@@ -290,6 +290,7 @@ class DataCollector:
         if data_arr.ndim == 1:
             data_arr = data_arr[:, np.newaxis]
 
+        overflow_mask: int = samp.get('overflow_mask', 0)
         samples: dict[int, vibechecker.VibeSample] = {}
 
         for i, ch in enumerate(channels):
@@ -325,6 +326,7 @@ class DataCollector:
                 samp['rel_time'],
             )
 
+        samples['overflow'] = overflow_mask   # int bitmask, bit n → Ch n clipped
         self.data_callback(samples)
 
     def data_callback(self, samples: dict):
@@ -360,14 +362,15 @@ class DataCollector:
             frames_grp = f.create_group('frames')
             for i, frame_samples in enumerate(frames):
                 fg = frames_grp.create_group(str(i))
-                first = next(iter(frame_samples.values()))
+                ch_only = {k: v for k, v in frame_samples.items() if isinstance(k, int)}
+                first = next(iter(ch_only.values()))
                 meta = fg.create_group('meta')
                 meta.create_dataset('timestamp',  data=first.timestamp)
                 meta.create_dataset('rel_time',   data=first.rel_time)
                 meta.create_dataset('samplerate', data=first.samplerate)
                 meta.create_dataset('status',     data=first.status)
                 ch_grp = fg.create_group('channels')
-                for ch, sample in frame_samples.items():
+                for ch, sample in ch_only.items():
                     cg = ch_grp.create_group(str(ch))
                     cg.create_dataset('data',     data=sample.data)
                     cg.create_dataset('unit',     data=sample.unit)
