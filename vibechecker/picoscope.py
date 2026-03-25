@@ -292,9 +292,6 @@ class PicoScopeStream:
         log.debug(f'PicoScope opened, maxADC={self._maxADC.value}')
 
     def _configure_channel(self):
-        coupling_key = ('PS4000A_AC' if self.config.coupling == 'AC'
-                        else 'PS4000A_DC')
-        coupling = ps.PS4000A_COUPLING[coupling_key]
         channel_keys = [f'PS4000A_CHANNEL_{chr(65 + i)}' for i in range(8)]
 
         for i, ch_key in enumerate(channel_keys):
@@ -303,6 +300,9 @@ class PicoScopeStream:
             except KeyError:
                 # This scope variant doesn't have this many channels
                 break
+            coupling_key = ('PS4000A_AC' if self.config.coupling_for(i) == 'AC'
+                            else 'PS4000A_DC')
+            coupling = ps.PS4000A_COUPLING[coupling_key]
             if i in self._enabled_channels:
                 assert_pico_ok(ps.ps4000aSetChannel(
                     self._chandle, ch_id,

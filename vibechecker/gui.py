@@ -24,6 +24,8 @@ TIME_PLOT_HEIGHT = 300
 
 _MAX_CHANNELS         = 8
 _DEFAULT_NUM_CHANNELS = 4
+# Height of each per-channel result card so 4 cards fit the default window height
+_RESULTS_CARD_HEIGHT  = (WINDOW_HEIGHT - 70) // 4   # ≈ 232 px
 
 def _c(key: str, alpha: int = 255) -> tuple:
     """Shorthand: THEME_COLORS[key] → DPG RGBA tuple."""
@@ -420,7 +422,7 @@ class GUI:
         fs_ks  = cfg.samplerate / 1000
         t_col  = cfg.acquisition_period
         info = (
-            f'{cfg.maxfreq:.0f} Hz  (max freq)\n'
+            f'{cfg.maxfreq:.0f} Hz\n'
             f'{n_bins} bins\n'
             f'{cfg.binsize:.2f} Hz/bin\n'
             f'{cfg.blocksize} samples\n'
@@ -568,7 +570,8 @@ class GUI:
         if not dpg.does_item_exist('DEVSETUP_CHANNEL_GROUP'):
             return
         for ch in range(_MAX_CHANNELS):
-            for tag in [ui.scope_ch_enabled(ch), ui.scope_ch_sensor(ch)]:
+            for tag in [ui.scope_ch_enabled(ch), ui.scope_ch_sensor(ch),
+                        ui.scope_ch_range(ch), ui.scope_ch_coupling(ch)]:
                 if dpg.does_alias_exist(tag):
                     dpg.remove_alias(tag)
         dpg.delete_item('DEVSETUP_CHANNEL_GROUP', children_only=True)
@@ -587,6 +590,7 @@ class GUI:
             default_r   = (_VOLTAGE_RANGE_LABELS[range_idx]
                            if range_idx < len(_VOLTAGE_RANGE_LABELS)
                            else _VOLTAGE_RANGE_LABELS[7])
+            default_c   = self.collector.config.coupling_for(ch)
             with dpg.group(horizontal=True,
                            parent='DEVSETUP_CHANNEL_GROUP'):
                 dpg.add_checkbox(
@@ -594,6 +598,14 @@ class GUI:
                     tag=ui.scope_ch_enabled(ch),
                     default_value=is_enabled,
                     callback=lambda s, d, c=ch: self._on_channel_enable_change(c),
+                )
+                dpg.add_combo(
+                    label='',
+                    tag=ui.scope_ch_coupling(ch),
+                    items=['AC', 'DC'],
+                    default_value=default_c,
+                    width=50,
+                    callback=lambda s, d, c=ch: self._on_coupling_combo_change(c, d),
                 )
                 dpg.add_combo(
                     label='',
@@ -657,6 +669,11 @@ class GUI:
                 if label in _VOLTAGE_RANGE_LABELS:
                     self.collector.config.channel_voltage_ranges[ch] = (
                         _VOLTAGE_RANGE_LABELS.index(label))
+            coupling_tag = ui.scope_ch_coupling(ch)
+            if dpg.does_item_exist(coupling_tag):
+                val = dpg.get_value(coupling_tag)
+                if val in ('AC', 'DC'):
+                    self.collector.config.channel_couplings[ch] = val
         self.collector.config.enabled_channels.sort()
         # Sync plot series visibility with final widget state
         for ch in range(self._num_channels):
@@ -873,6 +890,7 @@ class GUI:
                 'sensor_id':     self.collector.scope_sensors[c].id
                                  if c in self.collector.scope_sensors else None,
                 'voltage_range': self.collector.config.voltage_range_for(c),
+                'coupling':      self.collector.config.coupling_for(c),
             }
             for c in range(self._num_channels)
         }
@@ -903,6 +921,12 @@ class GUI:
         if not self.collector.is_streaming:
             self.collector.reprocess_last_block()
 
+    def _on_coupling_combo_change(self, ch: int, value: str):
+        if value in ('AC', 'DC'):
+            self.collector.config.channel_couplings[ch] = value
+            if self.collector.sensor is not None:
+                self.collector.reconnect_stream()
+
     def _on_range_combo_change(self, ch: int, label: str):
         if label not in _VOLTAGE_RANGE_LABELS:
             return
@@ -930,9 +954,11 @@ class GUI:
             sensor_id     = info.get('sensor_id')
             enabled       = info.get('enabled', True)
             voltage_range = info.get('voltage_range', 7)
+            coupling      = info.get('coupling', 'AC')
             sensor        = self.registry.find_by_id(sensor_id) if sensor_id else None
             self.collector.set_scope_sensor(ch, sensor)
             self.collector.config.channel_voltage_ranges[ch] = voltage_range
+            self.collector.config.channel_couplings[ch] = coupling
             if enabled and ch not in self.collector.config.enabled_channels:
                 self.collector.config.enabled_channels.append(ch)
             elif not enabled and ch in self.collector.config.enabled_channels:
@@ -944,6 +970,9 @@ class GUI:
             range_tag = ui.scope_ch_range(ch)
             if dpg.does_item_exist(range_tag) and voltage_range < len(_VOLTAGE_RANGE_LABELS):
                 dpg.set_value(range_tag, _VOLTAGE_RANGE_LABELS[voltage_range])
+            coupling_tag = ui.scope_ch_coupling(ch)
+            if dpg.does_item_exist(coupling_tag):
+                dpg.set_value(coupling_tag, coupling)
             if enabled:
                 self._add_channel_series(ch)
             else:
@@ -1261,15 +1290,15 @@ class GUI:
                     dpg.add_spacer(height=4)
                     dpg.add_input_int(label='# Peaks',
                                       tag=ui.FFT_PEAKS_DISPLAY_COUNT,
-                                      default_value=1, callback=self._redraw,
-                                      width=80)
+                                      default_value=3, callback=self._redraw,
+                                      width=60)
                     dpg.add_spacer(height=4)
 
                     # Per-channel result sections (all hidden by default;
                     # _update_results_section_visibility shows enabled ones)
                     for _ch in range(_MAX_CHANNELS):
                         with dpg.child_window(border=True, autosize_x=True,
-                                              autosize_y=True,
+                                              height=_RESULTS_CARD_HEIGHT,
                                               tag=ui.ch_result_section(_ch),
                                               show=False) as _sr:
                             dpg.bind_item_theme(_sr, self._sect_theme)
@@ -1278,12 +1307,12 @@ class GUI:
                             dpg.add_input_text(label='0-P',
                                                tag=ui.ch_overall_value(_ch),
                                                readonly=True, default_value='0.0',
-                                               width=-1)
+                                               width=RESULTS_WIDTH // 2)
                             dpg.add_table(header_row=True, row_background=True,
                                           borders_innerV=True,
                                           no_host_extendX=True,
                                           tag=ui.ch_peaks_table(_ch))
-                        dpg.add_spacer(height=4)
+                        dpg.add_spacer(height=2)
 
     def initialize(self):
         self.create_gui()

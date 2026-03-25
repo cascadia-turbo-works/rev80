@@ -235,6 +235,10 @@ class UI_Elements:
         return f'SCOPE_CH{ch}_RANGE'
 
     @staticmethod
+    def scope_ch_coupling(ch: int) -> str:
+        return f'SCOPE_CH{ch}_COUPLING'
+
+    @staticmethod
     def ch_overflow_warning(ch: int) -> str:
         return f'CH{ch}_OVERFLOW'
 

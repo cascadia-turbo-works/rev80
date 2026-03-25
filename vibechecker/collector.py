@@ -375,6 +375,7 @@ class DataCollector:
                     cg.create_dataset('data',     data=sample.data)
                     cg.create_dataset('unit',     data=sample.unit)
                     cg.create_dataset('modality', data=sample.modality)
+                    cg.create_dataset('coupling', data=self.config.coupling_for(ch))
 
             trend_grp = f.create_group('trend')
             for ch, td in self.data['trend'].items():

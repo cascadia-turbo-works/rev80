@@ -108,10 +108,9 @@ class ScopeSensorRegistry:
                 if isinstance(v, str):
                     result[int(k)] = {'enabled': True, 'sensor_id': v}
                 elif isinstance(v, dict):
-                    result[int(k)] = {
-                        'enabled':   bool(v.get('enabled', True)),
-                        'sensor_id': v.get('sensor_id'),
-                    }
+                    entry = dict(v)
+                    entry.setdefault('enabled', True)
+                    result[int(k)] = entry
             return result
         except Exception:
             return {}
