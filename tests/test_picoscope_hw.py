@@ -51,14 +51,12 @@ SIGGEN_CFG = {
 # ---------------------------------------------------------------------------
 
 def _hardware_available() -> bool:
-    return any(not s.is_simulation for s in vc.VibeSensor.find())
+    return len(vc.VibeSensor.find()) > 0
 
 
 def _get_hardware_sensor() -> vc.VibeSensor | None:
-    for s in vc.VibeSensor.find():
-        if not s.is_simulation:
-            return s
-    return None
+    sensors = vc.VibeSensor.find()
+    return sensors[0] if sensors else None
 
 
 hardware_skip = pytest.mark.skipif(

@@ -42,6 +42,7 @@ class DataCollector:
         self.scope_sensors: dict[int, ScopeSensor] = {}
         self.callbacks: dict = {}
         self._cache_cursor: int = 0
+        self.siggen_config: dict | None = None
 
         if sensor is not None:
             self.connect_sensor(sensor)
@@ -274,7 +275,8 @@ class DataCollector:
         if self.stream is not None:
             self.stream.close()
             self.stream = None
-        self.stream = sensor.connect(self.config, self.receive_data)
+        self.stream = sensor.connect(self.config, self.receive_data,
+                                     siggen_config=self.siggen_config)
         if was_streaming:
             self.start_stream()
 

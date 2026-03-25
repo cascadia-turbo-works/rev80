@@ -25,9 +25,9 @@ class VibeSensor:
 
     @classmethod
     def find(cls):
-        sensors = [cls.simulated()]
-        sensors += [cls(**dev) for dev in vibechecker.FindPicoScope()]
-        return sensors
+        """Return all connected hardware sensors. SimulatedSensor is excluded —
+        use VibeSensor.simulated() directly for CI/testing."""
+        return [cls(**dev) for dev in vibechecker.FindPicoScope()]
 
     @classmethod
     def simulated(cls):

@@ -240,7 +240,7 @@ class TestEnabledChannels:
 
 class TestCollectSampleMultiChannel:
 
-    @pytest.mark.parametrize('dev', VibeSensor.find())
+    @pytest.mark.parametrize('dev', [VibeSensor.simulated()])
     def test_collect_sample_returns_dict(self, dev):
         collector = DataCollector(dev)
         result = collector.collect_sample()

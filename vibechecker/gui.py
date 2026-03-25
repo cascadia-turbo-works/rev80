@@ -46,6 +46,16 @@ _CH_COLORS = [
 _MAXFREQ_LABELS = [f'{int(f)} Hz' for f in vibechecker.MAXFREQS]
 _BINSIZE_LABELS  = [f'{b} Hz/bin' for b in vibechecker.BINSIZES]
 
+# Signal generator waveform names → PS4000A wave type string
+_SIGGEN_WAVE_TYPES: dict[str, str] = {
+    'Sine':     'PS4000A_SINE',
+    'Square':   'PS4000A_SQUARE',
+    'Triangle': 'PS4000A_TRIANGLE',
+    'Ramp Up':  'PS4000A_RAMP_UP',
+    'Ramp Down':'PS4000A_RAMP_DOWN',
+    'DC':       'PS4000A_DC_VOLTAGE',
+}
+
 # PS4000A voltage range labels — index matches PS4000A_RANGE enum (0=±10mV … 10=±20V)
 _VOLTAGE_RANGE_LABELS = [
     '±10mV', '±20mV', '±50mV', '±100mV', '±200mV', '±500mV',
@@ -516,6 +526,8 @@ class GUI:
             self._populate_spectrum_tab()
         elif tab_tag == ui.CONFIG_TAB_SENSORS:
             self._init_sensor_registry_tab()
+        elif tab_tag == ui.CONFIG_TAB_SIGGEN:
+            self._populate_siggen_tab()
 
     def _start_device_discovery(self, sender=None, data=None):
         """Clear device list, show placeholder, then discover in a background thread."""
@@ -532,8 +544,6 @@ class GUI:
             self._set_device_status('disconnected')
             self._set_stream_status('idle')
         self.found_sensors = vibechecker.VibeSensor.find()
-        # Real hardware first, simulated last
-        self.found_sensors.sort(key=lambda s: getattr(s, 'is_simulation', False))
         self._repopulate_device_list()
         self._rebuild_device_channel_rows()
 
@@ -561,8 +571,6 @@ class GUI:
                              color=_c('ON_SURFACE'), indent=10)
                 dpg.add_text(f'  Channels:  {sensor.num_channels}',
                              color=_c('ON_SURFACE'), indent=10)
-                if getattr(sensor, 'is_simulation', False):
-                    dpg.add_text('  [Simulated]', color=_c('YELLOW'), indent=10)
                 dpg.add_spacer(height=4)
 
     def _rebuild_device_channel_rows(self):
@@ -709,6 +717,19 @@ class GUI:
             fmax = float(dpg.get_value(ui.SPEC_DLG_TREND_FMAX) or 0.0)
             self.collector.config.trend_fmax = fmax if fmax > 0 else None
 
+        # Apply signal generator config
+        if dpg.does_item_exist(ui.SIGGEN_ENABLED):
+            if dpg.get_value(ui.SIGGEN_ENABLED):
+                wave_name = dpg.get_value(ui.SIGGEN_WAVE_TYPE)
+                self.collector.siggen_config = {
+                    'wave_type':  _SIGGEN_WAVE_TYPES.get(wave_name, 'PS4000A_SINE'),
+                    'freq_hz':    float(dpg.get_value(ui.SIGGEN_FREQ_HZ) or 1000.0),
+                    'pktopk_uv':  int(float(dpg.get_value(ui.SIGGEN_PKTOPK_MV) or 0.0) * 1000),
+                    'offset_uv':  int(float(dpg.get_value(ui.SIGGEN_OFFSET_MV) or 0.0) * 1000),
+                }
+            else:
+                self.collector.siggen_config = None
+
         # Apply channel/sensor assignments from widgets
         was_streaming = self.collector.is_streaming
         if was_streaming:
@@ -781,6 +802,28 @@ class GUI:
             self.collector.clear_trend()
             self.collector.reprocess_last_block()
         self._update_spectrum_info()
+
+    # ------------------------------------------------------------------
+    # Signal Generator Tab
+    # ------------------------------------------------------------------
+
+    def _populate_siggen_tab(self):
+        """Sync signal generator tab widgets with current siggen_config."""
+        cfg = self.collector.siggen_config
+        if not dpg.does_item_exist(ui.SIGGEN_ENABLED):
+            return
+        if cfg is None:
+            dpg.set_value(ui.SIGGEN_ENABLED, False)
+        else:
+            dpg.set_value(ui.SIGGEN_ENABLED, True)
+            wave_name = next(
+                (k for k, v in _SIGGEN_WAVE_TYPES.items() if v == cfg.get('wave_type')),
+                'Sine',
+            )
+            dpg.set_value(ui.SIGGEN_WAVE_TYPE, wave_name)
+            dpg.set_value(ui.SIGGEN_FREQ_HZ,   float(cfg.get('freq_hz', 1000.0)))
+            dpg.set_value(ui.SIGGEN_PKTOPK_MV, float(cfg.get('pktopk_uv', 0)) / 1000.0)
+            dpg.set_value(ui.SIGGEN_OFFSET_MV,  float(cfg.get('offset_uv', 0)) / 1000.0)
 
     # ------------------------------------------------------------------
     # Sensor Registry Dialog
@@ -1098,6 +1141,36 @@ class GUI:
                         dpg.add_input_float(label='Hz max', tag=ui.SPEC_DLG_TREND_FMAX,
                                             default_value=0.0, min_value=0.0, width=100)
                     dpg.add_text('(0 max = use spectrum max freq)', indent=4)
+
+                # ── Signal Generator tab ────────────────────────────────
+                with dpg.tab(label='Generate', tag=ui.CONFIG_TAB_SIGGEN):
+                    dpg.add_text('PicoScope Signal Generator')
+                    dpg.add_separator()
+                    dpg.add_checkbox(label='Enable signal generator',
+                                     tag=ui.SIGGEN_ENABLED, default_value=False)
+                    dpg.add_spacer(height=6)
+                    dpg.add_combo(label='Waveform',
+                                  tag=ui.SIGGEN_WAVE_TYPE,
+                                  items=list(_SIGGEN_WAVE_TYPES.keys()),
+                                  default_value='Sine', width=160)
+                    dpg.add_input_float(label='Frequency (Hz)',
+                                        tag=ui.SIGGEN_FREQ_HZ,
+                                        default_value=1000.0,
+                                        min_value=0.0, max_value=20_000_000.0,
+                                        width=160)
+                    dpg.add_input_float(label='Amplitude pk-pk (mV)',
+                                        tag=ui.SIGGEN_PKTOPK_MV,
+                                        default_value=1000.0,
+                                        min_value=0.0, max_value=4000.0,
+                                        width=160)
+                    dpg.add_input_float(label='Offset (mV)',
+                                        tag=ui.SIGGEN_OFFSET_MV,
+                                        default_value=0.0,
+                                        min_value=-2000.0, max_value=2000.0,
+                                        width=160)
+                    dpg.add_spacer(height=6)
+                    dpg.add_text('Note: Only active on PicoScope hardware.',
+                                 color=_c('ON_SURFACE'))
 
             dpg.add_separator()
             dpg.add_button(label='Close', callback=self._on_config_close, width=-1)

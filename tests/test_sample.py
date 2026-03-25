@@ -5,8 +5,7 @@ from path import Path
 from datetime import datetime as dt
 import vibechecker as vc
 
-devs = vc.VibeSensor.find()
-simsensor = devs[0]
+simsensor = vc.VibeSensor.simulated()
 
 
 config = vc.AcquisitionSettings()

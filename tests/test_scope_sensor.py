@@ -148,7 +148,7 @@ def test_load_channel_assignments_missing_file(tmp_path, registry):
 # Pipeline scaling — DataCollector + ScopeSensor
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize('dev', vc.VibeSensor.find())
+@pytest.mark.parametrize('dev', [vc.VibeSensor.simulated()])
 def test_pipeline_no_scope_sensor_unit_unchanged(dev: vc.VibeSensor):
     """Without a ScopeSensor the unit passes through unchanged from the sensor."""
     collector = vc.DataCollector(dev)
