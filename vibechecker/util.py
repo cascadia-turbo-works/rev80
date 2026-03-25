@@ -148,73 +148,67 @@ class FormatError(Exception):
 
 class UI_Elements:
 
-    SENSOR_SELECTOR = 'SENSOR_SELECTOR'
-    SENSOR_REFRESH = 'SENSOR_REFRESH'
-    SENSOR_CONNECT = 'SENSOR_CONNECT'
-    SENSOR_DISCONNECT = 'SENSOR_DISCONNECT'
+    # ── Connection Status section ──────────────────────────────────────────
+    DEVICE_STATUS      = 'DEVICE_STATUS'       # drawlist tag
+    DEVICE_STATUS_RECT = 'DEVICE_STATUS_RECT'
+    CONN_STATUS_TEXT   = 'CONN_STATUS_TEXT'    # "Connected" / "Not Connected"
+    CONN_DEVICE_NAME   = 'CONN_DEVICE_NAME'    # device model name
+    CONN_CHANNEL_SUMMARY = 'CONN_CHANNEL_SUMMARY'  # group for per-channel lines
+    BTN_DEVICE_SETUP   = 'BTN_DEVICE_SETUP'
+    BTN_SENSOR_SETUP   = 'BTN_SENSOR_SETUP'
 
-    ACQ_BLOCKSIZE = 'ACQ_BLOCKSIZE'
-    ACQ_SAMPLERATE = 'ACQ_SAMPLERATE'
-    ACQ_MAXFREQ = 'ACQ_MAXFREQ'
-    ACQ_BINSIZE = 'ACQ_BINSIZE'
-    ACQ_START = 'ACQ_START'
-    ACQ_STOP = 'ACQ_STOP'
-    ACQ_SINGLE = 'ACQ_SINGLE'
-    ACQ_UNITS = 'ACQ_UNITS'
-    ACQ_INTEGRATE = 'ACQ_INTEGRATE'
-    ACQ_NORMALIZATION = 'ACQ_NORMALIZATION'
+    # ── Spectrum Setup section ─────────────────────────────────────────────
+    SPECTRUM_INFO_TEXT = 'SPECTRUM_INFO_TEXT'  # readonly multi-line text
+    BTN_SPECTRUM_SETUP = 'BTN_SPECTRUM_SETUP'
 
-    FILE_NAME = 'FILE_NAME'
-    FILE_TIMESTAMP = 'FILE_TIMESTAMP'
+    # ── Acquisition section ────────────────────────────────────────────────
+    STREAM_STATUS      = 'STREAM_STATUS'       # drawlist tag
+    STREAM_STATUS_RECT = 'STREAM_STATUS_RECT'
+    ACQ_TOGGLE         = 'ACQ_TOGGLE'          # Stopped / Waiting / Running button
+    ACQ_SINGLE         = 'ACQ_SINGLE'
+
+    # ── File Handling section ──────────────────────────────────────────────
     FILE_SAVE = 'FILE_SAVE'
     FILE_LOAD = 'FILE_LOAD'
-    FILE_DIALOG = 'FILE_DIALOG'
 
-    PLT_SAMPLE = 'PLT_SAMPLE'
-    PLT_SAMPLE_AX_TIME = 'PLT_SAMPLE_AX_TIME'
+    # ── Dialogs ────────────────────────────────────────────────────────────
+    DLG_DEVICE_SETUP    = 'DLG_DEVICE_SETUP'
+    DLG_SPECTRUM_SETUP  = 'DLG_SPECTRUM_SETUP'
+    DLG_SENSOR_REGISTRY = 'DLG_SENSOR_REGISTRY'
+    DLG_SAVE_FILE       = 'DLG_SAVE_FILE'
+    DLG_LOAD_FILE       = 'DLG_LOAD_FILE'
+
+    # Spectrum dialog inputs
+    SPEC_DLG_MAXFREQ = 'SPEC_DLG_MAXFREQ'
+    SPEC_DLG_BINSIZE = 'SPEC_DLG_BINSIZE'
+
+    # Sensor registry dialog
+    SCOPE_REGISTRY_LIST   = 'SCOPE_REGISTRY_LIST'
+    SCOPE_REGISTRY_ADD    = 'SCOPE_REGISTRY_ADD'
+    SCOPE_REGISTRY_DELETE = 'SCOPE_REGISTRY_DELETE'
+
+    # ── Plots ──────────────────────────────────────────────────────────────
+    PLT_SAMPLE          = 'PLT_SAMPLE'
+    PLT_SAMPLE_AX_TIME  = 'PLT_SAMPLE_AX_TIME'
     PLT_SAMPLE_AX_ACCEL = 'PLT_SAMPLE_AX_ACCEL'
-    PLT_SAMPLE_OVERALL = 'PLT_SAMPLE_OVERALL'
+    PLT_SAMPLE_OVERALL  = 'PLT_SAMPLE_OVERALL'
 
-    PLT_FREQ = 'PLT_FREQ'
-    PLT_FREQ_AX_FREQ = 'PLT_FREQ_AX_FREQ'
+    PLT_FREQ         = 'PLT_FREQ'
+    PLT_FREQ_AX_FREQ  = 'PLT_FREQ_AX_FREQ'
     PLT_FREQ_AX_ACCEL = 'PLT_FREQ_AX_ACCEL'
-    PLT_FREQ_AX_2 = 'PLT_FREQ_AX_2'
+    PLT_FREQ_AX_2     = 'PLT_FREQ_AX_2'
 
     PLT_SAMPLE_AX_ACCEL_2 = 'PLT_SAMPLE_AX_ACCEL_2'
 
-    PLT_TREND = 'PLT_TREND'
-    PLT_TREND_AX_TIME = 'PLT_TREND_AX_TIME'
+    PLT_TREND          = 'PLT_TREND'
+    PLT_TREND_AX_TIME  = 'PLT_TREND_AX_TIME'
     PLT_TREND_AX_OVERALL = 'PLT_TREND_AX_OVERALL'
-    PLT_TREND_DATA = 'PLT_TREND_DATA'
+    PLT_TREND_DATA     = 'PLT_TREND_DATA'
 
     FFT_PEAKS_DISPLAY_COUNT = 'FFT_PEAK_DISPLAY_COUNT'
-    FFT_PEAKS_TABLE = 'FFT_PEAKS_TABLE'
+    FFT_PEAKS_TABLE         = 'FFT_PEAKS_TABLE'
 
-    DEBUG_TXT = 'DEBUG_TXT'
-
-    # Scope sensor channel assignment + registry
-    SCOPE_REGISTRY_LIST = 'SCOPE_REGISTRY_LIST'
-    SCOPE_REGISTRY_ADD = 'SCOPE_REGISTRY_ADD'
-    SCOPE_REGISTRY_EDIT = 'SCOPE_REGISTRY_EDIT'
-    SCOPE_REGISTRY_DELETE = 'SCOPE_REGISTRY_DELETE'
-    SCOPE_SENSOR_DIALOG = 'SCOPE_SENSOR_DIALOG'
-    SCOPE_DIALOG_NAME = 'SCOPE_DIALOG_NAME'
-    SCOPE_DIALOG_UNITS = 'SCOPE_DIALOG_UNITS'
-    SCOPE_DIALOG_TARGET_UNIT = 'SCOPE_DIALOG_TARGET_UNIT'
-    SCOPE_DIALOG_SENSITIVITY = 'SCOPE_DIALOG_SENSITIVITY'
-    SCOPE_DIALOG_NOTES = 'SCOPE_DIALOG_NOTES'
-    SCOPE_DIALOG_OK = 'SCOPE_DIALOG_OK'
-    SCOPE_DIALOG_CANCEL = 'SCOPE_DIALOG_CANCEL'
-
-    ACQ_EU_DISPLAY = 'ACQ_EU_DISPLAY'
-
-    # Status indicator lights
-    DEVICE_STATUS  = 'DEVICE_STATUS'   # drawlist tag
-    DEVICE_STATUS_RECT = 'DEVICE_STATUS_RECT'
-    STREAM_STATUS  = 'STREAM_STATUS'   # drawlist tag
-    STREAM_STATUS_RECT = 'STREAM_STATUS_RECT'
-
-    # Per-channel dynamic tags
+    # ── Per-channel dynamic tags ───────────────────────────────────────────
     @staticmethod
     def scope_ch_enabled(ch: int) -> str:
         return f'SCOPE_CH{ch}_ENABLED'
@@ -238,11 +232,3 @@ class UI_Elements:
     @staticmethod
     def plt_trend_series(ch: int) -> str:
         return f'PLT_TREND_CH{ch}'
-
-    @property
-    def ACQ(self):
-        return [self.ACQ_MAXFREQ,
-                self.ACQ_BINSIZE,
-                self.ACQ_START,
-                self.ACQ_STOP,
-                self.ACQ_SINGLE]

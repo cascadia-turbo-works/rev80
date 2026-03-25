@@ -12,7 +12,6 @@ import vibechecker
 from vibechecker.scope_sensor import ScopeSensor
 
 log = vibechecker.get_logger('collector')
-ui = vibechecker.UI_Elements()
 
 class DataCollector:
     '''
@@ -133,28 +132,6 @@ class DataCollector:
         if self.sensor:
             log.debug(f'Disconnecting sensor {self.sensor})')
             self.sensor = None
-
-    def update_acquisition_settings(self,parameter, value):
-        if parameter not in ui.ACQ:
-            raise ValueError(f'Cannot set {parameter}') 
-        
-        stream_state = self.is_streaming
-        if stream_state:
-            self.stop_stream()
-
-        if parameter == ui.ACQ_MAXFREQ:
-            self.config.maxfreq = float(value)
-        elif parameter == ui.ACQ_BINSIZE:
-            self.config.binsize = float(value)
-        else:
-            log.error(f'Acquisition parameter invalid: {parameter}')
-             
-        if self.sensor:
-            # Reconnect sensor stream with updated settings.
-            self.connect_sensor(self.sensor)
-
-        if stream_state:
-            self.start_stream()
 
     def start_data_queue(self):
         if self.queue is None:
