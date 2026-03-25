@@ -99,6 +99,18 @@ def _open_unit(chandle) -> bool:
     return False
 
 
+def _channels_for_model(model: str) -> int:
+    """Return the number of input channels for a PS4000A model string."""
+    m = model.upper().replace(' ', '')
+    if any(m.startswith(p) for p in ('4824',)):
+        return 8
+    if any(m.startswith(p) for p in ('4444', '4461', '4462', '4463', '4464')):
+        return 4
+    if any(m.startswith(p) for p in ('4225', '4226', '4227', '4262', '4264')):
+        return 2
+    return 2   # safe default for unrecognised variants
+
+
 def FindPicoScope() -> list:
     """
     Probe for connected PicoScope 4000A devices.
@@ -120,19 +132,21 @@ def FindPicoScope() -> list:
 
     model  = _query_info(_PICO_VARIANT_INFO)
     serial = _query_info(_PICO_BATCH_AND_SERIAL)
+    num_ch = _channels_for_model(model)
 
     ps.ps4000aCloseUnit(chandle)   # PicoScopeStream re-opens on .start()
-    log.info(f'FindPicoScope: found PicoScope {model} s/n {serial}')
+    log.info(f'FindPicoScope: found PicoScope {model} s/n {serial} ({num_ch} ch)')
 
     return [{
-        'device_id':    'ps4000a',
-        'model_name':   f'PicoScope {model}',
+        'device_id':     'ps4000a',
+        'model_name':    f'PicoScope {model}',
         'serial_number': serial,
-        'build_date':   datetime.now(),
-        'format_id':    0,
-        'sensitivity':  [1.0],    # Phase 1: unity — raw voltage pass-through
-        'scale':        [1.0],    # ADC→mV handled inside PicoScopeStream
-        'unit':         ['mV'],
+        'build_date':    datetime.now(),
+        'format_id':     0,
+        'num_channels':  num_ch,
+        'sensitivity':   [1.0] * num_ch,   # raw voltage pass-through
+        'scale':         [1.0] * num_ch,   # ADC→mV handled inside PicoScopeStream
+        'unit':          ['mV'] * num_ch,
     }]
 
 
@@ -183,11 +197,16 @@ class PicoScopeStream:
         self._stop_event   = threading.Event()
         self._thread: threading.Thread | None = None
 
-        # Rolling buffer registered with the driver
-        self._driver_buffer = np.zeros(_DRIVER_BUFFER_SAMPLES, dtype=np.int16)
+        # One rolling driver buffer per enabled channel
+        self._enabled_channels: list[int] = list(config.enabled_channels)
+        self._driver_buffers: dict[int, np.ndarray] = {
+            ch: np.zeros(_DRIVER_BUFFER_SAMPLES, dtype=np.int16)
+            for ch in self._enabled_channels
+        }
 
-        # Accumulator: collects partial chunks until a full blocksize block is ready
-        self._accumulator   = np.zeros(config.blocksize * 2, dtype=np.float64)
+        # 2-D accumulator: shape (acc_size, N) — one column per enabled channel
+        N = len(self._enabled_channels)
+        self._accumulator   = np.zeros((config.blocksize * 2, N), dtype=np.float64)
         self._acc_ptr       = 0
         self._stream_start  = 0.0
 
@@ -214,8 +233,9 @@ class PicoScopeStream:
         self._start_streaming()
 
         # Reset accumulator and watchdog state
+        N = len(self._enabled_channels)
         self._acc_ptr        = 0
-        self._accumulator    = np.zeros(self.config.blocksize * 2, dtype=np.float64)
+        self._accumulator    = np.zeros((self.config.blocksize * 2, N), dtype=np.float64)
         self._stream_start   = time.monotonic()
         self._last_data_time = time.monotonic()
 
@@ -275,28 +295,34 @@ class PicoScopeStream:
         coupling_key = ('PS4000A_AC' if self.config.coupling == 'AC'
                         else 'PS4000A_DC')
         coupling = ps.PS4000A_COUPLING[coupling_key]
+        channel_keys = [f'PS4000A_CHANNEL_{chr(65 + i)}' for i in range(8)]
 
-        # Enable Channel A
-        assert_pico_ok(ps.ps4000aSetChannel(
-            self._chandle,
-            ps.PS4000A_CHANNEL['PS4000A_CHANNEL_A'],
-            1,                               # enabled
-            coupling,
-            self.config.voltage_range,       # range index (e.g. 10 = PS4000A_20V)
-            0.0,                             # analogue offset
-        ))
-
-        # Disable Channel B — range index 7 (2V) is nominal for a disabled channel
-        assert_pico_ok(ps.ps4000aSetChannel(
-            self._chandle,
-            ps.PS4000A_CHANNEL['PS4000A_CHANNEL_B'],
-            0,                               # disabled
-            ps.PS4000A_COUPLING['PS4000A_DC'],
-            7,
-            0.0,
-        ))
-        log.debug(f'Channel A configured: {coupling_key}, '
-                  f'range index={self.config.voltage_range}')
+        for i, ch_key in enumerate(channel_keys):
+            try:
+                ch_id = ps.PS4000A_CHANNEL[ch_key]
+            except KeyError:
+                # This scope variant doesn't have this many channels
+                break
+            if i in self._enabled_channels:
+                assert_pico_ok(ps.ps4000aSetChannel(
+                    self._chandle, ch_id,
+                    1,                               # enabled
+                    coupling,
+                    self.config.voltage_range_for(i),
+                    0.0,
+                ))
+                log.debug(f'Channel {chr(65+i)} enabled: {coupling_key}, '
+                          f'range index={self.config.voltage_range_for(i)}')
+            else:
+                # Disable unused channels — range index 7 (±2V) is nominal
+                try:
+                    assert_pico_ok(ps.ps4000aSetChannel(
+                        self._chandle, ch_id, 0,
+                        ps.PS4000A_COUPLING['PS4000A_DC'], 7, 0.0,
+                    ))
+                except Exception:
+                    # Scope may not have this many channels; ignore gracefully
+                    break
 
     def _setup_siggen(self):
         """Start the built-in signal generator if siggen_config was provided."""
@@ -325,16 +351,18 @@ class PicoScopeStream:
         # Configure signal generator if requested (before streaming starts)
         self._setup_siggen()
 
-        # Register the rolling buffer with the driver
-        assert_pico_ok(ps.ps4000aSetDataBuffers(
-            self._chandle,
-            ps.PS4000A_CHANNEL['PS4000A_CHANNEL_A'],
-            self._driver_buffer.ctypes.data_as(ctypes.POINTER(ctypes.c_int16)),
-            None,                            # no min buffer
-            _DRIVER_BUFFER_SAMPLES,
-            0,                               # memory segment
-            ps.PS4000A_RATIO_MODE['PS4000A_RATIO_MODE_NONE'],
-        ))
+        # Register a rolling buffer for each enabled channel
+        for ch in self._enabled_channels:
+            ch_key = f'PS4000A_CHANNEL_{chr(65 + ch)}'
+            assert_pico_ok(ps.ps4000aSetDataBuffers(
+                self._chandle,
+                ps.PS4000A_CHANNEL[ch_key],
+                self._driver_buffers[ch].ctypes.data_as(ctypes.POINTER(ctypes.c_int16)),
+                None,                            # no min buffer
+                _DRIVER_BUFFER_SAMPLES,
+                0,                               # memory segment
+                ps.PS4000A_RATIO_MODE['PS4000A_RATIO_MODE_NONE'],
+            ))
 
         sample_interval_us = ctypes.c_int32(max(1, int(1e6 / self.config.samplerate)))
 
@@ -376,32 +404,37 @@ class PicoScopeStream:
             now = time.monotonic()
             if now - self._last_overflow_log >= _OVERFLOW_LOG_INTERVAL:
                 log.warning(
-                    f'PicoScopeStream: ADC overflow — signal exceeds ±'
-                    f'{ps.PICO_VOLTAGE_RANGE.get(self.config.voltage_range, "?")}V range; '
-                    f'data clipped'
+                    'PicoScopeStream: ADC overflow — signal clipped'
                 )
                 self._last_overflow_log = now
 
-        # Convert ADC counts → mV for this chunk
-        chunk_adc = self._driver_buffer[startIndex:startIndex + noOfSamples]
-        chunk_mv  = np.array(
-            adc2mV(chunk_adc, self.config.voltage_range, self._maxADC),
-            dtype=np.float64,
-        )
+        # Convert ADC counts → mV for each enabled channel
+        chunks_mv = []
+        for ch in self._enabled_channels:
+            chunk_adc = self._driver_buffers[ch][startIndex:startIndex + noOfSamples]
+            chunks_mv.append(np.array(
+                adc2mV(chunk_adc, self.config.voltage_range_for(ch), self._maxADC),
+                dtype=np.float64,
+            ))
 
-        # Append chunk to accumulator, growing if necessary
+        N   = len(self._enabled_channels)
         end = self._acc_ptr + noOfSamples
-        if end > len(self._accumulator):
-            self._accumulator = np.resize(self._accumulator,
-                                          end + self.config.blocksize)
 
-        self._accumulator[self._acc_ptr:end] = chunk_mv
+        # Grow accumulator rows if needed
+        if end > self._accumulator.shape[0]:
+            new_rows = end + self.config.blocksize
+            grown = np.zeros((new_rows, N), dtype=np.float64)
+            grown[:self._accumulator.shape[0]] = self._accumulator
+            self._accumulator = grown
+
+        for i, chunk_mv in enumerate(chunks_mv):
+            self._accumulator[self._acc_ptr:end, i] = chunk_mv
         self._acc_ptr = end
 
         # Fire app callback for each complete block accumulated
         bs = self.config.blocksize
         while self._acc_ptr >= bs:
-            block     = self._accumulator[:bs].copy()
+            block     = self._accumulator[:bs, :].copy()   # shape (blocksize, N)
             remainder = self._acc_ptr - bs
             self._accumulator[:remainder] = self._accumulator[bs:self._acc_ptr]
             self._acc_ptr = remainder
@@ -413,8 +446,9 @@ class PicoScopeStream:
                 'status':    status,
                 'rel_time':  rel_time,
                 'timestamp': datetime.now(),
-                'unit':      ['mV'],
-                'data':      block.reshape(-1, 1),   # shape (blocksize, 1)
+                'unit':      ['mV'] * N,
+                'channels':  list(self._enabled_channels),
+                'data':      block,                         # shape (blocksize, N)
             }
             try:
                 self._app_callback(samp)
@@ -448,8 +482,9 @@ class PicoScopeStream:
                 self._configure_channel()
                 self._start_streaming()
                 # Reset accumulator so stale partial data isn't carried forward
+                N = len(self._enabled_channels)
                 self._acc_ptr        = 0
-                self._accumulator    = np.zeros(self.config.blocksize * 2,
+                self._accumulator    = np.zeros((self.config.blocksize * 2, N),
                                                 dtype=np.float64)
                 self._last_data_time = time.monotonic()
                 log.info('PicoScopeStream: recovery successful')

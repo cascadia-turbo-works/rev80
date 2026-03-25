@@ -15,13 +15,10 @@ from vibechecker import BLOCKSIZES, \
                         MAXFREQS, \
                         BINSIZES, \
                         SUPPORTED_UNITS, \
-                        convert_units, \
                         nextpow2
+from vibechecker.util import UNIT_TO_SI, integration_steps
 
 log = vibechecker.get_logger(__name__)
-
-# Derivative order: integrate (+) or differentiate (-) in freq domain
-MODALITY_ORDER = {'acceleration': 0, 'velocity': 1, 'displacement': 2}
 
 @dataclass
 class AcquisitionSettings:
@@ -29,14 +26,16 @@ class AcquisitionSettings:
     _fs: int = SAMPLERATES[0]
     _fm: float = MAXFREQS[3]
     _df: float = BINSIZES[3]
-    channel: int = 0
-    units: SUPPORTED_UNITS = 'g'
-    integrate: str = 'acceleration'    # target modality: acceleration, velocity, displacement
     oversample: int = 2
     butter_fc: float | None = 10
     # PicoScope channel settings (ignored by sounddevice / SimulatedSensor paths)
-    voltage_range: int = 10   # PS4000A range index: 10 = PS4000A_20V (±20 V, hardware max)
     coupling: str = 'AC'      # 'AC' or 'DC'
+    enabled_channels: list = field(default_factory=lambda: [0])
+    channel_voltage_ranges: dict = field(default_factory=lambda: {0: 10})
+
+    def voltage_range_for(self, ch: int) -> int:
+        """Return the PS4000A voltage range index for a given channel (default ±20V)."""
+        return self.channel_voltage_ranges.get(ch, 10)
 
     @classmethod
     def copy(cls, settings):
@@ -202,77 +201,88 @@ class VibeSample:
         self.unit = unit
         self.data = data
 
-    def get_accel(self, config: AcquisitionSettings):
-        try:
-            accel = convert_units(self.data, self.unit, config.units)
-        except ValueError:
-            log.warning(f'Unit conversion from {self.unit!r} to {config.units!r} not defined; passing through raw data')
-            accel = self.data
+    def get_accel(self, target_unit: str = '') -> tuple:
+        """Return (DataFrame[time, signal], rms) with data scaled to target_unit.
 
-        # Butterworth filter - causes lagg
-        # sos = accel.butter(10, 10, 'hp', fs=self.samplerate, output='sos')
-        # accel = np.ascontiguousarray(accel.sosfiltfilt(sos, accel))
-
-        # Remove mean
-        # accel = accel - accel.mean()
+        If target_unit is '' or matches self.unit, data is returned as-is.
+        Scaling uses the SI ratio between source and target units.
+        """
+        effective = target_unit if target_unit else self.unit
+        if effective == self.unit:
+            accel = self.data.copy()
+        else:
+            src_si = UNIT_TO_SI.get(self.unit, 1.0)
+            tgt_si = UNIT_TO_SI.get(effective, 1.0)
+            accel = self.data * (src_si / tgt_si)
 
         rms = np.sqrt(np.mean(np.square(accel))) * np.sqrt(2)
+        return pd.DataFrame({'time': self.time_vec, 'signal': accel}), rms
 
-        tab = {'time': self.time_vec, 'signal': accel}
-        return pd.DataFrame(tab), rms
+    def fft(self, target_unit: str, config: 'AcquisitionSettings'):
+        """Compute Welch PSD and convert to target_unit via freq-domain integration.
 
-    def fft(self, config:AcquisitionSettings):
+        target_unit: desired display/integration unit (e.g. 'mm/s', 'g', 'mm').
+                     Pass '' to stay in self.unit (no conversion).
+
+        Integration direction and amplitude scaling are derived from the
+        unit strings alone via integration_steps() and UNIT_TO_SI.
+        """
         if self.blocksize <= 1:
             log.error('Attempt to fft an EMPTY sample')
             return None, None
 
-        converted, _ = self.get_accel(config)
+        effective_target = target_unit if target_unit else self.unit
 
         fs = self.samplerate
         df = config.binsize
-
-        nfft = int(fs/df)
+        nfft = int(fs / df)
         nperseg = nfft
-        noverlap = min(self.blocksize,int(nperseg / 2)) # 50% overlap
-        freq, source_spectrum = signal.welch(converted.signal.to_numpy(),
-                                 fs = float(fs),
-                                 window = 'hann',
-                                 nperseg = nperseg,
-                                 noverlap = noverlap,
-                                 nfft = nfft,
-                                 scaling = 'spectrum',
-                                 detrend = 'constant',
-                                 average = 'mean')
+        noverlap = min(self.blocksize, int(nperseg / 2))
 
-        # Determine number of integrations from source → target modality
-        source_order = MODALITY_ORDER.get(self.modality, 0)
-        target_order = MODALITY_ORDER.get(config.integrate, 0)
-        n_integrations = source_order - target_order
+        freq, source_spectrum = signal.welch(
+            self.data,
+            fs=float(fs),
+            window='hann',
+            nperseg=nperseg,
+            noverlap=noverlap,
+            nfft=nfft,
+            scaling='spectrum',
+            detrend='constant',
+            average='mean',
+        )
 
-        # Apply frequency-domain integration/differentiation
-        # Each integration: divide PSD by (2πf)²
-        # Each differentiation: multiply PSD by (2πf)²
-
-        if not n_integrations == 0:
-            # Integration: zero DC to avoid infinity
-            omega_factor = np.power(np.where(freq > 0, 2 * np.pi * freq, np.inf), 2 * n_integrations)
+        # Frequency-domain integration / differentiation
+        n_steps = integration_steps(self.unit, effective_target)
+        if n_steps != 0:
+            omega_factor = np.power(
+                np.where(freq > 0, 2 * np.pi * freq, np.inf),
+                2 * n_steps,
+            )
             display_spectrum = source_spectrum * omega_factor
         else:
             display_spectrum = source_spectrum.copy()
 
-        # normalize to rms and zero-peak units per bin
+        # Amplitude scale: SI ratio covers both unit-system conversion and
+        # the dimensional change introduced by any integration/differentiation.
+        src_si = UNIT_TO_SI.get(self.unit, 1.0)
+        tgt_si = UNIT_TO_SI.get(effective_target, 1.0)
+        amp_scale = src_si / tgt_si
+        display_spectrum = display_spectrum * (amp_scale ** 2)
+
         source_0p = np.sqrt(source_spectrum) * np.sqrt(2)
         display_0p = np.sqrt(np.maximum(display_spectrum, 0)) * np.sqrt(2)
 
-        result = pd.DataFrame({'freq': freq,
-                           'source_spectrum': source_spectrum,
-                           'display_spectrum': display_spectrum,
-                           'source_0p': source_0p,
-                           'display_0p': display_0p})
+        result = pd.DataFrame({
+            'freq': freq,
+            'source_spectrum': source_spectrum,
+            'display_spectrum': display_spectrum,
+            'source_0p': source_0p,
+            'display_0p': display_0p,
+        })
 
-        peaks, _ = signal.find_peaks(display_0p, distance=min(len(freq)/50, 1))
+        peaks, _ = signal.find_peaks(display_0p, distance=min(len(freq) / 50, 1))
         peaks = np.array(peaks[np.argsort(-display_0p[peaks])])
 
-        return result[result.freq<=config.maxfreq], \
-               peaks[freq[peaks]<=config.maxfreq]
+        return (result[result.freq <= config.maxfreq],
+                peaks[freq[peaks] <= config.maxfreq])
     

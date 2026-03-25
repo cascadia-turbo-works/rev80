@@ -16,6 +16,7 @@ class VibeSensor:
     sensitivity: list
     scale: list
     unit: list
+    num_channels: int = 1
     is_simulation: bool = False
     callback = None
 
@@ -65,11 +66,16 @@ class VibeSensor:
 
         data = sd_data.copy() * self.scale
 
+        # Derive channel list from data shape (columns = sequential channels).
+        # sounddevice always returns 2-D (frames, N); SimulatedSensor matches.
+        channels = list(range(data.shape[1])) if data.ndim == 2 else [0]
+
         sample = {
             'status':    status,
             'rel_time':  rel_time,
             'timestamp': datetime.now(),
             'unit':      self.unit,
+            'channels':  channels,
             'data':      data,
         }
 

@@ -15,10 +15,15 @@ dependencies = [
     "matplotlib",
     "sounddevice",
     "path",
-    "pytest",
     "pyyaml",
-    "ipykernel"
+    "picosdk @ git+https://github.com/picotech/picosdk-python-wrappers.git"
 ]
+
+[project.optional-dependencies]
+dev = ["pytest", "ipykernel"]
+
+[tool.setuptools.packages.find]
+include = ["vibechecker*"]
 
 [build-system]
 requires = ["setuptools>=61"]

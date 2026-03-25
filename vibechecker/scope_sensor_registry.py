@@ -94,18 +94,31 @@ class ScopeSensorRegistry:
     # ------------------------------------------------------------------
 
     def load_channel_assignments(self,
-                                  path: Path | None = None) -> dict[int, str]:
-        """Return {channel_idx: sensor_id} from saved assignments."""
+                                  path: Path | None = None) -> dict[int, dict]:
+        """Return {channel_idx: {'enabled': bool, 'sensor_id': str|None}}.
+
+        Backwards compatible: old format {int: sensor_id_str} is treated as enabled=True.
+        """
         target = Path(path) if path is not None else _DEFAULT_CHANNELS_FILE
         try:
             with open(target) as f:
                 raw = yaml.safe_load(f) or {}
-            return {int(k): str(v) for k, v in raw.items()}
+            result = {}
+            for k, v in raw.items():
+                if isinstance(v, str):
+                    result[int(k)] = {'enabled': True, 'sensor_id': v}
+                elif isinstance(v, dict):
+                    result[int(k)] = {
+                        'enabled':   bool(v.get('enabled', True)),
+                        'sensor_id': v.get('sensor_id'),
+                    }
+            return result
         except Exception:
             return {}
 
     def save_channel_assignments(self,
-                                  assignments: dict[int, str],
+                                  assignments: dict[int, dict],
                                   path: Path | None = None) -> None:
+        """Save {channel_idx: {'enabled': bool, 'sensor_id': str|None}}."""
         target = Path(path) if path is not None else _DEFAULT_CHANNELS_FILE
         _atomic_yaml_write(target, {str(k): v for k, v in assignments.items()})

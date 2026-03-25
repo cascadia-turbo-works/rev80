@@ -101,7 +101,8 @@ class SimulatedSensor:
         args = self.source[1:] if len(self.source)>1 else []
         signal = self.source[0].__call__(self.config, *args) # type: ignore
 
-        data = np.tile(signal, (max(self.config.channel,N_CHANNELS),1)).T
+        n_ch = max(len(self.config.enabled_channels), N_CHANNELS)
+        data = np.tile(signal, (n_ch, 1)).T
         return data
 
     def _stream(self):

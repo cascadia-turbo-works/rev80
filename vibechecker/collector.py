@@ -26,7 +26,6 @@ class DataCollector:
     queue: Union[Queue, None] = None
     datadir: Union[Path, None] = Path('DEVDATA')
     data: Dict = {}
-    callbacks: Dict = {}
 
     def __init__(self,
                  sensor: Union[vibechecker.VibeSensor, None] = None,
@@ -39,6 +38,7 @@ class DataCollector:
             self.config = vibechecker.AcquisitionSettings()
 
         self.scope_sensors: dict[int, ScopeSensor] = {}
+        self.callbacks: dict = {}   # instance-level; not shared across DataCollector instances
 
         if sensor is not None:
             self.connect_sensor(sensor)
@@ -52,22 +52,21 @@ class DataCollector:
         else:
             self.scope_sensors[channel] = sensor
 
-    def get_active_eu(self) -> str:
-        """Return the engineering unit of the active data source.
+    def get_active_eu(self, ch: int = 0) -> str:
+        """Return the display/target unit for a channel.
 
-        Priority: scope sensor on active channel > VibeSensor unit > config.units fallback.
+        Priority: scope_sensor.effective_target_unit() > VibeSensor unit > 'mV'.
         """
-        ch = self.config.channel
         scope_sensor = self.scope_sensors.get(ch)
         if scope_sensor is not None:
-            return scope_sensor.engineering_units
+            return scope_sensor.effective_target_unit()
         if self.sensor is not None:
             unit = getattr(self.sensor, 'unit', None)
             if isinstance(unit, list):
                 return unit[min(ch, len(unit) - 1)]
             if unit is not None:
                 return unit
-        return self.config.units
+        return 'mV'
 
     @property
     def is_streaming(self):
@@ -84,6 +83,7 @@ class DataCollector:
         self.data['sample_count'] = 0
         self.data['trend'] = []
         self.data['rolling_average'] = {'N':0, 'k': 0, 'samples': []}
+        self._last_samples: dict = {}   # per-channel last VibeSample
 
         log.info('Reset data store.')
 
@@ -146,12 +146,8 @@ class DataCollector:
             self.config.maxfreq = float(value)
         elif parameter == ui.ACQ_BINSIZE:
             self.config.binsize = float(value)
-        elif parameter == ui.ACQ_UNITS:
-            self.config.units = vibechecker.UNITS[value] # type: ignore
-        elif parameter == ui.ACQ_INTEGRATE:
-            self.config.integrate = value.lower()
         else:
-            log.error('Acquisition arameter invalid')
+            log.error(f'Acquisition parameter invalid: {parameter}')
              
         if self.sensor:
             # Reconnect sensor stream with updated settings.
@@ -217,23 +213,42 @@ class DataCollector:
         self.stream.stop()
         log.debug(f'Stream stopped')
 
-    def collect_sample(self) -> vibechecker.VibeSample|None:
-        """Collect single sample from sensor"""
+    def reconnect_stream(self):
+        """Close and recreate the stream with current config.
+
+        Call this after modifying config.enabled_channels so hardware
+        (e.g. PicoScopeStream) picks up the new channel list.
+        """
+        if self.sensor is None:
+            return
+        sensor = self.sensor
+        was_streaming = self.is_streaming
+        if was_streaming:
+            self.stop_stream()
+        if self.stream is not None:
+            self.stream.close()
+            self.stream = None
+        self.stream = sensor.connect(self.config, self.recieve_data)
+        if was_streaming:
+            self.start_stream()
+
+    def collect_sample(self) -> dict:
+        """Collect one block from each enabled channel. Returns {channel: VibeSample}."""
         if self.is_streaming:
             self.stop_stream()
-         
+
         self.start_data_queue()
         self.start_stream()
 
         try:
-            sample = self.get_data_queue()
+            samples = self.get_data_queue()
         except Exception:
-            sample = None
+            samples = {}
         finally:
             self.stop_stream()
             self.kill_data_queue()
 
-        return sample
+        return samples if isinstance(samples, dict) else {}
 
     def save_data(self, target:Path):
         if target.exists():
@@ -249,77 +264,75 @@ class DataCollector:
 
         self.sample = vibechecker.VibeSample.load(target)
 
-        self.data_callback(self.sample)
+        self.data_callback({0: self.sample})
 
         log.info(f'Loaded data sample {target}')
 
     def recieve_data(self, samp: dict):
-        """Log and preprocess one incoming data block."""
+        """Preprocess one incoming data block and fan out to per-channel VibeSamples."""
         data_arr = np.asarray(samp['data'])
         unit_arr = samp['unit']
+        channels = samp.get('channels', [0])
 
-        if data_arr.ndim == 2:
-            # Multi- or single-channel 2-D array: extract requested channel,
-            # clamping to the last available channel if config.channel exceeds it.
-            ch   = min(self.config.channel, data_arr.shape[1] - 1)
-            data = data_arr[:, ch]
-            unit = unit_arr[ch] if isinstance(unit_arr, list) else unit_arr
-        else:
-            # Already 1-D
-            ch   = 0
-            data = data_arr
-            unit = unit_arr[0] if isinstance(unit_arr, list) else unit_arr
+        # Ensure 2-D (blocksize, N)
+        if data_arr.ndim == 1:
+            data_arr = data_arr[:, np.newaxis]
 
-        # Apply ScopeSensor mV → EU scaling if a sensor is assigned to this channel
-        modality = 'acceleration'  # default for audio / simulated sensors
-        if unit == 'mV':
-            scope_sensor = self.scope_sensors.get(ch)
-            if scope_sensor is not None:
-                data = np.asarray(data, dtype=np.float64) / scope_sensor.sensitivity
-                unit = scope_sensor.engineering_units
-                modality = scope_sensor.modality
+        samples: dict[int, vibechecker.VibeSample] = {}
 
-        # Apply Butterworth highpass filter if configured
-        if self.config.butter_fc:
-            nyq = float(self.config.samplerate) / 2.0
-            if self.config.butter_fc >= nyq:
-                log.warning(f'butter_fc {self.config.butter_fc}Hz >= Nyquist {nyq}Hz; skipping filter')
-            else:
-                sos = scipy.signal.butter(4, self.config.butter_fc, btype='highpass', fs=self.config.samplerate, output='sos')
-                # ensure data is float64 1-D array
-                data = scipy.signal.sosfilt(sos, np.asarray(data, dtype=np.float64))
+        for i, ch in enumerate(channels):
+            col  = min(i, data_arr.shape[1] - 1)
+            data = data_arr[:, col].copy()
+            unit = unit_arr[ch] if isinstance(unit_arr, list) and ch < len(unit_arr) else (
+                   unit_arr[i] if isinstance(unit_arr, list) and i < len(unit_arr) else unit_arr)
 
-        sample = vibechecker.VibeSample(samp['status'],
-                                samp['timestamp'],
-                                self.config.samplerate,
-                                unit,
-                                np.ascontiguousarray(data),
-                                samp['rel_time'],
-                                modality=modality)
-        # self.sample.push_sample(sample['status'],
-        #                         sample['timestamp'],
-        #                         self.config.samplerate,
-        #                         unit,
-        #                         data) 
+            # mV → EU conversion via assigned ScopeSensor
+            if unit == 'mV':
+                scope_sensor = self.scope_sensors.get(ch)
+                if scope_sensor is not None:
+                    data = np.asarray(data, dtype=np.float64) / scope_sensor.sensitivity
+                    unit = scope_sensor.engineering_units
 
-        self.data_callback(sample)
+            # Butterworth highpass filter
+            if self.config.butter_fc:
+                nyq = float(self.config.samplerate) / 2.0
+                if self.config.butter_fc < nyq:
+                    sos = scipy.signal.butter(4, self.config.butter_fc,
+                                              btype='highpass',
+                                              fs=self.config.samplerate,
+                                              output='sos')
+                    data = scipy.signal.sosfilt(sos, np.asarray(data, dtype=np.float64))
 
-    def data_callback(self, sample):
+            samples[ch] = vibechecker.VibeSample(
+                samp['status'],
+                samp['timestamp'],
+                self.config.samplerate,
+                unit,
+                np.ascontiguousarray(data),
+                samp['rel_time'],
+            )
+
+        self.data_callback(samples)
+
+    def data_callback(self, samples: dict):
+        """Deliver {channel: VibeSample} to queue or registered GUI callbacks."""
         if self.queue is not None:
-            self.queue.put(sample)
+            self.queue.put(samples)
         else:
-            self.sample = sample
+            if samples:
+                self.sample = next(iter(samples.values()))
+                self._last_samples.update(samples)   # per-channel storage for redraw
             for fn in self.callbacks.values():
-                fn(sample)
+                fn(samples)
 
     def visualize_init(self, sample:vibechecker.VibeSample):
-
-        acc, rms = sample.get_accel(self.config)
-        fft, pkk = sample.fft(self.config)
+        target_unit = self.get_active_eu(0)
+        acc, rms = sample.get_accel(target_unit)
+        fft, pkk = sample.fft(target_unit, self.config)
         if fft is None:
             return
 
-        import matplotlib.pyplot as plt      
+        import matplotlib.pyplot as plt
         plt.ion()
         fig, ax = plt.subplots(2,1)
 
@@ -329,13 +342,13 @@ class DataCollector:
             title = ''
 
         fig.suptitle(title, fontsize=20)
-        ax[0].set_xlabel('Time, ms')
-        ax[0].set_ylabel(f'Acceleration, {self.config.units}/s^2')
+        ax[0].set_xlabel('Time, s')
+        ax[0].set_ylabel(f'Signal, {sample.unit}')
         ax[1].set_xlabel('Frequency, Hz')
-        ax[1].set_ylabel(f'Velocity, {self.config.units}/s')
+        ax[1].set_ylabel(f'Amplitude, {target_unit}')
 
         time_plot, = ax[0].plot(acc.time, acc.signal)
-        freq_plot, = ax[1].plot(fft.freq, fft.vel_0p)
+        freq_plot, = ax[1].plot(fft.freq, fft.display_0p)
 
         vis = {'fig': fig,
                'ax': ax,
@@ -349,14 +362,15 @@ class DataCollector:
         return vis
 
     def visualize_sample(self, sample:vibechecker.VibeSample, vis:dict):
-        acc, rms = sample.get_accel(self.config)
-        fft, pkk = sample.fft(self.config)
+        target_unit = self.get_active_eu(0)
+        acc, rms = sample.get_accel(target_unit)
+        fft, pkk = sample.fft(target_unit, self.config)
         if fft is None:
             return
-        
+
         vis['time_plot'].set_data(acc.time, acc.signal)
-        vis['freq_plot'].set_data(fft.freq, fft.vel_0p)
-        
+        vis['freq_plot'].set_data(fft.freq, fft.display_0p)
+
         vis['fig'].canvas.draw()
         vis['fig'].canvas.flush_events()
 
