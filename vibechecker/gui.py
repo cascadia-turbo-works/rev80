@@ -812,6 +812,7 @@ class GUI:
         self._apply_channel_assignments_from_widgets()
         self._save_channel_assignments()
         self._save_registry_sensor_fields()
+        self.registry.save_siggen(self.collector.siggen_config)
         self._refresh_assigned_sensors()
         self._update_connection_summary()
         self._update_spectrum_info()
@@ -1074,7 +1075,10 @@ class GUI:
         self._redraw_all_channels()
 
     def _restore_channel_assignments(self):
-        """Apply saved channel assignments to the collector and any open dialog widgets."""
+        """Apply saved channel assignments and siggen config to the collector."""
+        siggen = self.registry.load_siggen()
+        self.collector.siggen_config = siggen
+        self._populate_siggen_tab()
         assignments = self.registry.load_channel_assignments()
         for ch, info in assignments.items():
             if ch >= self._num_channels:

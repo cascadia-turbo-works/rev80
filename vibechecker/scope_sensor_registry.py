@@ -120,4 +120,37 @@ class ScopeSensorRegistry:
                                   path: Path | None = None) -> None:
         """Save {channel_idx: {'enabled': bool, 'sensor_id': str|None}}."""
         target = Path(path) if path is not None else _DEFAULT_CHANNELS_FILE
-        _atomic_yaml_write(target, {str(k): v for k, v in assignments.items()})
+        # Preserve any existing non-channel keys (e.g. 'siggen') in the file
+        try:
+            with open(target) as f:
+                existing = yaml.safe_load(f) or {}
+        except Exception:
+            existing = {}
+        data = {k: v for k, v in existing.items() if not str(k).isdigit()}
+        data.update({str(k): v for k, v in assignments.items()})
+        _atomic_yaml_write(target, data)
+
+    def load_siggen(self, path: Path | None = None) -> dict | None:
+        """Return the persisted siggen config dict, or None if absent."""
+        target = Path(path) if path is not None else _DEFAULT_CHANNELS_FILE
+        try:
+            with open(target) as f:
+                raw = yaml.safe_load(f) or {}
+            return raw.get('siggen') or None
+        except Exception:
+            return None
+
+    def save_siggen(self, siggen: dict | None,
+                    path: Path | None = None) -> None:
+        """Persist siggen config alongside channel assignments in the YAML file."""
+        target = Path(path) if path is not None else _DEFAULT_CHANNELS_FILE
+        try:
+            with open(target) as f:
+                existing = yaml.safe_load(f) or {}
+        except Exception:
+            existing = {}
+        if siggen is not None:
+            existing['siggen'] = siggen
+        else:
+            existing.pop('siggen', None)
+        _atomic_yaml_write(target, existing)
