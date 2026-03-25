@@ -38,7 +38,7 @@ _BTN_HALF = (CONTROLS_WIDTH - 22) // 2              # ≈ 139 px
 _CARD_LINE_H  = 18   # per text-line height estimate (font + spacing)
 _CARD_BASE_H  = 100   # card overhead: padding + title + separator + bottom pad
 _CARD_BTN_H   = 26   # single button row height
-_CARD_H_DEVICE = _CARD_BASE_H + 2*_CARD_LINE_H + 2 + _CARD_BTN_H + 6   # ≈ 110
+_CARD_H_DEVICE = _CARD_BASE_H + _CARD_LINE_H + 2 + _CARD_BTN_H + 8     # disconnected baseline
 _CARD_H_ACQ    = 400   # Acquisition: fixed — toggle+controls+spectrum info box
 _CARD_H_FILE   = _CARD_BASE_H + _CARD_BTN_H + 6                          # ≈ 72
 
@@ -410,16 +410,32 @@ class GUI:
     # ------------------------------------------------------------------
 
     def _update_connection_summary(self):
-        """Refresh device name and per-channel lines in the left panel."""
-        if self.collector.sensor is not None:
+        """Refresh device info and per-channel lines in the left panel."""
+        sensor = self.collector.sensor
+        if sensor is not None:
             self._set_device_status('connected')
-            if dpg.does_item_exist(ui.CONN_DEVICE_NAME):
-                dpg.set_value(ui.CONN_DEVICE_NAME,
-                              self.collector.sensor.model_name)
         else:
             self._set_device_status('disconnected')
-            if dpg.does_item_exist(ui.CONN_DEVICE_NAME):
-                dpg.set_value(ui.CONN_DEVICE_NAME, '')
+
+        # Rebuild Device card info group
+        if dpg.does_item_exist(ui.DEVICE_INFO_GROUP):
+            dpg.delete_item(ui.DEVICE_INFO_GROUP, children_only=True)
+            if sensor is not None:
+                dim = _c('ON_SURFACE')
+                for line in [
+                    sensor.model_name,
+                    f'  S/N: {sensor.serial_number}',
+                    f'  ID:  {sensor.device_id}',
+                    f'  Ch:  {sensor.num_channels}',
+                ]:
+                    dpg.add_text(line, parent=ui.DEVICE_INFO_GROUP, color=dim)
+            # Resize Device card: base + (4 lines when connected, 0 when not) + btn
+            n_info = 4 if sensor is not None else 0
+            device_h = _CARD_BASE_H + n_info * _CARD_LINE_H + 2 + _CARD_BTN_H + 8
+            # Find the Device card by scanning its known child (DEVICE_INFO_GROUP parent)
+            dev_card = dpg.get_item_parent(ui.DEVICE_INFO_GROUP)
+            if dev_card:
+                dpg.configure_item(dev_card, height=device_h)
 
         if dpg.does_item_exist(ui.CONN_CHANNEL_SUMMARY):
             dpg.delete_item(ui.CONN_CHANNEL_SUMMARY, children_only=True)
@@ -1296,7 +1312,8 @@ class GUI:
                                     rounding=3, tag=ui.DEVICE_STATUS_RECT,
                                 )
                             dpg.add_text('Not Connected', tag=ui.CONN_STATUS_TEXT)
-                        dpg.add_text('', tag=ui.CONN_DEVICE_NAME)
+                        with dpg.group(tag=ui.DEVICE_INFO_GROUP):
+                            pass
                         dpg.add_spacer(height=2)
                         dpg.add_button(label='Device Setup',
                                        tag=ui.BTN_DEVICE_SETUP,

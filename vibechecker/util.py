@@ -156,6 +156,7 @@ class UI_Elements:
     CONN_STATUS_TEXT   = 'CONN_STATUS_TEXT'    # "Connected" / "Not Connected"
     CONN_DEVICE_NAME   = 'CONN_DEVICE_NAME'    # device model name
     CONN_CHANNEL_SUMMARY = 'CONN_CHANNEL_SUMMARY'  # group for per-channel lines
+    DEVICE_INFO_GROUP  = 'DEVICE_INFO_GROUP'   # dynamic device detail lines
     BTN_DEVICE_SETUP   = 'BTN_DEVICE_SETUP'
     BTN_CHANNELS_SETUP = 'BTN_CHANNELS_SETUP'
     BTN_SENSOR_SETUP   = 'BTN_SENSOR_SETUP'
