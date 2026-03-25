@@ -804,6 +804,17 @@ class GUI:
             dpg.add_button(label='Close', callback=self._on_registry_close,
                            width=-1)
 
+        # ── Section container theme (slightly lighter than window background) ──
+        _sect_bg = vibechecker.hex_to_rgba(vibechecker.THEME_COLORS['SURFACE'])
+        with dpg.theme() as _sect_theme:
+            with dpg.theme_component(dpg.mvChildWindow):
+                dpg.add_theme_color(dpg.mvThemeCol_ChildBg, _sect_bg,
+                                    category=dpg.mvThemeCat_Core)
+                dpg.add_theme_style(dpg.mvStyleVar_ChildRounding, 6,
+                                    category=dpg.mvThemeCat_Core)
+                dpg.add_theme_style(dpg.mvStyleVar_WindowPadding, 8, 6,
+                                    category=dpg.mvThemeCat_Core)
+
         # ── Main window ────────────────────────────────────────────────
         with dpg.window(label='Vibe Checkup', tag='primary_window'):
             with dpg.group(horizontal=True):
@@ -812,71 +823,88 @@ class GUI:
                 with dpg.child_window(width=CONTROLS_WIDTH, autosize_y=True):
 
                     # ── Connection Status ─────────────────────────────
-                    dpg.add_text('Connection Status')
-                    with dpg.group(horizontal=True):
-                        with dpg.drawlist(width=16, height=16,
-                                          tag=ui.DEVICE_STATUS):
-                            dpg.draw_rectangle(
-                                pmin=(1, 1), pmax=(15, 15),
-                                fill=_c('RED'), color=(0, 0, 0, 0),
-                                rounding=3, tag=ui.DEVICE_STATUS_RECT,
-                            )
-                        dpg.add_text('Not Connected', tag=ui.CONN_STATUS_TEXT)
-                    dpg.add_text('', tag=ui.CONN_DEVICE_NAME)
-                    with dpg.group(tag=ui.CONN_CHANNEL_SUMMARY):
-                        pass
-                    dpg.add_button(label='Device Setup',
-                                   tag=ui.BTN_DEVICE_SETUP,
-                                   callback=self._open_device_setup_dialog,
-                                   width=-1)
-                    dpg.add_button(label='Sensor Setup',
-                                   tag=ui.BTN_SENSOR_SETUP,
-                                   callback=self._open_sensor_registry_dialog,
-                                   width=-1)
+                    with dpg.child_window(border=True, autosize_x=True,
+                                          height=220) as _s1:
+                        dpg.bind_item_theme(_s1, _sect_theme)
+                        dpg.add_text('Connection Status')
+                        dpg.add_separator()
+                        with dpg.group(horizontal=True):
+                            with dpg.drawlist(width=16, height=16,
+                                              tag=ui.DEVICE_STATUS):
+                                dpg.draw_rectangle(
+                                    pmin=(1, 1), pmax=(15, 15),
+                                    fill=_c('RED'), color=(0, 0, 0, 0),
+                                    rounding=3, tag=ui.DEVICE_STATUS_RECT,
+                                )
+                            dpg.add_text('Not Connected', tag=ui.CONN_STATUS_TEXT)
+                        dpg.add_text('', tag=ui.CONN_DEVICE_NAME)
+                        with dpg.group(tag=ui.CONN_CHANNEL_SUMMARY):
+                            pass
+                        dpg.add_spacer(height=2)
+                        dpg.add_button(label='Device Setup',
+                                       tag=ui.BTN_DEVICE_SETUP,
+                                       callback=self._open_device_setup_dialog,
+                                       width=-1)
+                        dpg.add_button(label='Sensor Setup',
+                                       tag=ui.BTN_SENSOR_SETUP,
+                                       callback=self._open_sensor_registry_dialog,
+                                       width=-1)
 
-                    dpg.add_separator()
+                    dpg.add_spacer(height=6)
 
                     # ── Spectrum Setup ────────────────────────────────
-                    dpg.add_text('Spectrum Setup')
-                    dpg.add_input_text(tag=ui.SPECTRUM_INFO_TEXT,
-                                       multiline=True, readonly=True,
-                                       default_value='', width=-1, height=130)
-                    dpg.add_button(label='Spectrum Setup',
-                                   tag=ui.BTN_SPECTRUM_SETUP,
-                                   callback=self._open_spectrum_dialog,
-                                   width=-1)
+                    with dpg.child_window(border=True, autosize_x=True,
+                                          height=202, no_scrollbar=True) as _s2:
+                        dpg.bind_item_theme(_s2, _sect_theme)
+                        dpg.add_text('Spectrum Setup')
+                        dpg.add_separator()
+                        dpg.add_input_text(tag=ui.SPECTRUM_INFO_TEXT,
+                                           multiline=True, readonly=True,
+                                           default_value='', width=-1, height=120)
+                        dpg.add_button(label='Spectrum Setup',
+                                       tag=ui.BTN_SPECTRUM_SETUP,
+                                       callback=self._open_spectrum_dialog,
+                                       width=-1)
 
-                    dpg.add_separator()
+                    dpg.add_spacer(height=6)
 
                     # ── Acquisition ───────────────────────────────────
-                    dpg.add_text('Acquisition')
-                    with dpg.group(horizontal=True):
-                        with dpg.drawlist(width=20, height=20,
-                                          tag=ui.STREAM_STATUS):
-                            dpg.draw_rectangle(
-                                pmin=(1, 1), pmax=(19, 19),
-                                fill=_c('RED'), color=(0, 0, 0, 0),
-                                rounding=4, tag=ui.STREAM_STATUS_RECT,
-                            )
-                        dpg.add_button(label='Stopped',
-                                       tag=ui.ACQ_TOGGLE,
-                                       callback=self._toggle_acquisition,
+                    with dpg.child_window(border=True, autosize_x=True,
+                                          height=105, no_scrollbar=True) as _s3:
+                        dpg.bind_item_theme(_s3, _sect_theme)
+                        dpg.add_text('Acquisition')
+                        dpg.add_separator()
+                        with dpg.group(horizontal=True):
+                            with dpg.drawlist(width=20, height=20,
+                                              tag=ui.STREAM_STATUS):
+                                dpg.draw_rectangle(
+                                    pmin=(1, 1), pmax=(19, 19),
+                                    fill=_c('RED'), color=(0, 0, 0, 0),
+                                    rounding=4, tag=ui.STREAM_STATUS_RECT,
+                                )
+                            dpg.add_button(label='Stopped',
+                                           tag=ui.ACQ_TOGGLE,
+                                           callback=self._toggle_acquisition,
+                                           width=-1)
+                        dpg.add_button(label='Single',
+                                       tag=ui.ACQ_SINGLE,
+                                       callback=self.collect_sample,
                                        width=-1)
-                    dpg.add_button(label='Single',
-                                   tag=ui.ACQ_SINGLE,
-                                   callback=self.collect_sample,
-                                   width=-1)
 
-                    dpg.add_separator()
+                    dpg.add_spacer(height=6)
 
                     # ── File Handling ─────────────────────────────────
-                    dpg.add_text('File Handling')
-                    with dpg.group(horizontal=True):
-                        dpg.add_button(label='Save', tag=ui.FILE_SAVE,
-                                       callback=self._on_save_click, width=-1)
-                        dpg.add_button(label='Load', tag=ui.FILE_LOAD,
-                                       callback=lambda: dpg.show_item(ui.DLG_LOAD_FILE),
-                                       width=-1)
+                    with dpg.child_window(border=True, autosize_x=True,
+                                          height=78, no_scrollbar=True) as _s4:
+                        dpg.bind_item_theme(_s4, _sect_theme)
+                        dpg.add_text('File Handling')
+                        dpg.add_separator()
+                        with dpg.group(horizontal=True):
+                            dpg.add_button(label='Save', tag=ui.FILE_SAVE,
+                                           callback=self._on_save_click, width=-1)
+                            dpg.add_button(label='Load', tag=ui.FILE_LOAD,
+                                           callback=lambda: dpg.show_item(ui.DLG_LOAD_FILE),
+                                           width=-1)
 
                 # ── Main column (center — plots) ──────────────────────
                 with dpg.child_window(width=-RESULTS_WIDTH, autosize_y=True,
