@@ -157,7 +157,9 @@ class UI_Elements:
     CONN_DEVICE_NAME   = 'CONN_DEVICE_NAME'    # device model name
     CONN_CHANNEL_SUMMARY = 'CONN_CHANNEL_SUMMARY'  # group for per-channel lines
     BTN_DEVICE_SETUP   = 'BTN_DEVICE_SETUP'
+    BTN_CHANNELS_SETUP = 'BTN_CHANNELS_SETUP'
     BTN_SENSOR_SETUP   = 'BTN_SENSOR_SETUP'
+    BTN_SIGGEN_SETUP   = 'BTN_SIGGEN_SETUP'
 
     # ── Spectrum Setup section ─────────────────────────────────────────────
     SPECTRUM_INFO_TEXT = 'SPECTRUM_INFO_TEXT'  # readonly multi-line text

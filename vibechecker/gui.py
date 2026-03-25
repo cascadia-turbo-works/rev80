@@ -36,10 +36,10 @@ _BTN_HALF = (CONTROLS_WIDTH - 22) // 2              # ≈ 139 px
 #   button    ≈ 25 px (21 px frame + 4 px spacing)
 #   card base ≈ 40 px (top/bottom WindowPadding + title + separator)
 _CARD_LINE_H  = 18   # per text-line height estimate (font + spacing)
-_CARD_BASE_H  = 40   # card overhead: padding + title + separator + bottom pad
+_CARD_BASE_H  = 100   # card overhead: padding + title + separator + bottom pad
 _CARD_BTN_H   = 26   # single button row height
 _CARD_H_DEVICE = _CARD_BASE_H + 2*_CARD_LINE_H + 2 + _CARD_BTN_H + 6   # ≈ 110
-_CARD_H_ACQ    = 350   # Acquisition: fixed — toggle+controls+spectrum info box
+_CARD_H_ACQ    = 400   # Acquisition: fixed — toggle+controls+spectrum info box
 _CARD_H_FILE   = _CARD_BASE_H + _CARD_BTN_H + 6                          # ≈ 72
 
 def _c(key: str, alpha: int = 255) -> tuple:
@@ -456,7 +456,7 @@ class GUI:
                 n_lines = len(self.collector.config.enabled_channels) + 1  # +gen
             else:
                 n_lines = 0
-            h = _CARD_BASE_H + n_lines * _CARD_LINE_H + 2 + _CARD_BTN_H + 8
+            h = _CARD_BASE_H + n_lines * _CARD_LINE_H + 2 + 3*_CARD_BTN_H + 8
             dpg.configure_item(ui.CHANNELS_CARD, height=h)
 
     # ------------------------------------------------------------------
@@ -1308,7 +1308,7 @@ class GUI:
 
                     # ── Channels ─────────────────────────────────────
                     with dpg.child_window(border=True, autosize_x=True,
-                                          height=_CARD_BASE_H + _CARD_BTN_H + 8,
+                                          height=_CARD_BASE_H + 3*_CARD_BTN_H + 8,
                                           no_scrollbar=True,
                                           tag=ui.CHANNELS_CARD) as _s_ch:
                         dpg.bind_item_theme(_s_ch, self._sect_theme)
@@ -1317,10 +1317,20 @@ class GUI:
                         with dpg.group(tag=ui.CONN_CHANNEL_SUMMARY):
                             pass
                         dpg.add_spacer(height=2)
+                        dpg.add_button(label='Channel Setup',
+                                       tag=ui.BTN_CHANNELS_SETUP,
+                                       callback=lambda: self._open_config_dialog(
+                                           ui.CONFIG_TAB_CHANNELS),
+                                       width=-1)
                         dpg.add_button(label='Sensor Setup',
                                        tag=ui.BTN_SENSOR_SETUP,
                                        callback=lambda: self._open_config_dialog(
                                            ui.CONFIG_TAB_SENSORS),
+                                       width=-1)
+                        dpg.add_button(label='Signal Generator',
+                                       tag=ui.BTN_SIGGEN_SETUP,
+                                       callback=lambda: self._open_config_dialog(
+                                           ui.CONFIG_TAB_SIGGEN),
                                        width=-1)
 
                     dpg.add_spacer(height=6)
