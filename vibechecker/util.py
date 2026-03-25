@@ -1,6 +1,5 @@
 import numpy as np
 from path import Path
-from typing import Union, Literal
 
 # ── GUI colour palette ──────────────────────────────────────────────────────
 # All colours defined as hex strings (#RRGGBB).  Use hex_to_rgba() to convert
@@ -91,10 +90,14 @@ UNIT_TO_SI: dict = {
 
 def modality_of(unit: str) -> str:
     """Return 'acceleration'|'velocity'|'displacement'|'raw' for a unit string."""
-    if unit in ACCELERATION_UNITS: return 'acceleration'
-    if unit in VELOCITY_UNITS:     return 'velocity'
-    if unit in DISPLACEMENT_UNITS: return 'displacement'
-    if unit in RAW_UNITS:          return 'raw'
+    if unit in ACCELERATION_UNITS:
+        return 'acceleration'
+    if unit in VELOCITY_UNITS:
+        return 'velocity'
+    if unit in DISPLACEMENT_UNITS:
+        return 'displacement'
+    if unit in RAW_UNITS:
+        return 'raw'
     raise ValueError(f'Unknown unit {unit!r}')
 
 
@@ -145,7 +148,6 @@ class NoDevicesFound(Exception):
 class FormatError(Exception):
     pass
 
-
 class UI_Elements:
 
     # ── Connection Status section ──────────────────────────────────────────
@@ -166,6 +168,9 @@ class UI_Elements:
     STREAM_STATUS_RECT = 'STREAM_STATUS_RECT'
     ACQ_TOGGLE         = 'ACQ_TOGGLE'          # Stopped / Waiting / Running button
     ACQ_SINGLE         = 'ACQ_SINGLE'
+    ACQ_BROWSE_PREV    = 'ACQ_BROWSE_PREV'     # ← older frame
+    ACQ_BROWSE_NEXT    = 'ACQ_BROWSE_NEXT'     # → newer frame
+    ACQ_BROWSE_LABEL   = 'ACQ_BROWSE_LABEL'    # "Frame N / M" text
 
     # ── File Handling section ──────────────────────────────────────────────
     FILE_SAVE = 'FILE_SAVE'
@@ -179,8 +184,10 @@ class UI_Elements:
     DLG_LOAD_FILE       = 'DLG_LOAD_FILE'
 
     # Spectrum dialog inputs
-    SPEC_DLG_MAXFREQ = 'SPEC_DLG_MAXFREQ'
-    SPEC_DLG_BINSIZE = 'SPEC_DLG_BINSIZE'
+    SPEC_DLG_MAXFREQ    = 'SPEC_DLG_MAXFREQ'
+    SPEC_DLG_BINSIZE    = 'SPEC_DLG_BINSIZE'
+    SPEC_DLG_TREND_FMIN = 'SPEC_DLG_TREND_FMIN'
+    SPEC_DLG_TREND_FMAX = 'SPEC_DLG_TREND_FMAX'
 
     # Sensor registry dialog
     SCOPE_REGISTRY_LIST   = 'SCOPE_REGISTRY_LIST'

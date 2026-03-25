@@ -1,5 +1,4 @@
 from dataclasses import dataclass, field
-from typing import Literal, Union
 from datetime import datetime
 
 import numpy as np
@@ -31,6 +30,10 @@ class AcquisitionSettings:
     coupling: str = 'AC'      # 'AC' or 'DC'
     enabled_channels: list = field(default_factory=lambda: [0])
     channel_voltage_ranges: dict = field(default_factory=lambda: {0: 10})
+    # Trend history settings
+    trend_max_points: int = 500
+    trend_fmin: float = 0.0
+    trend_fmax: float | None = None   # None → clamp to maxfreq at compute time
 
     def voltage_range_for(self, ch: int) -> int:
         """Return the PS4000A voltage range index for a given channel (default ±20V)."""
@@ -156,7 +159,7 @@ class VibeSample:
     @classmethod
     def load(cls, h5filename:Path):
         log.debug(f'Loading {h5filename}')
-        decode = lambda x: x.decode() if isinstance(x,bytes) else x
+        def decode(x): return x.decode() if isinstance(x, bytes) else x
         with h5py.File(h5filename, 'r') as f:
             data = {k: decode(v[()]) for k,v in f.items()}
 
@@ -183,7 +186,7 @@ class VibeSample:
                     key = 'timestamp'
                 try:
                     f.create_dataset(key, data=val)
-                except TypeError as e:
+                except TypeError:
                     log.error(f'H5 failed to save {key} = {val} ({type(val)})')
         return h5filename
     
@@ -284,4 +287,25 @@ class VibeSample:
 
         return (result[result.freq <= config.maxfreq],
                 peaks[freq[peaks] <= config.maxfreq])
-    
+
+
+@dataclass(frozen=True)
+class ChannelResult:
+    """Pre-computed display result for one channel at one capture instant.
+
+    All arrays are in `unit` (the target display unit).  Constructed by the
+    GUI's _compute_channel_result() from a raw VibeSample; never mutated
+    after creation.
+    """
+    channel:    int
+    unit:       str              # target display unit, e.g. 'in/s', 'g', 'mV'
+    time_data:  np.ndarray       # (N,) signal in target unit
+    time_vec:   np.ndarray       # (N,) seconds
+    samplerate: int
+    freq:       np.ndarray       # (K,) Hz, clipped to maxfreq
+    spectrum:   np.ndarray       # (K,) amplitude in target unit
+    peaks:      np.ndarray       # indices into freq / spectrum
+    overall:    float            # broadband amplitude in target unit
+    timestamp:  datetime
+    rel_time:   float
+    status:     str

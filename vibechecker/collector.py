@@ -1,51 +1,59 @@
 # Data Collector
 
+import threading
 import numpy as np
 import scipy.signal
-import pandas as pd
-from datetime import datetime as dt
-from queue import Queue
+import h5py
+from collections import deque
+from datetime import datetime
 from path import Path
-from typing import Union, Literal, List, Tuple, Dict
+from typing import Union, Dict
 
 import vibechecker
 from vibechecker.scope_sensor import ScopeSensor
 
 log = vibechecker.get_logger('collector')
 
-class DataCollector:
-    '''
-    This class collects, analyzes, logs and loads data from the vibration sensor
-    '''
-    sensor: Union[vibechecker.VibeSensor, None] = None
+_FRAME_CACHE_SIZE = 32
 
-    # TODO: Make sensor take ownership of config. shouldn't be owned by collector
+
+class DataCollector:
+    """Collect, filter, cache, and persist multi-channel vibration data.
+
+    Pipeline
+    --------
+    Hardware callback → receive_data()
+        per channel: mV→EU conversion + Butterworth filter → VibeSample
+        → frame_cache.append(dict[int, VibeSample])
+        → data_callback() → registered GUI callbacks
+    """
+
+    sensor: Union[vibechecker.VibeSensor, None] = None
     config: vibechecker.AcquisitionSettings
     stream = None
-    queue: Union[Queue, None] = None
     datadir: Union[Path, None] = Path('DEVDATA')
     data: Dict = {}
 
     def __init__(self,
                  sensor: Union[vibechecker.VibeSensor, None] = None,
-                 config: Union[vibechecker.AcquisitionSettings,None] = None):
+                 config: Union[vibechecker.AcquisitionSettings, None] = None):
 
-        if config:
-            self.config = config
-        else:
-            # default settings
-            self.config = vibechecker.AcquisitionSettings()
-
+        self.config = config if config else vibechecker.AcquisitionSettings()
         self.scope_sensors: dict[int, ScopeSensor] = {}
-        self.callbacks: dict = {}   # instance-level; not shared across DataCollector instances
+        self.callbacks: dict = {}
+        self._cache_cursor: int = 0
 
         if sensor is not None:
             self.connect_sensor(sensor)
 
         self.reset_data_store()
 
+    # ------------------------------------------------------------------
+    # Sensor assignment
+    # ------------------------------------------------------------------
+
     def set_scope_sensor(self, channel: int, sensor: ScopeSensor | None) -> None:
-        """Assign or clear a ScopeSensor on a PicoScope channel for mV→EU conversion."""
+        """Assign or clear a ScopeSensor on a channel for mV→EU conversion."""
         if sensor is None:
             self.scope_sensors.pop(channel, None)
         else:
@@ -67,6 +75,10 @@ class DataCollector:
                 return unit
         return 'mV'
 
+    # ------------------------------------------------------------------
+    # Stream state
+    # ------------------------------------------------------------------
+
     @property
     def is_streaming(self):
         try:
@@ -75,120 +87,143 @@ class DataCollector:
             log.error('Device connection may be interrupted')
             return False
 
-    def reset_data_store(self):
-        self.data = {}
-        self.data['meta'] = []
-        self.data['sample'] = vibechecker.VibeSample.empty()
-        self.data['sample_count'] = 0
-        self.data['trend'] = []
-        self.data['rolling_average'] = {'N':0, 'k': 0, 'samples': []}
-        self._last_samples: dict = {}   # per-channel last VibeSample
+    # ------------------------------------------------------------------
+    # Data store
+    # ------------------------------------------------------------------
 
+    def reset_data_store(self):
+        self.data = {
+            'meta':        [],
+            'frame_cache': deque(maxlen=_FRAME_CACHE_SIZE),  # dict[int, VibeSample]
+            'frame_count': 0,
+            'trend':       {},   # dict[int, {'rel_times': list, 'overall': list}]
+        }
+        self._cache_cursor = 0
+        self.init_trend_channels()
         log.info('Reset data store.')
 
-    @property
-    def sample(self) -> vibechecker.VibeSample:
-        return self.data['sample']
-    @sample.setter
-    def sample(self, sample):
-        self.data['sample'] = sample
-        self.data['sample_count'] += 1
+    def init_trend_channels(self):
+        """(Re-)initialise trend store keyed by current enabled_channels.
+
+        Channels already in the store are preserved; new channels get empty
+        lists; channels no longer enabled are dropped.
+        """
+        enabled = set(self.config.enabled_channels)
+        self.data['trend'] = {
+            ch: self.data['trend'].get(ch, {'rel_times': [], 'overall': []})
+            for ch in sorted(enabled)
+        }
+
+    def update_trend(self, ch: int, rel_time: float, overall: float) -> None:
+        """Append one (rel_time, overall) point for a channel; prune to cap."""
+        if ch not in self.data['trend']:
+            self.data['trend'][ch] = {'rel_times': [], 'overall': []}
+        td = self.data['trend'][ch]
+        td['rel_times'].append(rel_time)
+        td['overall'].append(overall)
+        cap = self.config.trend_max_points
+        if len(td['rel_times']) > cap:
+            td['rel_times'] = td['rel_times'][-cap:]
+            td['overall'] = td['overall'][-cap:]
+
+    def clear_trend(self) -> None:
+        """Wipe all accumulated trend data (call after unit/freq-window changes)."""
+        for ch in self.data['trend']:
+            self.data['trend'][ch] = {'rel_times': [], 'overall': []}
+        log.debug('Trend data cleared.')
+
+    # ------------------------------------------------------------------
+    # Frame cache navigation
+    # ------------------------------------------------------------------
+
+    def reprocess_last_block(self) -> None:
+        """Re-deliver the currently displayed cached frame to GUI callbacks.
+
+        Use after display settings change (units, sensor, freq window) while
+        the stream is stopped to refresh plots without new hardware data.
+        Bypasses data_callback to avoid appending a duplicate frame or
+        resetting the browse cursor.
+        """
+        cache = self.data['frame_cache']
+        if not cache:
+            return
+        idx = min(self._cache_cursor, len(cache) - 1)
+        frame = cache[-(idx + 1)]
+        for fn in self.callbacks.values():
+            fn(frame)
+
+    def browse_frame(self, delta: int) -> None:
+        """Move the cache cursor by delta and redisplay.
+
+        Positive delta goes older; negative goes newer.
+        Only meaningful when the stream is stopped.
+        """
+        cache = self.data['frame_cache']
+        if not cache:
+            return
+        self._cache_cursor = max(0, min(self._cache_cursor + delta,
+                                        len(cache) - 1))
+        self.reprocess_last_block()
+
+    # ------------------------------------------------------------------
+    # Sensor connection
+    # ------------------------------------------------------------------
 
     def connect_sensor(self, sensor: vibechecker.VibeSensor,
                        siggen_config: dict | None = None):
-        '''
-        Connect to the device and return a stream object
-        '''
+        """Connect to a device and initialise its stream."""
         if not isinstance(sensor, vibechecker.VibeSensor):
-            raise TypeError(f"Attempted to select invalid sensor of {type(sensor)}")
+            raise TypeError(f'Attempted to select invalid sensor of {type(sensor)}')
 
         if self.stream is not None or self.sensor is not None:
-            # Disconnect any connected sensor first
             self.disconnect_sensor()
 
         if self.config is None:
-            log.error(f'Attempted to connect sensor {self.sensor} but no configuration implemented')
+            log.error('Attempted to connect sensor but no configuration set')
             return
 
         self.sensor = sensor
-        self.stream = self.sensor.connect(self.config, self.recieve_data,
-                                           siggen_config=siggen_config)
-        log.debug(f'Connected sensor {self.sensor})')
+        self.stream = self.sensor.connect(self.config, self.receive_data,
+                                          siggen_config=siggen_config)
+        log.debug(f'Connected sensor {self.sensor}')
 
     def disconnect_sensor(self):
-
         if self.is_streaming:
-            # stop active stream
             self.stop_stream()
 
         if self.stream is not None:
-            # close stream
             self.stream.close()
             self.stream = None
 
-        if self.queue is not None:    
-            self.kill_data_queue()  # clear all items from the queue
-
         if self.sensor:
-            log.debug(f'Disconnecting sensor {self.sensor})')
+            log.debug(f'Disconnecting sensor {self.sensor}')
             self.sensor = None
 
-    def start_data_queue(self):
-        if self.queue is None:
-            self.queue = Queue()
-            log.debug('Data Queue initialized')
-        else:
-            log.warning('Data Queue is already active')
-
-    def get_data_queue(self):
-        if self.queue is None:
-            return None
-
-        return self.queue.get()
-    
-    def flush_data_queue(self):
-        if self.queue is None:
-            log.warning('Attempted to flush inactive queue')
-            return
-        
-        qsize = self.queue.qsize()
-        self.queue.queue.clear()
-        log.debug(f'Data Queue flushed ({qsize} items)')
-
-    def kill_data_queue(self):
-        if self.queue is None:
-            log.warning('Attempted to kill inactive queue')
-            return
-
-        self.flush_data_queue()
-        self.queue = None
-
-        log.debug('Data Queue destroyed')
+    # ------------------------------------------------------------------
+    # Stream control
+    # ------------------------------------------------------------------
 
     def start_stream(self):
-        '''Initiate sensor stream'''        
+        """Initiate sensor stream."""
         if self.is_streaming:
             log.warning('Attempted Start Stream: Already Running')
             return
-        
         if not self.stream:
             return
-
         try:
             self.stream.start()
         except Exception as e:
             self.disconnect_sensor()
             log.error(f'Error starting stream: {e}')
-        log.debug(f'Stream started')
+        log.debug('Stream started')
 
     def stop_stream(self):
-        '''Terminate sensor stream'''
+        """Terminate sensor stream."""
         if not self.stream or not self.is_streaming:
             log.warning('Attempted Stop Stream: No stream running')
             return
-
         self.stream.stop()
-        log.debug(f'Stream stopped')
+        log.debug('Stream stopped')
 
     def reconnect_stream(self):
         """Close and recreate the stream with current config.
@@ -205,53 +240,53 @@ class DataCollector:
         if self.stream is not None:
             self.stream.close()
             self.stream = None
-        self.stream = sensor.connect(self.config, self.recieve_data)
+        self.stream = sensor.connect(self.config, self.receive_data)
         if was_streaming:
             self.start_stream()
 
+    # ------------------------------------------------------------------
+    # Single-shot capture
+    # ------------------------------------------------------------------
+
     def collect_sample(self) -> dict:
-        """Collect one block from each enabled channel. Returns {channel: VibeSample}."""
+        """Collect one block from each enabled channel.
+
+        Returns dict[int, VibeSample].  The captured frame is stored in
+        frame_cache via the normal data_callback path.
+        """
         if self.is_streaming:
             self.stop_stream()
 
-        self.start_data_queue()
+        captured: dict = {}
+        done = threading.Event()
+
+        def _one_shot(samples: dict):
+            captured.update(samples)
+            done.set()
+
+        self.callbacks['_collect_sample'] = _one_shot
         self.start_stream()
+        done.wait(timeout=self.config.acquisition_period * 3)
+        self.stop_stream()
+        self.callbacks.pop('_collect_sample', None)
 
-        try:
-            samples = self.get_data_queue()
-        except Exception:
-            samples = {}
-        finally:
-            self.stop_stream()
-            self.kill_data_queue()
+        return captured
 
-        return samples if isinstance(samples, dict) else {}
+    # ------------------------------------------------------------------
+    # Data pipeline
+    # ------------------------------------------------------------------
 
-    def save_data(self, target:Path):
-        if target.exists():
-            log.warning('Save target exists. Delete existing file before saving.')
-            return
+    def receive_data(self, samp: dict):
+        """Preprocess one hardware block: fan out to per-channel VibeSamples.
 
-        self.sample.save(target)
-
-    def load_data(self, target:Path):
-        if not target.is_file():
-            log.error(f'load_data: file does not exist: {target}')
-            return
-
-        self.sample = vibechecker.VibeSample.load(target)
-
-        self.data_callback({0: self.sample})
-
-        log.info(f'Loaded data sample {target}')
-
-    def recieve_data(self, samp: dict):
-        """Preprocess one incoming data block and fan out to per-channel VibeSamples."""
+        Applies per-channel mV→EU sensitivity conversion then an optional
+        Butterworth highpass filter before forwarding to data_callback().
+        """
         data_arr = np.asarray(samp['data'])
         unit_arr = samp['unit']
         channels = samp.get('channels', [0])
 
-        # Ensure 2-D (blocksize, N)
+        # Ensure 2-D (blocksize, N_channels)
         if data_arr.ndim == 1:
             data_arr = data_arr[:, np.newaxis]
 
@@ -260,10 +295,11 @@ class DataCollector:
         for i, ch in enumerate(channels):
             col  = min(i, data_arr.shape[1] - 1)
             data = data_arr[:, col].copy()
-            unit = unit_arr[ch] if isinstance(unit_arr, list) and ch < len(unit_arr) else (
-                   unit_arr[i] if isinstance(unit_arr, list) and i < len(unit_arr) else unit_arr)
+            unit = (unit_arr[ch] if isinstance(unit_arr, list) and ch < len(unit_arr)
+                    else unit_arr[i] if isinstance(unit_arr, list) and i < len(unit_arr)
+                    else unit_arr)
 
-            # mV → EU conversion via assigned ScopeSensor
+            # mV → EU via assigned ScopeSensor
             if unit == 'mV':
                 scope_sensor = self.scope_sensors.get(ch)
                 if scope_sensor is not None:
@@ -292,14 +328,114 @@ class DataCollector:
         self.data_callback(samples)
 
     def data_callback(self, samples: dict):
-        """Deliver {channel: VibeSample} to queue or registered GUI callbacks."""
-        if self.queue is not None:
-            self.queue.put(samples)
-        else:
-            if samples:
-                self.sample = next(iter(samples.values()))
-                self._last_samples.update(samples)   # per-channel storage for redraw
-            for fn in self.callbacks.values():
-                fn(samples)
+        """Store raw frame and deliver dict[int, VibeSample] to consumers."""
+        if samples:
+            self.data['frame_cache'].append(samples)
+            self.data['frame_count'] += 1
+            self._cache_cursor = 0
+        for fn in self.callbacks.values():
+            fn(samples)
 
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
 
+    def save_data(self, target: Path):
+        """Save frame cache and trend history to an HDF5 file.
+
+        Layout::
+
+            /frames/{i}/meta/{timestamp, rel_time, samplerate, status}
+            /frames/{i}/channels/{ch}/data   (N,) float64
+            /frames/{i}/channels/{ch}/unit   str
+            /trend/{ch}/rel_times            (M,)
+            /trend/{ch}/overall              (M,)
+        """
+        if target.exists():
+            log.warning('Save target exists. Delete existing file before saving.')
+            return
+
+        frames = list(self.data['frame_cache'])
+        with h5py.File(target, 'w') as f:
+            frames_grp = f.create_group('frames')
+            for i, frame_samples in enumerate(frames):
+                fg = frames_grp.create_group(str(i))
+                first = next(iter(frame_samples.values()))
+                meta = fg.create_group('meta')
+                meta.create_dataset('timestamp',  data=first.timestamp)
+                meta.create_dataset('rel_time',   data=first.rel_time)
+                meta.create_dataset('samplerate', data=first.samplerate)
+                meta.create_dataset('status',     data=first.status)
+                ch_grp = fg.create_group('channels')
+                for ch, sample in frame_samples.items():
+                    cg = ch_grp.create_group(str(ch))
+                    cg.create_dataset('data',     data=sample.data)
+                    cg.create_dataset('unit',     data=sample.unit)
+                    cg.create_dataset('modality', data=sample.modality)
+
+            trend_grp = f.create_group('trend')
+            for ch, td in self.data['trend'].items():
+                if td['rel_times']:
+                    tg = trend_grp.create_group(str(ch))
+                    tg.create_dataset('rel_times', data=np.array(td['rel_times']))
+                    tg.create_dataset('overall',   data=np.array(td['overall']))
+
+        log.info(f'Saved {len(frames)} frames to {target}')
+
+    def load_data(self, target: Path):
+        """Load frame cache and trend from an HDF5 file, then reprocess for display."""
+        if not target.is_file():
+            log.error(f'load_data: file does not exist: {target}')
+            return
+
+        def decode(x): return x.decode() if isinstance(x, bytes) else x
+
+        self.data['frame_cache'].clear()
+        self.data['trend'] = {}
+
+        with h5py.File(target, 'r') as f:
+            if 'frames' in f:
+                frames_grp = f['frames']
+                for idx in sorted(frames_grp.keys(), key=int):
+                    fg = frames_grp[idx]
+                    meta = fg['meta']
+                    ts_str    = decode(meta['timestamp'][()])
+                    rel_time  = float(meta['rel_time'][()])
+                    samplerate = int(meta['samplerate'][()])
+                    status    = decode(meta['status'][()])
+                    try:
+                        timestamp = datetime.fromisoformat(ts_str)
+                    except (ValueError, TypeError):
+                        timestamp = datetime.now()
+
+                    frame_samples: dict[int, vibechecker.VibeSample] = {}
+                    for ch_str, cg in fg['channels'].items():
+                        ch = int(ch_str)
+                        data     = np.ascontiguousarray(cg['data'][()],
+                                                        dtype=np.float64)
+                        unit     = decode(cg['unit'][()])
+                        modality = decode(cg['modality'][()]) if 'modality' in cg \
+                                   else 'acceleration'
+                        frame_samples[ch] = vibechecker.VibeSample(
+                            status=status,
+                            _timestamp=timestamp,
+                            samplerate=samplerate,
+                            unit=unit,
+                            data=data,
+                            rel_time=rel_time,
+                            modality=modality,
+                        )
+                    self.data['frame_cache'].append(frame_samples)
+
+            if 'trend' in f:
+                for ch_str, tg in f['trend'].items():
+                    ch = int(ch_str)
+                    self.data['trend'][ch] = {
+                        'rel_times': list(np.array(tg['rel_times'][()])),
+                        'overall':   list(np.array(tg['overall'][()])),
+                    }
+
+        n = len(self.data['frame_cache'])
+        log.info(f'Loaded {n} frames from {target}')
+        if n:
+            self.reprocess_last_block()

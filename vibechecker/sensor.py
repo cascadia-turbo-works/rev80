@@ -45,7 +45,7 @@ class VibeSensor:
     def connect(self, config: vibechecker.AcquisitionSettings, callback,
                 siggen_config: dict | None = None):
         """Return a stream object with .start() / .stop() / .close() / .active."""
-        self.callback = callback   # app callback — DataCollector.recieve_data
+        self.callback = callback   # app callback — DataCollector.receive_data
 
         if self.is_simulation:
             # SimulatedSensor fires _sd_callback (sounddevice-style args) which
@@ -57,7 +57,7 @@ class VibeSensor:
 
     def _sd_callback(self, sd_data: np.ndarray, frames: int, sd_time, sd_status: str):
         """sounddevice / SimulatedSensor callback — packages raw data into a dict
-        and forwards to the registered app callback (DataCollector.recieve_data)."""
+        and forwards to the registered app callback (DataCollector.receive_data)."""
         status = str(sd_status)
         try:
             rel_time = float(sd_time)

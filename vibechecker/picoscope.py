@@ -1,10 +1,10 @@
 # PicoScope 4000A acquisition backend for vibechecker
 #
 # Provides:
-#   FindPicoScope()      — enumerate connected PS4000A devices (mirrors FindDigiducer interface)
+#   FindPicoScope()      — enumerate connected PS4000A devices
 #   PicoScopeStream      — streaming thread that replaces sounddevice.InputStream
 #
-# Data contract with DataCollector.recieve_data:
+# Data contract with DataCollector.receive_data:
 #   callback(dict) where dict keys are:
 #     status    : str  — 'OKAY' | 'OVERFLOW'
 #     rel_time  : float — seconds since stream started
@@ -160,7 +160,7 @@ class PicoScopeStream:
         .stop()  → stop streaming, release driver resources
         .close() → close device handle (call after stop)
 
-    The app callback receives a dict matching DataCollector.recieve_data's
+    The app callback receives a dict matching DataCollector.receive_data's
     expected format on every accumulated blocksize-worth of samples.
 
     Resilience features
@@ -179,7 +179,7 @@ class PicoScopeStream:
         config   : AcquisitionSettings
             Provides samplerate, blocksize, voltage_range, coupling.
         callback : callable
-            DataCollector.recieve_data — called with sample dict on each block.
+            DataCollector.receive_data — called with sample dict on each block.
         siggen_config : dict | None
             Optional signal generator parameters applied on every start().
             Keys: freq_hz (float), pktopk_uv (int), offset_uv (int),
