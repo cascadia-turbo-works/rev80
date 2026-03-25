@@ -251,9 +251,6 @@ class GUI:
         if not self.collector.is_streaming:
             self.display_sample({0: self.collector.sample})
 
-    def update_axes_label(self):
-        self._update_axis_assignment()
-
     def update_streaming_config(self, sender=None, data=None):
         '''Syncronize gui settings with sensor acquisition settings'''
 
@@ -826,7 +823,7 @@ class GUI:
     def initialize(self):
         self.create_gui()
         self.update_streaming_config()
-        self.update_axes_label()
+        self._update_axis_assignment()
 
         self._refresh_scope_registry_list()
         self._rebuild_channel_rows(self._num_channels)

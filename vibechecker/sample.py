@@ -14,7 +14,6 @@ from vibechecker import BLOCKSIZES, \
                         SAMPLERATES, \
                         MAXFREQS, \
                         BINSIZES, \
-                        SUPPORTED_UNITS, \
                         nextpow2
 from vibechecker.util import UNIT_TO_SI, integration_steps
 
@@ -119,7 +118,7 @@ class VibeSample:
     status: str
     _timestamp: datetime
     samplerate: int
-    unit: SUPPORTED_UNITS
+    unit: str
     data: np.ndarray = field(default_factory=lambda: np.array([0], dtype=np.float64))
     rel_time: float = field(default=0)
     label: str = field(default='')
@@ -192,7 +191,7 @@ class VibeSample:
                     status: str, 
                     rel_time: float,  
                     samplerate: int, 
-                    unit:SUPPORTED_UNITS, 
+                    unit: str,
                     data:np.ndarray):
         self.status = status
         self._timestamp = datetime.now()

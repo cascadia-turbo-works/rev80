@@ -408,10 +408,20 @@ class PicoScopeStream:
                 )
                 self._last_overflow_log = now
 
-        # Convert ADC counts → mV for each enabled channel
+        # Convert ADC counts → mV for each enabled channel.
+        # The driver treats the registered buffer as a circular ring, so
+        # startIndex + noOfSamples may wrap past _DRIVER_BUFFER_SAMPLES.
         chunks_mv = []
+        buf_size = _DRIVER_BUFFER_SAMPLES
+        end_idx  = startIndex + noOfSamples
         for ch in self._enabled_channels:
-            chunk_adc = self._driver_buffers[ch][startIndex:startIndex + noOfSamples]
+            if end_idx <= buf_size:
+                chunk_adc = self._driver_buffers[ch][startIndex:end_idx].copy()
+            else:
+                # Two-part read: tail of buffer + wrapped head
+                first  = self._driver_buffers[ch][startIndex:buf_size]
+                second = self._driver_buffers[ch][0:end_idx - buf_size]
+                chunk_adc = np.concatenate([first, second])
             chunks_mv.append(np.array(
                 adc2mV(chunk_adc, self.config.voltage_range_for(ch), self._maxADC),
                 dtype=np.float64,

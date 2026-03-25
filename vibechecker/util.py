@@ -48,8 +48,6 @@ BLOCKSIZES = list(map(int,np.pow(2, np.arange(8,18))))
 MAXFREQS = [2e2, 5e2, 1e3, 2e3, 5e3, 1e4, 2e4, 2.4e4]
 BINSIZES = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0]
 
-SUPPORTED_UNITS = str  # any EU_OPTIONS string
-
 # ── Unit taxonomy ──────────────────────────────────────────────────────────
 # Each unit string encodes both the physical quantity (modality) and the
 # measurement system.  'mV' is the raw pass-through unit (no physical dimension).
@@ -116,40 +114,8 @@ def integration_steps(source_unit: str, target_unit: str) -> int:
     return MODALITY_ORDER[src_mod] - MODALITY_ORDER[tgt_mod]
 
 
-# Legacy mapping kept for compatibility with sounddevice display labels
-UNITS = {'Earth Gravity - g': 'g',
-         'Metric - mm/s2': 'mm/s2',
-         'Imperial - in/s2': 'in/s2',
-         'Imperial - mil/s2': 'mil/s2',
-         'Voltage - mV': 'mV'}
-UNITS_REV = {v: k for k, v in UNITS.items()}
-
-UNIT_CONVERSION = {
-    ("g", "mm"):  9.80665 * 1000,
-    ("mm", "g"):  1 / (9.80665 * 1000),
-    ("g", "in"):  9.80665 * 1000 / 25.4,
-    ("in", "g"):  1 / (9.80665 * 1000 / 25.4),
-    ("g", "mil"): 9.80665 * 1000 / 25.4 * 1000,
-    ("mil", "g"): 1 / (9.80665 * 1000 / 25.4 * 1000),
-    ("mm", "in"): 1 / 25.4,
-    ("in", "mm"): 25.4,
-    ("mm", "mil"): 1 / 25.4 * 1000,
-    ("mil", "mm"): 25.4 / 1000,
-    ("in", "mil"): 1000,
-    ("mil", "in"): 1 / 1000,
-}
-
 SAVEDIR = Path('DEVDATA')
 EXT = '.h5'
-
-def convert_units(data: np.ndarray, from_unit: str, to_unit: str) -> np.ndarray:
-    if from_unit == to_unit:
-        return data
-    try:
-        factor = UNIT_CONVERSION[(from_unit, to_unit)]
-        return data * factor
-    except KeyError:
-        raise ValueError(f"Unsupported conversion from {from_unit} to {to_unit}")
 
 
 def nextpow2(x:int) -> int:
