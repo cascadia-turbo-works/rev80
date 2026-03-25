@@ -29,6 +29,19 @@ _RESULTS_CARD_HEIGHT  = (WINDOW_HEIGHT - 70) // 4   # ≈ 232 px
 # Width of paired buttons side-by-side in the left control panel
 _BTN_HALF = (CONTROLS_WIDTH - 22) // 2              # ≈ 139 px
 
+# Left-panel card heights.  DPG child_window has no shrink-to-content mode:
+# autosize_y=True fills the parent rather than the content.  Heights must be
+# fixed or dynamically updated.  Estimates based on DPG default style metrics:
+#   text line ≈ 17 px (13 px font + 4 px ItemSpacing.y)
+#   button    ≈ 25 px (21 px frame + 4 px spacing)
+#   card base ≈ 40 px (top/bottom WindowPadding + title + separator)
+_CARD_LINE_H  = 18   # per text-line height estimate (font + spacing)
+_CARD_BASE_H  = 40   # card overhead: padding + title + separator + bottom pad
+_CARD_BTN_H   = 26   # single button row height
+_CARD_H_DEVICE = _CARD_BASE_H + 2*_CARD_LINE_H + 2 + _CARD_BTN_H + 6   # ≈ 110
+_CARD_H_ACQ    = 350   # Acquisition: fixed — toggle+controls+spectrum info box
+_CARD_H_FILE   = _CARD_BASE_H + _CARD_BTN_H + 6                          # ≈ 72
+
 def _c(key: str, alpha: int = 255) -> tuple:
     """Shorthand: THEME_COLORS[key] → DPG RGBA tuple."""
     return vibechecker.hex_to_rgba(vibechecker.THEME_COLORS[key], alpha)
@@ -82,8 +95,10 @@ class GUI:
         self._channel_themes: list = []
         self._peak_themes: list = []
         self._sect_theme = None
+        self._toggle_themes: dict = {}   # 'active'|'waiting'|'idle' → dpg theme
         self._status_timer: threading.Timer | None = None
         self.found_sensors: list = []
+        self._autoscale_pending: bool = False   # True → autoscale on next frame
 
     # ------------------------------------------------------------------
     # Status indicator helpers
@@ -99,18 +114,13 @@ class GUI:
                           'Connected' if state == 'connected' else 'Not Connected')
 
     def _set_stream_status(self, state: str):
-        """Update the stream indicator and toggle button: 'active'|'waiting'|'idle'."""
-        if dpg.does_item_exist(ui.STREAM_STATUS_RECT):
-            color_map = {
-                'active':  _c('GREEN'),
-                'waiting': _c('YELLOW'),
-                'idle':    _c('RED'),
-            }
-            dpg.configure_item(ui.STREAM_STATUS_RECT,
-                                fill=color_map.get(state, _c('RED')))
+        """Update the toggle button color and label: 'active'|'waiting'|'idle'."""
         if dpg.does_item_exist(ui.ACQ_TOGGLE):
             label_map = {'active': 'Running', 'waiting': 'Waiting', 'idle': 'Stopped'}
             dpg.set_item_label(ui.ACQ_TOGGLE, label_map.get(state, 'Stopped'))
+            theme = self._toggle_themes.get(state)
+            if theme:
+                dpg.bind_item_theme(ui.ACQ_TOGGLE, theme)
 
     def _schedule_status_timeout(self):
         """Re-arm watchdog: revert stream indicator to yellow if no data arrives."""
@@ -355,6 +365,9 @@ class GUI:
             self.collector.update_trend(ch, result.rel_time, result.overall)
         self._update_trend_plot()
         self._update_browse_label()
+        if self._autoscale_pending:
+            self._autoscale_plots()
+            self._autoscale_pending = False
 
     def _redraw(self, sender=None, data=None):
         if not self.collector.is_streaming:
@@ -437,6 +450,15 @@ class GUI:
                 dpg.add_text(gen_text, parent=ui.CONN_CHANNEL_SUMMARY,
                              color=_c('ON_SURFACE'))
 
+        # Resize Channels card to match actual line count
+        if dpg.does_item_exist(ui.CHANNELS_CARD):
+            if self.collector.sensor is not None:
+                n_lines = len(self.collector.config.enabled_channels) + 1  # +gen
+            else:
+                n_lines = 0
+            h = _CARD_BASE_H + n_lines * _CARD_LINE_H + 2 + _CARD_BTN_H + 8
+            dpg.configure_item(ui.CHANNELS_CARD, height=h)
+
     # ------------------------------------------------------------------
     # Spectrum info display
     # ------------------------------------------------------------------
@@ -474,6 +496,7 @@ class GUI:
             log.warning('Connect a device before starting acquisition')
             return
         self._set_stream_status('waiting')
+        self._autoscale_pending = True
         self.collector.start_stream()
         self._update_browse_label()
 
@@ -1230,6 +1253,26 @@ class GUI:
                 dpg.add_theme_style(dpg.mvStyleVar_WindowPadding, 8, 6,
                                     category=dpg.mvThemeCat_Core)
 
+        # ── Toggle button state themes (idle=red, waiting=yellow, active=green) ──
+        for state, bg_key, fg_key in [
+            ('idle',    'RED_DARK',    'RED_LIGHT'),
+            ('waiting', 'YELLOW_DARK', 'YELLOW_LIGHT'),
+            ('active',  'GREEN_DARK',  'GREEN_LIGHT'),
+        ]:
+            bg = _c(bg_key)
+            fg = _c(fg_key)
+            with dpg.theme() as _t:
+                with dpg.theme_component(dpg.mvButton):
+                    dpg.add_theme_color(dpg.mvThemeCol_Button,        bg,
+                                        category=dpg.mvThemeCat_Core)
+                    dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered,  bg,
+                                        category=dpg.mvThemeCat_Core)
+                    dpg.add_theme_color(dpg.mvThemeCol_ButtonActive,   bg,
+                                        category=dpg.mvThemeCat_Core)
+                    dpg.add_theme_color(dpg.mvThemeCol_Text,           fg,
+                                        category=dpg.mvThemeCat_Core)
+            self._toggle_themes[state] = _t
+
         # ── Main window ────────────────────────────────────────────────
         with dpg.window(label='Vibe Checkup', tag='primary_window'):
             with dpg.group(horizontal=True):
@@ -1239,7 +1282,8 @@ class GUI:
 
                     # ── Device ───────────────────────────────────────
                     with dpg.child_window(border=True, autosize_x=True,
-                                          autosize_y=True) as _s1:
+                                          height=_CARD_H_DEVICE,
+                                          no_scrollbar=True) as _s1:
                         dpg.bind_item_theme(_s1, self._sect_theme)
                         dpg.add_text('Device')
                         dpg.add_separator()
@@ -1264,7 +1308,9 @@ class GUI:
 
                     # ── Channels ─────────────────────────────────────
                     with dpg.child_window(border=True, autosize_x=True,
-                                          autosize_y=True) as _s_ch:
+                                          height=_CARD_BASE_H + _CARD_BTN_H + 8,
+                                          no_scrollbar=True,
+                                          tag=ui.CHANNELS_CARD) as _s_ch:
                         dpg.bind_item_theme(_s_ch, self._sect_theme)
                         dpg.add_text('Channels')
                         dpg.add_separator()
@@ -1281,38 +1327,29 @@ class GUI:
 
                     # ── Acquisition (stream control + spectrum info) ──
                     with dpg.child_window(border=True, autosize_x=True,
-                                          autosize_y=True) as _s2:
+                                          height=_CARD_H_ACQ,
+                                          no_scrollbar=True) as _s2:
                         dpg.bind_item_theme(_s2, self._sect_theme)
                         dpg.add_text('Acquisition')
                         dpg.add_separator()
-                        # Stream status indicator + large toggle button
-                        with dpg.group(horizontal=True):
-                            with dpg.drawlist(width=20, height=40,
-                                              tag=ui.STREAM_STATUS):
-                                dpg.draw_rectangle(
-                                    pmin=(1, 10), pmax=(19, 30),
-                                    fill=_c('RED'), color=(0, 0, 0, 0),
-                                    rounding=4, tag=ui.STREAM_STATUS_RECT,
-                                )
-                            dpg.add_button(label='Stopped',
-                                           tag=ui.ACQ_TOGGLE,
-                                           callback=self._toggle_acquisition,
-                                           width=-1, height=40)
+                        dpg.add_button(label='Stopped',
+                                       tag=ui.ACQ_TOGGLE,
+                                       callback=self._toggle_acquisition,
+                                       width=-1, height=40)
                         dpg.add_spacer(height=2)
-                        with dpg.group(horizontal=True):
-                            dpg.add_button(label='Single',
-                                           tag=ui.ACQ_SINGLE,
-                                           callback=self._collect_sample,
-                                           width=_BTN_HALF)
-                            dpg.add_button(label='Autoscale',
-                                           tag=ui.ACQ_AUTOSCALE,
-                                           callback=self._autoscale_plots,
-                                           width=_BTN_HALF)
+                        dpg.add_button(label='Single',
+                                        tag=ui.ACQ_SINGLE,
+                                        callback=self._collect_sample,
+                                        width=-1)
+                        dpg.add_button(label='Autoscale',
+                                        tag=ui.ACQ_AUTOSCALE,
+                                        callback=self._autoscale_plots,
+                                        width=-1)
                         with dpg.group(horizontal=True):
                             dpg.add_button(label='Clear Cache',
                                            tag=ui.ACQ_CLEAR_CACHE,
                                            callback=self._clear_cache,
-                                           width=_BTN_HALF)
+                                           width=-1)
                         dpg.add_spacer(height=2)
                         with dpg.group(horizontal=True):
                             dpg.add_button(label='<', tag=ui.ACQ_BROWSE_PREV,
@@ -1338,7 +1375,8 @@ class GUI:
 
                     # ── File Handling ─────────────────────────────────
                     with dpg.child_window(border=True, autosize_x=True,
-                                          autosize_y=True) as _s4:
+                                          height=_CARD_H_FILE,
+                                          no_scrollbar=True) as _s4:
                         dpg.bind_item_theme(_s4, self._sect_theme)
                         dpg.add_text('File Handling')
                         dpg.add_separator()
@@ -1437,7 +1475,8 @@ class GUI:
                     # _update_results_section_visibility shows enabled ones)
                     for _ch in range(_MAX_CHANNELS):
                         with dpg.child_window(border=True, autosize_x=True,
-                                              autosize_y=True,
+                                              height=_RESULTS_CARD_HEIGHT,
+                                              no_scrollbar=True,
                                               tag=ui.ch_result_section(_ch),
                                               show=False) as _sr:
                             dpg.bind_item_theme(_sr, self._sect_theme)
@@ -1460,6 +1499,7 @@ class GUI:
         self._update_axis_assignment()
         self._refresh_registry_dialog_list()
         self._restore_channel_assignments()
+        self._set_stream_status('idle')   # apply initial toggle button theme
         log.info('Setup GUI')
         dpg.setup_dearpygui()
 
