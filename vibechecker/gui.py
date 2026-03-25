@@ -341,16 +341,17 @@ class GUI:
             self._schedule_status_timeout()
 
         overflow_mask = samples.get('overflow', 0)
-        any_overflow = False
+        n_overflow = 0
         for ch in range(_MAX_CHANNELS):
             tag = ui.ch_overflow_warning(ch)
             if dpg.does_item_exist(tag):
                 overflowed = bool(overflow_mask & (1 << ch))
                 dpg.configure_item(tag, show=overflowed)
                 if overflowed:
-                    any_overflow = True
+                    n_overflow += 1
         if dpg.does_item_exist(ui.CH_WARNINGS_SECTION):
-            dpg.configure_item(ui.CH_WARNINGS_SECTION, show=any_overflow)
+            dpg.configure_item(ui.CH_WARNINGS_SECTION, show=bool(n_overflow),
+                               height=_CARD_BASE_H + n_overflow * _CARD_LINE_H)
 
         for ch, sample in samples.items():
             if not isinstance(ch, int):   # skip metadata keys like 'overflow'
@@ -1477,7 +1478,8 @@ class GUI:
                 with dpg.child_window(width=RESULTS_WIDTH, autosize_y=True):
                     # Channel warnings — hidden until an overflow occurs
                     with dpg.child_window(border=True, autosize_x=True,
-                                          autosize_y=True,
+                                          height=_CARD_BASE_H,
+                                          no_scrollbar=True,
                                           tag=ui.CH_WARNINGS_SECTION,
                                           show=False) as _sw:
                         dpg.bind_item_theme(_sw, self._sect_theme)
