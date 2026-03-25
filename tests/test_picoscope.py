@@ -5,7 +5,7 @@ Tests cover:
   - FindPicoScope() — device enumeration, error handling, channel count
   - _channels_for_model() — model string → channel count
   - PicoScopeStream._streaming_callback() — accumulator logic, data contract
-  - DataCollector integration — mV passthrough via recieve_data
+  - DataCollector integration — mV passthrough via receive_data
 """
 
 import ctypes
@@ -331,13 +331,18 @@ class TestPicoScopeStreamInterface:
 
 class TestMvPassthrough:
 
-    def test_recieve_data_single_channel_returns_dict(self):
-        """recieve_data returns a dict keyed by channel index."""
-        sensor = vc.VibeSensor.simulated()
-        dc = vc.DataCollector(sensor)
-        dc.config.butter_fc = None
+    def _collect(self, collector, samp):
+        result = {}
+        collector.callbacks['_test'] = lambda s: result.update(s)
+        collector.receive_data(samp)
+        collector.callbacks.pop('_test', None)
+        return result
 
-        n = dc.config.blocksize
+    def test_receive_data_single_channel_returns_dict(self):
+        """receive_data returns a dict keyed by channel index."""
+        collector = vc.DataCollector(vc.VibeSensor.simulated())
+        collector.config.butter_fc = None
+        n = collector.config.blocksize
         samp = {
             'status': 'OKAY', 'rel_time': 0.0,
             'timestamp': datetime.now(),
@@ -345,21 +350,16 @@ class TestMvPassthrough:
             'channels': [0],
             'data': np.ones((n, 1), dtype=np.float64),
         }
-        dc.start_data_queue()
-        dc.recieve_data(samp)
-        result = dc.queue.get_nowait()
-        dc.kill_data_queue()
+        result = self._collect(collector, samp)
 
         assert isinstance(result, dict)
         assert 0 in result
         assert isinstance(result[0], vc.VibeSample)
 
-    def test_recieve_data_mv_unit_preserved(self):
-        sensor = vc.VibeSensor.simulated()
-        dc = vc.DataCollector(sensor)
-        dc.config.butter_fc = None
-
-        n = dc.config.blocksize
+    def test_receive_data_mv_unit_preserved(self):
+        collector = vc.DataCollector(vc.VibeSensor.simulated())
+        collector.config.butter_fc = None
+        n = collector.config.blocksize
         samp = {
             'status': 'OKAY', 'rel_time': 0.0,
             'timestamp': datetime.now(),
@@ -367,20 +367,15 @@ class TestMvPassthrough:
             'channels': [0],
             'data': np.ones((n, 1), dtype=np.float64),
         }
-        dc.start_data_queue()
-        dc.recieve_data(samp)
-        result = dc.queue.get_nowait()
-        dc.kill_data_queue()
+        result = self._collect(collector, samp)
 
         assert result[0].unit == 'mV'
 
-    def test_recieve_data_correct_values(self):
+    def test_receive_data_correct_values(self):
         """Channel 0 column data flows through unchanged (no scope sensor assigned)."""
-        sensor = vc.VibeSensor.simulated()
-        dc = vc.DataCollector(sensor)
-        dc.config.butter_fc = None
-
-        n = dc.config.blocksize
+        collector = vc.DataCollector(vc.VibeSensor.simulated())
+        collector.config.butter_fc = None
+        n = collector.config.blocksize
         samp = {
             'status': 'OKAY', 'rel_time': 0.0,
             'timestamp': datetime.now(),
@@ -388,10 +383,7 @@ class TestMvPassthrough:
             'channels': [0],
             'data': np.full((n, 1), 42.0, dtype=np.float64),
         }
-        dc.start_data_queue()
-        dc.recieve_data(samp)
-        result = dc.queue.get_nowait()
-        dc.kill_data_queue()
+        result = self._collect(collector, samp)
 
         assert np.all(result[0].data == 42.0)
 

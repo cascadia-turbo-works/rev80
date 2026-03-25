@@ -178,7 +178,7 @@ def test_pipeline_scope_sensor_scales_mv_data():
     )
     collector.set_scope_sensor(0, scope_sensor)
 
-    # Inject a synthetic mV packet directly into recieve_data
+    # Inject a synthetic mV packet directly into receive_data
     raw_mv = np.ones(256, dtype=np.float32) * 50.0  # 50 mV
     packet = {
         'data': raw_mv,
@@ -191,7 +191,7 @@ def test_pipeline_scope_sensor_scales_mv_data():
 
     received = []
     collector.callbacks['test'] = received.append
-    collector.recieve_data(packet)
+    collector.receive_data(packet)
 
     assert len(received) == 1
     sample = received[0][0]
@@ -225,7 +225,7 @@ def test_pipeline_scope_sensor_clear():
 
     received = []
     collector.callbacks['test'] = received.append
-    collector.recieve_data(packet)
+    collector.receive_data(packet)
 
     sample = received[0][0]
     # Unit should still be mV since no sensor is assigned
