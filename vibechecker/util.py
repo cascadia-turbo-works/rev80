@@ -168,6 +168,8 @@ class UI_Elements:
     STREAM_STATUS_RECT = 'STREAM_STATUS_RECT'
     ACQ_TOGGLE         = 'ACQ_TOGGLE'          # Stopped / Waiting / Running button
     ACQ_SINGLE         = 'ACQ_SINGLE'
+    ACQ_AUTOSCALE      = 'ACQ_AUTOSCALE'       # fit all plot axes to data
+    ACQ_CLEAR_CACHE    = 'ACQ_CLEAR_CACHE'     # wipe frame cache + trend
     ACQ_BROWSE_PREV    = 'ACQ_BROWSE_PREV'     # ← older frame
     ACQ_BROWSE_NEXT    = 'ACQ_BROWSE_NEXT'     # → newer frame
     ACQ_BROWSE_LABEL   = 'ACQ_BROWSE_LABEL'    # "Frame N / M" text

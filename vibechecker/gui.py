@@ -261,8 +261,6 @@ class GUI:
         time   = result.time_vec
         signal = result.time_data
         dpg.set_value(ui.plt_time_series(ch), [time.tolist(), signal.tolist()])
-        dpg.fit_axis_data(ui.PLT_SAMPLE_AX_TIME)
-        dpg.fit_axis_data(self._get_time_axis_for(ch))
 
     def _update_freq_plot(self, result: vibechecker.ChannelResult, ch: int):
         if not dpg.does_item_exist(ui.plt_freq_series(ch)):
@@ -272,8 +270,6 @@ class GUI:
         dpg.set_value(ui.plt_freq_series(ch), [freq.tolist(), spectrum.tolist()])
         if dpg.does_item_exist(ui.ch_overall_value(ch)):
             dpg.set_value(ui.ch_overall_value(ch), f'{result.overall:.4f}')
-        dpg.fit_axis_data(ui.PLT_FREQ_AX_FREQ)
-        dpg.fit_axis_data(self._get_freq_axis_for(ch))
         peak_limit = dpg.get_value(ui.FFT_PEAKS_DISPLAY_COUNT)
         peaks = result.peaks
         if len(peaks) > 0:
@@ -303,8 +299,6 @@ class GUI:
                 all_times.extend(times)
             else:
                 dpg.set_value(tag, [[0.], [0.]])
-        if all_times and dpg.does_item_exist(ui.PLT_TREND_AX_TIME):
-            dpg.fit_axis_data(ui.PLT_TREND_AX_TIME)
 
     def _update_browse_label(self):
         """Refresh the frame-browser label and enable/disable nav buttons."""
@@ -495,6 +489,20 @@ class GUI:
     def _on_browse_next(self, sender=None, data=None):
         """Browse to a newer cached frame."""
         self.collector.browse_frame(-1)
+
+    def _autoscale_plots(self, sender=None, data=None):
+        """Fit all plot axes to current data bounds."""
+        for ax in [ui.PLT_SAMPLE_AX_TIME, ui.PLT_SAMPLE_AX_ACCEL,
+                   ui.PLT_SAMPLE_AX_ACCEL_2,
+                   ui.PLT_FREQ_AX_FREQ, ui.PLT_FREQ_AX_ACCEL, ui.PLT_FREQ_AX_2,
+                   ui.PLT_TREND_AX_TIME, ui.PLT_TREND_AX_OVERALL]:
+            if dpg.does_item_exist(ax):
+                dpg.fit_axis_data(ax)
+
+    def _clear_cache(self, sender=None, data=None):
+        """Wipe the frame cache and trend data, refresh the browse label."""
+        self.collector.reset_data_store()
+        self._update_browse_label()
 
     def _on_save_click(self, sender=None, data=None):
         dpg.show_item(ui.DLG_SAVE_FILE)
@@ -1242,45 +1250,41 @@ class GUI:
 
                     dpg.add_spacer(height=6)
 
-                    # ── Spectrum Setup ────────────────────────────────
+                    # ── Acquisition (stream control + spectrum info) ──
                     with dpg.child_window(border=True, autosize_x=True,
-                                          height=202, no_scrollbar=True) as _s2:
+                                          autosize_y=False, height=340,
+                                          no_scrollbar=True) as _s2:
                         dpg.bind_item_theme(_s2, self._sect_theme)
-                        dpg.add_text('Spectrum Setup')
-                        dpg.add_separator()
-                        dpg.add_input_text(tag=ui.SPECTRUM_INFO_TEXT,
-                                           multiline=True, readonly=True,
-                                           default_value='', width=-1, height=120)
-                        dpg.add_button(label='Spectrum Setup',
-                                       tag=ui.BTN_SPECTRUM_SETUP,
-                                       callback=lambda: self._open_config_dialog(
-                                           ui.CONFIG_TAB_SPECTRUM),
-                                       width=-1)
-
-                    dpg.add_spacer(height=6)
-
-                    # ── Acquisition ───────────────────────────────────
-                    with dpg.child_window(border=True, autosize_x=True,
-                                          height=105, no_scrollbar=True) as _s3:
-                        dpg.bind_item_theme(_s3, self._sect_theme)
                         dpg.add_text('Acquisition')
                         dpg.add_separator()
+                        # Stream status indicator + large toggle button
                         with dpg.group(horizontal=True):
-                            with dpg.drawlist(width=20, height=20,
+                            with dpg.drawlist(width=20, height=40,
                                               tag=ui.STREAM_STATUS):
                                 dpg.draw_rectangle(
-                                    pmin=(1, 1), pmax=(19, 19),
+                                    pmin=(1, 10), pmax=(19, 30),
                                     fill=_c('RED'), color=(0, 0, 0, 0),
                                     rounding=4, tag=ui.STREAM_STATUS_RECT,
                                 )
                             dpg.add_button(label='Stopped',
                                            tag=ui.ACQ_TOGGLE,
                                            callback=self._toggle_acquisition,
+                                           width=-1, height=40)
+                        dpg.add_spacer(height=2)
+                        with dpg.group(horizontal=True):
+                            dpg.add_button(label='Single',
+                                           tag=ui.ACQ_SINGLE,
+                                           callback=self._collect_sample,
                                            width=-1)
-                        dpg.add_button(label='Single',
-                                       tag=ui.ACQ_SINGLE,
-                                       callback=self._collect_sample,
-                                       width=-1)
+                            dpg.add_button(label='Autoscale',
+                                           tag=ui.ACQ_AUTOSCALE,
+                                           callback=self._autoscale_plots,
+                                           width=-1)
+                        with dpg.group(horizontal=True):
+                            dpg.add_button(label='Clear Cache',
+                                           tag=ui.ACQ_CLEAR_CACHE,
+                                           callback=self._clear_cache,
+                                           width=-1)
                         dpg.add_spacer(height=2)
                         with dpg.group(horizontal=True):
                             dpg.add_button(label='<', tag=ui.ACQ_BROWSE_PREV,
@@ -1290,6 +1294,17 @@ class GUI:
                             dpg.add_button(label='>', tag=ui.ACQ_BROWSE_NEXT,
                                            callback=self._on_browse_next,
                                            width=28, enabled=False)
+                        dpg.add_spacer(height=6)
+                        dpg.add_separator()
+                        dpg.add_text('Spectrum Setup', color=_c('ON_SURFACE'))
+                        dpg.add_input_text(tag=ui.SPECTRUM_INFO_TEXT,
+                                           multiline=True, readonly=True,
+                                           default_value='', width=-1, height=112)
+                        dpg.add_button(label='Spectrum Setup',
+                                       tag=ui.BTN_SPECTRUM_SETUP,
+                                       callback=lambda: self._open_config_dialog(
+                                           ui.CONFIG_TAB_SPECTRUM),
+                                       width=-1)
 
                     dpg.add_spacer(height=6)
 

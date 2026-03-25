@@ -291,8 +291,7 @@ class VibeSample:
         peaks, _ = signal.find_peaks(display_0p, distance=min(len(freq) / 50, 1))
         peaks = np.array(peaks[np.argsort(-display_0p[peaks])])
 
-        return (result[result.freq <= config.maxfreq],
-                peaks[freq[peaks] <= config.maxfreq])
+        return result, peaks
 
 
 @dataclass(frozen=True)
