@@ -2,7 +2,8 @@
 
 All tests mock picosdk so they run without PicoScope hardware attached.
 Tests cover:
-  - FindPicoScope() — device enumeration, error handling
+  - FindPicoScope() — device enumeration, error handling, channel count
+  - _channels_for_model() — model string → channel count
   - PicoScopeStream._streaming_callback() — accumulator logic, data contract
   - DataCollector integration — mV passthrough via recieve_data
 """
@@ -16,19 +17,20 @@ import pytest
 
 import vibechecker as vc
 import vibechecker.picoscope as pico_module
-from vibechecker.picoscope import PicoScopeStream, _DRIVER_BUFFER_SAMPLES
+from vibechecker.picoscope import PicoScopeStream, _DRIVER_BUFFER_SAMPLES, _channels_for_model
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_config(blocksize=128, samplerate=1000, voltage_range=8, coupling='AC'):
+def _make_config(blocksize=128, samplerate=1000, coupling='AC', enabled_channels=None):
     cfg = vc.AcquisitionSettings()
     cfg.blocksize = blocksize
     cfg.samplerate = samplerate
-    cfg.voltage_range = voltage_range
     cfg.coupling = coupling
+    if enabled_channels is not None:
+        cfg.enabled_channels = list(enabled_channels)
     return cfg
 
 
@@ -45,6 +47,42 @@ def _make_stream(config=None, monkeypatch=None):
     return stream, received
 
 
+def _fill_driver_buffers(stream, value=0, n=None):
+    """Fill all driver buffers with a constant value."""
+    size = n or _DRIVER_BUFFER_SAMPLES
+    for ch in stream._enabled_channels:
+        buf = np.full(max(size, _DRIVER_BUFFER_SAMPLES), value, dtype=np.int16)
+        stream._driver_buffers[ch] = buf
+
+
+# ---------------------------------------------------------------------------
+# _channels_for_model
+# ---------------------------------------------------------------------------
+
+class TestChannelsForModel:
+
+    def test_4824a_returns_8(self):
+        assert _channels_for_model('4824A') == 8
+
+    def test_4824_returns_8(self):
+        assert _channels_for_model('4824') == 8
+
+    def test_4461_returns_4(self):
+        assert _channels_for_model('4461') == 4
+
+    def test_4444_returns_4(self):
+        assert _channels_for_model('4444') == 4
+
+    def test_4262_returns_2(self):
+        assert _channels_for_model('4262') == 2
+
+    def test_unknown_returns_2(self):
+        assert _channels_for_model('9999X') == 2
+
+    def test_case_insensitive(self):
+        assert _channels_for_model('4824a') == 8
+
+
 # ---------------------------------------------------------------------------
 # FindPicoScope — error paths (no hardware)
 # ---------------------------------------------------------------------------
@@ -54,7 +92,7 @@ class TestFindPicoScope:
     def test_no_hardware_returns_empty_list(self, monkeypatch):
         """When assert_pico_ok raises (PICO_NOT_FOUND), return []."""
         monkeypatch.setattr(pico_module.ps, 'ps4000aOpenUnit',
-                            lambda ptr, serial: 10)   # non-power-state error
+                            lambda ptr, serial: 10)
         monkeypatch.setattr(pico_module, 'assert_pico_ok',
                             lambda s: (_ for _ in ()).throw(Exception('PICO_NOT_FOUND')))
 
@@ -62,15 +100,12 @@ class TestFindPicoScope:
         assert result == []
 
     def test_power_source_failure_returns_empty_list(self, monkeypatch):
-        """Power state 282 but ChangePowerSource fails → return []."""
         monkeypatch.setattr(pico_module.ps, 'ps4000aOpenUnit',
                             lambda ptr, serial: 282)
         monkeypatch.setattr(pico_module.ps, 'ps4000aChangePowerSource',
                             lambda handle, status: 10)
-        call_count = {'n': 0}
 
         def strict_assert(status):
-            call_count['n'] += 1
             raise Exception('PICO_NOT_FOUND')
 
         monkeypatch.setattr(pico_module, 'assert_pico_ok', strict_assert)
@@ -82,14 +117,13 @@ class TestFindPicoScope:
         """Successful open + GetUnitInfo → list with one VibeSensor-compatible dict."""
 
         def fake_open(ptr, serial):
-            return 0   # PICO_OK
+            return 0
 
         def fake_get_info(handle, buf, buf_len, req_size, info_id):
-            # info_id is ctypes.c_uint32; .value gives the integer
             val = info_id.value if hasattr(info_id, 'value') else int(info_id)
-            if val == 3:    # _PICO_VARIANT_INFO
+            if val == 3:
                 buf.value = b'4461'
-            elif val == 4:  # _PICO_BATCH_AND_SERIAL
+            elif val == 4:
                 buf.value = b'CMY12/345'
             return 0
 
@@ -105,42 +139,59 @@ class TestFindPicoScope:
         assert dev['device_id'] == 'ps4000a'
         assert 'PicoScope' in dev['model_name']
         assert '4461' in dev['model_name']
-        assert dev['unit'] == ['mV']
-        assert dev['scale'] == [1.0]
-        assert dev['sensitivity'] == [1.0]
+        assert dev['num_channels'] == 4
+        assert len(dev['unit']) == 4
+        assert all(u == 'mV' for u in dev['unit'])
         assert isinstance(dev['serial_number'], str)
         assert isinstance(dev['build_date'], datetime)
-        # Returned dict must be accepted by VibeSensor(**dev)
         sensor = vc.VibeSensor(**dev)
+        assert sensor.num_channels == 4
         assert not sensor.is_simulation
+
+    def test_find_8ch_model_reports_8_channels(self, monkeypatch):
+        def fake_open(ptr, serial): return 0
+
+        def fake_get_info(handle, buf, buf_len, req_size, info_id):
+            val = info_id.value if hasattr(info_id, 'value') else int(info_id)
+            if val == 3:
+                buf.value = b'4824A'
+            elif val == 4:
+                buf.value = b'AB123/456'
+            return 0
+
+        monkeypatch.setattr(pico_module.ps, 'ps4000aOpenUnit', fake_open)
+        monkeypatch.setattr(pico_module.ps, 'ps4000aGetUnitInfo', fake_get_info)
+        monkeypatch.setattr(pico_module.ps, 'ps4000aCloseUnit', lambda h: 0)
+        monkeypatch.setattr(pico_module, 'assert_pico_ok', lambda s: None)
+
+        result = pico_module.FindPicoScope()
+        assert result[0]['num_channels'] == 8
 
 
 # ---------------------------------------------------------------------------
-# PicoScopeStream — accumulator / _streaming_callback
+# PicoScopeStream — accumulator / _streaming_callback (single channel)
 # ---------------------------------------------------------------------------
 
 class TestStreamingCallbackAccumulator:
 
     def test_single_chunk_smaller_than_blocksize_no_callback(self, monkeypatch):
-        """A chunk smaller than blocksize must not fire the app callback."""
         stream, received = _make_stream(monkeypatch=monkeypatch)
         bs = stream.config.blocksize
 
-        chunk = np.ones(bs - 1, dtype=np.int16)
+        _fill_driver_buffers(stream, value=0)
         stream._streaming_callback(
-            handle=0, noOfSamples=len(chunk), startIndex=0,
+            handle=0, noOfSamples=bs - 1, startIndex=0,
             overflow=0, triggerAt=0, triggered=0, autoStop=0, param=None,
         )
         assert len(received) == 0
 
     def test_exact_blocksize_fires_once(self, monkeypatch):
-        """Exactly one blocksize worth of samples fires the callback once."""
         stream, received = _make_stream(monkeypatch=monkeypatch)
         bs = stream.config.blocksize
 
-        chunk = np.arange(bs, dtype=np.int16)
-        stream._driver_buffer = np.zeros(max(bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
-        stream._driver_buffer[:bs] = chunk
+        buf = np.arange(bs, dtype=np.int16)
+        stream._driver_buffers[0] = np.zeros(max(bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
+        stream._driver_buffers[0][:bs] = buf
 
         stream._streaming_callback(
             handle=0, noOfSamples=bs, startIndex=0,
@@ -149,13 +200,12 @@ class TestStreamingCallbackAccumulator:
         assert len(received) == 1
 
     def test_two_chunks_fire_one_callback(self, monkeypatch):
-        """Two partial chunks that together equal one block → one callback."""
         stream, received = _make_stream(monkeypatch=monkeypatch)
         bs = stream.config.blocksize
         half = bs // 2
 
         buf = np.zeros(max(bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
-        stream._driver_buffer = buf
+        stream._driver_buffers[0] = buf
 
         buf[:half] = 1
         stream._streaming_callback(0, half, 0, 0, 0, 0, 0, None)
@@ -166,193 +216,187 @@ class TestStreamingCallbackAccumulator:
         assert len(received) == 1
 
     def test_double_blocksize_fires_twice(self, monkeypatch):
-        """Delivering 2× blocksize at once fires the callback exactly twice."""
         stream, received = _make_stream(monkeypatch=monkeypatch)
         bs = stream.config.blocksize
 
         buf = np.zeros(max(bs * 2, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
-        stream._driver_buffer = buf
+        stream._driver_buffers[0] = buf
 
         stream._streaming_callback(0, bs * 2, 0, 0, 0, 0, 0, None)
         assert len(received) == 2
 
-    def test_data_shape_is_blocksize_by_one(self, monkeypatch):
-        """Fired data dict must have data.shape == (blocksize, 1)."""
+    def test_data_shape_is_blocksize_by_n_channels(self, monkeypatch):
+        """Fired data must have shape (blocksize, N) where N = enabled channels."""
         bs = 64
-        stream, received = _make_stream(_make_config(blocksize=bs),
-                                        monkeypatch=monkeypatch)
+        stream, received = _make_stream(_make_config(blocksize=bs), monkeypatch=monkeypatch)
 
         buf = np.zeros(max(bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
-        stream._driver_buffer = buf
+        stream._driver_buffers[0] = buf
         stream._streaming_callback(0, bs, 0, 0, 0, 0, 0, None)
 
         assert len(received) == 1
-        assert received[0]['data'].shape == (bs, 1)
+        N = len(stream._enabled_channels)
+        assert received[0]['data'].shape == (bs, N)
 
-    def test_unit_is_mv(self, monkeypatch):
-        """Fired data dict must have unit == ['mV']."""
+    def test_channels_key_in_payload(self, monkeypatch):
+        """Each fired dict must carry a 'channels' key matching enabled_channels."""
         bs = 64
-        stream, received = _make_stream(_make_config(blocksize=bs),
-                                        monkeypatch=monkeypatch)
-        buf = np.zeros(max(bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
-        stream._driver_buffer = buf
+        stream, received = _make_stream(_make_config(blocksize=bs), monkeypatch=monkeypatch)
+        stream._driver_buffers[0] = np.zeros(max(bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
         stream._streaming_callback(0, bs, 0, 0, 0, 0, 0, None)
 
-        assert received[0]['unit'] == ['mV']
+        assert 'channels' in received[0]
+        assert received[0]['channels'] == [0]
+
+    def test_unit_length_matches_channel_count(self, monkeypatch):
+        """unit list length must equal number of enabled channels."""
+        bs = 64
+        stream, received = _make_stream(_make_config(blocksize=bs), monkeypatch=monkeypatch)
+        stream._driver_buffers[0] = np.zeros(max(bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
+        stream._streaming_callback(0, bs, 0, 0, 0, 0, 0, None)
+
+        N = len(stream._enabled_channels)
+        assert len(received[0]['unit']) == N
+        assert all(u == 'mV' for u in received[0]['unit'])
 
     def test_overflow_sets_status(self, monkeypatch):
-        """overflow=1 in the driver callback → status='OVERFLOW' in the dict."""
         bs = 64
-        stream, received = _make_stream(_make_config(blocksize=bs),
-                                        monkeypatch=monkeypatch)
-        buf = np.zeros(max(bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
-        stream._driver_buffer = buf
+        stream, received = _make_stream(_make_config(blocksize=bs), monkeypatch=monkeypatch)
+        stream._driver_buffers[0] = np.zeros(max(bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
         stream._streaming_callback(0, bs, 0, overflow=1,
-                                    triggerAt=0, triggered=0, autoStop=0, param=None)
-
+                                   triggerAt=0, triggered=0, autoStop=0, param=None)
         assert received[0]['status'] == 'OVERFLOW'
 
     def test_okay_status(self, monkeypatch):
-        """overflow=0 → status='OKAY'."""
         bs = 64
-        stream, received = _make_stream(_make_config(blocksize=bs),
-                                        monkeypatch=monkeypatch)
-        buf = np.zeros(max(bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
-        stream._driver_buffer = buf
+        stream, received = _make_stream(_make_config(blocksize=bs), monkeypatch=monkeypatch)
+        stream._driver_buffers[0] = np.zeros(max(bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
         stream._streaming_callback(0, bs, 0, overflow=0,
-                                    triggerAt=0, triggered=0, autoStop=0, param=None)
-
+                                   triggerAt=0, triggered=0, autoStop=0, param=None)
         assert received[0]['status'] == 'OKAY'
 
     def test_data_dtype_float64(self, monkeypatch):
-        """Accumulated data must be float64 (ready for Butterworth filter)."""
         bs = 64
-        stream, received = _make_stream(_make_config(blocksize=bs),
-                                        monkeypatch=monkeypatch)
-        buf = np.ones(max(bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
-        stream._driver_buffer = buf
+        stream, received = _make_stream(_make_config(blocksize=bs), monkeypatch=monkeypatch)
+        stream._driver_buffers[0] = np.ones(max(bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
         stream._streaming_callback(0, bs, 0, 0, 0, 0, 0, None)
-
         assert received[0]['data'].dtype == np.float64
 
     def test_timestamp_is_datetime(self, monkeypatch):
-        """Each fired dict must carry a datetime timestamp."""
         bs = 64
-        stream, received = _make_stream(_make_config(blocksize=bs),
-                                        monkeypatch=monkeypatch)
-        buf = np.zeros(max(bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
-        stream._driver_buffer = buf
+        stream, received = _make_stream(_make_config(blocksize=bs), monkeypatch=monkeypatch)
+        stream._driver_buffers[0] = np.zeros(max(bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
         stream._streaming_callback(0, bs, 0, 0, 0, 0, 0, None)
-
         assert isinstance(received[0]['timestamp'], datetime)
 
     def test_zero_samples_noop(self, monkeypatch):
-        """noOfSamples=0 must not call the app callback."""
         stream, received = _make_stream(monkeypatch=monkeypatch)
         stream._streaming_callback(0, 0, 0, 0, 0, 0, 0, None)
         assert len(received) == 0
 
 
 # ---------------------------------------------------------------------------
-# PicoScopeStream — stream interface (active property)
+# PicoScopeStream — stream interface (active property, accumulator)
 # ---------------------------------------------------------------------------
 
 class TestPicoScopeStreamInterface:
 
     def test_active_starts_false(self):
-        """A freshly constructed stream must not be active."""
         stream, _ = _make_stream()
         assert stream.active is False
 
-    def test_active_is_false_after_construction(self):
-        config = _make_config()
-        received = []
-        s = PicoScopeStream(config, lambda samp: received.append(samp))
-        assert s.active is False
-
-    def test_accumulator_initialised_correct_size(self):
-        """Accumulator pre-allocated to 2× blocksize."""
+    def test_accumulator_shape_is_2d(self):
+        """Accumulator is 2-D: (2*blocksize, N_channels)."""
         bs = 256
         stream, _ = _make_stream(_make_config(blocksize=bs))
-        assert len(stream._accumulator) == bs * 2
+        assert stream._accumulator.ndim == 2
+        assert stream._accumulator.shape[0] == bs * 2
+        assert stream._accumulator.shape[1] == len(stream._enabled_channels)
 
     def test_acc_ptr_starts_zero(self):
         stream, _ = _make_stream()
         assert stream._acc_ptr == 0
 
+    def test_driver_buffers_keyed_by_channel(self):
+        """_driver_buffers must be a dict keyed by channel index."""
+        stream, _ = _make_stream()
+        assert isinstance(stream._driver_buffers, dict)
+        for ch in stream._enabled_channels:
+            assert ch in stream._driver_buffers
+
 
 # ---------------------------------------------------------------------------
-# DataCollector integration — mV passthrough
+# DataCollector integration — mV passthrough, multi-channel fan-out
 # ---------------------------------------------------------------------------
 
 class TestMvPassthrough:
 
-    def test_recieve_data_mv_2d(self):
-        """DataCollector.recieve_data with (N,1) mV data → VibeSample.unit='mV'."""
+    def test_recieve_data_single_channel_returns_dict(self):
+        """recieve_data returns a dict keyed by channel index."""
         sensor = vc.VibeSensor.simulated()
         dc = vc.DataCollector(sensor)
-        dc.config.butter_fc = None   # disable filter for this test
+        dc.config.butter_fc = None
 
         n = dc.config.blocksize
         samp = {
-            'status':    'OKAY',
-            'rel_time':  0.0,
+            'status': 'OKAY', 'rel_time': 0.0,
             'timestamp': datetime.now(),
-            'unit':      ['mV'],
-            'data':      np.ones((n, 1), dtype=np.float64),
+            'unit': ['mV'],
+            'channels': [0],
+            'data': np.ones((n, 1), dtype=np.float64),
         }
         dc.start_data_queue()
         dc.recieve_data(samp)
         result = dc.queue.get_nowait()
         dc.kill_data_queue()
 
-        assert isinstance(result, vc.VibeSample)
-        assert result.unit == 'mV'
-        assert result.data.shape == (n,)
+        assert isinstance(result, dict)
+        assert 0 in result
+        assert isinstance(result[0], vc.VibeSample)
 
-    def test_recieve_data_mv_selects_channel(self):
-        """Channel clamping: channel=0 from (N,1) data gives column 0."""
+    def test_recieve_data_mv_unit_preserved(self):
         sensor = vc.VibeSensor.simulated()
         dc = vc.DataCollector(sensor)
-        dc.config.channel = 0
         dc.config.butter_fc = None
 
         n = dc.config.blocksize
-        col0 = np.full((n, 1), 42.0, dtype=np.float64)
         samp = {
             'status': 'OKAY', 'rel_time': 0.0,
-            'timestamp': datetime.now(), 'unit': ['mV'], 'data': col0,
+            'timestamp': datetime.now(),
+            'unit': ['mV'],
+            'channels': [0],
+            'data': np.ones((n, 1), dtype=np.float64),
         }
         dc.start_data_queue()
         dc.recieve_data(samp)
         result = dc.queue.get_nowait()
         dc.kill_data_queue()
 
-        assert np.all(result.data == 42.0)
+        assert result[0].unit == 'mV'
 
-    def test_recieve_data_channel_clamping(self):
-        """config.channel > available columns → clamped to last column."""
+    def test_recieve_data_correct_values(self):
+        """Channel 0 column data flows through unchanged (no scope sensor assigned)."""
         sensor = vc.VibeSensor.simulated()
         dc = vc.DataCollector(sensor)
-        dc.config.channel = 5   # only 1 column available → clamped to 0
         dc.config.butter_fc = None
 
         n = dc.config.blocksize
-        col0 = np.full((n, 1), 7.0, dtype=np.float64)
         samp = {
             'status': 'OKAY', 'rel_time': 0.0,
-            'timestamp': datetime.now(), 'unit': ['mV'], 'data': col0,
+            'timestamp': datetime.now(),
+            'unit': ['mV'],
+            'channels': [0],
+            'data': np.full((n, 1), 42.0, dtype=np.float64),
         }
         dc.start_data_queue()
         dc.recieve_data(samp)
         result = dc.queue.get_nowait()
         dc.kill_data_queue()
 
-        assert np.all(result.data == 7.0)
+        assert np.all(result[0].data == 42.0)
 
     def test_get_accel_mv_passthrough(self):
-        """VibeSample.get_accel() passes through raw data when unit='mV' and
-        config.units='g' (unsupported conversion) without raising."""
+        """VibeSample.get_accel() passes through raw data when unit='mV'."""
         n = 512
         data = np.random.randn(n)
         sample = vc.VibeSample(
@@ -362,35 +406,54 @@ class TestMvPassthrough:
             unit='mV',
             data=data,
         )
-        config = vc.AcquisitionSettings()
-        config.units = 'g'
-
-        acc_df, rms = sample.get_accel(config)
+        acc_df, rms = sample.get_accel('mV')
 
         assert len(acc_df) == n
         assert np.allclose(acc_df['signal'].to_numpy(), data)
 
 
 # ---------------------------------------------------------------------------
-# AcquisitionSettings — new PicoScope fields
+# AcquisitionSettings — new multi-channel fields
 # ---------------------------------------------------------------------------
 
 class TestAcquisitionSettingsPicoFields:
 
-    def test_default_voltage_range(self):
+    def test_default_enabled_channels(self):
         config = vc.AcquisitionSettings()
-        assert config.voltage_range == 10   # PS4000A_20V (hardware max)
+        assert config.enabled_channels == [0]
 
     def test_default_coupling(self):
         config = vc.AcquisitionSettings()
         assert config.coupling == 'AC'
 
-    def test_voltage_range_settable(self):
+    def test_voltage_range_for_default(self):
         config = vc.AcquisitionSettings()
-        config.voltage_range = 7
-        assert config.voltage_range == 7
+        assert config.voltage_range_for(0) == 10
+
+    def test_voltage_range_for_unknown_channel_returns_default(self):
+        config = vc.AcquisitionSettings()
+        assert config.voltage_range_for(7) == 10
+
+    def test_voltage_range_for_set_per_channel(self):
+        config = vc.AcquisitionSettings()
+        config.channel_voltage_ranges = {0: 5, 1: 8}
+        assert config.voltage_range_for(0) == 5
+        assert config.voltage_range_for(1) == 8
+        assert config.voltage_range_for(2) == 10  # fallback
+
+    def test_enabled_channels_settable(self):
+        config = vc.AcquisitionSettings()
+        config.enabled_channels = [0, 1, 2]
+        assert config.enabled_channels == [0, 1, 2]
 
     def test_coupling_settable(self):
         config = vc.AcquisitionSettings()
         config.coupling = 'DC'
         assert config.coupling == 'DC'
+
+    def test_each_instance_has_independent_enabled_channels(self):
+        """Mutable default_factory: two instances must not share the list."""
+        a = vc.AcquisitionSettings()
+        b = vc.AcquisitionSettings()
+        a.enabled_channels.append(1)
+        assert b.enabled_channels == [0]

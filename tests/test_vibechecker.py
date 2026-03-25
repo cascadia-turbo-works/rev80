@@ -1,94 +1,118 @@
-import pytest
+"""Core DataCollector and VibeSample tests — simulated sensor only.
+
+Hardware-specific tests (re-triggering, stream cycles against real hardware,
+FFT peak validation via siggen loopback) live in test_picoscope_hw.py.
+"""
+
 import time
 import numpy as np
+import pytest
 from path import Path
-from datetime import datetime as dt
+
 import vibechecker as vc
 
 DATADIR = Path('DEVDATA')
 log = vc.get_logger('test')
 
-samples = []
-settings=vc.AcquisitionSettings()
+settings = vc.AcquisitionSettings()
+simsensor = vc.VibeSensor.simulated()
 
-def do_sample_calcs(sample:vc.VibeSample):
-    acc, rms = sample.get_accel(settings)
 
-    fft, peaks = sample.fft(settings)
-    
-    assert acc.time.to_numpy().flags['C_CONTIGUOUS'], 'Issue with T c-continuity'
-    assert acc.signal.to_numpy().flags['C_CONTIGUOUS'], 'Issue with T c-continuity'
-    # assert fft.freq.to_numpy().flags['C_CONTIGUOUS'], 'Issue with T c-continuity'
-    # assert fft.acc_spectrum.to_numpy().flags['C_CONTIGUOUS'], 'Issue with T c-continuity'    
+# ---------------------------------------------------------------------------
+# Stream start / stop cycle
+# ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize('dev', vc.VibeSensor.find())
-def test_stream_cycle(dev: vc.VibeSensor):
-    vibr = vc.DataCollector(dev)
-    vibr.callbacks['test'] = do_sample_calcs
+def test_stream_cycle():
+    """start_stream / stop_stream cycle works and leaves stream in clean state."""
+    dc = vc.DataCollector(simsensor)
+    received = []
+    dc.callbacks['test'] = lambda s: received.extend(s.values())
 
-    vibr.start_data_queue()
-    
+    dc.start_data_queue()
     for _ in range(2):
-        vibr.start_stream()
-        time.sleep(settings.acquisition_period*1.05)
-        vibr.stop_stream()
-        time.sleep(0.1)
+        dc.start_stream()
+        time.sleep(settings.acquisition_period * 1.05)
+        dc.stop_stream()
+        time.sleep(0.05)
 
-    vibr.disconnect_sensor()
-    
-    assert vibr.stream is None, "Stream should be properly closed after test."
+    dc.disconnect_sensor()
+    assert dc.stream is None, 'Stream should be None after disconnect'
 
-@pytest.mark.parametrize('dev', vc.VibeSensor.find())
-def test_sample_capture(dev: vc.VibeSensor):
-    vibr = vc.DataCollector(dev)
 
-    N = 3
-    for _ in range(N):
-        print('Collecting Sample')
-        sample = vibr.collect_sample()
-        if sample is None:
-            pytest.skip(f'Hardware sensor {dev} unavailable (no sample returned)')
-        assert isinstance(sample, vc.VibeSample), f'invalid sample {sample}'
-        samples.append(sample)
-        time.sleep(0.1)
+# ---------------------------------------------------------------------------
+# collect_sample — format and return-type contract
+# ---------------------------------------------------------------------------
 
-    vibr.disconnect_sensor()
-    
-    assert vibr.stream is None, "Stream should be properly closed after test."
-
-@pytest.mark.parametrize('dev', vc.VibeSensor.find())
-def test_save(dev: vc.VibeSensor):
-    dc = vc.DataCollector(dev,settings)
-    vs1 = dc.collect_sample()
+def test_collect_sample_returns_dict():
+    """collect_sample() returns dict[int, VibeSample]."""
+    dc = vc.DataCollector(simsensor)
+    result = dc.collect_sample()
     dc.disconnect_sensor()
 
-    if vs1 is None:
-        pytest.skip(f'Hardware sensor {dev} unavailable (no sample returned)')
+    assert isinstance(result, dict), f'Expected dict, got {type(result)}'
+    assert len(result) > 0
+    for sample in result.values():
+        assert isinstance(sample, vc.VibeSample), f'invalid sample {sample}'
+        assert sample.blocksize > 1
+
+
+def test_collect_sample_signal_processing():
+    """Collected simulated sample survives get_accel() and fft() without error."""
+    dc = vc.DataCollector(simsensor)
+    result = dc.collect_sample()
+    dc.disconnect_sensor()
+
+    for sample in result.values():
+        acc, rms = sample.get_accel()
+        assert acc.time.to_numpy().flags['C_CONTIGUOUS']
+        assert acc.signal.to_numpy().flags['C_CONTIGUOUS']
+        fft, peaks = sample.fft('', settings)
+        assert fft is not None
+
+
+# ---------------------------------------------------------------------------
+# HDF5 save / load round-trip (file I/O only — no hardware needed)
+# ---------------------------------------------------------------------------
+
+def test_save_load_roundtrip():
+    """VibeSample.save() / .load() preserves all fields."""
+    dc = vc.DataCollector(simsensor, settings)
+    result = dc.collect_sample()
+    dc.disconnect_sensor()
+
+    vs1 = next(iter(result.values()))
     assert isinstance(vs1, vc.VibeSample)
-    time.sleep(0.5)
+
     vs1.label = 'pytest_data'
     fname = vs1.save()
 
-    time.sleep(0.5)
     vs2 = vc.VibeSample.load(fname)
 
-    assert vs2.status == vs1.status, 'status differs'
+    assert vs2.status == vs1.status,     'status differs'
     assert vs2.timestamp == vs1.timestamp, 'timestamp differs'
     assert vs2.samplerate == vs1.samplerate, 'samplerate differs'
-    assert vs2.unit == vs1.unit, 'unit differs'
+    assert vs2.unit == vs1.unit,         'unit differs'
     if not np.all(vs2.data == vs1.data):
         diff = np.abs(vs2.data - vs1.data)
         idiff = np.argwhere(diff != 0)
         raise AssertionError(f'Data differ after load. {idiff}, {diff[idiff]}')
 
-    # Touch collector load method
-    dc.load_data(fname)
+    # Exercise DataCollector.load_data path
+    dc2 = vc.DataCollector(simsensor, settings)
+    dc2.load_data(fname)
+    dc2.disconnect_sensor()
+
+
+# ---------------------------------------------------------------------------
+# GUI build smoke test
+# ---------------------------------------------------------------------------
 
 def test_gui_build():
     app = vc.GUI()
     app.initialize()
     time.sleep(1)
     app.cleanup()
-   
-if __name__ == "__main__":
+
+
+if __name__ == '__main__':
     pytest.main()
