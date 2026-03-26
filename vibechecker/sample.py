@@ -2,7 +2,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 import numpy as np
-import pandas as pd
 from scipy import signal
 
 from path import Path
@@ -14,7 +13,7 @@ from vibechecker import BLOCKSIZES, \
                         MAXFREQS, \
                         BINSIZES, \
                         nextpow2
-from vibechecker.util import UNIT_TO_SI, integration_steps
+from vibechecker.util import UNIT_TO_SI, AMPLITUDE_SCALE, integration_steps
 
 log = vibechecker.get_logger(__name__)
 
@@ -36,6 +35,7 @@ class AcquisitionSettings:
     trend_fmin: float = 0.0
     trend_fmax: float | None = None   # None → clamp to maxfreq at compute time
     fft_window: str = 'hann'
+    amplitude_mode: str = '0-P'   # 'RMS', '0-P', or 'P-P'
 
     def voltage_range_for(self, ch: int) -> int:
         """Return the PS4000A voltage range index for a given channel (default ±2V)."""
@@ -209,38 +209,61 @@ class VibeSample:
         self.unit = unit
         self.data = data
 
-    def get_accel(self, target_unit: str = '') -> tuple:
-        """Return (DataFrame[time, signal], rms) with data scaled to target_unit.
+    # ------------------------------------------------------------------
+    # Time-domain conversion
+    # ------------------------------------------------------------------
 
-        If target_unit is '' or matches self.unit, data is returned as-is.
-        Scaling uses the SI ratio between source and target units.
+    def _convert_time_domain(self, target_unit: str) -> np.ndarray:
+        """Convert raw data to target_unit in the time domain.
+
+        Same-modality: direct SI ratio scaling.
+        Cross-modality: FFT → integrate/differentiate → IFFT.
         """
-        effective = target_unit if target_unit else self.unit
-        if effective == self.unit:
-            accel = self.data.copy()
-        else:
-            src_si = UNIT_TO_SI.get(self.unit, 1.0)
-            tgt_si = UNIT_TO_SI.get(effective, 1.0)
-            accel = self.data * (src_si / tgt_si)
+        n_steps = integration_steps(self.unit, target_unit)
+        src_si = UNIT_TO_SI.get(self.unit, 1.0)
+        tgt_si = UNIT_TO_SI.get(target_unit, 1.0)
 
-        rms = np.sqrt(np.mean(np.square(accel))) * np.sqrt(2)
-        return pd.DataFrame({'time': self.time_vec, 'signal': accel}), rms
+        if n_steps == 0:
+            return self.data * (src_si / tgt_si)
 
-    def fft(self, target_unit: str, config: 'AcquisitionSettings'):
-        """Compute Welch PSD and convert to target_unit via freq-domain integration.
+        N = len(self.data)
+        spectrum = np.fft.rfft(self.data)
+        freq = np.fft.rfftfreq(N, d=1.0 / self.samplerate)
 
-        target_unit: desired display/integration unit (e.g. 'mm/s', 'g', 'mm').
-                     Pass '' to stay in self.unit (no conversion).
+        omega = 2 * np.pi * freq
+        omega[0] = 1.0                           # protect DC from div-by-zero
+        transfer = np.power(1j * omega, n_steps)
+        transfer[0] = 0.0                         # zero DC — no DC recovery
 
-        Integration direction and amplitude scaling are derived from the
-        unit strings alone via integration_steps() and UNIT_TO_SI.
+        spectrum = spectrum * transfer * (src_si / tgt_si)
+        return np.fft.irfft(spectrum, n=N)
+
+    # ------------------------------------------------------------------
+    # Unified processing: VibeSample → ChannelResult
+    # ------------------------------------------------------------------
+
+    def process(self, channel: int, target_unit: str,
+                config: 'AcquisitionSettings') -> 'ChannelResult | None':
+        """Compute everything needed for display in one call.
+
+        Produces a frozen ChannelResult containing:
+        - converted time-domain signal (IFFT for cross-modality)
+        - Welch spectrum in the configured amplitude mode (RMS/0-P/P-P)
+        - sorted peak indices
+        - broadband overall amplitude over the trend frequency window
+
+        Returns None if the sample is empty.
         """
         if self.blocksize <= 1:
-            log.error('Attempt to fft an EMPTY sample')
-            return None, None
+            log.error('Attempt to process an EMPTY sample')
+            return None
 
         effective_target = target_unit if target_unit else self.unit
 
+        # ── Time-domain conversion (same or cross-modality) ──────────
+        time_signal = self._convert_time_domain(effective_target)
+
+        # ── Welch PSD (on raw source data) ───────────────────────────
         fs = self.samplerate
         df = config.binsize
         nfft = int(fs / df)
@@ -259,7 +282,7 @@ class VibeSample:
             average='mean',
         )
 
-        # Frequency-domain integration / differentiation
+        # ── Frequency-domain integration / differentiation ───────────
         n_steps = integration_steps(self.unit, effective_target)
         if n_steps != 0:
             omega_factor = np.power(
@@ -270,47 +293,62 @@ class VibeSample:
         else:
             display_spectrum = source_spectrum.copy()
 
-        # Amplitude scale: SI ratio covers both unit-system conversion and
-        # the dimensional change introduced by any integration/differentiation.
+        # SI amplitude scaling
         src_si = UNIT_TO_SI.get(self.unit, 1.0)
         tgt_si = UNIT_TO_SI.get(effective_target, 1.0)
         amp_scale = src_si / tgt_si
         display_spectrum = display_spectrum * (amp_scale ** 2)
 
-        source_0p = np.sqrt(source_spectrum) * np.sqrt(2)
-        display_0p = np.sqrt(np.maximum(display_spectrum, 0)) * np.sqrt(2)
+        # ── Amplitude mode (RMS / 0-P / P-P) ────────────────────────
+        amp_factor = AMPLITUDE_SCALE.get(config.amplitude_mode, np.sqrt(2))
+        spectrum_amp = np.sqrt(np.maximum(display_spectrum, 0)) * amp_factor
 
-        result = pd.DataFrame({
-            'freq': freq,
-            'source_spectrum': source_spectrum,
-            'display_spectrum': display_spectrum,
-            'source_0p': source_0p,
-            'display_0p': display_0p,
-        })
+        # ── Peaks ────────────────────────────────────────────────────
+        peaks, _ = signal.find_peaks(spectrum_amp,
+                                     distance=max(1, int(len(freq) / 50)))
+        peaks = np.array(peaks[np.argsort(-spectrum_amp[peaks])])
 
-        peaks, _ = signal.find_peaks(display_0p, distance=min(len(freq) / 50, 1))
-        peaks = np.array(peaks[np.argsort(-display_0p[peaks])])
+        # ── Overall broadband amplitude (trend freq window) ──────────
+        fmin = config.trend_fmin
+        fmax = (min(config.trend_fmax, config.maxfreq)
+                if config.trend_fmax is not None else config.maxfreq)
+        mask = (freq >= fmin) & (freq <= fmax)
+        band = spectrum_amp[mask] if mask.any() else spectrum_amp
+        band_rms = band / amp_factor
+        overall = float(np.sqrt(np.sum(np.square(band_rms)))) * amp_factor
 
-        return result, peaks
+        return ChannelResult(
+            channel=channel,
+            unit=effective_target,
+            time_data=time_signal,
+            time_vec=self.time_vec,
+            samplerate=self.samplerate,
+            freq=freq,
+            spectrum=spectrum_amp,
+            peaks=peaks,
+            overall=overall,
+            timestamp=self._timestamp,
+            rel_time=self.rel_time,
+            status=self.status,
+        )
 
 
 @dataclass(frozen=True)
 class ChannelResult:
     """Pre-computed display result for one channel at one capture instant.
 
-    All arrays are in `unit` (the target display unit).  Constructed by the
-    GUI's _compute_channel_result() from a raw VibeSample; never mutated
-    after creation.
+    All arrays are in `unit` (the target display unit).  Constructed by
+    VibeSample.process(); never mutated after creation.
     """
     channel:    int
     unit:       str              # target display unit, e.g. 'in/s', 'g', 'mV'
     time_data:  np.ndarray       # (N,) signal in target unit
     time_vec:   np.ndarray       # (N,) seconds
     samplerate: int
-    freq:       np.ndarray       # (K,) Hz, clipped to maxfreq
-    spectrum:   np.ndarray       # (K,) amplitude in target unit
-    peaks:      np.ndarray       # indices into freq / spectrum
-    overall:    float            # broadband amplitude in target unit
+    freq:       np.ndarray       # (K,) Hz
+    spectrum:   np.ndarray       # (K,) amplitude in target unit + amp mode
+    peaks:      np.ndarray       # indices into freq / spectrum, descending
+    overall:    float            # broadband amplitude in target unit + amp mode
     timestamp:  datetime
     rel_time:   float
     status:     str

@@ -63,6 +63,18 @@ EU_OPTIONS: list = [
     'mm', 'in', 'mil',
 ]
 
+# Amplitude normalization modes for frequency-domain display.
+# Welch PSD with scaling='spectrum' yields power (RMS²).
+#   RMS  = sqrt(spectrum)
+#   0-P  = RMS * sqrt(2)
+#   P-P  = 0-P * 2
+AMPLITUDE_MODES: list = ['RMS', '0-P', 'P-P']
+AMPLITUDE_SCALE: dict = {
+    'RMS': 1.0,
+    '0-P': np.sqrt(2),
+    'P-P': 2 * np.sqrt(2),
+}
+
 # Modality ordering: acceleration=0, velocity=1, displacement=2
 # n_steps = src_order - tgt_order
 #   negative  → integrate  (e.g. acc→vel: 0-1=-1, one integration)
@@ -204,6 +216,7 @@ class UI_Elements:
     # Spectrum dialog inputs
     SPEC_DLG_MAXFREQ    = 'SPEC_DLG_MAXFREQ'
     SPEC_DLG_BINSIZE    = 'SPEC_DLG_BINSIZE'
+    SPEC_DLG_AMP_MODE   = 'SPEC_DLG_AMP_MODE'
     SPEC_DLG_WINDOW     = 'SPEC_DLG_WINDOW'
     SPEC_DLG_TREND_FMIN = 'SPEC_DLG_TREND_FMIN'
     SPEC_DLG_TREND_FMAX = 'SPEC_DLG_TREND_FMAX'
