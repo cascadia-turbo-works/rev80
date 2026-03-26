@@ -207,3 +207,9 @@ Vibegui:
 - Track down velocity integration low freq noise
 - Windows functional
   - Package exe
+
+## 2026 - 03 - 25
+
+- Add 0P, PP or RMS to sensor setup. 
+- Acq setting lead to long acq times. Examine
+- Displaying wrong bins in spectrum setup
