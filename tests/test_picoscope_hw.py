@@ -145,11 +145,11 @@ class TestPicoScopeHardwareStream:
     def test_fft_peak_at_siggen_frequency(self):
         """Dominant FFT peak must land within FREQ_TOL_HZ of SIGGEN_FREQ_HZ."""
         cfg = _make_stream_config()
-        fft_df, peaks = self.sample.fft('', cfg)
-        assert fft_df is not None and peaks is not None, 'fft() returned None'
-        assert len(peaks) > 0, 'No peaks found in FFT'
+        result = self.sample.process(0, '', cfg)
+        assert result is not None, 'process() returned None'
+        assert len(result.peaks) > 0, 'No peaks found in FFT'
 
-        top_freq = float(fft_df.iloc[peaks[0]]['freq'])
+        top_freq = float(result.freq[result.peaks[0]])
         assert abs(top_freq - SIGGEN_FREQ_HZ) <= FREQ_TOL_HZ, (
             f'Dominant peak at {top_freq:.1f} Hz, expected {SIGGEN_FREQ_HZ} Hz '
             f'(±{FREQ_TOL_HZ} Hz). Check siggen loopback.'

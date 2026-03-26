@@ -163,6 +163,11 @@ class GUI:
             groups.setdefault(unit, []).append(ch)
         return list(groups.items())
 
+    def _freq_axis_label(self, unit: str) -> str:
+        """Build a frequency-plot Y-axis label like 'in/s 0-P'."""
+        mode = self.collector.config.amplitude_mode
+        return f'{unit} {mode}'
+
     def _update_axis_assignment(self):
         """Show/hide secondary axes and reassign series based on unit groups."""
         groups = self._get_unit_groups()
@@ -173,7 +178,7 @@ class GUI:
                 self._reassign_series_to_axis(ch, ui.PLT_FREQ_AX_ACCEL,
                                               ui.PLT_SAMPLE_AX_ACCEL)
             unit = groups[0][0] if groups else 'mV'
-            dpg.set_item_label(ui.PLT_FREQ_AX_ACCEL, unit)
+            dpg.set_item_label(ui.PLT_FREQ_AX_ACCEL, self._freq_axis_label(unit))
             dpg.set_item_label(ui.PLT_SAMPLE_AX_ACCEL, unit)
         else:
             dpg.show_item(ui.PLT_FREQ_AX_2)
@@ -184,9 +189,9 @@ class GUI:
             for ch in groups[1][1]:
                 self._reassign_series_to_axis(ch, ui.PLT_FREQ_AX_2,
                                               ui.PLT_SAMPLE_AX_ACCEL_2)
-            dpg.set_item_label(ui.PLT_FREQ_AX_ACCEL,      groups[0][0])
+            dpg.set_item_label(ui.PLT_FREQ_AX_ACCEL,      self._freq_axis_label(groups[0][0]))
             dpg.set_item_label(ui.PLT_SAMPLE_AX_ACCEL,    groups[0][0])
-            dpg.set_item_label(ui.PLT_FREQ_AX_2,          groups[1][0])
+            dpg.set_item_label(ui.PLT_FREQ_AX_2,          self._freq_axis_label(groups[1][0]))
             dpg.set_item_label(ui.PLT_SAMPLE_AX_ACCEL_2,  groups[1][0])
 
     def _reassign_series_to_axis(self, ch: int, freq_axis: str, time_axis: str):
@@ -228,44 +233,9 @@ class GUI:
     def _compute_channel_result(self, ch: int,
                                  sample: vibechecker.VibeSample
                                  ) -> vibechecker.ChannelResult | None:
-        """Compute a ChannelResult from a raw VibeSample in one call.
-
-        Calls sample.get_accel() and sample.fft() once each; applies the
-        trend frequency window from config to compute overall vibration.
-        Returns None if the sample is empty or FFT fails.
-        """
+        """Delegate all computation to VibeSample.process()."""
         target_unit = self.collector.get_active_eu(ch)
-        acc_df, _   = sample.get_accel(target_unit)
-        fft_df, peaks = sample.fft(target_unit, self.collector.config)
-        if fft_df is None or peaks is None:
-            return None
-
-        freq     = fft_df.freq.to_numpy()
-        spectrum = fft_df.display_0p.to_numpy()
-
-        # Overall amplitude over the configured trend frequency window
-        cfg  = self.collector.config
-        fmin = cfg.trend_fmin
-        fmax = min(cfg.trend_fmax, cfg.maxfreq) if cfg.trend_fmax is not None \
-               else cfg.maxfreq
-        mask = (freq >= fmin) & (freq <= fmax)
-        band = spectrum[mask] if mask.any() else spectrum
-        overall = float(np.sqrt(np.sum(np.square(band))) * np.sqrt(2) / 2)
-
-        return vibechecker.ChannelResult(
-            channel=ch,
-            unit=target_unit,
-            time_data=acc_df.signal.to_numpy(),
-            time_vec=acc_df.time.to_numpy(),
-            samplerate=sample.samplerate,
-            freq=freq,
-            spectrum=spectrum,
-            peaks=peaks,
-            overall=overall,
-            timestamp=sample._timestamp,
-            rel_time=sample.rel_time,
-            status=sample.status,
-        )
+        return sample.process(ch, target_unit, self.collector.config)
 
     def _update_time_plot(self, result: vibechecker.ChannelResult, ch: int):
         if not dpg.does_item_exist(ui.plt_time_series(ch)):
@@ -483,12 +453,12 @@ class GUI:
     def _update_spectrum_info(self):
         """Refresh the read-only spectrum parameter block."""
         cfg = self.collector.config
-        n_bins = cfg.blocksize // cfg.oversample
+        n_freq_bins = len(np.fft.fftfreq(cfg.blocksize, 1/cfg.samplerate))
         fs_ks  = cfg.samplerate / 1000
         t_col  = cfg.acquisition_period
         info = (
-            f'{cfg.maxfreq:.0f} Hz\n'
-            f'{n_bins} bins\n'
+            f'{cfg.maxfreq:.0f} Hz max\n'
+            f'{n_freq_bins} spectral lines\n'
             f'{cfg.binsize:.2f} Hz/bin\n'
             f'{cfg.blocksize} samples\n'
             f'Sample Rate: {fs_ks:.1f} kS/sec\n'
@@ -791,6 +761,10 @@ class GUI:
         if dpg.does_item_exist(ui.SPEC_DLG_TREND_FMAX):
             fmax = float(dpg.get_value(ui.SPEC_DLG_TREND_FMAX) or 0.0)
             self.collector.config.trend_fmax = fmax if fmax > 0 else None
+        if dpg.does_item_exist(ui.SPEC_DLG_AMP_MODE):
+            mode = dpg.get_value(ui.SPEC_DLG_AMP_MODE)
+            if mode in vibechecker.AMPLITUDE_MODES:
+                self.collector.config.amplitude_mode = mode
 
         # Apply signal generator config
         if dpg.does_item_exist(ui.SIGGEN_ENABLED):
@@ -850,6 +824,8 @@ class GUI:
         if dpg.does_item_exist(ui.SPEC_DLG_TREND_FMAX):
             dpg.set_value(ui.SPEC_DLG_TREND_FMAX,
                           cfg.trend_fmax if cfg.trend_fmax is not None else 0.0)
+        if dpg.does_item_exist(ui.SPEC_DLG_AMP_MODE):
+            dpg.set_value(ui.SPEC_DLG_AMP_MODE, cfg.amplitude_mode)
 
     def _on_spectrum_apply(self, sender=None, data=None):
         mf_str = dpg.get_value(ui.SPEC_DLG_MAXFREQ)
@@ -876,6 +852,10 @@ class GUI:
             win = dpg.get_value(ui.SPEC_DLG_WINDOW)
             if win in _FFT_WINDOWS:
                 self.collector.config.fft_window = win
+        if dpg.does_item_exist(ui.SPEC_DLG_AMP_MODE):
+            mode = dpg.get_value(ui.SPEC_DLG_AMP_MODE)
+            if mode in vibechecker.AMPLITUDE_MODES:
+                self.collector.config.amplitude_mode = mode
         if self.collector.sensor is not None:
             self.collector.reconnect_stream()
         if was_streaming:
@@ -1221,6 +1201,9 @@ class GUI:
                     dpg.add_spacer(height=6)
                     dpg.add_combo(label='FFT Window', tag=ui.SPEC_DLG_WINDOW,
                                   items=_FFT_WINDOWS, default_value='hann', width=160)
+                    dpg.add_combo(label='Amplitude', tag=ui.SPEC_DLG_AMP_MODE,
+                                  items=vibechecker.AMPLITUDE_MODES,
+                                  default_value='0-P', width=160)
                     dpg.add_spacer(height=6)
                     dpg.add_text('Trend Frequency Window')
                     with dpg.group(horizontal=True):

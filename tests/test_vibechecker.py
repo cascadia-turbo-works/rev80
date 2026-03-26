@@ -64,17 +64,17 @@ def test_collect_sample_returns_dict():
 
 
 def test_collect_sample_signal_processing():
-    """Collected simulated sample survives get_accel() and fft() without error."""
+    """Collected simulated sample survives process() without error."""
     collector = DataCollector(sim_sensor)
     result = collector.collect_sample()
     collector.disconnect_sensor()
 
-    for sample in (v for k, v in result.items() if isinstance(k, int)):
-        acc, rms = sample.get_accel()
-        assert acc.time.to_numpy().flags['C_CONTIGUOUS']
-        assert acc.signal.to_numpy().flags['C_CONTIGUOUS']
-        fft, peaks = sample.fft('', acq_settings)
-        assert fft is not None
+    for ch, sample in ((k, v) for k, v in result.items() if isinstance(k, int)):
+        cr = sample.process(ch, '', acq_settings)
+        assert cr is not None
+        assert cr.time_data.flags['C_CONTIGUOUS']
+        assert len(cr.freq) > 0
+        assert len(cr.spectrum) == len(cr.freq)
 
 
 # ---------------------------------------------------------------------------
