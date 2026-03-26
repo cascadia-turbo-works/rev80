@@ -40,12 +40,11 @@ def hex_to_rgba(hex_color: str, alpha: int = 255) -> tuple:
     return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), alpha)
 
 
-# ── Audio interface rates + PicoScope-relevant rates (100 kHz – 1 MHz) ──────
-SAMPLERATES = [8_000, 11_050, 16_000, 22_100, 32_000, 44_100, 48_000,
-               100_000, 200_000, 500_000, 1_000_000]
-BLOCKSIZES = list(map(int,np.pow(2, np.arange(8,18))))
-MAXFREQS = [2e2, 5e2, 1e3, 2e3, 5e3, 1e4, 2e4, 2.4e4]
-BINSIZES = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0]
+# ── Spectrum preset values (quick-pick selections in the GUI) ────────────────
+# These are convenience presets, NOT hard constraints.  AcquisitionSettings
+# derives samplerate and blocksize arithmetically from maxfreq and binsize.
+MAXFREQ_PRESETS = [2e2, 5e2, 1e3, 2e3, 5e3, 1e4, 2e4, 5e4, 1e5, 2.5e5, 5e5]
+BINSIZE_PRESETS = [0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0]
 
 # ── Unit taxonomy ──────────────────────────────────────────────────────────
 # Each unit string encodes both the physical quantity (modality) and the
@@ -213,12 +212,22 @@ class UI_Elements:
     DLG_SAVE_FILE       = 'DLG_SAVE_FILE'
     DLG_LOAD_FILE       = 'DLG_LOAD_FILE'
 
-    # Spectrum dialog inputs
+    # Spectrum dialog inputs — controls
     SPEC_DLG_MAXFREQ    = 'SPEC_DLG_MAXFREQ'
     SPEC_DLG_BINSIZE    = 'SPEC_DLG_BINSIZE'
     SPEC_DLG_WINDOW     = 'SPEC_DLG_WINDOW'
+    SPEC_DLG_OVERLAP    = 'SPEC_DLG_OVERLAP'
+    SPEC_DLG_HP_ENABLED = 'SPEC_DLG_HP_ENABLED'
+    SPEC_DLG_HP_FC      = 'SPEC_DLG_HP_FC'
+    SPEC_DLG_LP_ENABLED = 'SPEC_DLG_LP_ENABLED'
+    SPEC_DLG_LP_FC      = 'SPEC_DLG_LP_FC'
     SPEC_DLG_TREND_FMIN = 'SPEC_DLG_TREND_FMIN'
     SPEC_DLG_TREND_FMAX = 'SPEC_DLG_TREND_FMAX'
+    # Spectrum dialog — derived display fields
+    SPEC_DLG_SAMPLERATE = 'SPEC_DLG_SAMPLERATE'
+    SPEC_DLG_NFFT_BINS  = 'SPEC_DLG_NFFT_BINS'
+    SPEC_DLG_ACQ_TIME   = 'SPEC_DLG_ACQ_TIME'
+    SPEC_DLG_MEMORY     = 'SPEC_DLG_MEMORY'
 
     # Sensor registry dialog
     SCOPE_REGISTRY_LIST   = 'SCOPE_REGISTRY_LIST'

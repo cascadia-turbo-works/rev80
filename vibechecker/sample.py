@@ -8,118 +8,106 @@ from path import Path
 import h5py
 
 import vibechecker
-from vibechecker import BLOCKSIZES, \
-                        SAMPLERATES, \
-                        MAXFREQS, \
-                        BINSIZES, \
-                        nextpow2
+from vibechecker import nextpow2
 from vibechecker.util import UNIT_TO_SI, AMPLITUDE_SCALE, integration_steps
 
 log = vibechecker.get_logger(__name__)
 
 @dataclass
 class AcquisitionSettings:
-    _ns: int = BLOCKSIZES[3]
-    _fs: int = SAMPLERATES[0]
-    _fm: float = MAXFREQS[3]
-    _df: float = BINSIZES[3]
-    oversample: int = 2
-    butter_fc: float | None = 10
-    # PicoScope channel settings (ignored by sounddevice / SimulatedSensor paths)
-    coupling: str = 'AC'      # global default — 'AC' or 'DC'
+    """Spectrum acquisition parameters.
+
+    The user controls two primary values — maxfreq and binsize.
+    Everything else (samplerate, blocksize, acquisition time) is derived.
+
+    Arithmetic flow:
+        maxfreq  → samplerate = nextpow2(2 * maxfreq)
+        binsize  → blocksize  = nextpow2(samplerate / binsize)
+    """
+    _fm: float = 2e3               # max analysis frequency (Hz)
+    _df: float = 2.0               # frequency bin resolution (Hz)
+    # PicoScope channel settings
+    coupling: str = 'AC'
     enabled_channels: list = field(default_factory=lambda: [0])
     channel_voltage_ranges: dict = field(default_factory=lambda: {0: 7})
-    channel_couplings: dict = field(default_factory=dict)  # {ch: 'AC'|'DC'}
-    # Trend history settings
+    channel_couplings: dict = field(default_factory=dict)
+    # Trend history
     trend_max_points: int = 500
     trend_fmin: float = 0.0
-    trend_fmax: float | None = None   # None → clamp to maxfreq at compute time
+    trend_fmax: float | None = None
+    # FFT / Welch
     fft_window: str = 'hann'
+    welch_overlap: float = 0.5     # 0.0–0.95 fraction of nperseg
+    # Butterworth filters (applied per-channel in DataCollector.receive_data)
+    highpass_enabled: bool = True
+    highpass_fc: float = 10.0      # Hz
+    lowpass_enabled: bool = False
+    lowpass_fc: float = 1000.0     # Hz
+
+    _BUTTER_ORDER: int = field(default=4, repr=False)  # clamped, not user-exposed
 
     def voltage_range_for(self, ch: int) -> int:
-        """Return the PS4000A voltage range index for a given channel (default ±2V)."""
         return self.channel_voltage_ranges.get(ch, 7)
 
     def coupling_for(self, ch: int) -> str:
-        """Return 'AC' or 'DC' for a channel; falls back to the global default."""
         return self.channel_couplings.get(ch, self.coupling)
 
     @classmethod
-    def copy(cls, settings):
-        return cls(settings.blocksize, settings.samplerate)
-    
-    @property
-    def blocksize(self):
-        return self._ns
-    @blocksize.setter
-    def blocksize(self, ns):
-        self._ns = int(ns)
+    def copy(cls, settings: 'AcquisitionSettings') -> 'AcquisitionSettings':
+        c = cls()
+        c.maxfreq = settings.maxfreq
+        c.binsize = settings.binsize
+        return c
+
+    # ── Derived values ───────────────────────────────────────────────
 
     @property
-    def samplerate(self):
-        return self._fs
-    @samplerate.setter
-    def samplerate(self, fs):
-        self._fs = int(fs)
+    def samplerate(self) -> int:
+        """Minimum power-of-2 sample rate satisfying Nyquist for maxfreq."""
+        return nextpow2(int(2 * self._fm))
+
+    @property
+    def blocksize(self) -> int:
+        """Minimum power-of-2 block length achieving the requested binsize."""
+        return nextpow2(int(self.samplerate / self._df))
 
     @property
     def maxfreq(self) -> float:
-        require_fm = self.samplerate / 2
-        if require_fm > self._fm:
-            return self._fm
-        
-        try:
-            return next(filter(lambda fm: fm <= require_fm, reversed(MAXFREQS)))
-        except StopIteration:
-            return require_fm
-        
+        return self._fm
+
     @maxfreq.setter
-    def maxfreq(self, fm:float):
-        self.ensure_maxfreq(fm)
+    def maxfreq(self, fm: float):
         self._fm = float(fm)
 
     @property
     def binsize(self) -> float:
-        require_df = self.oversample * self.samplerate / self.blocksize
-        if require_df > self._df:
-            return self._df
-        
-        try:
-            return next(filter(lambda df: df >= require_df, BINSIZES))
-        except StopIteration:
-            return require_df
-        
+        return self._df
+
     @binsize.setter
-    def binsize(self, df:float):
-        self.ensure_binsize(df)
-        self._df = float(df)    
+    def binsize(self, df: float):
+        self._df = float(df)
+
     @property
     def sampleperiod(self) -> float:
-        return 1./self.samplerate
+        return 1.0 / self.samplerate
 
     @property
     def acquisition_period(self) -> float:
         return self.blocksize * self.sampleperiod
-    
+
     @property
     def time_vec(self) -> np.ndarray:
         return np.arange(self.blocksize) * self.sampleperiod
 
-    def ensure_maxfreq(self, fm: float):
-        require_fs = 2 * float(fm)
-        try:
-            fs = next(filter(lambda x: x > require_fs, SAMPLERATES))
-        except StopIteration:
-            fs = SAMPLERATES[-1]
-            log.warning(f'Cannot acheive max frequency {fm} hz. Defaulting to max samplerate {fs}')
+    @property
+    def n_fft_bins(self) -> int:
+        """Number of frequency bins in the one-sided spectrum."""
+        return self.blocksize // 2 + 1
 
-        self.samplerate = fs
-        self.ensure_binsize(self.binsize)
-    
-    def ensure_binsize(self, df:float):
-        require_ns = self.oversample * int(self.samplerate / float(df))
-        self.blocksize = nextpow2(require_ns)
-        log.debug(f'Set samplesize to {self.blocksize} hz to achieve {df} hz frequency resolution') 
+    @property
+    def memory_bytes(self) -> int:
+        """Approximate memory per channel per block (float64)."""
+        return self.blocksize * 8
 
 @dataclass
 class VibeSample:
@@ -268,7 +256,7 @@ class VibeSample:
         df = config.binsize
         nfft = int(fs / df)
         nperseg = nfft
-        noverlap = min(self.blocksize, int(nperseg / 2))
+        noverlap = min(self.blocksize - 1, int(nperseg * config.welch_overlap))
 
         freq, source_spectrum = signal.welch(
             self.data,
