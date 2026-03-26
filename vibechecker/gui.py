@@ -163,9 +163,12 @@ class GUI:
             groups.setdefault(unit, []).append(ch)
         return list(groups.items())
 
-    def _freq_axis_label(self, unit: str) -> str:
+    def _freq_axis_label(self, unit: str, channels: list[int] | None = None) -> str:
         """Build a frequency-plot Y-axis label like 'in/s 0-P'."""
-        mode = self.collector.config.amplitude_mode
+        if channels:
+            mode = self._get_amplitude_mode(channels[0])
+        else:
+            mode = '0-P'
         return f'{unit} {mode}'
 
     def _update_axis_assignment(self):
@@ -178,7 +181,8 @@ class GUI:
                 self._reassign_series_to_axis(ch, ui.PLT_FREQ_AX_ACCEL,
                                               ui.PLT_SAMPLE_AX_ACCEL)
             unit = groups[0][0] if groups else 'mV'
-            dpg.set_item_label(ui.PLT_FREQ_AX_ACCEL, self._freq_axis_label(unit))
+            chs = groups[0][1] if groups else []
+            dpg.set_item_label(ui.PLT_FREQ_AX_ACCEL, self._freq_axis_label(unit, chs))
             dpg.set_item_label(ui.PLT_SAMPLE_AX_ACCEL, unit)
         else:
             dpg.show_item(ui.PLT_FREQ_AX_2)
@@ -189,9 +193,9 @@ class GUI:
             for ch in groups[1][1]:
                 self._reassign_series_to_axis(ch, ui.PLT_FREQ_AX_2,
                                               ui.PLT_SAMPLE_AX_ACCEL_2)
-            dpg.set_item_label(ui.PLT_FREQ_AX_ACCEL,      self._freq_axis_label(groups[0][0]))
+            dpg.set_item_label(ui.PLT_FREQ_AX_ACCEL,      self._freq_axis_label(groups[0][0], groups[0][1]))
             dpg.set_item_label(ui.PLT_SAMPLE_AX_ACCEL,    groups[0][0])
-            dpg.set_item_label(ui.PLT_FREQ_AX_2,          self._freq_axis_label(groups[1][0]))
+            dpg.set_item_label(ui.PLT_FREQ_AX_2,          self._freq_axis_label(groups[1][0], groups[1][1]))
             dpg.set_item_label(ui.PLT_SAMPLE_AX_ACCEL_2,  groups[1][0])
 
     def _reassign_series_to_axis(self, ch: int, freq_axis: str, time_axis: str):
@@ -230,12 +234,20 @@ class GUI:
                 for j in range(df.shape[1]):
                     dpg.add_text(f'{df.iloc[i, j]}')
 
+    def _get_amplitude_mode(self, ch: int) -> str:
+        """Return the amplitude mode for a channel from its scope sensor."""
+        scope_sensor = self.collector.scope_sensors.get(ch)
+        if scope_sensor is not None:
+            return scope_sensor.amplitude_mode
+        return '0-P'
+
     def _compute_channel_result(self, ch: int,
                                  sample: vibechecker.VibeSample
                                  ) -> vibechecker.ChannelResult | None:
         """Delegate all computation to VibeSample.process()."""
         target_unit = self.collector.get_active_eu(ch)
-        return sample.process(ch, target_unit, self.collector.config)
+        amp_mode = self._get_amplitude_mode(ch)
+        return sample.process(ch, target_unit, self.collector.config, amp_mode)
 
     def _update_time_plot(self, result: vibechecker.ChannelResult, ch: int):
         if not dpg.does_item_exist(ui.plt_time_series(ch)):
@@ -761,10 +773,6 @@ class GUI:
         if dpg.does_item_exist(ui.SPEC_DLG_TREND_FMAX):
             fmax = float(dpg.get_value(ui.SPEC_DLG_TREND_FMAX) or 0.0)
             self.collector.config.trend_fmax = fmax if fmax > 0 else None
-        if dpg.does_item_exist(ui.SPEC_DLG_AMP_MODE):
-            mode = dpg.get_value(ui.SPEC_DLG_AMP_MODE)
-            if mode in vibechecker.AMPLITUDE_MODES:
-                self.collector.config.amplitude_mode = mode
 
         # Apply signal generator config
         if dpg.does_item_exist(ui.SIGGEN_ENABLED):
@@ -824,8 +832,6 @@ class GUI:
         if dpg.does_item_exist(ui.SPEC_DLG_TREND_FMAX):
             dpg.set_value(ui.SPEC_DLG_TREND_FMAX,
                           cfg.trend_fmax if cfg.trend_fmax is not None else 0.0)
-        if dpg.does_item_exist(ui.SPEC_DLG_AMP_MODE):
-            dpg.set_value(ui.SPEC_DLG_AMP_MODE, cfg.amplitude_mode)
 
     def _on_spectrum_apply(self, sender=None, data=None):
         mf_str = dpg.get_value(ui.SPEC_DLG_MAXFREQ)
@@ -852,10 +858,6 @@ class GUI:
             win = dpg.get_value(ui.SPEC_DLG_WINDOW)
             if win in _FFT_WINDOWS:
                 self.collector.config.fft_window = win
-        if dpg.does_item_exist(ui.SPEC_DLG_AMP_MODE):
-            mode = dpg.get_value(ui.SPEC_DLG_AMP_MODE)
-            if mode in vibechecker.AMPLITUDE_MODES:
-                self.collector.config.amplitude_mode = mode
         if self.collector.sensor is not None:
             self.collector.reconnect_stream()
         if was_streaming:
@@ -924,12 +926,14 @@ class GUI:
             dpg.set_value('SREG_FIELD_UNITS', 'g')
             dpg.set_value('SREG_FIELD_TARGET', '')
             dpg.set_value('SREG_FIELD_SENS', 0.0)
+            dpg.set_value('SREG_FIELD_AMP_MODE', '0-P')
             dpg.set_value('SREG_FIELD_NOTES', '')
         else:
             dpg.set_value('SREG_FIELD_NAME', sensor.name)
             dpg.set_value('SREG_FIELD_UNITS', sensor.engineering_units)
             dpg.set_value('SREG_FIELD_TARGET', sensor.target_unit or '')
             dpg.set_value('SREG_FIELD_SENS', float(sensor.sensitivity))
+            dpg.set_value('SREG_FIELD_AMP_MODE', sensor.amplitude_mode)
             dpg.set_value('SREG_FIELD_NOTES', sensor.notes or '')
 
     def _save_registry_sensor_fields(self):
@@ -946,6 +950,7 @@ class GUI:
             engineering_units=dpg.get_value('SREG_FIELD_UNITS'),
             sensitivity=float(dpg.get_value('SREG_FIELD_SENS')),
             target_unit=dpg.get_value('SREG_FIELD_TARGET'),
+            amplitude_mode=dpg.get_value('SREG_FIELD_AMP_MODE'),
             id=self._editing_scope_sensor_id,
             notes=dpg.get_value('SREG_FIELD_NOTES').strip(),
         )
@@ -1185,6 +1190,11 @@ class GUI:
                             dpg.add_input_float(label='Sensitivity (mV/eu)',
                                                 tag='SREG_FIELD_SENS',
                                                 format='%.6f', width=_sreg_field_w)
+                            dpg.add_combo(label='Amplitude',
+                                          tag='SREG_FIELD_AMP_MODE',
+                                          items=vibechecker.AMPLITUDE_MODES,
+                                          default_value='0-P',
+                                          width=_sreg_field_w)
                             dpg.add_input_text(label='Notes',
                                                tag='SREG_FIELD_NOTES',
                                                width=_sreg_field_w)
@@ -1201,9 +1211,6 @@ class GUI:
                     dpg.add_spacer(height=6)
                     dpg.add_combo(label='FFT Window', tag=ui.SPEC_DLG_WINDOW,
                                   items=_FFT_WINDOWS, default_value='hann', width=160)
-                    dpg.add_combo(label='Amplitude', tag=ui.SPEC_DLG_AMP_MODE,
-                                  items=vibechecker.AMPLITUDE_MODES,
-                                  default_value='0-P', width=160)
                     dpg.add_spacer(height=6)
                     dpg.add_text('Trend Frequency Window')
                     with dpg.group(horizontal=True):

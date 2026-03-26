@@ -35,7 +35,6 @@ class AcquisitionSettings:
     trend_fmin: float = 0.0
     trend_fmax: float | None = None   # None → clamp to maxfreq at compute time
     fft_window: str = 'hann'
-    amplitude_mode: str = '0-P'   # 'RMS', '0-P', or 'P-P'
 
     def voltage_range_for(self, ch: int) -> int:
         """Return the PS4000A voltage range index for a given channel (default ±2V)."""
@@ -243,7 +242,8 @@ class VibeSample:
     # ------------------------------------------------------------------
 
     def process(self, channel: int, target_unit: str,
-                config: 'AcquisitionSettings') -> 'ChannelResult | None':
+                config: 'AcquisitionSettings',
+                amplitude_mode: str = '0-P') -> 'ChannelResult | None':
         """Compute everything needed for display in one call.
 
         Produces a frozen ChannelResult containing:
@@ -300,7 +300,7 @@ class VibeSample:
         display_spectrum = display_spectrum * (amp_scale ** 2)
 
         # ── Amplitude mode (RMS / 0-P / P-P) ────────────────────────
-        amp_factor = AMPLITUDE_SCALE.get(config.amplitude_mode, np.sqrt(2))
+        amp_factor = AMPLITUDE_SCALE.get(amplitude_mode, np.sqrt(2))
         spectrum_amp = np.sqrt(np.maximum(display_spectrum, 0)) * amp_factor
 
         # ── Peaks ────────────────────────────────────────────────────

@@ -188,24 +188,9 @@ def test_amplitude_modes_ratio(freq):
     sample = dc.collect_sample()[0]
     sample.unit = 'mm/s2'
 
-    cfg_rms = vc.AcquisitionSettings()
-    cfg_rms.binsize = config.binsize
-    cfg_rms.maxfreq = config.maxfreq
-    cfg_rms.amplitude_mode = 'RMS'
-
-    cfg_0p = vc.AcquisitionSettings()
-    cfg_0p.binsize = config.binsize
-    cfg_0p.maxfreq = config.maxfreq
-    cfg_0p.amplitude_mode = '0-P'
-
-    cfg_pp = vc.AcquisitionSettings()
-    cfg_pp.binsize = config.binsize
-    cfg_pp.maxfreq = config.maxfreq
-    cfg_pp.amplitude_mode = 'P-P'
-
-    r_rms = sample.process(0, 'mm/s2', cfg_rms)
-    r_0p  = sample.process(0, 'mm/s2', cfg_0p)
-    r_pp  = sample.process(0, 'mm/s2', cfg_pp)
+    r_rms = sample.process(0, 'mm/s2', config, amplitude_mode='RMS')
+    r_0p  = sample.process(0, 'mm/s2', config, amplitude_mode='0-P')
+    r_pp  = sample.process(0, 'mm/s2', config, amplitude_mode='P-P')
     assert r_rms is not None and r_0p is not None and r_pp is not None
 
     v_rms = _peak_amp_at(r_rms, freq)
