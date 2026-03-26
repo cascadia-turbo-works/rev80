@@ -57,9 +57,9 @@ _CH_COLORS = [
     _c('SILVER'),  # Ch H
 ]
 
-# Spectrum dialog display labels — index-aligned with MAXFREQS / BINSIZES
-_MAXFREQ_LABELS = [f'{int(f)} Hz' for f in vibechecker.MAXFREQS]
-_BINSIZE_LABELS  = [f'{b} Hz/bin' for b in vibechecker.BINSIZES]
+# Spectrum dialog display labels — index-aligned with preset lists
+_MAXFREQ_LABELS = [f'{int(f)} Hz' for f in vibechecker.MAXFREQ_PRESETS]
+_BINSIZE_LABELS  = [f'{b} Hz/bin' for b in vibechecker.BINSIZE_PRESETS]
 
 # Welch FFT window options (scipy.signal.welch 'window' argument strings)
 _FFT_WINDOWS = ['hann', 'blackmanharris', 'flattop', 'hamming', 'boxcar', 'bartlett']
@@ -463,22 +463,56 @@ class GUI:
     # ------------------------------------------------------------------
 
     def _update_spectrum_info(self):
-        """Refresh the read-only spectrum parameter block."""
+        """Refresh the read-only spectrum parameter block in the left panel."""
         cfg = self.collector.config
-        n_freq_bins = len(np.fft.fftfreq(cfg.blocksize, 1/cfg.samplerate))
         fs_ks  = cfg.samplerate / 1000
         t_col  = cfg.acquisition_period
+        hp = f'HP {cfg.highpass_fc:.0f} Hz' if cfg.highpass_enabled else 'HP off'
+        lp = f'LP {cfg.lowpass_fc:.0f} Hz' if cfg.lowpass_enabled else 'LP off'
         info = (
-            f'{cfg.maxfreq:.0f} Hz max\n'
-            f'{n_freq_bins} spectral lines\n'
-            f'{cfg.binsize:.2f} Hz/bin\n'
-            f'{cfg.blocksize} samples\n'
-            f'Sample Rate: {fs_ks:.1f} kS/sec\n'
-            f'Collection time: {t_col:.3f} sec\n'
-            f'Window: {cfg.fft_window}'
+            f'{cfg.maxfreq:.0f} Hz max  |  {cfg.binsize:.2f} Hz/bin\n'
+            f'{cfg.n_fft_bins} lines  |  {fs_ks:.1f} kS/s\n'
+            f'Acq: {t_col:.3f} s  |  {cfg.fft_window}\n'
+            f'{hp}  |  {lp}'
         )
         if dpg.does_item_exist(ui.SPECTRUM_INFO_TEXT):
             dpg.set_value(ui.SPECTRUM_INFO_TEXT, info)
+
+    def _update_spectrum_derived(self):
+        """Refresh derived display fields in the spectrum dialog based on current combo values."""
+        mf_str = dpg.get_value(ui.SPEC_DLG_MAXFREQ) if dpg.does_item_exist(ui.SPEC_DLG_MAXFREQ) else ''
+        bs_str = dpg.get_value(ui.SPEC_DLG_BINSIZE) if dpg.does_item_exist(ui.SPEC_DLG_BINSIZE) else ''
+        try:
+            maxfreq = vibechecker.MAXFREQ_PRESETS[_MAXFREQ_LABELS.index(mf_str)]
+        except (ValueError, IndexError):
+            maxfreq = self.collector.config.maxfreq
+        try:
+            binsize = vibechecker.BINSIZE_PRESETS[_BINSIZE_LABELS.index(bs_str)]
+        except (ValueError, IndexError):
+            binsize = self.collector.config.binsize
+        samplerate = vibechecker.nextpow2(int(2 * maxfreq))
+        blocksize = vibechecker.nextpow2(int(samplerate / binsize))
+        n_fft_bins = blocksize // 2 + 1
+        acq_time = blocksize / samplerate
+        mem_bytes = blocksize * 8
+        if mem_bytes >= 1024 * 1024:
+            mem_str = f'{mem_bytes / (1024*1024):.1f} MB'
+        elif mem_bytes >= 1024:
+            mem_str = f'{mem_bytes / 1024:.1f} KB'
+        else:
+            mem_str = f'{mem_bytes} B'
+        if dpg.does_item_exist(ui.SPEC_DLG_SAMPLERATE):
+            dpg.set_value(ui.SPEC_DLG_SAMPLERATE, f'{samplerate/1000:.1f} kS/s')
+        if dpg.does_item_exist(ui.SPEC_DLG_NFFT_BINS):
+            dpg.set_value(ui.SPEC_DLG_NFFT_BINS, str(n_fft_bins))
+        if dpg.does_item_exist(ui.SPEC_DLG_ACQ_TIME):
+            dpg.set_value(ui.SPEC_DLG_ACQ_TIME, f'{acq_time:.3f} s')
+        if dpg.does_item_exist(ui.SPEC_DLG_MEMORY):
+            dpg.set_value(ui.SPEC_DLG_MEMORY, mem_str)
+
+    def _on_spectrum_preview(self, sender=None, data=None):
+        """Update derived fields live as the user changes freq range / resolution combos."""
+        self._update_spectrum_derived()
 
     # ------------------------------------------------------------------
     # Acquisition toggle
@@ -751,28 +785,8 @@ class GUI:
 
     def _on_config_close(self, sender=None, data=None):
         """Apply all tab settings, reconnect if needed, then hide the dialog."""
-        # Apply spectrum settings from widgets
-        mf_str = dpg.get_value(ui.SPEC_DLG_MAXFREQ) if dpg.does_item_exist(ui.SPEC_DLG_MAXFREQ) else None
-        bs_str = dpg.get_value(ui.SPEC_DLG_BINSIZE) if dpg.does_item_exist(ui.SPEC_DLG_BINSIZE) else None
-        if mf_str:
-            try:
-                self.collector.config.maxfreq = vibechecker.MAXFREQS[_MAXFREQ_LABELS.index(mf_str)]
-            except (ValueError, IndexError):
-                pass
-        if bs_str:
-            try:
-                self.collector.config.binsize = vibechecker.BINSIZES[_BINSIZE_LABELS.index(bs_str)]
-            except (ValueError, IndexError):
-                pass
-        if dpg.does_item_exist(ui.SPEC_DLG_WINDOW):
-            win = dpg.get_value(ui.SPEC_DLG_WINDOW)
-            if win in _FFT_WINDOWS:
-                self.collector.config.fft_window = win
-        if dpg.does_item_exist(ui.SPEC_DLG_TREND_FMIN):
-            self.collector.config.trend_fmin = float(dpg.get_value(ui.SPEC_DLG_TREND_FMIN) or 0.0)
-        if dpg.does_item_exist(ui.SPEC_DLG_TREND_FMAX):
-            fmax = float(dpg.get_value(ui.SPEC_DLG_TREND_FMAX) or 0.0)
-            self.collector.config.trend_fmax = fmax if fmax > 0 else None
+        # Apply spectrum settings from widgets (delegate to shared apply method)
+        self._on_spectrum_apply()
 
         # Apply signal generator config
         if dpg.does_item_exist(ui.SIGGEN_ENABLED):
@@ -827,37 +841,59 @@ class GUI:
                 dpg.set_value(ui.SPEC_DLG_BINSIZE, curr_bs)
         if dpg.does_item_exist(ui.SPEC_DLG_WINDOW):
             dpg.set_value(ui.SPEC_DLG_WINDOW, cfg.fft_window)
+        if dpg.does_item_exist(ui.SPEC_DLG_OVERLAP):
+            dpg.set_value(ui.SPEC_DLG_OVERLAP, cfg.welch_overlap * 100.0)
+        if dpg.does_item_exist(ui.SPEC_DLG_HP_ENABLED):
+            dpg.set_value(ui.SPEC_DLG_HP_ENABLED, cfg.highpass_enabled)
+        if dpg.does_item_exist(ui.SPEC_DLG_HP_FC):
+            dpg.set_value(ui.SPEC_DLG_HP_FC, cfg.highpass_fc)
+        if dpg.does_item_exist(ui.SPEC_DLG_LP_ENABLED):
+            dpg.set_value(ui.SPEC_DLG_LP_ENABLED, cfg.lowpass_enabled)
+        if dpg.does_item_exist(ui.SPEC_DLG_LP_FC):
+            dpg.set_value(ui.SPEC_DLG_LP_FC, cfg.lowpass_fc)
         if dpg.does_item_exist(ui.SPEC_DLG_TREND_FMIN):
             dpg.set_value(ui.SPEC_DLG_TREND_FMIN, cfg.trend_fmin)
         if dpg.does_item_exist(ui.SPEC_DLG_TREND_FMAX):
             dpg.set_value(ui.SPEC_DLG_TREND_FMAX,
                           cfg.trend_fmax if cfg.trend_fmax is not None else 0.0)
+        self._update_spectrum_derived()
 
     def _on_spectrum_apply(self, sender=None, data=None):
+        cfg = self.collector.config
         mf_str = dpg.get_value(ui.SPEC_DLG_MAXFREQ)
         bs_str = dpg.get_value(ui.SPEC_DLG_BINSIZE)
         try:
-            maxfreq = vibechecker.MAXFREQS[_MAXFREQ_LABELS.index(mf_str)]
+            maxfreq = vibechecker.MAXFREQ_PRESETS[_MAXFREQ_LABELS.index(mf_str)]
         except (ValueError, IndexError):
-            maxfreq = self.collector.config.maxfreq
+            maxfreq = cfg.maxfreq
         try:
-            binsize = vibechecker.BINSIZES[_BINSIZE_LABELS.index(bs_str)]
+            binsize = vibechecker.BINSIZE_PRESETS[_BINSIZE_LABELS.index(bs_str)]
         except (ValueError, IndexError):
-            binsize = self.collector.config.binsize
+            binsize = cfg.binsize
         trend_fmin = float(dpg.get_value(ui.SPEC_DLG_TREND_FMIN) or 0.0)
         trend_fmax = float(dpg.get_value(ui.SPEC_DLG_TREND_FMAX) or 0.0)
 
         was_streaming = self.collector.is_streaming
         if was_streaming:
             self._stop_stream()
-        self.collector.config.maxfreq = maxfreq
-        self.collector.config.binsize = binsize
-        self.collector.config.trend_fmin = trend_fmin
-        self.collector.config.trend_fmax = trend_fmax if trend_fmax > 0 else None
+        cfg.maxfreq = maxfreq
+        cfg.binsize = binsize
+        cfg.trend_fmin = trend_fmin
+        cfg.trend_fmax = trend_fmax if trend_fmax > 0 else None
         if dpg.does_item_exist(ui.SPEC_DLG_WINDOW):
             win = dpg.get_value(ui.SPEC_DLG_WINDOW)
             if win in _FFT_WINDOWS:
-                self.collector.config.fft_window = win
+                cfg.fft_window = win
+        if dpg.does_item_exist(ui.SPEC_DLG_OVERLAP):
+            cfg.welch_overlap = float(dpg.get_value(ui.SPEC_DLG_OVERLAP)) / 100.0
+        if dpg.does_item_exist(ui.SPEC_DLG_HP_ENABLED):
+            cfg.highpass_enabled = dpg.get_value(ui.SPEC_DLG_HP_ENABLED)
+        if dpg.does_item_exist(ui.SPEC_DLG_HP_FC):
+            cfg.highpass_fc = float(dpg.get_value(ui.SPEC_DLG_HP_FC))
+        if dpg.does_item_exist(ui.SPEC_DLG_LP_ENABLED):
+            cfg.lowpass_enabled = dpg.get_value(ui.SPEC_DLG_LP_ENABLED)
+        if dpg.does_item_exist(ui.SPEC_DLG_LP_FC):
+            cfg.lowpass_fc = float(dpg.get_value(ui.SPEC_DLG_LP_FC))
         if self.collector.sensor is not None:
             self.collector.reconnect_stream()
         if was_streaming:
@@ -1201,17 +1237,51 @@ class GUI:
 
                 # ── Spectrum tab ───────────────────────────────────────
                 with dpg.tab(label='Spectrum', tag=ui.CONFIG_TAB_SPECTRUM):
-                    dpg.add_text('Max Frequency')
-                    dpg.add_listbox(items=_MAXFREQ_LABELS, tag=ui.SPEC_DLG_MAXFREQ,
-                                    num_items=len(_MAXFREQ_LABELS), width=-1)
-                    dpg.add_spacer(height=4)
-                    dpg.add_text('Bin Size')
-                    dpg.add_listbox(items=_BINSIZE_LABELS, tag=ui.SPEC_DLG_BINSIZE,
-                                    num_items=len(_BINSIZE_LABELS), width=-1)
-                    dpg.add_spacer(height=6)
+                    _w = 160
+                    # Control: Freq. Range
+                    dpg.add_combo(label='Freq. Range', tag=ui.SPEC_DLG_MAXFREQ,
+                                  items=_MAXFREQ_LABELS, width=_w,
+                                  callback=self._on_spectrum_preview)
+                    # Derived: Sample Rate
+                    dpg.add_input_text(label='Sample Rate', tag=ui.SPEC_DLG_SAMPLERATE,
+                                       readonly=True, width=_w)
+                    dpg.add_separator()
+                    # Control: Freq. Resolution
+                    dpg.add_combo(label='Freq. Resolution', tag=ui.SPEC_DLG_BINSIZE,
+                                  items=_BINSIZE_LABELS, width=_w,
+                                  callback=self._on_spectrum_preview)
+                    # Derived: # spectral lines
+                    dpg.add_input_text(label='Spectral Lines', tag=ui.SPEC_DLG_NFFT_BINS,
+                                       readonly=True, width=_w)
+                    # Derived: Acquisition Time
+                    dpg.add_input_text(label='Acq. Time', tag=ui.SPEC_DLG_ACQ_TIME,
+                                       readonly=True, width=_w)
+                    # Derived: Memory usage
+                    dpg.add_input_text(label='Memory/ch', tag=ui.SPEC_DLG_MEMORY,
+                                       readonly=True, width=_w)
+                    dpg.add_separator()
+                    dpg.add_text('FFT Controls')
+                    # Control: Welch % Overlap
+                    dpg.add_input_float(label='Welch Overlap %', tag=ui.SPEC_DLG_OVERLAP,
+                                        default_value=50.0, min_value=0.0,
+                                        max_value=95.0, width=_w)
+                    # Control: FFT Window
                     dpg.add_combo(label='FFT Window', tag=ui.SPEC_DLG_WINDOW,
-                                  items=_FFT_WINDOWS, default_value='hann', width=160)
-                    dpg.add_spacer(height=6)
+                                  items=_FFT_WINDOWS, default_value='hann', width=_w)
+                    dpg.add_separator()
+                    # Control: Highpass filter
+                    with dpg.group(horizontal=True):
+                        dpg.add_checkbox(label='Highpass', tag=ui.SPEC_DLG_HP_ENABLED,
+                                         default_value=True)
+                        dpg.add_input_float(label='Hz', tag=ui.SPEC_DLG_HP_FC,
+                                            default_value=10.0, min_value=0.1, width=100)
+                    # Control: Lowpass filter
+                    with dpg.group(horizontal=True):
+                        dpg.add_checkbox(label='Lowpass', tag=ui.SPEC_DLG_LP_ENABLED,
+                                         default_value=False)
+                        dpg.add_input_float(label='Hz', tag=ui.SPEC_DLG_LP_FC,
+                                            default_value=1000.0, min_value=1.0, width=100)
+                    dpg.add_separator()
                     dpg.add_text('Trend Frequency Window')
                     with dpg.group(horizontal=True):
                         dpg.add_input_float(label='Hz min', tag=ui.SPEC_DLG_TREND_FMIN,
