@@ -24,11 +24,17 @@ from vibechecker.picoscope import PicoScopeStream, _DRIVER_BUFFER_SAMPLES, _chan
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_config(blocksize=128, samplerate=1000, coupling='AC', enabled_channels=None):
+def _make_config(maxfreq=500, binsize=8.0, coupling='AC', enabled_channels=None,
+                  blocksize=None):
     cfg = vc.AcquisitionSettings()
-    cfg.blocksize = blocksize
-    cfg.samplerate = samplerate
+    cfg.maxfreq = maxfreq
+    if blocksize is not None:
+        # Derive binsize that produces the desired blocksize
+        cfg.binsize = cfg.samplerate / blocksize
+    else:
+        cfg.binsize = binsize
     cfg.coupling = coupling
+    cfg.highpass_enabled = False
     if enabled_channels is not None:
         cfg.enabled_channels = list(enabled_channels)
     return cfg
@@ -341,7 +347,7 @@ class TestMvPassthrough:
     def test_receive_data_single_channel_returns_dict(self):
         """receive_data returns a dict keyed by channel index."""
         collector = vc.DataCollector(vc.VibeSensor.simulated())
-        collector.config.butter_fc = None
+        collector.config.highpass_enabled = False
         n = collector.config.blocksize
         samp = {
             'status': 'OKAY', 'rel_time': 0.0,
@@ -358,7 +364,7 @@ class TestMvPassthrough:
 
     def test_receive_data_mv_unit_preserved(self):
         collector = vc.DataCollector(vc.VibeSensor.simulated())
-        collector.config.butter_fc = None
+        collector.config.highpass_enabled = False
         n = collector.config.blocksize
         samp = {
             'status': 'OKAY', 'rel_time': 0.0,
@@ -374,7 +380,7 @@ class TestMvPassthrough:
     def test_receive_data_correct_values(self):
         """Channel 0 column data flows through unchanged (no scope sensor assigned)."""
         collector = vc.DataCollector(vc.VibeSensor.simulated())
-        collector.config.butter_fc = None
+        collector.config.highpass_enabled = False
         n = collector.config.blocksize
         samp = {
             'status': 'OKAY', 'rel_time': 0.0,

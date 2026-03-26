@@ -168,7 +168,7 @@ def test_pipeline_scope_sensor_scales_mv_data():
     """
     sim_sensor = vc.VibeSensor.simulated()
     # Disable Butterworth filter so we can check exact scaled values
-    config = vc.AcquisitionSettings(butter_fc=None)
+    config = vc.AcquisitionSettings(highpass_enabled=False)
     collector = vc.DataCollector(sim_sensor, config=config)
 
     sensitivity = 10.0  # 10 mV/g (datasheet value)

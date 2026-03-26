@@ -64,7 +64,7 @@ class TestRecieveDataMultiChannel:
 
     def test_two_channels_returns_dict_with_two_keys(self):
         collector = DataCollector()
-        collector.config.butter_fc = None
+        collector.config.highpass_enabled = False
         n = collector.config.blocksize
 
         result = _collect(collector, _make_multichannel_samp(n, [0, 1]))
@@ -74,7 +74,7 @@ class TestRecieveDataMultiChannel:
 
     def test_each_value_is_vibesample(self):
         collector = DataCollector()
-        collector.config.butter_fc = None
+        collector.config.highpass_enabled = False
         n = collector.config.blocksize
 
         result = _collect(collector, _make_multichannel_samp(n, [0, 1]))
@@ -85,7 +85,7 @@ class TestRecieveDataMultiChannel:
     def test_channel_data_values_are_independent(self):
         """Channel 0 gets col 0, channel 1 gets col 1, values don't cross."""
         collector = DataCollector()
-        collector.config.butter_fc = None
+        collector.config.highpass_enabled = False
         n = collector.config.blocksize
 
         result = _collect(collector, _make_multichannel_samp(
@@ -97,7 +97,7 @@ class TestRecieveDataMultiChannel:
 
     def test_four_channels_returns_four_samples(self):
         collector = DataCollector()
-        collector.config.butter_fc = None
+        collector.config.highpass_enabled = False
         n = collector.config.blocksize
 
         result = _collect(collector, _make_multichannel_samp(n, [0, 1, 2, 3]))
@@ -108,7 +108,7 @@ class TestRecieveDataMultiChannel:
     def test_single_enabled_channel_only(self):
         """When only one channel is in the payload, exactly one sample returned."""
         collector = DataCollector()
-        collector.config.butter_fc = None
+        collector.config.highpass_enabled = False
         n = collector.config.blocksize
 
         result = _collect(collector, _make_multichannel_samp(n, [0]))
@@ -118,7 +118,7 @@ class TestRecieveDataMultiChannel:
     def test_non_contiguous_channels(self):
         """Channels [0, 2] (B disabled) returns keys 0 and 2 only."""
         collector = DataCollector()
-        collector.config.butter_fc = None
+        collector.config.highpass_enabled = False
         n = collector.config.blocksize
 
         result = _collect(collector, _make_multichannel_samp(n, [0, 2]))
@@ -128,7 +128,7 @@ class TestRecieveDataMultiChannel:
     def test_channel_a_only_no_b(self):
         """Disabling channel B: only channel A data returned."""
         collector = DataCollector()
-        collector.config.butter_fc = None
+        collector.config.highpass_enabled = False
         collector.config.enabled_channels = [0]
         n = collector.config.blocksize
 
@@ -140,7 +140,7 @@ class TestRecieveDataMultiChannel:
     def test_channel_b_only_no_a(self):
         """Enabling only channel B: only channel B data returned."""
         collector = DataCollector()
-        collector.config.butter_fc = None
+        collector.config.highpass_enabled = False
         collector.config.enabled_channels = [1]
         n = collector.config.blocksize
 
@@ -161,7 +161,7 @@ class TestPerChannelSensorConversion:
     def test_scope_sensor_converts_mv_to_g(self):
         """mV data / sensitivity → EU, unit changes from mV to sensor EU."""
         collector = DataCollector()
-        collector.config.butter_fc = None
+        collector.config.highpass_enabled = False
         n = collector.config.blocksize
 
         sensor = ScopeSensor(name='test', engineering_units='g', sensitivity=100.0)
@@ -178,7 +178,7 @@ class TestPerChannelSensorConversion:
     def test_channels_converted_independently(self):
         """Each channel applies its own sensor conversion."""
         collector = DataCollector()
-        collector.config.butter_fc = None
+        collector.config.highpass_enabled = False
         n = collector.config.blocksize
 
         sensor_ch0 = ScopeSensor(name='ch0', engineering_units='g', sensitivity=100.0)
@@ -196,7 +196,7 @@ class TestPerChannelSensorConversion:
     def test_channel_without_sensor_passes_mv_through(self):
         """A channel with no assigned sensor preserves mV unit and raw value."""
         collector = DataCollector()
-        collector.config.butter_fc = None
+        collector.config.highpass_enabled = False
         n = collector.config.blocksize
 
         # Only assign sensor to channel 0, not channel 1
@@ -274,7 +274,7 @@ class TestFrameCache:
 
     def test_frame_cache_grows_on_each_block(self):
         collector = DataCollector()
-        collector.config.butter_fc = None
+        collector.config.highpass_enabled = False
         received = []
         collector.callbacks['t'] = lambda s: received.append(s)
         self._push(collector, n_blocks=3)
@@ -282,14 +282,14 @@ class TestFrameCache:
 
     def test_frame_cache_bounded_at_32(self):
         collector = DataCollector()
-        collector.config.butter_fc = None
+        collector.config.highpass_enabled = False
         collector.callbacks['t'] = lambda s: None
         self._push(collector, n_blocks=40)
         assert len(collector.data['frame_cache']) == 32
 
     def test_frame_cache_contains_vibesamples(self):
         collector = DataCollector()
-        collector.config.butter_fc = None
+        collector.config.highpass_enabled = False
         collector.callbacks['t'] = lambda s: None
         self._push(collector, n_blocks=1)
         frame = collector.data['frame_cache'][-1]
@@ -299,7 +299,7 @@ class TestFrameCache:
 
     def test_browse_frame_moves_cursor(self):
         collector = DataCollector()
-        collector.config.butter_fc = None
+        collector.config.highpass_enabled = False
         collector.callbacks['t'] = lambda s: None
         self._push(collector, n_blocks=5)
         assert collector._cache_cursor == 0
@@ -308,7 +308,7 @@ class TestFrameCache:
 
     def test_browse_frame_clamps_at_bounds(self):
         collector = DataCollector()
-        collector.config.butter_fc = None
+        collector.config.highpass_enabled = False
         collector.callbacks['t'] = lambda s: None
         self._push(collector, n_blocks=3)
         collector.browse_frame(+100)
@@ -316,7 +316,7 @@ class TestFrameCache:
 
     def test_new_block_resets_cursor(self):
         collector = DataCollector()
-        collector.config.butter_fc = None
+        collector.config.highpass_enabled = False
         collector.callbacks['t'] = lambda s: None
         self._push(collector, n_blocks=4)
         collector.browse_frame(+2)

@@ -65,23 +65,23 @@ hardware_skip = pytest.mark.skipif(
 )
 
 
-def _make_stream_config(butter_fc: float | None = 10.0) -> vc.AcquisitionSettings:
-    """Return AcquisitionSettings tuned for 500 Hz detection at 50 kHz."""
+def _make_stream_config(highpass: bool = True) -> vc.AcquisitionSettings:
+    """Return AcquisitionSettings tuned for 500 Hz detection at ~50 kHz."""
     cfg = vc.AcquisitionSettings()
-    cfg._fs = STREAM_SAMPLERATE
-    cfg._ns = STREAM_BLOCKSIZE
-    cfg.butter_fc              = butter_fc
+    cfg.maxfreq = STREAM_SAMPLERATE / 2   # → samplerate ≥ STREAM_SAMPLERATE
+    cfg.binsize = cfg.samplerate / STREAM_BLOCKSIZE  # → blocksize ≥ STREAM_BLOCKSIZE
+    cfg.highpass_enabled       = highpass
     cfg.channel_voltage_ranges = {0: CHANNEL_RANGE}
     cfg.coupling               = 'AC'
     return cfg
 
 
-def _collect_one(butter_fc: float | None = 10.0) -> vc.VibeSample | None:
+def _collect_one(highpass: bool = True) -> vc.VibeSample | None:
     """Collect a single VibeSample via DataCollector + siggen loopback."""
     sensor = _get_hardware_sensor()
     if sensor is None:
         return None
-    dc = vc.DataCollector(config=_make_stream_config(butter_fc))
+    dc = vc.DataCollector(config=_make_stream_config(highpass))
     dc.connect_sensor(sensor, siggen_config=SIGGEN_CFG)
     try:
         result = dc.collect_sample()
@@ -106,7 +106,7 @@ class TestPicoScopeHardwareStream:
 
     @classmethod
     def setup_class(cls):
-        sample = _collect_one(butter_fc=None)   # raw — no HP filter
+        sample = _collect_one(highpass=False)   # raw — no HP filter
         assert sample is not None, (
             'setup_class: no sample collected — verify scope connection and loopback cable'
         )

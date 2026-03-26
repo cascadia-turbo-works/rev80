@@ -25,20 +25,21 @@ def test_binsize_drives_blocksize():
 
 
 @pytest.mark.parametrize('df', [1.0, 5.0, 20.0])
-def test_ensure_binsize_satisfies_constraint(df):
+def test_binsize_satisfies_constraint(df):
     config = AcquisitionSettings()
-    config.ensure_binsize(df)
-    assert config.binsize <= df
+    config.binsize = df
     assert config.samplerate / config.blocksize <= df
 
 
-def test_copy_preserves_blocksize_and_samplerate():
+def test_copy_preserves_maxfreq_and_binsize():
     original = AcquisitionSettings()
-    original.blocksize = 512
-    original.samplerate = 8000
+    original.maxfreq = 5000
+    original.binsize = 2.0
     copy = AcquisitionSettings.copy(original)
-    assert copy.blocksize == 512
-    assert copy.samplerate == 8000
+    assert copy.maxfreq == 5000
+    assert copy.binsize == 2.0
+    assert copy.samplerate == original.samplerate
+    assert copy.blocksize == original.blocksize
 
 
 def test_instances_have_independent_enabled_channels():
@@ -71,3 +72,42 @@ def test_trend_fmax_is_none_or_positive():
     """trend_fmax=None means 'clamp to maxfreq at compute time'."""
     config = AcquisitionSettings()
     assert config.trend_fmax is None or config.trend_fmax > 0
+
+
+def test_samplerate_is_power_of_two():
+    config = AcquisitionSettings()
+    for fm in [200, 500, 1000, 5000, 10000, 50000]:
+        config.maxfreq = fm
+        sr = config.samplerate
+        assert sr & (sr - 1) == 0, f'samplerate {sr} is not a power of 2'
+
+
+def test_blocksize_is_power_of_two():
+    config = AcquisitionSettings()
+    for df in [0.25, 0.5, 1.0, 2.0, 5.0, 10.0]:
+        config.binsize = df
+        bs = config.blocksize
+        assert bs & (bs - 1) == 0, f'blocksize {bs} is not a power of 2'
+
+
+def test_n_fft_bins():
+    config = AcquisitionSettings()
+    assert config.n_fft_bins == config.blocksize // 2 + 1
+
+
+def test_memory_bytes():
+    config = AcquisitionSettings()
+    assert config.memory_bytes == config.blocksize * 8
+
+
+def test_filter_defaults():
+    config = AcquisitionSettings()
+    assert config.highpass_enabled is True
+    assert config.highpass_fc == 10.0
+    assert config.lowpass_enabled is False
+    assert config.lowpass_fc == 1000.0
+
+
+def test_welch_overlap_default():
+    config = AcquisitionSettings()
+    assert 0.0 <= config.welch_overlap <= 0.95
