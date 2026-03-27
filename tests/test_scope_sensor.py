@@ -126,27 +126,6 @@ def test_registry_update_nonexistent_raises(registry):
 
 
 # ---------------------------------------------------------------------------
-# Channel assignment persistence
-# ---------------------------------------------------------------------------
-
-def test_save_load_channel_assignments(tmp_path, registry):
-    s = ScopeSensor(name='Chan0Sensor', engineering_units='g', sensitivity=0.098)
-    registry.add(s)
-
-    assign_file = tmp_path / 'channel_assignments.yaml'
-    registry.save_channel_assignments({0: {'enabled': True, 'sensor_id': s.id}}, path=assign_file)
-
-    loaded = registry.load_channel_assignments(path=assign_file)
-    assert loaded == {0: {'enabled': True, 'sensor_id': s.id}}
-
-
-def test_load_channel_assignments_missing_file(tmp_path, registry):
-    missing = tmp_path / 'no_such_file.yaml'
-    result = registry.load_channel_assignments(path=missing)
-    assert result == {}
-
-
-# ---------------------------------------------------------------------------
 # Pipeline scaling — DataCollector + ScopeSensor
 # ---------------------------------------------------------------------------
 

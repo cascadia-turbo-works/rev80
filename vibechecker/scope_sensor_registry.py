@@ -1,42 +1,29 @@
 """ScopeSensorRegistry — persistent YAML-backed registry of user IEPE sensors.
 
-Storage layout:
-  ~/.config/vibechecker/scope_sensors.yaml     — user-defined sensors
-  ~/.config/vibechecker/channel_assignments.yaml — {channel_idx: sensor_id}
+Storage:
+  {config_dir}/scope_sensors.yaml  — global sensor library (all devices)
+
+Per-device channel assignments and acquisition settings are managed by
+vibechecker.config (devices/{serial}.yaml), not by this class.
 """
 
-import os
-import tempfile
 from pathlib import Path
 
 import yaml
 
 from vibechecker.scope_sensor import ScopeSensor
-
-_DEFAULT_SENSORS_FILE   = Path.home() / '.config' / 'vibechecker' / 'scope_sensors.yaml'
-_DEFAULT_CHANNELS_FILE  = Path.home() / '.config' / 'vibechecker' / 'channel_assignments.yaml'
+from vibechecker.config import config_dir, _atomic_yaml_write
 
 
-def _atomic_yaml_write(path: Path, data) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix='.yaml.tmp')
-    try:
-        with os.fdopen(fd, 'w') as f:
-            yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
-        os.replace(tmp, path)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+def _sensors_file(path: Path | None) -> Path:
+    return Path(path) if path is not None else config_dir() / 'scope_sensors.yaml'
 
 
 class ScopeSensorRegistry:
     """Registry of IEPE sensor configurations backed by a YAML file."""
 
     def __init__(self, path: Path | None = None):
-        self._path = Path(path) if path is not None else _DEFAULT_SENSORS_FILE
+        self._path = _sensors_file(path)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -88,69 +75,3 @@ class ScopeSensorRegistry:
     def delete(self, sensor_id: str) -> None:
         user = self._load_user()
         self._save_user([s for s in user if s.id != sensor_id])
-
-    # ------------------------------------------------------------------
-    # Channel assignment persistence
-    # ------------------------------------------------------------------
-
-    def load_channel_assignments(self,
-                                  path: Path | None = None) -> dict[int, dict]:
-        """Return {channel_idx: {'enabled': bool, 'sensor_id': str|None}}.
-
-        Backwards compatible: old format {int: sensor_id_str} is treated as enabled=True.
-        """
-        target = Path(path) if path is not None else _DEFAULT_CHANNELS_FILE
-        try:
-            with open(target) as f:
-                raw = yaml.safe_load(f) or {}
-            result = {}
-            for k, v in raw.items():
-                if isinstance(v, str):
-                    result[int(k)] = {'enabled': True, 'sensor_id': v}
-                elif isinstance(v, dict):
-                    entry = dict(v)
-                    entry.setdefault('enabled', True)
-                    result[int(k)] = entry
-            return result
-        except Exception:
-            return {}
-
-    def save_channel_assignments(self,
-                                  assignments: dict[int, dict],
-                                  path: Path | None = None) -> None:
-        """Save {channel_idx: {'enabled': bool, 'sensor_id': str|None}}."""
-        target = Path(path) if path is not None else _DEFAULT_CHANNELS_FILE
-        # Preserve any existing non-channel keys (e.g. 'siggen') in the file
-        try:
-            with open(target) as f:
-                existing = yaml.safe_load(f) or {}
-        except Exception:
-            existing = {}
-        data = {k: v for k, v in existing.items() if not str(k).isdigit()}
-        data.update({str(k): v for k, v in assignments.items()})
-        _atomic_yaml_write(target, data)
-
-    def load_siggen(self, path: Path | None = None) -> dict | None:
-        """Return the persisted siggen config dict, or None if absent."""
-        target = Path(path) if path is not None else _DEFAULT_CHANNELS_FILE
-        try:
-            with open(target) as f:
-                raw = yaml.safe_load(f) or {}
-            return raw.get('siggen') or None
-        except Exception:
-            return None
-
-    def save_siggen(self, siggen: dict | None,
-                    path: Path | None = None) -> None:
-        """Persist siggen config alongside channel assignments in the YAML file."""
-        target = Path(path) if path is not None else _DEFAULT_CHANNELS_FILE
-        try:
-            with open(target) as f:
-                existing = yaml.safe_load(f) or {}
-        except Exception:
-            existing = {}
-        if siggen is not None:
-            existing['siggen'] = siggen
-        else:
-            existing.pop('siggen', None)
-        _atomic_yaml_write(target, existing)

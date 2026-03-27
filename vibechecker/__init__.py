@@ -8,4 +8,5 @@ from vibechecker.scope_sensor import ScopeSensor  # noqa: F401
 from vibechecker.scope_sensor_registry import ScopeSensorRegistry  # noqa: F401
 from vibechecker.collector import DataCollector  # noqa: F401
 from vibechecker.gui import GUI  # noqa: F401
+from vibechecker.config import config_dir, load_device_config, save_device_config  # noqa: F401
 

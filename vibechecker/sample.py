@@ -59,6 +59,43 @@ class AcquisitionSettings:
         c.binsize = settings.binsize
         return c
 
+    def to_dict(self) -> dict:
+        """Serialise user-facing fields to the 'acquisition' section of a device config."""
+        return {
+            'maxfreq':          self._fm,
+            'binsize':          self._df,
+            'fft_window':       self.fft_window,
+            'welch_overlap':    self.welch_overlap,
+            'highpass_enabled': self.highpass_enabled,
+            'highpass_fc':      self.highpass_fc,
+            'lowpass_enabled':  self.lowpass_enabled,
+            'lowpass_fc':       self.lowpass_fc,
+            'trend_max_points': self.trend_max_points,
+            'trend_fmin':       self.trend_fmin,
+            'trend_fmax':       self.trend_fmax,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> 'AcquisitionSettings':
+        """Build an AcquisitionSettings from an 'acquisition' config dict.
+
+        Missing keys fall back to the dataclass field defaults.
+        """
+        obj = cls()
+        if 'maxfreq'          in d: obj.maxfreq          = float(d['maxfreq'])
+        if 'binsize'          in d: obj.binsize           = float(d['binsize'])
+        if 'fft_window'       in d: obj.fft_window        = str(d['fft_window'])
+        if 'welch_overlap'    in d: obj.welch_overlap     = float(d['welch_overlap'])
+        if 'highpass_enabled' in d: obj.highpass_enabled  = bool(d['highpass_enabled'])
+        if 'highpass_fc'      in d: obj.highpass_fc       = float(d['highpass_fc'])
+        if 'lowpass_enabled'  in d: obj.lowpass_enabled   = bool(d['lowpass_enabled'])
+        if 'lowpass_fc'       in d: obj.lowpass_fc        = float(d['lowpass_fc'])
+        if 'trend_max_points' in d: obj.trend_max_points  = int(d['trend_max_points'])
+        if 'trend_fmin'       in d: obj.trend_fmin        = float(d['trend_fmin'])
+        if 'trend_fmax'       in d:
+            obj.trend_fmax = float(d['trend_fmax']) if d['trend_fmax'] is not None else None
+        return obj
+
     # ── Derived values ───────────────────────────────────────────────
 
     @property

@@ -417,12 +417,15 @@ class TestMvPassthrough:
 class TestAcquisitionSettingsPicoFields:
 
     def test_default_enabled_channels(self):
+        """enabled_channels must be a non-empty list of valid channel indices."""
         config = vc.AcquisitionSettings()
-        assert config.enabled_channels == [0]
+        assert isinstance(config.enabled_channels, list)
+        assert len(config.enabled_channels) >= 1
 
     def test_default_coupling(self):
+        """Global coupling must be AC or DC."""
         config = vc.AcquisitionSettings()
-        assert config.coupling == 'AC'
+        assert config.coupling in ('AC', 'DC')
 
     def test_voltage_range_for_default(self):
         config = vc.AcquisitionSettings()

@@ -11,6 +11,8 @@ import pandas as pd
 import vibechecker
 from vibechecker.scope_sensor import ScopeSensor
 from vibechecker.scope_sensor_registry import ScopeSensorRegistry
+import vibechecker.config as _cfg
+from vibechecker.sample import AcquisitionSettings
 
 log = vibechecker.get_logger('gui')
 ui = vibechecker.UI_Elements()
@@ -737,7 +739,8 @@ class GUI:
                 for _ch in range(_MAX_CHANNELS):
                     self._remove_channel_series(_ch)
                 self.collector.reset_channel_config(sensor.num_channels)
-                self._restore_channel_assignments()
+                device_cfg = _cfg.load_device_config(sensor.serial_number)
+                self._restore_channel_assignments(device_cfg)
                 self.collector.reconnect_stream()
                 self._set_device_status('connected')
             except Exception as e:
@@ -808,7 +811,6 @@ class GUI:
         self._apply_channel_assignments_from_widgets()
         self._save_channel_assignments()
         self._save_registry_sensor_fields()
-        self.registry.save_siggen(self.collector.siggen_config)
         self._refresh_assigned_sensors()
         self._update_connection_summary()
         self._update_spectrum_info()
@@ -1034,7 +1036,9 @@ class GUI:
                 self.collector.set_scope_sensor(ch, updated)
 
     def _save_channel_assignments(self):
-        assignments = {
+        if self.collector.sensor is None:
+            return
+        channels = {
             c: {
                 'enabled':       c in self.collector.config.enabled_channels,
                 'sensor_id':     self.collector.scope_sensors[c].id
@@ -1044,7 +1048,12 @@ class GUI:
             }
             for c in range(self._num_channels)
         }
-        self.registry.save_channel_assignments(assignments)
+        device_cfg = {
+            'channels':    channels,
+            'siggen':      self.collector.siggen_config,
+            'acquisition': self.collector.config.to_dict(),
+        }
+        _cfg.save_device_config(self.collector.sensor.serial_number, device_cfg)
 
     def _on_channel_enable_change(self, ch: int):
         if not dpg.does_item_exist(ui.scope_ch_enabled(ch)):
@@ -1095,12 +1104,36 @@ class GUI:
         self._update_axis_assignment()
         self._redraw_all_channels()
 
-    def _restore_channel_assignments(self):
-        """Apply saved channel assignments and siggen config to the collector."""
-        siggen = self.registry.load_siggen()
+    def _restore_channel_assignments(self, device_cfg: dict | None = None):
+        """Apply saved channel assignments, siggen, and acquisition config to the collector."""
+        if device_cfg is None:
+            if self.collector.sensor is not None:
+                device_cfg = _cfg.load_device_config(self.collector.sensor.serial_number)
+            else:
+                device_cfg = _cfg.load_device_config('__default__')
+
+        # Restore acquisition settings
+        acq_dict = device_cfg.get('acquisition', {})
+        if acq_dict:
+            restored = AcquisitionSettings.from_dict(acq_dict)
+            self.collector.config.maxfreq          = restored.maxfreq
+            self.collector.config.binsize          = restored.binsize
+            self.collector.config.fft_window       = restored.fft_window
+            self.collector.config.welch_overlap    = restored.welch_overlap
+            self.collector.config.highpass_enabled = restored.highpass_enabled
+            self.collector.config.highpass_fc      = restored.highpass_fc
+            self.collector.config.lowpass_enabled  = restored.lowpass_enabled
+            self.collector.config.lowpass_fc       = restored.lowpass_fc
+            self.collector.config.trend_max_points = restored.trend_max_points
+            self.collector.config.trend_fmin       = restored.trend_fmin
+            self.collector.config.trend_fmax       = restored.trend_fmax
+
+        # Restore siggen
+        siggen = device_cfg.get('siggen')
         self.collector.siggen_config = siggen
         self._populate_siggen_tab()
-        assignments = self.registry.load_channel_assignments()
+
+        assignments = device_cfg.get('channels', {})
         for ch, info in assignments.items():
             if ch >= self._num_channels:
                 continue
@@ -1586,12 +1619,12 @@ class GUI:
                         dpg.add_spacer(height=2)
 
     def initialize(self):
+        _cfg.ensure_default_config()
         self.create_gui()
         self._update_spectrum_info()
         self._update_connection_summary()
         self._update_axis_assignment()
         self._refresh_registry_dialog_list()
-        self._restore_channel_assignments()
         self._set_stream_status('idle')   # apply initial toggle button theme
         log.info('Setup GUI')
         dpg.setup_dearpygui()
