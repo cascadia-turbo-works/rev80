@@ -210,6 +210,9 @@ class PicoScopeStream:
         self._acc_ptr       = 0
         self._stream_start  = 0.0
 
+        # Actual sample rate reported by hardware after ps4000aRunStreaming;
+        # initialised from config and updated in _start_streaming.
+        self._actual_samplerate = config.samplerate
         # Watchdog: updated by _streaming_callback whenever data arrives
         self._last_data_time    = 0.0
         # Rate-limit overflow warnings
@@ -378,13 +381,14 @@ class PicoScopeStream:
             _DRIVER_BUFFER_SAMPLES,
         ))
 
-        # Read back the actual achieved sample interval and update config
+        # Read back the actual achieved sample rate (hardware may round the interval).
+        # Store on self — config.samplerate is now a read-only derived property.
         actual_us = sample_interval_us.value
         actual_fs = int(round(1e6 / actual_us))
         if actual_fs != self.config.samplerate:
             log.info(f'PicoScope actual sample rate: {actual_fs} Hz '
                      f'(requested {self.config.samplerate} Hz)')
-            self.config.samplerate = actual_fs
+        self._actual_samplerate = actual_fs
 
     # ------------------------------------------------------------------
     # Streaming callback + poll loop (run on background thread)
@@ -460,6 +464,7 @@ class PicoScopeStream:
                 'unit':          ['mV'] * N,
                 'channels':      list(self._enabled_channels),
                 'data':          block,           # shape (blocksize, N)
+                'samplerate':    self._actual_samplerate,
             }
             try:
                 self._app_callback(samp)

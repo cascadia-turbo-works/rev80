@@ -345,27 +345,28 @@ class DataCollector:
 
             # Butterworth filters (SOS for numerical stability)
             data = np.asarray(data, dtype=np.float64)
-            nyq = float(self.config.samplerate) / 2.0
+            samplerate = samp.get('samplerate', self.config.samplerate)
+            nyq = float(samplerate) / 2.0
             order = self.config._BUTTER_ORDER
 
             if self.config.highpass_enabled and self.config.highpass_fc < nyq:
                 sos = scipy.signal.butter(order, self.config.highpass_fc,
                                           btype='highpass',
-                                          fs=self.config.samplerate,
+                                          fs=samplerate,
                                           output='sos')
                 data = scipy.signal.sosfilt(sos, data)
 
             if self.config.lowpass_enabled and self.config.lowpass_fc < nyq:
                 sos = scipy.signal.butter(order, self.config.lowpass_fc,
                                           btype='lowpass',
-                                          fs=self.config.samplerate,
+                                          fs=samplerate,
                                           output='sos')
                 data = scipy.signal.sosfilt(sos, data)
 
             samples[ch] = vibechecker.VibeSample(
                 samp['status'],
                 samp['timestamp'],
-                self.config.samplerate,
+                samplerate,
                 unit,
                 np.ascontiguousarray(data),
                 samp['rel_time'],
