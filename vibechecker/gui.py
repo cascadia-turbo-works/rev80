@@ -607,12 +607,13 @@ class GUI:
         """Show the unified config dialog focused on the requested tab."""
         dpg.show_item(ui.DLG_CONFIG)
         dpg.set_value(ui.CONFIG_TAB_BAR, tab_tag)
+        # Always sync spectrum widgets so they reflect current config
+        # regardless of which tab was used to open the dialog.
+        self._populate_spectrum_tab()
         if tab_tag == ui.CONFIG_TAB_DEVICE:
             self._start_device_discovery()
         elif tab_tag == ui.CONFIG_TAB_CHANNELS:
             self._rebuild_device_channel_rows()
-        elif tab_tag == ui.CONFIG_TAB_SPECTRUM:
-            self._populate_spectrum_tab()
         elif tab_tag == ui.CONFIG_TAB_SENSORS:
             self._init_sensor_registry_tab()
         elif tab_tag == ui.CONFIG_TAB_SIGGEN:
@@ -787,9 +788,11 @@ class GUI:
                     self._remove_channel_series(ch)
 
     def _on_config_close(self, sender=None, data=None):
-        """Apply all tab settings, reconnect if needed, then hide the dialog."""
-        # Apply spectrum settings from widgets (delegate to shared apply method)
-        self._on_spectrum_apply()
+        """Apply all tab settings, reconnect once if needed, then hide the dialog."""
+        # Read spectrum widgets into config directly — do NOT call _on_spectrum_apply
+        # here, as that method manages its own stop/start cycle which would cause a
+        # double reconnect (relay noise, slow frames) when streaming.
+        self._apply_spectrum_settings_from_widgets()
 
         # Apply signal generator config
         if dpg.does_item_exist(ui.SIGGEN_ENABLED):
@@ -860,26 +863,25 @@ class GUI:
                           cfg.trend_fmax if cfg.trend_fmax is not None else 0.0)
         self._update_spectrum_derived()
 
-    def _on_spectrum_apply(self, sender=None, data=None):
+    def _apply_spectrum_settings_from_widgets(self):
+        """Read spectrum tab widgets and write values into collector.config.
+
+        Pure settings application — no stream stop/start side effects.
+        Stream lifecycle is the caller's responsibility.
+        """
         cfg = self.collector.config
         mf_str = dpg.get_value(ui.SPEC_DLG_MAXFREQ)
         bs_str = dpg.get_value(ui.SPEC_DLG_BINSIZE)
         try:
-            maxfreq = vibechecker.MAXFREQ_PRESETS[_MAXFREQ_LABELS.index(mf_str)]
+            cfg.maxfreq = vibechecker.MAXFREQ_PRESETS[_MAXFREQ_LABELS.index(mf_str)]
         except (ValueError, IndexError):
-            maxfreq = cfg.maxfreq
+            pass
         try:
-            binsize = vibechecker.BINSIZE_PRESETS[_BINSIZE_LABELS.index(bs_str)]
+            cfg.binsize = vibechecker.BINSIZE_PRESETS[_BINSIZE_LABELS.index(bs_str)]
         except (ValueError, IndexError):
-            binsize = cfg.binsize
+            pass
         trend_fmin = float(dpg.get_value(ui.SPEC_DLG_TREND_FMIN) or 0.0)
         trend_fmax = float(dpg.get_value(ui.SPEC_DLG_TREND_FMAX) or 0.0)
-
-        was_streaming = self.collector.is_streaming
-        if was_streaming:
-            self._stop_stream()
-        cfg.maxfreq = maxfreq
-        cfg.binsize = binsize
         cfg.trend_fmin = trend_fmin
         cfg.trend_fmax = trend_fmax if trend_fmax > 0 else None
         if dpg.does_item_exist(ui.SPEC_DLG_WINDOW):
@@ -896,6 +898,12 @@ class GUI:
             cfg.lowpass_enabled = dpg.get_value(ui.SPEC_DLG_LP_ENABLED)
         if dpg.does_item_exist(ui.SPEC_DLG_LP_FC):
             cfg.lowpass_fc = float(dpg.get_value(ui.SPEC_DLG_LP_FC))
+
+    def _on_spectrum_apply(self, sender=None, data=None):
+        was_streaming = self.collector.is_streaming
+        if was_streaming:
+            self._stop_stream()
+        self._apply_spectrum_settings_from_widgets()
         if self.collector.sensor is not None:
             self.collector.reconnect_stream()
         if was_streaming:
