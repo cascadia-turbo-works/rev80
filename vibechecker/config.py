@@ -29,9 +29,6 @@ log = vibechecker.get_logger(__name__)
 _BUILTIN_DEFAULTS: dict[str, Any] = {
     'channels': {
         0: {'enabled': True,  'sensor_id': None, 'voltage_range': 7, 'coupling': 'AC'},
-        1: {'enabled': False, 'sensor_id': None, 'voltage_range': 7, 'coupling': 'AC'},
-        2: {'enabled': False, 'sensor_id': None, 'voltage_range': 7, 'coupling': 'AC'},
-        3: {'enabled': False, 'sensor_id': None, 'voltage_range': 7, 'coupling': 'AC'},
     },
     'siggen': None,
     'acquisition': {
@@ -105,10 +102,7 @@ def _atomic_yaml_write(path: Path, data: Any) -> None:
 
 def ensure_default_config() -> None:
     """Write devices/default.yaml with built-in defaults if it does not exist.
-
-    Also runs the one-time migration from the legacy channel_assignments.yaml.
     """
-    migrate_legacy_channel_assignments()
     path = default_config_path()
     if not path.exists():
         log.info('Creating default device config: %s', path)
@@ -144,48 +138,6 @@ def save_device_config(serial: str, data: dict[str, Any]) -> None:
     path = device_config_path(serial)
     _atomic_yaml_write(path, data)
     log.debug('Saved device config to %s', path)
-
-
-# ---------------------------------------------------------------------------
-# Migration
-# ---------------------------------------------------------------------------
-
-def migrate_legacy_channel_assignments() -> None:
-    """One-time migration: promote channel_assignments.yaml → devices/default.yaml.
-
-    Only runs if the legacy file exists and the devices/ directory does not.
-    The legacy file is left in place (user can delete it manually).
-    """
-    legacy = config_dir() / 'channel_assignments.yaml'
-    devices_dir = config_dir() / 'devices'
-    if not legacy.exists() or devices_dir.exists():
-        return
-    try:
-        with open(legacy) as f:
-            raw = yaml.safe_load(f) or {}
-        channels = {}
-        for k, v in raw.items():
-            if str(k).isdigit():
-                ch = int(k)
-                if isinstance(v, str):
-                    channels[ch] = {'enabled': True, 'sensor_id': v,
-                                    'voltage_range': 7, 'coupling': 'AC'}
-                elif isinstance(v, dict):
-                    entry = dict(v)
-                    entry.setdefault('enabled', True)
-                    entry.setdefault('voltage_range', 7)
-                    entry.setdefault('coupling', 'AC')
-                    channels[ch] = entry
-        migrated = _deep_copy_defaults()
-        if channels:
-            migrated['channels'] = channels
-        siggen = raw.get('siggen')
-        if siggen is not None:
-            migrated['siggen'] = siggen
-        _atomic_yaml_write(default_config_path(), migrated)
-        log.info('Migrated %s → %s', legacy, default_config_path())
-    except Exception as exc:
-        log.warning('Legacy config migration failed: %s', exc)
 
 
 # ---------------------------------------------------------------------------
