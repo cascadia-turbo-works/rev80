@@ -295,27 +295,37 @@ class PicoScopeStream:
         log.debug(f'PicoScope opened, maxADC={self._maxADC.value}')
 
     def _configure_channel(self):
-        channel_keys = [f'PS4000A_CHANNEL_{chr(65 + i)}' for i in range(8)]
+        # PS4000A channel enum values equal channel indices: A=0, B=1, …, H=7.
+        # The picosdk dict uses a *tuple* key for channel E:
+        #   ('PS4000A_CHANNEL_E', 'PS4000A_MAX_4_CHANNELS') → 4
+        # so ps.PS4000A_CHANNEL['PS4000A_CHANNEL_E'] raises KeyError even on an
+        # 8-channel scope.  Using the index directly as the enum value is safe and
+        # avoids the lookup entirely.
 
-        for i, ch_key in enumerate(channel_keys):
-            try:
-                ch_id = ps.PS4000A_CHANNEL[ch_key]
-            except KeyError:
-                # This scope variant doesn't have this many channels
-                break
+        for i in range(8):
+            ch_id = i  # PS4000A_CHANNEL_{A..H} == 0..7 by definition
             coupling_key = ('PS4000A_AC' if self.config.coupling_for(i) == 'AC'
                             else 'PS4000A_DC')
             coupling = ps.PS4000A_COUPLING[coupling_key]
             if i in self._enabled_channels:
-                assert_pico_ok(ps.ps4000aSetChannel(
-                    self._chandle, ch_id,
-                    1,                               # enabled
-                    coupling,
-                    self.config.voltage_range_for(i),
-                    0.0,
-                ))
-                log.debug(f'Channel {chr(65+i)} enabled: {coupling_key}, '
-                          f'range index={self.config.voltage_range_for(i)}')
+                try:
+                    assert_pico_ok(ps.ps4000aSetChannel(
+                        self._chandle, ch_id,
+                        1,                               # enabled
+                        coupling,
+                        self.config.voltage_range_for(i),
+                        0.0,
+                    ))
+                    log.debug(f'Channel {chr(65+i)} enabled: {coupling_key}, '
+                              f'range index={self.config.voltage_range_for(i)}')
+                except Exception:
+                    # Hardware rejected this channel — scope doesn't have it.
+                    # Remove from _enabled_channels so _start_streaming skips it.
+                    log.debug(f'Channel {chr(65+i)} not available on this scope variant')
+                    self._enabled_channels = [
+                        ch for ch in self._enabled_channels if ch != i
+                    ]
+                    break
             else:
                 # Disable unused channels — range index 7 (±2V) is nominal
                 try:
@@ -354,12 +364,14 @@ class PicoScopeStream:
         # Configure signal generator if requested (before streaming starts)
         self._setup_siggen()
 
-        # Register a rolling buffer for each enabled channel
+        # Register a rolling buffer for each enabled channel.
+        # Use ch directly as the channel enum value (A=0, B=1, …, H=7);
+        # avoids the string-key lookup that fails for channel E on picosdk
+        # (which uses a tuple alias key instead of a plain string for E).
         for ch in self._enabled_channels:
-            ch_key = f'PS4000A_CHANNEL_{chr(65 + ch)}'
             assert_pico_ok(ps.ps4000aSetDataBuffers(
                 self._chandle,
-                ps.PS4000A_CHANNEL[ch_key],
+                ch,                              # PS4000A_CHANNEL_{A..H} == 0..7
                 self._driver_buffers[ch].ctypes.data_as(ctypes.POINTER(ctypes.c_int16)),
                 None,                            # no min buffer
                 _DRIVER_BUFFER_SAMPLES,
