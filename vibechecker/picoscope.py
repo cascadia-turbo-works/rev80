@@ -44,7 +44,6 @@ _NOT_RESPONDING_DELAY_S = 2.0   # longer pause after PICO_NOT_RESPONDING (device
 # Streaming watchdog / recovery tuning
 _WATCHDOG_TIMEOUT_S     = 5.0   # seconds of silence → assume device hung
 _MAX_RECONNECT_ATTEMPTS = 3     # recovery attempts before giving up
-_OVERFLOW_LOG_INTERVAL  = 2.0   # minimum seconds between overflow log lines
 
 
 def _open_unit(chandle) -> bool:
@@ -168,8 +167,8 @@ class PicoScopeStream:
     * OpenUnit is retried up to _MAX_OPEN_ATTEMPTS times on transient failures.
     * A watchdog in the poll loop detects data-silent hangs (e.g. after
       overvoltage) and triggers an automatic stop/reopen/restart recovery cycle.
-    * ADC overflow (signal clipping) is logged at WARNING level, rate-limited
-      to one line per _OVERFLOW_LOG_INTERVAL seconds.
+    * ADC overflow (signal clipping) is logged at WARNING level once per
+      channel per stream start; inhibit resets when settings change.
     """
 
     def __init__(self, config, callback, siggen_config: dict | None = None):
@@ -215,8 +214,8 @@ class PicoScopeStream:
         self._actual_samplerate = config.samplerate
         # Watchdog: updated by _streaming_callback whenever data arrives
         self._last_data_time    = 0.0
-        # Rate-limit overflow warnings
-        self._last_overflow_log = 0.0
+        # Channels already warned about overflow this stream; cleared on start/recover
+        self._overflow_warned: set[int] = set()
 
     # ------------------------------------------------------------------
     # Public interface
@@ -237,10 +236,11 @@ class PicoScopeStream:
 
         # Reset accumulator and watchdog state
         N = len(self._enabled_channels)
-        self._acc_ptr        = 0
-        self._accumulator    = np.zeros((self.config.blocksize * 2, N), dtype=np.float64)
-        self._stream_start   = time.monotonic()
-        self._last_data_time = time.monotonic()
+        self._acc_ptr         = 0
+        self._accumulator     = np.zeros((self.config.blocksize * 2, N), dtype=np.float64)
+        self._stream_start    = time.monotonic()
+        self._last_data_time  = time.monotonic()
+        self._overflow_warned = set()   # reset per-channel overflow inhibit on each stream start
 
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._poll_loop, daemon=True,
@@ -454,8 +454,8 @@ class PicoScopeStream:
         actual_us = sample_interval_us.value
         actual_fs = int(round(1e6 / actual_us))
         if actual_fs != self.config.samplerate:
-            log.info(f'PicoScope actual sample rate: {actual_fs} Hz '
-                     f'(requested {self.config.samplerate} Hz)')
+            log.debug(f'PicoScope actual sample rate: {actual_fs} Hz '
+                      f'(requested {self.config.samplerate} Hz)')
         self._actual_samplerate = actual_fs
 
     # ------------------------------------------------------------------
@@ -471,14 +471,16 @@ class PicoScopeStream:
         # Watchdog heartbeat
         self._last_data_time = time.monotonic()
 
-        # Log ADC overflow (signal exceeds voltage range), rate-limited
+        # Log ADC overflow (signal clipping) once per channel per stream.
+        # overflow is a bitmask: bit n set → channel n clipped.
         if overflow:
-            now = time.monotonic()
-            if now - self._last_overflow_log >= _OVERFLOW_LOG_INTERVAL:
-                log.warning(
-                    'PicoScopeStream: ADC overflow — signal clipped'
-                )
-                self._last_overflow_log = now
+            for ch in self._enabled_channels:
+                if (overflow & (1 << ch)) and ch not in self._overflow_warned:
+                    log.warning(
+                        f'PicoScopeStream: ADC overflow on Ch {chr(65 + ch)} '
+                        f'— signal clipped, reduce voltage range'
+                    )
+                    self._overflow_warned.add(ch)
 
         # Convert ADC counts → mV for each enabled channel.
         # The driver treats the registered buffer as a circular ring, so
@@ -567,10 +569,11 @@ class PicoScopeStream:
                 self._start_streaming()
                 # Reset accumulator so stale partial data isn't carried forward
                 N = len(self._enabled_channels)
-                self._acc_ptr        = 0
-                self._accumulator    = np.zeros((self.config.blocksize * 2, N),
-                                                dtype=np.float64)
-                self._last_data_time = time.monotonic()
+                self._acc_ptr         = 0
+                self._accumulator     = np.zeros((self.config.blocksize * 2, N),
+                                                 dtype=np.float64)
+                self._last_data_time  = time.monotonic()
+                self._overflow_warned = set()   # settings changed — re-arm overflow warnings
                 log.info('PicoScopeStream: recovery successful')
                 return True
             except Exception as e:
