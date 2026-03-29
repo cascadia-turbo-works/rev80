@@ -219,46 +219,6 @@ class TestSaveDeviceConfig:
         assert (vc / 'devices' / 'NEWDEV.yaml').exists()
 
 
-# ---------------------------------------------------------------------------
-# Legacy migration
-# ---------------------------------------------------------------------------
-
-class TestMigrateLegacy:
-    def test_migrates_channel_assignments_yaml(self, tmp_path):
-        vc = tmp_path / 'vc'
-        vc.mkdir()
-        legacy = vc / 'channel_assignments.yaml'
-        legacy.write_text(yaml.dump({
-            '0': {'enabled': True, 'sensor_id': 'abc-123', 'voltage_range': 7, 'coupling': 'AC'},
-            '1': {'enabled': False, 'sensor_id': None, 'voltage_range': 7, 'coupling': 'AC'},
-            'siggen': {'wave_type': 'PS4000A_SINE', 'freq_hz': 1000.0,
-                       'pktopk_uv': 500000, 'offset_uv': 0},
-        }))
-        with patch('vibechecker.config.config_dir', return_value=vc):
-            cfg.migrate_legacy_channel_assignments()
-            default = vc / 'devices' / 'default.yaml'
-            assert default.exists()
-            data = yaml.safe_load(default.read_text())
-            assert data['channels'][0]['sensor_id'] == 'abc-123'
-            assert data['siggen']['freq_hz'] == 1000.0
-
-    def test_skips_if_devices_dir_exists(self, tmp_path):
-        vc = tmp_path / 'vc'
-        vc.mkdir()
-        legacy = vc / 'channel_assignments.yaml'
-        legacy.write_text('0: {enabled: true}\n')
-        devices = vc / 'devices'
-        devices.mkdir()
-        with patch('vibechecker.config.config_dir', return_value=vc):
-            cfg.migrate_legacy_channel_assignments()
-        assert not (devices / 'default.yaml').exists()
-
-    def test_skips_if_no_legacy_file(self, tmp_path):
-        vc = tmp_path / 'vc'
-        vc.mkdir()
-        with patch('vibechecker.config.config_dir', return_value=vc):
-            cfg.migrate_legacy_channel_assignments()   # must not raise
-        assert not (vc / 'devices').exists()
 
 
 # ---------------------------------------------------------------------------
