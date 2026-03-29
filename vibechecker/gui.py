@@ -3,7 +3,7 @@
 import threading
 import dearpygui.dearpygui as dpg
 
-from path import Path
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -757,6 +757,17 @@ class GUI:
         if not dpg.does_item_exist('DEVSETUP_DEVICE_LIST_GROUP'):
             return
         dpg.delete_item('DEVSETUP_DEVICE_LIST_GROUP', children_only=True)
+        if not self.found_sensors:
+            if vibechecker.PICOSCOPE_DRIVER_MISSING:
+                dpg.add_text(
+                    'PicoScope driver not found.\nInstall PicoSDK to connect a device.',
+                    parent='DEVSETUP_DEVICE_LIST_GROUP',
+                    color=_c('YELLOW'),
+                )
+            else:
+                dpg.add_text('No devices found.',
+                             parent='DEVSETUP_DEVICE_LIST_GROUP')
+            return
         for sensor in self.found_sensors:
             is_connected = (
                 self.collector.sensor is not None

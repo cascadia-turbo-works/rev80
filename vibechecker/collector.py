@@ -7,8 +7,10 @@ import scipy.signal
 import h5py
 from collections import deque
 from datetime import datetime
-from path import Path
+from pathlib import Path
 from typing import Union, Dict
+
+from vibechecker._paths import data_dir
 
 import vibechecker
 from vibechecker.scope_sensor import ScopeSensor
@@ -29,16 +31,14 @@ class DataCollector:
         → data_callback() → registered GUI callbacks
     """
 
-    sensor: Union[vibechecker.VibeSensor, None] = None
-    config: vibechecker.AcquisitionSettings
-    stream = None
-    datadir: Union[Path, None] = Path('DEVDATA')
-    data: Dict = {}
-
     def __init__(self,
                  sensor: Union[vibechecker.VibeSensor, None] = None,
                  config: Union[vibechecker.AcquisitionSettings, None] = None):
 
+        self.sensor: Union[vibechecker.VibeSensor, None] = None
+        self.stream = None
+        self.datadir: Path = data_dir()
+        self.data: Dict = {}
         self.config = config if config else vibechecker.AcquisitionSettings()
         self.scope_sensors: dict[int, ScopeSensor] = {}
         self.callbacks: dict = {}

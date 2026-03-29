@@ -6,12 +6,15 @@ import platform
 import yaml
 import logging.config
 
-def setup_logging(config_path="logging.yaml", debug:bool=False):
+from vibechecker._paths import resource_path, log_dir
 
-    # load logging config
-    if not os.path.exists(config_path):
-        raise FileNotFoundError(f"Logging config not found: {config_path}")
-    with open(config_path, "r") as f:
+
+def setup_logging(debug: bool = False) -> None:
+    """Load logging configuration and direct file handlers to the correct log dir."""
+    config_file = resource_path("logging.yaml")
+    if not config_file.exists():
+        raise FileNotFoundError(f"Logging config not found: {config_file}")
+    with open(config_file, "r") as f:
         config = yaml.safe_load(f)
 
     # rename main logger to match package name
@@ -19,15 +22,17 @@ def setup_logging(config_path="logging.yaml", debug:bool=False):
         config['loggers'][__package__] = config['loggers']['main']
         del config['loggers']['main']
 
-    # Ensure the log directory exists
+    # Redirect file handlers to the runtime-safe log directory
+    _log_dir = log_dir()
     for handler in config.get("handlers", {}).values():
         fname = handler.get("filename")
         if fname:
-            os.makedirs(os.path.dirname(fname), exist_ok=True)
+            # Replace bare relative filename (e.g. "log/main.log") with absolute path
+            handler["filename"] = str(_log_dir / os.path.basename(fname))
 
     if debug:
         config['handlers']['console']['level'] = logging.DEBUG
-        
+
     # setup config
     logging.config.dictConfig(config)
 
