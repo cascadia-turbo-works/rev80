@@ -477,8 +477,7 @@ class PicoScopeStream:
             for ch in self._enabled_channels:
                 if (overflow & (1 << ch)) and ch not in self._overflow_warned:
                     log.warning(
-                        f'PicoScopeStream: ADC overflow on Ch {chr(65 + ch)} '
-                        f'— signal clipped, reduce voltage range'
+                        f'PicoScopeStream: ADC overflow on Channel {chr(65 + ch)}'
                     )
                     self._overflow_warned.add(ch)
 
