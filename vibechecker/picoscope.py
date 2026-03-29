@@ -22,6 +22,9 @@ from datetime import datetime
 
 import numpy as np
 
+from vibechecker._pico_loader import ensure_pico_dlls_loadable
+ensure_pico_dlls_loadable()
+
 from picosdk.ps4000a import ps4000a as ps
 from picosdk.functions import adc2mV, assert_pico_ok
 
