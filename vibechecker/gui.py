@@ -310,9 +310,8 @@ class GUI:
                 all_times.extend(times)
             else:
                 dpg.set_value(tag, [[0.], [0.]])
-        # Keep X-axis pinned from 0 to most recent time + 10% headroom
-        if all_times and dpg.does_item_exist(ui.PLT_TREND_AX_TIME):
-            dpg.set_axis_limits(ui.PLT_TREND_AX_TIME, 0.0, max(all_times) * 1.1)
+        # NOTE: trend X range is NOT updated here; use the Autoscale button to
+        # fit [0, max_t * 1.1].  Updating it every frame would lock out user pan/zoom.
 
     def _update_browse_label(self):
         """Refresh the frame-browser label and enable/disable nav buttons."""
@@ -370,9 +369,24 @@ class GUI:
         if self.collector.is_streaming:
             self._update_trend_plot()
         self._update_browse_label()
+        self._ensure_legends()
         if self._autoscale_pending:
             self._autoscale_plots()
             self._autoscale_pending = False
+
+    def _ensure_legends(self):
+        """Re-create any plot legend that has been lost (DPG can drop them on
+        dynamic series add/remove).  Called every display_frame so recovery is
+        immediate."""
+        for plot_tag, legend_tag in [
+            (ui.PLT_FREQ,   ui.PLT_FREQ_LEGEND),
+            (ui.PLT_TREND,  ui.PLT_TREND_LEGEND),
+            (ui.PLT_SAMPLE, ui.PLT_SAMPLE_LEGEND),
+        ]:
+            if (dpg.does_item_exist(plot_tag)
+                    and not dpg.does_item_exist(legend_tag)):
+                dpg.add_plot_legend(location=dpg.mvPlot_Location_East,
+                                    tag=legend_tag, parent=plot_tag)
 
     def _redraw(self, sender=None, data=None):
         if not self.collector.is_streaming:
@@ -593,28 +607,60 @@ class GUI:
     _TIME_WINDOW_MS: float = 300.0
 
     def _autoscale_plots(self, sender=None, data=None):
-        """Fit all plot axes to current data bounds."""
-        # Time Series X: pin to a fixed window (0 → _TIME_WINDOW_MS) rather than
-        # fitting to the full block, which would show too many cycles to read.
+        """Scale all plot axes to sensible initial bounds.
+
+        Axes that are explicitly set via set_axis_limits (time-series X and
+        trend Y/X) are unlocked one frame later so the user can freely pan/zoom
+        afterwards.  Axes scaled with fit_axis_data are inherently one-shot and
+        don't need unlocking.
+        """
+        # Time Series X: fixed window for legibility (not fit-to-data)
         if dpg.does_item_exist(ui.PLT_SAMPLE_AX_TIME):
             dpg.set_axis_limits(ui.PLT_SAMPLE_AX_TIME, 0.0, self._TIME_WINDOW_MS)
+
+        # Amplitude / frequency axes: fit to current data (one-shot, no lock)
         for ax in [ui.PLT_SAMPLE_AX_ACCEL, ui.PLT_SAMPLE_AX_ACCEL_2,
-                   ui.PLT_FREQ_AX_FREQ, ui.PLT_FREQ_AX_ACCEL, ui.PLT_FREQ_AX_2,
-                   ui.PLT_TREND_AX_TIME]:
+                   ui.PLT_FREQ_AX_FREQ, ui.PLT_FREQ_AX_ACCEL, ui.PLT_FREQ_AX_2]:
             if dpg.does_item_exist(ax):
                 dpg.fit_axis_data(ax)
-        # Trend Y: scale from 0 to peak overall across enabled channels + 5%
+
+        # Trend X: fit to current data extent
+        all_times: list[float] = []
+        for ch in self.collector.config.enabled_channels:
+            all_times.extend(
+                self.collector.data['trend'].get(ch, {}).get('rel_times', [])
+            )
+        if all_times and dpg.does_item_exist(ui.PLT_TREND_AX_TIME):
+            dpg.set_axis_limits(ui.PLT_TREND_AX_TIME, 0.0, max(all_times) * 1.1)
+        elif dpg.does_item_exist(ui.PLT_TREND_AX_TIME):
+            dpg.fit_axis_data(ui.PLT_TREND_AX_TIME)
+
+        # Trend Y: [0, peak_overall * 1.05]
         if dpg.does_item_exist(ui.PLT_TREND_AX_OVERALL):
             peak = 0.0
             for ch in self.collector.config.enabled_channels:
-                td = self.collector.data['trend'].get(ch, {})
-                vals = td.get('overall', [])
+                vals = self.collector.data['trend'].get(ch, {}).get('overall', [])
                 if vals:
                     peak = max(peak, max(vals))
             if peak > 0.0:
                 dpg.set_axis_limits(ui.PLT_TREND_AX_OVERALL, 0.0, peak * 1.05)
             else:
                 dpg.fit_axis_data(ui.PLT_TREND_AX_OVERALL)
+
+        # Unlock all explicitly-set axes one frame later so user can pan/zoom freely.
+        # dpg.set_axis_limits locks the axis until set_axis_limits_auto is called;
+        # doing it on the next frame preserves the view while releasing the lock.
+        dpg.set_frame_callback(
+            dpg.get_frame_count() + 1,
+            callback=self._unlock_autoscaled_axes,
+        )
+
+    def _unlock_autoscaled_axes(self):
+        """Release axis locks set by _autoscale_plots (called one frame later)."""
+        for ax in [ui.PLT_SAMPLE_AX_TIME,
+                   ui.PLT_TREND_AX_TIME, ui.PLT_TREND_AX_OVERALL]:
+            if dpg.does_item_exist(ax):
+                dpg.set_axis_limits_auto(ax)
 
     def _clear_cache(self, sender=None, data=None):
         """Wipe the frame cache and trend data, refresh the browse label."""
@@ -848,6 +894,12 @@ class GUI:
 
     def _on_config_close(self, sender=None, data=None):
         """Apply all tab settings, reconnect once if needed, then hide the dialog."""
+        # TODO: investigate the "reapply settings" loop that sometimes requires a
+        #       manual stop/start to clear after changing acquisition parameters.
+        #       Preferred fix: stop acquisition when the config window opens and
+        #       resume it on close — apply all settings at once here rather than
+        #       trying to update on-the-fly for every widget change.
+
         # Read spectrum widgets into config directly — do NOT call _on_spectrum_apply
         # here, as that method manages its own stop/start cycle which would cause a
         # double reconnect (relay noise, slow frames) when streaming.
@@ -963,6 +1015,7 @@ class GUI:
         if was_streaming:
             self._stop_stream()
         self._apply_spectrum_settings_from_widgets()
+        self._save_channel_assignments()   # persist acquisition settings to device YAML
         if self.collector.sensor is not None:
             self.collector.reconnect_stream()
         if was_streaming:
@@ -1608,7 +1661,8 @@ class GUI:
                             with dpg.plot(label='Frequency Series',
                                           width=-1, height=-TIME_PLOT_HEIGHT,
                                           tag=ui.PLT_FREQ, crosshairs=True):
-                                dpg.add_plot_legend(location=dpg.mvPlot_Location_East)
+                                dpg.add_plot_legend(location=dpg.mvPlot_Location_East,
+                                                    tag=ui.PLT_FREQ_LEGEND)
                                 dpg.add_plot_axis(dpg.mvXAxis,
                                                   label='Frequency, hz',
                                                   tag=ui.PLT_FREQ_AX_FREQ)
@@ -1621,7 +1675,8 @@ class GUI:
                             with dpg.plot(label='Trend Series',
                                           width=-1, height=-TIME_PLOT_HEIGHT,
                                           tag=ui.PLT_TREND, crosshairs=True):
-                                dpg.add_plot_legend(location=dpg.mvPlot_Location_East)
+                                dpg.add_plot_legend(location=dpg.mvPlot_Location_East,
+                                                    tag=ui.PLT_TREND_LEGEND)
                                 dpg.add_plot_axis(dpg.mvXAxis, label='Time, s',
                                                   tag=ui.PLT_TREND_AX_TIME)
                                 dpg.add_plot_axis(dpg.mvYAxis,
@@ -1630,7 +1685,8 @@ class GUI:
                     with dpg.plot(label='Time Series', width=-1,
                                   height=TIME_PLOT_HEIGHT, tag=ui.PLT_SAMPLE,
                                   crosshairs=True):
-                        dpg.add_plot_legend(location=dpg.mvPlot_Location_East)
+                        dpg.add_plot_legend(location=dpg.mvPlot_Location_East,
+                                            tag=ui.PLT_SAMPLE_LEGEND)
                         dpg.add_plot_axis(dpg.mvXAxis, label='Time, ms',
                                           tag=ui.PLT_SAMPLE_AX_TIME)
                         dpg.add_plot_axis(dpg.mvYAxis, label='',
@@ -1696,6 +1752,11 @@ class GUI:
         self._set_stream_status('idle')   # apply initial toggle button theme
         log.info('Setup GUI')
         dpg.setup_dearpygui()
+        # TODO: open device connection window automatically at startup so the user
+        #       is prompted to connect a device without needing to find the menu.
+        #       Uncomment the line below once the config dialog open/close lifecycle
+        #       is stable (see _on_config_close TODO above).
+        # self._open_config_dialog(ui.CONFIG_TAB_DEVICE)
 
     def run(self):
         log.info('Launch app window')
