@@ -1,6 +1,7 @@
 # Data Collector
 
 import threading
+import time
 import numpy as np
 import scipy.signal
 import h5py
@@ -43,6 +44,8 @@ class DataCollector:
         self.callbacks: dict = {}
         self._cache_cursor: int = 0
         self.siggen_config: dict | None = None
+        self._last_frame_t: float | None = None   # arrival time of previous frame
+        self._lag_warn_t: float = 0.0             # wall time of last lag warning
 
         if sensor is not None:
             self.connect_sensor(sensor)
@@ -377,12 +380,36 @@ class DataCollector:
 
     def data_callback(self, samples: dict):
         """Store raw frame and deliver dict[int, VibeSample] to consumers."""
+        t0 = time.monotonic()
+
         if samples:
             self.data['frame_cache'].append(samples)
             self.data['frame_count'] += 1
             self._cache_cursor = 0
+
         for fn in self.callbacks.values():
             fn(samples)
+
+        # Warn when GUI processing time exceeds the hardware frame period —
+        # frames are piling up faster than they're being rendered.
+        # TODO: profile the full data-pipeline (receive_data → FFT → DPG plot
+        #       update) to identify the dominant cost; consider decimating GUI
+        #       updates (render every Nth frame) or offloading FFT to a worker
+        #       thread to prevent the stream from starving.
+        elapsed = time.monotonic() - t0
+        if self._last_frame_t is not None:
+            period = t0 - self._last_frame_t
+            if elapsed > period:
+                now = time.monotonic()
+                if now - self._lag_warn_t >= 1.0:   # rate-limit to once per second
+                    queued = max(1, round(elapsed / period))
+                    log.warning(
+                        f'Processing lag: {elapsed*1000:.0f} ms per frame, '
+                        f'hardware period ~{period*1000:.0f} ms '
+                        f'(~{queued} frame(s) behind)'
+                    )
+                    self._lag_warn_t = now
+        self._last_frame_t = t0
 
     # ------------------------------------------------------------------
     # Persistence
