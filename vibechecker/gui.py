@@ -100,7 +100,8 @@ class GUI:
         self._toggle_themes: dict = {}   # 'active'|'waiting'|'idle' → dpg theme
         self._status_timer: threading.Timer | None = None
         self.found_sensors: list = []
-        self._autoscale_pending: bool = False   # True → autoscale on next frame
+        self._autoscale_pending: bool = False       # True → autoscale on next frame
+        self._was_streaming_before_config: bool = False  # stream state when config opened
 
     # ------------------------------------------------------------------
     # Status indicator helpers
@@ -698,7 +699,16 @@ class GUI:
     # ------------------------------------------------------------------
 
     def _open_config_dialog(self, tab_tag: str):
-        """Show the unified config dialog focused on the requested tab."""
+        """Show the unified config dialog focused on the requested tab.
+
+        Acquisition is stopped here so widget callbacks (channel enable, coupling,
+        range) don't each trigger individual reconnects while the dialog is open.
+        _on_config_close restarts streaming if it was active when we opened.
+        """
+        self._was_streaming_before_config = self.collector.is_streaming
+        if self._was_streaming_before_config:
+            self._stop_stream()
+
         dpg.show_item(ui.DLG_CONFIG)
         dpg.set_value(ui.CONFIG_TAB_BAR, tab_tag)
         # Always sync spectrum widgets so they reflect current config
@@ -893,19 +903,16 @@ class GUI:
                     self._remove_channel_series(ch)
 
     def _on_config_close(self, sender=None, data=None):
-        """Apply all tab settings, reconnect once if needed, then hide the dialog."""
-        # TODO: investigate the "reapply settings" loop that sometimes requires a
-        #       manual stop/start to clear after changing acquisition parameters.
-        #       Preferred fix: stop acquisition when the config window opens and
-        #       resume it on close — apply all settings at once here rather than
-        #       trying to update on-the-fly for every widget change.
+        """Apply all tab settings, do a single reconnect, then hide the dialog.
 
-        # Read spectrum widgets into config directly — do NOT call _on_spectrum_apply
-        # here, as that method manages its own stop/start cycle which would cause a
-        # double reconnect (relay noise, slow frames) when streaming.
+        Acquisition was already stopped in _open_config_dialog; _was_streaming_before_config
+        records whether to restart it here.  All widget-level callbacks (channel enable,
+        coupling, range) are gated from calling reconnect_stream while the dialog is
+        open, so this is the one and only reconnect point.
+        """
+        # Apply all settings from every tab into collector.config
         self._apply_spectrum_settings_from_widgets()
 
-        # Apply signal generator config
         if dpg.does_item_exist(ui.SIGGEN_ENABLED):
             if dpg.get_value(ui.SIGGEN_ENABLED):
                 wave_name = dpg.get_value(ui.SIGGEN_WAVE_TYPE)
@@ -918,10 +925,6 @@ class GUI:
             else:
                 self.collector.siggen_config = None
 
-        # Apply channel/sensor assignments from widgets
-        was_streaming = self.collector.is_streaming
-        if was_streaming:
-            self._stop_stream()
         self._apply_channel_assignments_from_widgets()
         self._save_channel_assignments()
         self._save_registry_sensor_fields()
@@ -932,12 +935,17 @@ class GUI:
         self._update_results_section_visibility()
         self.collector.init_trend_channels()
         self.collector.clear_trend()
+
+        # Single reconnect to apply all hardware changes at once
         if self.collector.sensor is not None:
             self.collector.reconnect_stream()
-        if was_streaming:
+
+        if self._was_streaming_before_config:
             self._start_stream()
         else:
             self.collector.reprocess_last_block()
+
+        self._was_streaming_before_config = False
         dpg.hide_item(ui.DLG_CONFIG)
 
     # ------------------------------------------------------------------
@@ -1193,7 +1201,10 @@ class GUI:
         self._update_connection_summary()
         self._update_axis_assignment()
         self._update_results_section_visibility()
-        self.collector.reconnect_stream()
+        # Skip live reconnect while the config dialog is open — _on_config_close
+        # will do a single reconnect with all changes applied at once.
+        if not dpg.is_item_visible(ui.DLG_CONFIG):
+            self.collector.reconnect_stream()
 
     def _redraw_all_channels(self):
         """Re-display the current cached frame for all enabled channels."""
@@ -1203,14 +1214,16 @@ class GUI:
     def _on_coupling_combo_change(self, ch: int, value: str):
         if value in ('AC', 'DC'):
             self.collector.config.channel_couplings[ch] = value
-            if self.collector.sensor is not None:
+            if (self.collector.sensor is not None
+                    and not dpg.is_item_visible(ui.DLG_CONFIG)):
                 self.collector.reconnect_stream()
 
     def _on_range_combo_change(self, ch: int, label: str):
         if label not in _VOLTAGE_RANGE_LABELS:
             return
         self.collector.config.channel_voltage_ranges[ch] = _VOLTAGE_RANGE_LABELS.index(label)
-        if self.collector.sensor is not None:
+        if (self.collector.sensor is not None
+                and not dpg.is_item_visible(ui.DLG_CONFIG)):
             self.collector.reconnect_stream()
 
     def _on_sensor_combo_change(self, ch: int, sensor_name: str):
