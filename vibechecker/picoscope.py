@@ -282,6 +282,15 @@ class PicoScopeStream:
     # Device setup (called from start() and _try_recover())
     # ------------------------------------------------------------------
 
+    # PS4000A device-resolution enum values (PS4000A_DEVICE_RESOLUTION).
+    # picosdk does not expose these as a named dict for the 4000A family;
+    # the values match PICO_DEVICE_RESOLUTION in PicoDeviceEnums.py.
+    _RES_8BIT  = 0
+    _RES_12BIT = 1
+    _RES_14BIT = 2
+    _RES_16BIT = 4
+    _RES_BITS  = {0: 8, 1: 12, 2: 14, 4: 16}
+
     def _open_device(self):
         if self._device_open:
             return
@@ -293,6 +302,53 @@ class PicoScopeStream:
                                                ctypes.byref(self._maxADC)))
         self._device_open = True
         log.debug(f'PicoScope opened, maxADC={self._maxADC.value}')
+        self._set_max_resolution()
+
+    def _set_max_resolution(self):
+        """Attempt to set the highest ADC resolution the hardware supports.
+
+        PS4000A resolution constraints (programmer's guide §3.69):
+          16-bit : ≤ 1 channel enabled
+          14-bit : ≤ 4 channels enabled
+          12-bit : ≤ 8 channels enabled   (or any count on the 4824)
+           8-bit : always available
+
+        The 4824 returns PICO_NOT_SUPPORTED_BY_THIS_DEVICE — it has fixed
+        12-bit hardware and the API is not applicable.  All other failures
+        are logged and we fall back to the next lower resolution.
+
+        Note: picosdk always normalises ADC counts to the signed int16 range
+        (maxADC = 32767) regardless of resolution, so adc2mV() stays correct
+        without refreshing _maxADC here.
+        """
+        _PICO_NOT_SUPPORTED = 0x11F   # PICO_NOT_SUPPORTED_BY_THIS_DEVICE
+
+        n_ch = len(self._enabled_channels)
+        if n_ch <= 1:
+            candidates = [self._RES_16BIT, self._RES_14BIT, self._RES_12BIT, self._RES_8BIT]
+        elif n_ch <= 4:
+            candidates = [self._RES_14BIT, self._RES_12BIT, self._RES_8BIT]
+        else:
+            candidates = [self._RES_12BIT, self._RES_8BIT]
+
+        for res in candidates:
+            raw = ps.ps4000aSetDeviceResolution(self._chandle, ctypes.c_int32(res))
+            if raw == 0:   # PICO_OK
+                log.info(f'PicoScope resolution: {self._RES_BITS[res]}-bit '
+                         f'({n_ch} channel(s) enabled)')
+                return
+            if raw == _PICO_NOT_SUPPORTED:
+                # Device has fixed resolution (e.g. 4824 is always 12-bit)
+                res_out = ctypes.c_int32()
+                ps.ps4000aGetDeviceResolution(self._chandle, ctypes.byref(res_out))
+                native = self._RES_BITS.get(res_out.value, '?')
+                log.info(f'PicoScope resolution: {native}-bit fixed '
+                         f'(SetDeviceResolution not supported by this variant)')
+                return
+            log.debug(f'PicoScope: {self._RES_BITS[res]}-bit resolution rejected '
+                      f'(status={raw:#x}), trying lower')
+
+        log.warning('PicoScope: could not set any resolution — using hardware default')
 
     def _configure_channel(self):
         # PS4000A channel enum values equal channel indices: A=0, B=1, …, H=7.
@@ -506,7 +562,7 @@ class PicoScopeStream:
                      f'{attempt}/{_MAX_RECONNECT_ATTEMPTS}')
             time.sleep(1.0)
             try:
-                self._open_device()
+                self._open_device()   # calls _set_max_resolution internally
                 self._configure_channel()
                 self._start_streaming()
                 # Reset accumulator so stale partial data isn't carried forward
