@@ -4,7 +4,7 @@ from datetime import datetime
 import numpy as np
 from scipy import signal
 
-from path import Path
+from pathlib import Path
 import h5py
 
 import vibechecker

@@ -14,8 +14,8 @@ dependencies = [
     "dearpygui",
     "matplotlib",
     "sounddevice",
-    "path",
     "pyyaml",
+    "h5py",
     "picosdk @ git+https://github.com/picotech/picosdk-python-wrappers.git"
 ]
 

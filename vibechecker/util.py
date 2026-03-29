@@ -1,5 +1,7 @@
 import numpy as np
-from path import Path
+from pathlib import Path
+
+from vibechecker._paths import data_dir
 
 # ── GUI colour palette ──────────────────────────────────────────────────────
 # All colours defined as hex strings (#RRGGBB).  Use hex_to_rgba() to convert
@@ -128,7 +130,7 @@ def integration_steps(source_unit: str, target_unit: str) -> int:
     return MODALITY_ORDER[src_mod] - MODALITY_ORDER[tgt_mod]
 
 
-SAVEDIR = Path('DEVDATA')
+SAVEDIR = data_dir()
 EXT = '.h5'
 
 
