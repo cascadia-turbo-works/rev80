@@ -166,12 +166,9 @@ class GUI:
         return list(groups.items())
 
     def _freq_axis_label(self, unit: str, channels: list[int] | None = None) -> str:
-        """Build a frequency-plot Y-axis label like 'in/s 0-P'."""
-        if channels:
-            mode = self._get_amplitude_mode(channels[0])
-        else:
-            mode = '0-P'
-        return f'{unit} {mode}'
+        """Build a frequency-plot Y-axis label like 'Amplitude, mils P-P'."""
+        mode = self._get_amplitude_mode(channels[0]) if channels else '0-P'
+        return f'Amplitude, {unit} {mode}'
 
     def _update_axis_assignment(self):
         """Show/hide secondary axes and reassign series based on unit groups."""
@@ -183,9 +180,17 @@ class GUI:
                 self._reassign_series_to_axis(ch, ui.PLT_FREQ_AX_ACCEL,
                                               ui.PLT_SAMPLE_AX_ACCEL)
             unit = groups[0][0] if groups else 'mV'
-            chs = groups[0][1] if groups else []
-            dpg.set_item_label(ui.PLT_FREQ_AX_ACCEL, self._freq_axis_label(unit, chs))
-            dpg.set_item_label(ui.PLT_SAMPLE_AX_ACCEL, unit)
+            chs  = groups[0][1] if groups else []
+            mode = self._get_amplitude_mode(chs[0]) if chs else '0-P'
+            dpg.set_item_label(ui.PLT_FREQ_AX_ACCEL,   self._freq_axis_label(unit, chs))
+            dpg.set_item_label(ui.PLT_SAMPLE_AX_ACCEL, f'Amplitude, {unit}')
+            if dpg.does_item_exist(ui.PLT_TREND_AX_OVERALL):
+                dpg.set_item_label(ui.PLT_TREND_AX_OVERALL,
+                                   f'Overall Vibration, {unit} {mode}')
+            for ch in chs:
+                tag = ui.ch_overall_value(ch)
+                if dpg.does_item_exist(tag):
+                    dpg.configure_item(tag, label=f'Overall, {unit} {mode}')
         else:
             dpg.show_item(ui.PLT_FREQ_AX_2)
             dpg.show_item(ui.PLT_SAMPLE_AX_ACCEL_2)
@@ -195,10 +200,19 @@ class GUI:
             for ch in groups[1][1]:
                 self._reassign_series_to_axis(ch, ui.PLT_FREQ_AX_2,
                                               ui.PLT_SAMPLE_AX_ACCEL_2)
-            dpg.set_item_label(ui.PLT_FREQ_AX_ACCEL,      self._freq_axis_label(groups[0][0], groups[0][1]))
-            dpg.set_item_label(ui.PLT_SAMPLE_AX_ACCEL,    groups[0][0])
-            dpg.set_item_label(ui.PLT_FREQ_AX_2,          self._freq_axis_label(groups[1][0], groups[1][1]))
-            dpg.set_item_label(ui.PLT_SAMPLE_AX_ACCEL_2,  groups[1][0])
+            dpg.set_item_label(ui.PLT_FREQ_AX_ACCEL,     self._freq_axis_label(groups[0][0], groups[0][1]))
+            dpg.set_item_label(ui.PLT_SAMPLE_AX_ACCEL,   f'Amplitude, {groups[0][0]}')
+            dpg.set_item_label(ui.PLT_FREQ_AX_2,         self._freq_axis_label(groups[1][0], groups[1][1]))
+            dpg.set_item_label(ui.PLT_SAMPLE_AX_ACCEL_2, f'Amplitude, {groups[1][0]}')
+            # Trend Y: mixed units — omit unit from label
+            if dpg.does_item_exist(ui.PLT_TREND_AX_OVERALL):
+                dpg.set_item_label(ui.PLT_TREND_AX_OVERALL, 'Overall Vibration')
+            for unit, chs in groups:
+                mode = self._get_amplitude_mode(chs[0]) if chs else '0-P'
+                for ch in chs:
+                    tag = ui.ch_overall_value(ch)
+                    if dpg.does_item_exist(tag):
+                        dpg.configure_item(tag, label=f'Overall, {unit} {mode}')
 
     def _reassign_series_to_axis(self, ch: int, freq_axis: str, time_axis: str):
         """If a channel's series are on wrong axes, delete and recreate them."""
@@ -254,7 +268,7 @@ class GUI:
     def _update_time_plot(self, result: vibechecker.ChannelResult, ch: int):
         if not dpg.does_item_exist(ui.plt_time_series(ch)):
             return
-        time   = result.time_vec
+        time   = result.time_vec * 1000.0   # convert s → ms (axis label is "Time, ms")
         signal = result.time_data
         dpg.set_value(ui.plt_time_series(ch), [time.tolist(), signal.tolist()])
 
@@ -272,9 +286,10 @@ class GUI:
             top_peaks = peaks[:peak_limit]
             dpg.set_value(ui.plt_freq_peaks(ch),
                           [freq[top_peaks].tolist(), spectrum[top_peaks].tolist()])
+            amp_mode = self._get_amplitude_mode(ch)
             peak_df = pd.DataFrame({
-                'Frequency (Hz)': np.round(freq[top_peaks], 2),
-                result.unit:      np.round(spectrum[top_peaks], 6),
+                'Frequency (Hz)':              np.round(freq[top_peaks], 2),
+                f'Amp., {result.unit} {amp_mode}': np.round(spectrum[top_peaks], 6),
             })
             self._update_fft_peaks_table(peak_df, ch)
         else:
@@ -295,6 +310,9 @@ class GUI:
                 all_times.extend(times)
             else:
                 dpg.set_value(tag, [[0.], [0.]])
+        # Keep X-axis pinned from 0 to most recent time + 10% headroom
+        if all_times and dpg.does_item_exist(ui.PLT_TREND_AX_TIME):
+            dpg.set_axis_limits(ui.PLT_TREND_AX_TIME, 0.0, max(all_times) * 1.1)
 
     def _update_browse_label(self):
         """Refresh the frame-browser label and enable/disable nav buttons."""
@@ -347,8 +365,10 @@ class GUI:
                 continue
             self._update_time_plot(result, ch)
             self._update_freq_plot(result, ch)
-            self.collector.update_trend(ch, result.rel_time, result.overall)
-        self._update_trend_plot()
+            if self.collector.is_streaming:
+                self.collector.update_trend(ch, result.rel_time, result.overall)
+        if self.collector.is_streaming:
+            self._update_trend_plot()
         self._update_browse_label()
         if self._autoscale_pending:
             self._autoscale_plots()
@@ -532,6 +552,7 @@ class GUI:
             return
         self._set_stream_status('waiting')
         self._autoscale_pending = True
+        self.collector.clear_trend()   # reset rel_time so trend starts at t=0
         self.collector.start_stream()
         self._update_browse_label()
 
@@ -567,19 +588,46 @@ class GUI:
         """Browse to a newer cached frame."""
         self.collector.browse_frame(-1)
 
+    # Default time-series window: ~10 cycles at 60 Hz ≈ 167 ms, rounded to 300 ms
+    # so a typical 60 Hz fundamental fills the trace legibly on autoscale.
+    _TIME_WINDOW_MS: float = 300.0
+
     def _autoscale_plots(self, sender=None, data=None):
         """Fit all plot axes to current data bounds."""
-        for ax in [ui.PLT_SAMPLE_AX_TIME, ui.PLT_SAMPLE_AX_ACCEL,
-                   ui.PLT_SAMPLE_AX_ACCEL_2,
+        # Time Series X: pin to a fixed window (0 → _TIME_WINDOW_MS) rather than
+        # fitting to the full block, which would show too many cycles to read.
+        if dpg.does_item_exist(ui.PLT_SAMPLE_AX_TIME):
+            dpg.set_axis_limits(ui.PLT_SAMPLE_AX_TIME, 0.0, self._TIME_WINDOW_MS)
+        for ax in [ui.PLT_SAMPLE_AX_ACCEL, ui.PLT_SAMPLE_AX_ACCEL_2,
                    ui.PLT_FREQ_AX_FREQ, ui.PLT_FREQ_AX_ACCEL, ui.PLT_FREQ_AX_2,
-                   ui.PLT_TREND_AX_TIME, ui.PLT_TREND_AX_OVERALL]:
+                   ui.PLT_TREND_AX_TIME]:
             if dpg.does_item_exist(ax):
                 dpg.fit_axis_data(ax)
+        # Trend Y: scale from 0 to peak overall across enabled channels + 5%
+        if dpg.does_item_exist(ui.PLT_TREND_AX_OVERALL):
+            peak = 0.0
+            for ch in self.collector.config.enabled_channels:
+                td = self.collector.data['trend'].get(ch, {})
+                vals = td.get('overall', [])
+                if vals:
+                    peak = max(peak, max(vals))
+            if peak > 0.0:
+                dpg.set_axis_limits(ui.PLT_TREND_AX_OVERALL, 0.0, peak * 1.05)
+            else:
+                dpg.fit_axis_data(ui.PLT_TREND_AX_OVERALL)
 
     def _clear_cache(self, sender=None, data=None):
         """Wipe the frame cache and trend data, refresh the browse label."""
         self.collector.reset_data_store()
         self._update_browse_label()
+        # Push flat (0,0) traces to every series so the plots visually clear
+        for ch in range(_MAX_CHANNELS):
+            for tag in [ui.plt_time_series(ch), ui.plt_freq_series(ch),
+                        ui.plt_trend_series(ch), ui.plt_freq_peaks(ch)]:
+                if dpg.does_item_exist(tag):
+                    dpg.set_value(tag, [[0.], [0.]])
+        if dpg.does_item_exist(ui.PLT_TREND_AX_TIME):
+            dpg.set_axis_limits(ui.PLT_TREND_AX_TIME, 0.0, 1.0)
 
     def _on_save_click(self, sender=None, data=None):
         dpg.show_item(ui.DLG_SAVE_FILE)
@@ -628,14 +676,25 @@ class GUI:
         threading.Thread(target=self._discover_devices, daemon=True).start()
 
     def _discover_devices(self):
-        """Background: disconnect current device, find sensors, update dialog."""
+        """Background: find sensors, then update the device list.
+
+        Does NOT auto-disconnect the current sensor — doing so from a background
+        thread races with main-thread GUI operations and can corrupt widget state.
+        If a device is already connected the scan is skipped (PicoScope cannot be
+        opened twice); the existing sensor is kept as the sole list entry.
+
+        _rebuild_device_channel_rows is intentionally NOT called here: it is
+        already invoked on the main thread by _on_device_connect_toggle, and
+        calling it from a background thread concurrently with main-thread
+        widget reads (_apply_channel_assignments_from_widgets) causes DPG
+        state corruption (combo returns stale/default values).
+        """
         if self.collector.sensor is not None:
-            self.collector.disconnect_sensor()
-            self._set_device_status('disconnected')
-            self._set_stream_status('idle')
-        self.found_sensors = vibechecker.VibeSensor.find()
+            # Device already connected — cannot re-scan while handle may be open.
+            self.found_sensors = [self.collector.sensor]
+        else:
+            self.found_sensors = vibechecker.VibeSensor.find()
         self._repopulate_device_list()
-        self._rebuild_device_channel_rows()
 
     def _repopulate_device_list(self):
         """Rebuild the detected-device rows inside the Device Setup dialog."""
@@ -1548,8 +1607,8 @@ class GUI:
                         with dpg.tab(label='Spectrum'):
                             with dpg.plot(label='Frequency Series',
                                           width=-1, height=-TIME_PLOT_HEIGHT,
-                                          tag=ui.PLT_FREQ):
-                                dpg.add_plot_legend()
+                                          tag=ui.PLT_FREQ, crosshairs=True):
+                                dpg.add_plot_legend(location=dpg.mvPlot_Location_East)
                                 dpg.add_plot_axis(dpg.mvXAxis,
                                                   label='Frequency, hz',
                                                   tag=ui.PLT_FREQ_AX_FREQ)
@@ -1561,16 +1620,17 @@ class GUI:
                         with dpg.tab(label='Trend'):
                             with dpg.plot(label='Trend Series',
                                           width=-1, height=-TIME_PLOT_HEIGHT,
-                                          tag=ui.PLT_TREND):
-                                dpg.add_plot_legend()
+                                          tag=ui.PLT_TREND, crosshairs=True):
+                                dpg.add_plot_legend(location=dpg.mvPlot_Location_East)
                                 dpg.add_plot_axis(dpg.mvXAxis, label='Time, s',
                                                   tag=ui.PLT_TREND_AX_TIME)
                                 dpg.add_plot_axis(dpg.mvYAxis,
                                                   label='Overall Vibration',
                                                   tag=ui.PLT_TREND_AX_OVERALL)
                     with dpg.plot(label='Time Series', width=-1,
-                                  height=TIME_PLOT_HEIGHT, tag=ui.PLT_SAMPLE):
-                        dpg.add_plot_legend()
+                                  height=TIME_PLOT_HEIGHT, tag=ui.PLT_SAMPLE,
+                                  crosshairs=True):
+                        dpg.add_plot_legend(location=dpg.mvPlot_Location_East)
                         dpg.add_plot_axis(dpg.mvXAxis, label='Time, ms',
                                           tag=ui.PLT_SAMPLE_AX_TIME)
                         dpg.add_plot_axis(dpg.mvYAxis, label='',
@@ -1616,7 +1676,7 @@ class GUI:
                             dpg.bind_item_theme(_sr, self._sect_theme)
                             dpg.add_text(f'Channel {chr(65 + _ch)}')
                             dpg.add_separator()
-                            dpg.add_input_text(label='0-P',
+                            dpg.add_input_text(label='Overall',
                                                tag=ui.ch_overall_value(_ch),
                                                readonly=True, default_value='0.0',
                                                width=RESULTS_WIDTH // 2)
