@@ -21,6 +21,7 @@ A Python desktop application for capturing, analyzing, and recording vibration d
 - [Configuration and Persistence](#configuration-and-persistence)
 - [PicoScope Integration](#picoscope-integration)
 - [Testing](#testing)
+- [Building for Windows](#building-for-windows)
 
 ---
 
@@ -56,7 +57,7 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-**Dependencies:** `numpy`, `scipy`, `pandas`, `dearpygui`, `sounddevice`, `h5py`, `pyyaml`, `matplotlib`, `path`, `picosdk`
+**Dependencies:** `numpy`, `scipy`, `pandas`, `dearpygui==2.0.0`, `sounddevice`, `h5py`, `pyyaml`, `matplotlib`, `picosdk`
 
 The `picosdk` package requires the PicoScope 4000A driver (`ps4000a.dll` / `.so`) to be present on the system path for hardware operation.
 
@@ -396,7 +397,7 @@ Assignments are restored automatically when the device reconnects. `save_channel
 
 ### Logging
 
-Logging is configured via `logging.yaml` in the project root. Log files are written to `log/`.
+Logging is configured via `vibechecker/logging.yaml`. In development, log files are written to `log/`. In a frozen Windows build, logs are written to `~/Documents/vibechecker/logs/`.
 
 ---
 
@@ -446,3 +447,59 @@ pytest tests/ -k "stream"
 ```
 
 Hardware-specific tests in `tests/test_picoscope_hw.py` skip automatically when no PicoScope is detected (`VibeSensor.find()` returns empty).
+
+---
+
+## Building for Windows
+
+Produces a self-contained one-directory executable and a standalone installer (`.exe`) via PyInstaller and Inno Setup. The build must run on a **64-bit Windows machine** with the PicoScope connected and PicoSDK installed — cross-compilation from Linux is not supported.
+
+### Prerequisites
+
+1. **PicoSDK** — install from [picotech.com/downloads](https://www.picotech.com/downloads).
+   The installer places `ps4000a.dll` and `picoipp.dll` in `C:\Program Files\Pico Technology\SDK\lib\`.
+   **Reboot after installation** so Windows registers the USB kernel driver before the first connection attempt.
+
+2. **Inno Setup 6** — install from [jrsoftware.org/isinfo.php](https://jrsoftware.org/isinfo.php).
+   A non-admin (per-user) install to `%LOCALAPPDATA%\Programs\Inno Setup 6\` is fine; the build scripts find it automatically.
+
+3. **Python 64-bit** and project dependencies:
+   ```bash
+   pip install -e ".[dev]" pyinstaller
+   ```
+
+### Build
+
+From Git Bash (or PowerShell with `build.bat`):
+
+```bash
+# Full pipeline: collect DLLs → PyInstaller → Inno Setup installer
+./build.sh
+
+# Individual steps
+./build.sh dlls         # collect PicoScope DLLs into drivers/ only
+./build.sh pyinstaller  # PyInstaller only (skips DLL collection)
+./build.sh installer    # Inno Setup only (requires dist/ to exist)
+```
+
+### Output
+
+| Path | Description |
+| --- | --- |
+| `dist/vibechecker/vibechecker.exe` | Standalone executable (run directly, no install needed) |
+| `installer/Output/VibecheckerSetup-<version>.exe` | Windows installer with Start Menu shortcut and uninstaller |
+
+### Runtime paths (installed app)
+
+| Purpose | Location |
+| --- | --- |
+| Data files (`.h5`) | `~/Documents/vibechecker/data/` |
+| Log files | `~/Documents/vibechecker/logs/` |
+| Config / sensor library | `%APPDATA%\vibechecker\` |
+
+### Known constraints
+
+- **64-bit only** — PicoSDK DLLs are 64-bit; 32-bit Python will not work.
+- **DearPyGui pinned to 2.0.0** — versions above 2.0.0 have a known viewport initialisation crash on Windows.
+- **PicoSDK USB kernel driver** — the bundled `ps4000a.dll` is the user-mode library; the USB kernel driver must be installed separately via the PicoSDK installer. Vibechecker will launch without it but will show a "PicoScope driver not found" message in the device dialog.
+- **Code signing** — the installer is unsigned; Windows SmartScreen will warn on first run. Right-click → Run anyway, or sign the installer with a certificate for distribution.
