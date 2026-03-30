@@ -17,19 +17,24 @@ set -euo pipefail
 
 STEP="${1:-all}"
 
-# Locate iscc.exe — try PATH first, then common install locations
+# Locate iscc.exe — try PATH first, then common install locations.
+# $LOCALAPPDATA is a Windows-style path in Git Bash; convert with cygpath.
 find_iscc() {
     if command -v iscc &>/dev/null; then
         echo "iscc"
         return
     fi
+    local localappdata_unix=""
+    if [[ -n "${LOCALAPPDATA:-}" ]]; then
+        localappdata_unix=$(cygpath "$LOCALAPPDATA" 2>/dev/null || echo "")
+    fi
     local candidates=(
-        "$LOCALAPPDATA/Programs/Inno Setup 6/iscc.exe"
+        "$localappdata_unix/Programs/Inno Setup 6/iscc.exe"
         "/c/Program Files (x86)/Inno Setup 6/iscc.exe"
         "/c/Program Files/Inno Setup 6/iscc.exe"
     )
     for c in "${candidates[@]}"; do
-        if [[ -f "$c" ]]; then
+        if [[ -n "$c" && -f "$c" ]]; then
             echo "$c"
             return
         fi
@@ -42,6 +47,17 @@ echo "============================================================"
 echo "  Vibechecker Windows Build Pipeline"
 echo "============================================================"
 echo
+
+# ── Preflight checks ─────────────────────────────────────────────────────────
+if [[ "$STEP" == "all" || "$STEP" == "installer" ]]; then
+    ISCC="$(find_iscc)"
+    if [[ -z "$ISCC" ]]; then
+        echo "ERROR: iscc.exe not found. Install Inno Setup 6 from https://jrsoftware.org/isinfo.php"
+        exit 1
+    fi
+    echo "Found Inno Setup: $ISCC"
+    echo
+fi
 
 # ── Step 1: Collect PicoScope DLLs ──────────────────────────────────────────
 if [[ "$STEP" == "all" || "$STEP" == "dlls" ]]; then
@@ -60,14 +76,7 @@ fi
 # ── Step 3: Inno Setup ───────────────────────────────────────────────────────
 if [[ "$STEP" == "all" || "$STEP" == "installer" ]]; then
     echo "[3/3] Creating installer with Inno Setup..."
-    ISCC="$(find_iscc)"
-    if [[ -z "$ISCC" ]]; then
-        echo "WARNING: iscc.exe not found."
-        echo "Install Inno Setup 6 from https://jrsoftware.org/isinfo.php"
-        echo "or run manually: iscc installer/vibechecker.iss"
-    else
-        "$ISCC" installer/vibechecker.iss
-    fi
+    "$ISCC" installer/vibechecker.iss
     echo
 fi
 
