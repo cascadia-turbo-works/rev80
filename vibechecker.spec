@@ -64,15 +64,6 @@ binaries = []
 # ── Excludes (trim unused scipy subpackages to reduce size) ──────────────────
 
 excludes = [
-    'scipy.io',
-    'scipy.linalg',
-    'scipy.stats',
-    'scipy.optimize',
-    'scipy.spatial',
-    'scipy.ndimage',
-    'scipy.interpolate',
-    'scipy.sparse',
-    'scipy.cluster',
     'tkinter',
     'matplotlib',
     'IPython',
