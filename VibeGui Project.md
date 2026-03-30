@@ -210,6 +210,56 @@ Vibegui:
 
 ## 2026 - 03 - 25
 
-- Add 0P, PP or RMS to sensor setup. 
+- Add 0P, PP or RMS to sensor setup.
 - Acq setting lead to long acq times. Examine
 - Displaying wrong bins in spectrum setup
+
+## 2026 - 03 - 29 Build Pipeline & CI Plan
+
+### Windows Build (complete)
+
+Branch: `feature/windows-build`
+
+- [x] Cross-platform path sanitization (`_paths.py`) — data/log dirs route to `~/Documents/vibechecker/` in frozen builds
+- [x] `pathlib` migration — removed third-party `path` package
+- [x] PicoScope DLL bundling (`build/collect_pico_dlls.py`, `_pico_loader.py`)
+- [x] PyInstaller spec (`vibechecker.spec`) — one-dir bundle, ~40MB
+- [x] Inno Setup installer script (`installer/vibechecker.iss`) — non-admin install, PicoSDK prerequisite check
+- [x] Build scripts: `build.sh` (Git Bash) and `build.bat`
+- [ ] App icon — graphic design needed (`assets/vibechecker.ico`, 16/32/48/256px)
+- [ ] Code signing for distribution
+- [ ] Resolve frozen app startup crash (dearpygui context init failing on Windows VM — under investigation)
+
+### CI/CD Plan — Forgejo + act_runner
+
+Current setup: bare git repo at `git@192.168.0.43:repo/vibegui.git`
+
+**Motivation:** eliminate manual build cycle on Windows VM; get artifact (installer .exe) on push.
+
+**Plan:**
+
+1. **Stand up Forgejo on `192.168.0.43`**
+   - Single binary install, ~100MB RAM footprint
+   - Import bare repo — full history preserved
+   - Update `git remote` on dev box and Windows VM
+
+2. **Register Windows VM as act_runner**
+   - Install `act_runner` on Windows VM
+   - Register against Forgejo instance (token from web UI)
+   - Install runner as a Windows service (survives reboots)
+
+3. **Add workflow YAML** (`.gitea/workflows/build.yml`)
+   - Triggers on push to `feature/windows-build` and `main`
+   - Steps: checkout → pip install → `build.sh pyinstaller` → `build.sh installer`
+   - Installer `.exe` uploaded as downloadable artifact in Forgejo UI
+
+4. **Distribution**
+   - Tag releases in Forgejo (`git tag v0.x.x`)
+   - Attach `.exe` as release asset — not committed to git history
+   - Share download link from Forgejo releases page
+
+**Trade-offs vs bare repo:**
+- Setup: ~2 hours one-time
+- Learning value: high — GitHub Actions YAML syntax is industry standard
+- Maintenance: minimal (single binary, SQLite DB)
+- Benefit: push to branch → installer ready to download, no manual steps
