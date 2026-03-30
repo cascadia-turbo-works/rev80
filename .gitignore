@@ -1,21 +1,20 @@
-# Do not sync test Data
-DEVDATA
+# ── Data ──────────────────────────────────────────────────────────────────────
+DEVDATA/
+data/
 
-# python crumbs
-__pycache__
-.pytest_cache
-.venv
-venv
+# ── Logs ──────────────────────────────────────────────────────────────────────
+log/
 
-# dont pass through logs between machines
-log
-**/.ipynb_checkpoints
-vibechecker.egg-info
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+**/.ipynb_checkpoints/
 
-# build artifacts
+# ── Build & installer artifacts ───────────────────────────────────────────────
 dist/
-build/__pycache__
-*.spec.bak
-
-# installer artifacts
 installer/Output/
+*.spec.bak
