@@ -15,7 +15,11 @@ REM   build.bat installer   — Inno Setup only (requires dist\ to exist)
 setlocal enabledelayedexpansion
 
 set "STEP=%1"
-set "ISCC= %APPDATA%\..\Local\Programs\Inno Setup 6\ISCC.exe"
+
+REM Locate iscc.exe — user install (non-admin) takes priority over system-wide
+set "ISCC=%LOCALAPPDATA%\Programs\Inno Setup 6\iscc.exe"
+if not exist "%ISCC%" set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\iscc.exe"
+if not exist "%ISCC%" set "ISCC=%ProgramFiles%\Inno Setup 6\iscc.exe"
 
 echo.
 echo ============================================================
