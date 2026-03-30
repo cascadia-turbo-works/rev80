@@ -17,13 +17,14 @@ set -euo pipefail
 
 STEP="${1:-all}"
 
-# Locate iscc.exe — try PATH first, then default install locations
+# Locate iscc.exe — try PATH first, then common install locations
 find_iscc() {
     if command -v iscc &>/dev/null; then
         echo "iscc"
         return
     fi
     local candidates=(
+        "$LOCALAPPDATA/Programs/Inno Setup 6/iscc.exe"
         "/c/Program Files (x86)/Inno Setup 6/iscc.exe"
         "/c/Program Files/Inno Setup 6/iscc.exe"
     )
