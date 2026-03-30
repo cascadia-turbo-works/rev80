@@ -4,9 +4,18 @@ DEVDATA
 # python crumbs
 __pycache__
 .pytest_cache
-
+.venv
+venv
 
 # dont pass through logs between machines
 log
 **/.ipynb_checkpoints
 vibechecker.egg-info
+
+# build artifacts
+dist/
+build/__pycache__
+*.spec.bak
+
+# installer artifacts
+installer/Output/
