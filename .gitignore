@@ -16,5 +16,6 @@ venv/
 
 # ── Build & installer artifacts ───────────────────────────────────────────────
 dist/
+build/vibechecker/
 installer/Output/
 *.spec.bak
