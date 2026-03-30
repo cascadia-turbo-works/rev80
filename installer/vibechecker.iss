@@ -18,8 +18,7 @@
 #define AppPublisher "Rev Engineering"
 #define AppCopyright "Copyright (c) 2026 Rev Engineering. Author: Henry Gotjen."
 #define AppExeName   "vibechecker.exe"
-; TODO: Replace placeholder with real icon before release
-; #define AppIcon      "..\assets\vibechecker.ico"
+#define AppIcon      "..\assets\vibechecker.ico"
 ; Directory produced by PyInstaller COLLECT step
 #define BuildDir     "..\dist\vibechecker"
 
@@ -33,7 +32,7 @@ DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 OutputDir=Output
 OutputBaseFilename=VibecheckerSetup-{#AppVersion}
-; SetupIconFile={#AppIcon}
+SetupIconFile={#AppIcon}
 Compression=lzma2/ultra64
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64

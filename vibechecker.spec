@@ -16,7 +16,7 @@ from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 ROOT = Path(SPECPATH)
 DRIVERS_DIR = ROOT / 'drivers'
 LOGGING_YAML = ROOT / 'vibechecker' / 'logging.yaml'
-ICON_FILE = ROOT / 'assets' / 'vibechecker.ico'  # placeholder — add before build
+ICON_FILE = ROOT / 'assets' / 'vibechecker.ico'
 
 # ── Hidden imports ───────────────────────────────────────────────────────────
 
@@ -105,7 +105,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,                   # no console window
-    icon=str(ICON_FILE) if ICON_FILE.is_file() else None,
+    icon=str(ICON_FILE),
 )
 
 # ── One-dir bundle ───────────────────────────────────────────────────────────
