@@ -1319,7 +1319,9 @@ class GUI:
     # ------------------------------------------------------------------
 
     def create_gui(self):
+        print("create_gui: create_context", flush=True)
         dpg.create_context()
+        print("create_gui: context created", flush=True)
 
         # File dialogs
         with dpg.file_dialog(
@@ -1343,6 +1345,8 @@ class GUI:
                 f'Vibe Samples (*{vibechecker.EXT}){{{vibechecker.EXT}}}',
                 color=(150, 255, 150, 255))
             dpg.add_file_extension('.*', color=(0, 150, 150, 150))
+
+        print("create_gui: A file_dialogs done", flush=True)
 
         # ── Unified Config Dialog (Device / Sensors / Spectrum tabs) ───
         _dlg_cfg_w, _dlg_cfg_h = 720, 560
@@ -1500,6 +1504,8 @@ class GUI:
             dpg.add_separator()
             dpg.add_button(label='Close', callback=self._on_config_close, width=-1)
 
+        print("create_gui: B config_dialog done", flush=True)
+
         # ── Section container theme (slightly lighter than window background) ──
         _sect_bg = vibechecker.hex_to_rgba(vibechecker.THEME_COLORS['SURFACE'])
         with dpg.theme() as self._sect_theme:
@@ -1530,6 +1536,8 @@ class GUI:
                     dpg.add_theme_color(dpg.mvThemeCol_Text,           fg,
                                         category=dpg.mvThemeCat_Core)
             self._toggle_themes[state] = _t
+
+        print("create_gui: C themes done", flush=True)
 
         # ── Main window ────────────────────────────────────────────────
         with dpg.window(label='Vibe Checkup', tag='primary_window'):
@@ -1658,6 +1666,8 @@ class GUI:
                                                ui.DLG_LOAD_FILE),
                                            width=_BTN_HALF)
 
+                print("create_gui: D controls_column done", flush=True)
+
                 # ── Main column (center — plots) ──────────────────────
                 with dpg.child_window(width=-RESULTS_WIDTH, autosize_y=True,
                                       no_scrollbar=True):
@@ -1719,6 +1729,8 @@ class GUI:
                                           tag=ui.PLT_SAMPLE_AX_ACCEL_2)
                         dpg.hide_item(ui.PLT_SAMPLE_AX_ACCEL_2)
 
+                print("create_gui: E plots done", flush=True)
+
                 # ── Results column (right) ────────────────────────────
                 with dpg.child_window(width=RESULTS_WIDTH, autosize_y=True):
                     # Channel warnings — hidden until an overflow occurs
@@ -1767,15 +1779,20 @@ class GUI:
                         dpg.add_spacer(height=2)
 
     def initialize(self):
+        print("initialize: ensure_default_config", flush=True)
         _cfg.ensure_default_config()
+        print("initialize: create_gui", flush=True)
         self.create_gui()
+        print("initialize: post create_gui", flush=True)
         self._update_spectrum_info()
         self._update_connection_summary()
         self._update_axis_assignment()
         self._refresh_registry_dialog_list()
         self._set_stream_status('idle')   # apply initial toggle button theme
         log.info('Setup GUI')
+        print("initialize: setup_dearpygui", flush=True)
         dpg.setup_dearpygui()
+        print("initialize: done", flush=True)
         # TODO: open device connection window automatically at startup so the user
         #       is prompted to connect a device without needing to find the menu.
         #       Uncomment the line below once the config dialog open/close lifecycle
