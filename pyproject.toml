@@ -11,7 +11,7 @@ dependencies = [
     "numpy",
     "scipy",
     "pandas",
-    "dearpygui",
+    "dearpygui==2.0.0",
     "matplotlib",
     "sounddevice",
     "pyyaml",
