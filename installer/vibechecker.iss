@@ -1,6 +1,8 @@
 ; vibechecker.iss  —  Inno Setup script
 ;
-; Creates a Windows installer for Vibechecker.
+; Vibechecker — Desktop GUI for PicoScope vibration analysis
+; Copyright (c) 2026 Rev Engineering. Author: Henry Gotjen.
+; Released under the MIT License.
 ;
 ; Requirements:
 ;   Inno Setup 6.x  https://jrsoftware.org/isinfo.php
@@ -13,8 +15,10 @@
 
 #define AppName      "Vibechecker"
 #define AppVersion   "0.1.0"
-#define AppPublisher "Henry Gotjen"
+#define AppPublisher "Rev Engineering"
+#define AppCopyright "Copyright (c) 2026 Rev Engineering. Author: Henry Gotjen."
 #define AppExeName   "vibechecker.exe"
+; TODO: Replace placeholder with real icon before release
 ; #define AppIcon      "..\assets\vibechecker.ico"
 ; Directory produced by PyInstaller COLLECT step
 #define BuildDir     "..\dist\vibechecker"
@@ -24,6 +28,7 @@ AppId={{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
+AppCopyright={#AppCopyright}
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 OutputDir=Output
