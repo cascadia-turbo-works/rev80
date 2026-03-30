@@ -70,10 +70,14 @@ Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(
 
 function IsPicoSdkInstalled(): Boolean;
 var
-  Path: String;
+  RegPath: String;
 begin
-  Result := RegQueryStringValue(HKLM, 'SOFTWARE\Pico Technology\SDK', 'InstallPath', Path)
-         or RegQueryStringValue(HKLM, 'SOFTWARE\WOW6432Node\Pico Technology\SDK', 'InstallPath', Path);
+  // PicoSDK 11.x does not write a registry key — fall back to checking the
+  // well-known default DLL location.
+  Result := RegQueryStringValue(HKLM, 'SOFTWARE\Pico Technology\SDK', 'InstallPath', RegPath)
+         or RegQueryStringValue(HKLM, 'SOFTWARE\WOW6432Node\Pico Technology\SDK', 'InstallPath', RegPath)
+         or FileExists(ExpandConstant('{pf}\Pico Technology\SDK\lib\ps4000a.dll'))
+         or FileExists(ExpandConstant('{pf32}\Pico Technology\SDK\lib\ps4000a.dll'));
 end;
 
 function InitializeSetup(): Boolean;
