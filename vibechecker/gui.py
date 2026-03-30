@@ -1319,7 +1319,9 @@ class GUI:
     # ------------------------------------------------------------------
 
     def create_gui(self):
+        print("create_gui: create_context", flush=True)
         dpg.create_context()
+        print("create_gui: context created", flush=True)
 
         # File dialogs
         with dpg.file_dialog(
@@ -1767,15 +1769,20 @@ class GUI:
                         dpg.add_spacer(height=2)
 
     def initialize(self):
+        print("initialize: ensure_default_config", flush=True)
         _cfg.ensure_default_config()
+        print("initialize: create_gui", flush=True)
         self.create_gui()
+        print("initialize: post create_gui", flush=True)
         self._update_spectrum_info()
         self._update_connection_summary()
         self._update_axis_assignment()
         self._refresh_registry_dialog_list()
         self._set_stream_status('idle')   # apply initial toggle button theme
         log.info('Setup GUI')
+        print("initialize: setup_dearpygui", flush=True)
         dpg.setup_dearpygui()
+        print("initialize: done", flush=True)
         # TODO: open device connection window automatically at startup so the user
         #       is prompted to connect a device without needing to find the menu.
         #       Uncomment the line below once the config dialog open/close lifecycle
