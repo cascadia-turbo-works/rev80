@@ -14,7 +14,16 @@ if __name__=="__main__":
     vibechecker.get_logger().info('Vibechecker Launched')
 
     # Start App
-    app = vibechecker.GUI()
-    app.initialize()
-    app.run()
-    app.cleanup()
+    try:
+        print("Creating GUI...", flush=True)
+        app = vibechecker.GUI()
+        print("Initializing...", flush=True)
+        app.initialize()
+        print("Running...", flush=True)
+        app.run()
+        app.cleanup()
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        vibechecker.get_logger().exception("Fatal startup error")
+        input("Press Enter to exit...")
