@@ -15,7 +15,7 @@ from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
 ROOT = Path(SPECPATH)
 DRIVERS_DIR = ROOT / 'drivers'
-LOGGING_YAML = ROOT / 'logging.yaml'
+LOGGING_YAML = ROOT / 'vibechecker' / 'logging.yaml'
 ICON_FILE = ROOT / 'assets' / 'vibechecker.ico'  # placeholder — add before build
 
 # ── Hidden imports ───────────────────────────────────────────────────────────
