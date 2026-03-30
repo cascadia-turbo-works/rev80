@@ -1346,6 +1346,8 @@ class GUI:
                 color=(150, 255, 150, 255))
             dpg.add_file_extension('.*', color=(0, 150, 150, 150))
 
+        print("create_gui: A file_dialogs done", flush=True)
+
         # ── Unified Config Dialog (Device / Sensors / Spectrum tabs) ───
         _dlg_cfg_w, _dlg_cfg_h = 720, 560
         _sreg_field_w = int((_dlg_cfg_w - 200 - 40) * 0.618)  # ~297px
@@ -1502,6 +1504,8 @@ class GUI:
             dpg.add_separator()
             dpg.add_button(label='Close', callback=self._on_config_close, width=-1)
 
+        print("create_gui: B config_dialog done", flush=True)
+
         # ── Section container theme (slightly lighter than window background) ──
         _sect_bg = vibechecker.hex_to_rgba(vibechecker.THEME_COLORS['SURFACE'])
         with dpg.theme() as self._sect_theme:
@@ -1532,6 +1536,8 @@ class GUI:
                     dpg.add_theme_color(dpg.mvThemeCol_Text,           fg,
                                         category=dpg.mvThemeCat_Core)
             self._toggle_themes[state] = _t
+
+        print("create_gui: C themes done", flush=True)
 
         # ── Main window ────────────────────────────────────────────────
         with dpg.window(label='Vibe Checkup', tag='primary_window'):
@@ -1660,6 +1666,8 @@ class GUI:
                                                ui.DLG_LOAD_FILE),
                                            width=_BTN_HALF)
 
+                print("create_gui: D controls_column done", flush=True)
+
                 # ── Main column (center — plots) ──────────────────────
                 with dpg.child_window(width=-RESULTS_WIDTH, autosize_y=True,
                                       no_scrollbar=True):
@@ -1720,6 +1728,8 @@ class GUI:
                         dpg.add_plot_axis(dpg.mvYAxis, label='',
                                           tag=ui.PLT_SAMPLE_AX_ACCEL_2)
                         dpg.hide_item(ui.PLT_SAMPLE_AX_ACCEL_2)
+
+                print("create_gui: E plots done", flush=True)
 
                 # ── Results column (right) ────────────────────────────
                 with dpg.child_window(width=RESULTS_WIDTH, autosize_y=True):
