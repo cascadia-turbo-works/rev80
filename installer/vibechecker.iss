@@ -15,7 +15,7 @@
 #define AppVersion   "0.1.0"
 #define AppPublisher "Henry Gotjen"
 #define AppExeName   "vibechecker.exe"
-#define AppIcon      "..\assets\vibechecker.ico"
+; #define AppIcon      "..\assets\vibechecker.ico"
 ; Directory produced by PyInstaller COLLECT step
 #define BuildDir     "..\dist\vibechecker"
 
@@ -28,7 +28,7 @@ DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 OutputDir=Output
 OutputBaseFilename=VibecheckerSetup-{#AppVersion}
-SetupIconFile={#AppIcon}
+; SetupIconFile={#AppIcon}
 Compression=lzma2/ultra64
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64
