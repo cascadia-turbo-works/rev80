@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "ipykernel"]
+dev = ["pytest", "ipykernel", "pyinstaller"]
 
 [tool.setuptools.packages.find]
 include = ["vibechecker*"]
