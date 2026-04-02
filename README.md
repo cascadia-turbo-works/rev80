@@ -7,8 +7,10 @@ A Python desktop application for capturing, analyzing, and recording vibration d
 ## Table of Contents
 
 - [Features](#features)
-- [Installation](#installation)
-- [Running the App](#running-the-app)
+- [Installing on Windows](#installing-on-windows)
+- [Installing from Source (any OS)](#installing-from-source-any-os)
+- [Contributing](#contributing)
+- [Building the Windows Installer](#building-the-windows-installer)
 - [Architecture](#architecture)
 - [Module Reference](#module-reference)
 - [Data Pipeline](#data-pipeline)
@@ -21,7 +23,6 @@ A Python desktop application for capturing, analyzing, and recording vibration d
 - [Configuration and Persistence](#configuration-and-persistence)
 - [PicoScope Integration](#picoscope-integration)
 - [Testing](#testing)
-- [Building for Windows](#building-for-windows)
 
 ---
 
@@ -43,35 +44,155 @@ A Python desktop application for capturing, analyzing, and recording vibration d
 
 ---
 
-## Installation
+## Installing on Windows
 
-```bash
-# Clone the repository
-git clone <repo-url>
-cd vibegui
+1. Install **PicoSDK 11.1.418** (or PicoScope 7 for Windows) from [picotech.com/downloads](https://www.picotech.com/downloads). **Restart your computer** after installation so Windows registers the USB kernel driver.
+2. Run **`VibecheckerSetup-0.1.0.exe`** and follow the installer. It creates a Start Menu shortcut and an uninstaller. No admin rights required.
 
-# Or install dependencies directly
-pip install -r requirements.txt
+> **SmartScreen warning:** the installer is currently unsigned. Click *More info → Run anyway* to proceed.
 
-# Install in editable mode
-pip install -e .
-```
+### Runtime file locations
 
-**Dependencies:** `numpy`, `scipy`, `pandas`, `dearpygui==2.0.0`, `sounddevice`, `h5py`, `pyyaml`, `matplotlib`, `picosdk`
-
-The `picosdk` package requires the PicoScope 4000A driver (`ps4000a.dll` / `.so`) to be present on the system path for hardware operation.
+| Purpose | Location |
+| --- | --- |
+| Measurement data (`.h5`) | `~/Documents/vibechecker/data/` |
+| Log files | `~/Documents/vibechecker/logs/` |
+| Config / sensor library | `%APPDATA%\vibechecker\` |
 
 ---
 
-## Running the App
+## Installing from Source (any OS)
+
+Works on Windows, Linux, and macOS. Requires Python 3.10+.
+
+1. Install **PicoSDK** or **PicoScope 7** for your OS from [picotech.com/downloads](https://www.picotech.com/downloads). **Restart your computer** after installation.
+
+2. Get the source and install dependencies:
+
+   ```bash
+   git clone <repo-url>/vibegui.git
+   cd vibegui
+
+   # Runtime dependencies only
+   pip install .
+
+   # Runtime + development tools (pytest, pyinstaller, etc.)
+   pip install -e ".[dev]"
+   ```
+
+3. Run the app:
+
+   ```bash
+   python -m vibechecker
+
+   # With debug logging to console
+   python -m vibechecker --debug
+   ```
+
+**Runtime dependencies:** `numpy`, `scipy`, `dearpygui==2.0.0`, `h5py`, `pyyaml`, `picosdk`
+
+The `picosdk` package requires the PicoScope 4000A driver (`ps4000a.dll` / `libps4000a.so`) to be present on the system for hardware use. The app will start without it and show a "driver not found" notice in the device dialog — the simulated sensor is still available.
+
+---
+
+## Contributing
+
+### Development environment (Linux / macOS recommended)
 
 ```bash
-# Standard launch
-python -m vibechecker
+git clone <repo-url>/vibegui.git
+cd vibegui
 
-# With debug logging to console
-python -m vibechecker --debug
+# Create and activate a virtual environment
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+
+# Install in editable mode with dev tools
+pip install -e ".[dev]"
+
+# Run the test suite (no hardware required — uses SimulatedSensor)
+pytest tests/
+
+# Launch the app against the source tree
+python -m vibechecker
 ```
+
+### Project layout
+
+```
+vibechecker/          Python package
+  _paths.py           Runtime-safe path resolution (dev vs frozen)
+  _pico_loader.py     Windows DLL search path setup for frozen builds
+  logging.yaml        Logging configuration (bundled with package)
+assets/               App icon source
+  vibechecker_icon.svg  Source artwork — edit this to change the icon
+  make_icons.sh         Regenerates vibechecker.ico from SVG via Inkscape + ImageMagick
+  vibechecker.ico       Multi-resolution icon used by installer and exe
+drivers/              PicoScope DLLs (Windows build only, not committed)
+installer/            Inno Setup script
+tests/                pytest suite
+vibechecker.spec      PyInstaller build spec
+build.sh              Full build pipeline (Git Bash on Windows)
+build.bat             Full build pipeline (cmd.exe on Windows)
+```
+
+### Replacing the app icon
+
+Drop a new `assets/vibechecker.ico` in place and rebuild — no changes to `vibechecker.spec` or `installer/vibechecker.iss` are needed. To regenerate the `.ico` from the SVG source:
+
+```bash
+# Requires inkscape and imagemagick
+cd assets
+./make_icons.sh
+```
+
+---
+
+## Building the Windows Installer
+
+Produces a self-contained one-directory executable and a standalone installer (`.exe`) via PyInstaller and Inno Setup. **The build must run on a 64-bit Windows machine.**
+
+### Prerequisites
+
+| Tool | Where to get it | Notes |
+| --- | --- | --- |
+| Python 3.10+ (64-bit) | [python.org](https://www.python.org/downloads/) | Must be 64-bit; add to PATH |
+| Git for Windows | [git-scm.com](https://git-scm.com/download/win) | Provides Git Bash for `build.sh` |
+| PicoSDK 11.1.418 | [picotech.com/downloads](https://www.picotech.com/downloads) | **Reboot after install** |
+| Inno Setup 6 | [jrsoftware.org/isinfo.php](https://jrsoftware.org/isinfo.php) | Per-user install to `%LOCALAPPDATA%` is fine |
+
+Install project dependencies (from Git Bash or cmd.exe):
+
+```bash
+pip install -e ".[dev]"
+```
+
+### Running the build
+
+```bash
+# Full pipeline: collect DLLs → PyInstaller → Inno Setup
+./build.sh          # Git Bash
+build.bat           # cmd.exe / PowerShell
+
+# Individual steps
+./build.sh dlls         # collect PicoScope DLLs into drivers/ only
+./build.sh pyinstaller  # PyInstaller only (skips DLL collection)
+./build.sh installer    # Inno Setup only (requires dist/ to exist)
+```
+
+### Output
+
+| Path | Description |
+| --- | --- |
+| `dist/vibechecker/vibechecker.exe` | Standalone executable (no install needed) |
+| `installer/Output/VibecheckerSetup-<version>.exe` | Installer with Start Menu shortcut and uninstaller |
+
+### Known constraints
+
+- **64-bit only** — PicoSDK DLLs are 64-bit; 32-bit Python will not work.
+- **DearPyGui pinned to 2.0.0** — versions above 2.0.0 have a known viewport crash on Windows.
+- **USB kernel driver** — `ps4000a.dll` is the user-mode library; the USB kernel driver is installed separately by PicoSDK. Reboot required before first hardware connection.
+- **Code signing** — the installer and executable are unsigned; Windows SmartScreen will warn on first run. See `README` code signing notes or sign with `osslsigncode` and a certificate.
 
 ---
 
@@ -448,58 +569,3 @@ pytest tests/ -k "stream"
 
 Hardware-specific tests in `tests/test_picoscope_hw.py` skip automatically when no PicoScope is detected (`VibeSensor.find()` returns empty).
 
----
-
-## Building for Windows
-
-Produces a self-contained one-directory executable and a standalone installer (`.exe`) via PyInstaller and Inno Setup. The build must run on a **64-bit Windows machine** with the PicoScope connected and PicoSDK installed — cross-compilation from Linux is not supported.
-
-### Prerequisites
-
-1. **PicoSDK** — install from [picotech.com/downloads](https://www.picotech.com/downloads).
-   The installer places `ps4000a.dll` and `picoipp.dll` in `C:\Program Files\Pico Technology\SDK\lib\`.
-   **Reboot after installation** so Windows registers the USB kernel driver before the first connection attempt.
-
-2. **Inno Setup 6** — install from [jrsoftware.org/isinfo.php](https://jrsoftware.org/isinfo.php).
-   A non-admin (per-user) install to `%LOCALAPPDATA%\Programs\Inno Setup 6\` is fine; the build scripts find it automatically.
-
-3. **Python 64-bit** and project dependencies:
-   ```bash
-   pip install -e ".[dev]" pyinstaller
-   ```
-
-### Build
-
-From Git Bash (or PowerShell with `build.bat`):
-
-```bash
-# Full pipeline: collect DLLs → PyInstaller → Inno Setup installer
-./build.sh
-
-# Individual steps
-./build.sh dlls         # collect PicoScope DLLs into drivers/ only
-./build.sh pyinstaller  # PyInstaller only (skips DLL collection)
-./build.sh installer    # Inno Setup only (requires dist/ to exist)
-```
-
-### Output
-
-| Path | Description |
-| --- | --- |
-| `dist/vibechecker/vibechecker.exe` | Standalone executable (run directly, no install needed) |
-| `installer/Output/VibecheckerSetup-<version>.exe` | Windows installer with Start Menu shortcut and uninstaller |
-
-### Runtime paths (installed app)
-
-| Purpose | Location |
-| --- | --- |
-| Data files (`.h5`) | `~/Documents/vibechecker/data/` |
-| Log files | `~/Documents/vibechecker/logs/` |
-| Config / sensor library | `%APPDATA%\vibechecker\` |
-
-### Known constraints
-
-- **64-bit only** — PicoSDK DLLs are 64-bit; 32-bit Python will not work.
-- **DearPyGui pinned to 2.0.0** — versions above 2.0.0 have a known viewport initialisation crash on Windows.
-- **PicoSDK USB kernel driver** — the bundled `ps4000a.dll` is the user-mode library; the USB kernel driver must be installed separately via the PicoSDK installer. Vibechecker will launch without it but will show a "PicoScope driver not found" message in the device dialog.
-- **Code signing** — the installer is unsigned; Windows SmartScreen will warn on first run. Right-click → Run anyway, or sign the installer with a certificate for distribution.
