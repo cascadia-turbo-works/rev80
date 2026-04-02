@@ -82,16 +82,16 @@ class AcquisitionSettings:
         Missing keys fall back to the dataclass field defaults.
         """
         obj = cls()
-        if 'maxfreq'          in d: obj.maxfreq          = float(d['maxfreq'])
-        if 'binsize'          in d: obj.binsize           = float(d['binsize'])
-        if 'fft_window'       in d: obj.fft_window        = str(d['fft_window'])
-        if 'welch_overlap'    in d: obj.welch_overlap     = float(d['welch_overlap'])
-        if 'highpass_enabled' in d: obj.highpass_enabled  = bool(d['highpass_enabled'])
-        if 'highpass_fc'      in d: obj.highpass_fc       = float(d['highpass_fc'])
-        if 'lowpass_enabled'  in d: obj.lowpass_enabled   = bool(d['lowpass_enabled'])
-        if 'lowpass_fc'       in d: obj.lowpass_fc        = float(d['lowpass_fc'])
-        if 'trend_max_points' in d: obj.trend_max_points  = int(d['trend_max_points'])
-        if 'trend_fmin'       in d: obj.trend_fmin        = float(d['trend_fmin'])
+        if 'maxfreq'          in d: obj.maxfreq         = float(d['maxfreq'])          # noqa: E701
+        if 'binsize'          in d: obj.binsize          = float(d['binsize'])          # noqa: E701
+        if 'fft_window'       in d: obj.fft_window       = str(d['fft_window'])        # noqa: E701
+        if 'welch_overlap'    in d: obj.welch_overlap    = float(d['welch_overlap'])   # noqa: E701
+        if 'highpass_enabled' in d: obj.highpass_enabled = bool(d['highpass_enabled']) # noqa: E701
+        if 'highpass_fc'      in d: obj.highpass_fc      = float(d['highpass_fc'])     # noqa: E701
+        if 'lowpass_enabled'  in d: obj.lowpass_enabled  = bool(d['lowpass_enabled'])  # noqa: E701
+        if 'lowpass_fc'       in d: obj.lowpass_fc       = float(d['lowpass_fc'])      # noqa: E701
+        if 'trend_max_points' in d: obj.trend_max_points = int(d['trend_max_points'])  # noqa: E701
+        if 'trend_fmin'       in d: obj.trend_fmin       = float(d['trend_fmin'])      # noqa: E701
         if 'trend_fmax'       in d:
             obj.trend_fmax = float(d['trend_fmax']) if d['trend_fmax'] is not None else None
         return obj
