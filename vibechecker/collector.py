@@ -28,7 +28,11 @@ class DataCollector:
     Hardware callback → receive_data()
         per channel: mV→EU conversion + Butterworth filter → VibeSample
         → frame_cache.append(dict[int, VibeSample])
-        → data_callback() → registered GUI callbacks
+        → new_frame_event.set()
+
+    The GUI render loop polls new_frame_event each tick and grabs
+    frame_cache[-1] for display.  Programmatic consumers (collect_sample
+    one-shot, test hooks) still use self.callbacks directly.
     """
 
     def __init__(self,
@@ -46,6 +50,10 @@ class DataCollector:
         self.siggen_config: dict | None = None
         self._last_frame_t: float | None = None   # arrival time of previous frame
         self._lag_warn_t: float = 0.0             # wall time of last lag warning
+
+        # Event-based GUI signaling: set when a new frame is ready for display.
+        # The GUI render loop polls this each tick and grabs frame_cache[-1].
+        self.new_frame_event = threading.Event()
 
         if sensor is not None:
             self.connect_sensor(sensor)
@@ -175,20 +183,16 @@ class DataCollector:
     # ------------------------------------------------------------------
 
     def reprocess_last_block(self) -> None:
-        """Re-deliver the currently displayed cached frame to GUI callbacks.
+        """Signal the GUI to redisplay the current cached frame.
 
         Use after display settings change (units, sensor, freq window) while
         the stream is stopped to refresh plots without new hardware data.
-        Bypasses data_callback to avoid appending a duplicate frame or
-        resetting the browse cursor.
+        Does not append a duplicate frame or reset the browse cursor.
         """
         cache = self.data['frame_cache']
         if not cache:
             return
-        idx = min(self._cache_cursor, len(cache) - 1)
-        frame = cache[-(idx + 1)]
-        for fn in self.callbacks.values():
-            fn(frame)
+        self.new_frame_event.set()
 
     def browse_frame(self, delta: int) -> None:
         """Move the cache cursor by delta and redisplay.
@@ -379,37 +383,24 @@ class DataCollector:
         self.data_callback(samples)
 
     def data_callback(self, samples: dict):
-        """Store raw frame and deliver dict[int, VibeSample] to consumers."""
-        t0 = time.monotonic()
+        """Store raw frame and signal that new data is available.
 
+        Appends the frame to frame_cache, then sets new_frame_event so
+        the GUI render loop can pick up the latest frame on its next tick.
+        Programmatic callbacks (e.g. collect_sample one-shot) still fire
+        directly via self.callbacks.
+        """
         if samples:
             self.data['frame_cache'].append(samples)
             self.data['frame_count'] += 1
             self._cache_cursor = 0
 
+        # Fire programmatic callbacks (collect_sample one-shot, test hooks)
         for fn in self.callbacks.values():
             fn(samples)
 
-        # Warn when GUI processing time exceeds the hardware frame period —
-        # frames are piling up faster than they're being rendered.
-        # TODO: profile the full data-pipeline (receive_data → FFT → DPG plot
-        #       update) to identify the dominant cost; consider decimating GUI
-        #       updates (render every Nth frame) or offloading FFT to a worker
-        #       thread to prevent the stream from starving.
-        elapsed = time.monotonic() - t0
-        if self._last_frame_t is not None:
-            period = t0 - self._last_frame_t
-            if elapsed > period:
-                now = time.monotonic()
-                if now - self._lag_warn_t >= 1.0:   # rate-limit to once per second
-                    queued = max(1, round(elapsed / period))
-                    log.warning(
-                        f'Processing lag: {elapsed*1000:.0f} ms per frame, '
-                        f'hardware period ~{period*1000:.0f} ms '
-                        f'(~{queued} frame(s) behind)'
-                    )
-                    self._lag_warn_t = now
-        self._last_frame_t = t0
+        # Signal the GUI render loop — it will grab frame_cache[-1]
+        self.new_frame_event.set()
 
     # ------------------------------------------------------------------
     # Persistence
