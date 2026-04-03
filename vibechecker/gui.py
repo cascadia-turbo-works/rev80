@@ -90,7 +90,6 @@ class GUI:
     def __init__(self):
         self.context = None
         self.collector = vibechecker.DataCollector()
-        self.collector.callbacks['plots'] = self.display_frame
         self.registry = ScopeSensorRegistry()
         self._editing_scope_sensor_id: str | None = None
         self._num_channels: int = _DEFAULT_NUM_CHANNELS
@@ -389,6 +388,25 @@ class GUI:
                 dpg.add_plot_legend(location=dpg.mvPlot_Location_East,
                                     tag=legend_tag, parent=plot_tag)
 
+    def poll_new_frames(self):
+        """Check for new data from the collector and display the latest frame.
+
+        Called once per DPG render tick from the manual render loop.
+        If multiple frames arrived since the last tick, only the most
+        recent is displayed — earlier frames remain in frame_cache for
+        browsing.
+        """
+        if not self.collector.new_frame_event.is_set():
+            return
+        self.collector.new_frame_event.clear()
+
+        cache = self.collector.data['frame_cache']
+        if not cache:
+            return
+        idx = min(self.collector._cache_cursor, len(cache) - 1)
+        frame = cache[-(idx + 1)]
+        self.display_frame(frame)
+
     def _redraw(self, sender=None, data=None):
         if not self.collector.is_streaming:
             self.collector.reprocess_last_block()
@@ -586,10 +604,10 @@ class GUI:
             log.warning('Connect a device before collecting')
             return
         self._set_stream_status('waiting')
-        samples = self.collector.collect_sample()
+        self.collector.collect_sample()
         self._set_stream_status('idle')
-        if samples:
-            self.display_frame(samples)
+        # Frame is now in cache and new_frame_event is set;
+        # poll_new_frames will display it on the next render tick.
 
     # ------------------------------------------------------------------
     # File handling
@@ -1789,7 +1807,9 @@ class GUI:
         dpg.show_viewport()
         dpg.set_primary_window('primary_window', True)
         log.info('Start DPG backend')
-        dpg.start_dearpygui()
+        while dpg.is_dearpygui_running():
+            self.poll_new_frames()
+            dpg.render_dearpygui_frame()
 
     def cleanup(self):
         log.info('Cleanup app assets')
