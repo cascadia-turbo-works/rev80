@@ -116,6 +116,86 @@ def test_save_load_roundtrip():
 
 
 # ---------------------------------------------------------------------------
+# Offline file loading — no device connected
+# ---------------------------------------------------------------------------
+
+def test_load_offline_configures_channels():
+    """Loading an h5 with no sensor sets enabled_channels from file contents."""
+    # First, create a file with known channel data
+    collector = DataCollector(sim_sensor, acq_settings)
+    result = collector.collect_sample()
+    collector.disconnect_sensor()
+    assert result
+
+    DATADIR.makedirs_p()
+    fname = DATADIR / 'pytest_offline.h5'
+    fname.remove_p()
+    collector.save_data(fname)
+
+    # Load into a fresh collector with NO sensor
+    offline = DataCollector(config=acq_settings)
+    assert offline.sensor is None, 'Should have no sensor'
+    assert offline.stream is None, 'Should have no stream'
+
+    offline.load_data(fname)
+
+    # Verify channels were auto-configured
+    cache = offline.data['frame_cache']
+    assert len(cache) >= 1, 'frame_cache empty after offline load'
+
+    # Collect all channel keys from loaded frames
+    loaded_channels = set()
+    for frame in cache:
+        loaded_channels.update(k for k in frame if isinstance(k, int))
+
+    assert loaded_channels, 'No channel data in loaded file'
+    assert set(offline.config.enabled_channels) == loaded_channels, (
+        f'enabled_channels {offline.config.enabled_channels} != '
+        f'file channels {sorted(loaded_channels)}'
+    )
+
+    # Verify reprocess works (process() on loaded samples)
+    last_frame = cache[-1]
+    for ch, sample in ((k, v) for k, v in last_frame.items() if isinstance(k, int)):
+        cr = sample.process(ch, sample.unit, offline.config)
+        assert cr is not None, f'process() returned None for channel {ch}'
+        assert len(cr.freq) > 0
+
+    fname.remove_p()
+
+
+def test_load_offline_adjusts_maxfreq():
+    """Loading a file whose samplerate > current config adjusts maxfreq."""
+    # Create a file with high samplerate
+    high_freq_config = AcquisitionSettings()
+    high_freq_config.maxfreq = 50000.0  # → samplerate = 131072
+    collector = DataCollector(sim_sensor, high_freq_config)
+    result = collector.collect_sample()
+    collector.disconnect_sensor()
+
+    DATADIR.makedirs_p()
+    fname = DATADIR / 'pytest_offline_hf.h5'
+    fname.remove_p()
+    collector.save_data(fname)
+
+    # Load with a low-freq default config
+    low_config = AcquisitionSettings()
+    low_config.maxfreq = 500.0  # → samplerate = 1024
+    offline = DataCollector(config=low_config)
+    old_sr = offline.config.samplerate
+
+    offline.load_data(fname)
+
+    # Config should have been adjusted upward
+    assert offline.config.samplerate >= high_freq_config.samplerate, (
+        f'samplerate {offline.config.samplerate} should be >= '
+        f'{high_freq_config.samplerate} after loading high-freq file'
+    )
+
+    fname.remove_p()
+
+
+# ---------------------------------------------------------------------------
 # GUI build smoke test
 # ---------------------------------------------------------------------------
 
