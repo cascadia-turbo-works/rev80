@@ -16,6 +16,7 @@ dependencies = [
     "sounddevice",
     "pyyaml",
     "h5py",
+    "plyer",
     "picosdk @ git+https://github.com/picotech/picosdk-python-wrappers.git@5d91a11b67a2c2ff9d6371d459e05e873106a2a3"
 ]
 
