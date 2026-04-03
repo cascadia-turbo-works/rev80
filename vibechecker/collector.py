@@ -514,5 +514,30 @@ class DataCollector:
 
         n = len(self.data['frame_cache'])
         log.info(f'Loaded {n} frames from {target}')
-        if n:
-            self.reprocess_last_block()
+
+        if not n:
+            return
+
+        # Auto-configure enabled_channels and acquisition settings from file
+        all_channels: set[int] = set()
+        file_samplerate: int = 0
+        for frame in self.data['frame_cache']:
+            for k, v in frame.items():
+                if isinstance(k, int):
+                    all_channels.add(k)
+                    if v.samplerate > file_samplerate:
+                        file_samplerate = v.samplerate
+
+        if all_channels:
+            self.config.enabled_channels = sorted(all_channels)
+            log.info(f'Enabled channels from file: {self.config.enabled_channels}')
+
+        if file_samplerate > 0:
+            file_maxfreq = file_samplerate / 2
+            if self.config.samplerate < file_samplerate:
+                self.config.maxfreq = file_maxfreq
+                log.info(f'Adjusted maxfreq to {file_maxfreq} Hz '
+                         f'(file samplerate: {file_samplerate})')
+
+        self.init_trend_channels()
+        self.reprocess_last_block()

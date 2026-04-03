@@ -188,8 +188,10 @@ class UI_Elements:
     ACQ_CLEAR_CACHE    = 'ACQ_CLEAR_CACHE'     # wipe frame cache + trend
     CHANNELS_CARD      = 'CHANNELS_CARD'        # left-panel Channels card window
     CHANNELS_GEN_LINE  = 'CHANNELS_GEN_LINE'   # "Gen : wave : freq x amp" text
-    ACQ_BROWSE_PREV    = 'ACQ_BROWSE_PREV'     # ← older frame
-    ACQ_BROWSE_NEXT    = 'ACQ_BROWSE_NEXT'     # → newer frame
+    ACQ_BROWSE_FIRST   = 'ACQ_BROWSE_FIRST'     # << oldest frame
+    ACQ_BROWSE_PREV    = 'ACQ_BROWSE_PREV'     # < older frame
+    ACQ_BROWSE_NEXT    = 'ACQ_BROWSE_NEXT'     # > newer frame
+    ACQ_BROWSE_LAST    = 'ACQ_BROWSE_LAST'     # >> newest frame
     ACQ_BROWSE_LABEL   = 'ACQ_BROWSE_LABEL'    # "Frame N / M" text
 
     # ── File Handling section ──────────────────────────────────────────────
@@ -211,8 +213,7 @@ class UI_Elements:
     SIGGEN_FREQ_HZ       = 'SIGGEN_FREQ_HZ'
     SIGGEN_PKTOPK_MV     = 'SIGGEN_PKTOPK_MV'
     SIGGEN_OFFSET_MV     = 'SIGGEN_OFFSET_MV'
-    DLG_SAVE_FILE       = 'DLG_SAVE_FILE'
-    DLG_LOAD_FILE       = 'DLG_LOAD_FILE'
+    # DLG_SAVE_FILE / DLG_LOAD_FILE removed — replaced by tkinter dialogs
 
     # Spectrum dialog inputs — controls
     SPEC_DLG_MAXFREQ    = 'SPEC_DLG_MAXFREQ'
@@ -256,6 +257,7 @@ class UI_Elements:
     PLT_TREND_AX_TIME    = 'PLT_TREND_AX_TIME'
     PLT_TREND_AX_OVERALL = 'PLT_TREND_AX_OVERALL'
     PLT_TREND_DATA       = 'PLT_TREND_DATA'
+    PLT_TREND_CURSOR     = 'PLT_TREND_CURSOR'    # vertical line at browsed frame time
 
     FFT_PEAKS_DISPLAY_COUNT = 'FFT_PEAK_DISPLAY_COUNT'
     FFT_PEAKS_TABLE         = 'FFT_PEAKS_TABLE'

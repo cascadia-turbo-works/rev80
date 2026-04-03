@@ -108,13 +108,22 @@ class GUI:
     # ------------------------------------------------------------------
 
     def _set_device_status(self, state: str):
-        """Update the device connection indicator: 'connected' | 'disconnected'."""
+        """Update the device connection indicator: 'connected'|'file_loaded'|'disconnected'."""
         if dpg.does_item_exist(ui.DEVICE_STATUS_RECT):
-            color = _c('GREEN') if state == 'connected' else _c('RED')
-            dpg.configure_item(ui.DEVICE_STATUS_RECT, fill=color)
+            colors = {
+                'connected': _c('GREEN'),
+                'file_loaded': _c('YELLOW'),
+                'disconnected': _c('RED'),
+            }
+            dpg.configure_item(ui.DEVICE_STATUS_RECT,
+                               fill=colors.get(state, _c('RED')))
         if dpg.does_item_exist(ui.CONN_STATUS_TEXT):
-            dpg.set_value(ui.CONN_STATUS_TEXT,
-                          'Connected' if state == 'connected' else 'Not Connected')
+            labels = {
+                'connected': 'Connected',
+                'file_loaded': 'File Loaded',
+                'disconnected': 'Not Connected',
+            }
+            dpg.set_value(ui.CONN_STATUS_TEXT, labels.get(state, 'Not Connected'))
 
     def _set_stream_status(self, state: str):
         """Update the toggle button color and label: 'active'|'waiting'|'idle'."""
@@ -315,7 +324,7 @@ class GUI:
         # fit [0, max_t * 1.1].  Updating it every frame would lock out user pan/zoom.
 
     def _update_browse_label(self):
-        """Refresh the frame-browser label and enable/disable nav buttons."""
+        """Refresh the frame-browser label, nav buttons, and trend cursor line."""
         if not dpg.does_item_exist(ui.ACQ_BROWSE_LABEL):
             return
         cache  = self.collector.data['frame_cache']
@@ -324,9 +333,49 @@ class GUI:
         label  = f'Frame {n - cursor} / {n}' if n else 'No frames'
         dpg.set_value(ui.ACQ_BROWSE_LABEL, label)
         can_browse = (not self.collector.is_streaming) and n > 1
-        for tag in [ui.ACQ_BROWSE_PREV, ui.ACQ_BROWSE_NEXT]:
+        for tag in [ui.ACQ_BROWSE_FIRST, ui.ACQ_BROWSE_PREV,
+                    ui.ACQ_BROWSE_NEXT, ui.ACQ_BROWSE_LAST]:
             if dpg.does_item_exist(tag):
                 dpg.configure_item(tag, enabled=can_browse)
+
+        # Vertical cursor on trend plot showing current browse position
+        self._update_trend_cursor()
+
+    def _update_trend_cursor(self):
+        """Show/hide a vertical line on the trend plot at the browsed frame's rel_time."""
+        cache = self.collector.data['frame_cache']
+        cursor = self.collector._cache_cursor
+        show = (not self.collector.is_streaming) and len(cache) > 0
+
+        if show:
+            idx = min(cursor, len(cache) - 1)
+            frame = cache[-(idx + 1)]
+            # Get rel_time from the first channel sample in the frame
+            rel_time = None
+            for k, v in frame.items():
+                if isinstance(k, int):
+                    rel_time = v.rel_time
+                    break
+
+            if rel_time is not None and dpg.does_item_exist(ui.PLT_TREND_AX_OVERALL):
+                if not dpg.does_item_exist(ui.PLT_TREND_CURSOR):
+                    dpg.add_vline_series([rel_time], tag=ui.PLT_TREND_CURSOR,
+                                         parent=ui.PLT_TREND_AX_OVERALL,
+                                         label='##cursor')
+                    with dpg.theme() as cursor_theme:
+                        with dpg.theme_component(dpg.mvAll):
+                            dpg.add_theme_color(dpg.mvPlotCol_Line,
+                                                _c('ON_SURFACE', 180))
+                            dpg.add_theme_style(dpg.mvPlotStyleVar_LineWeight, 1.0)
+                    dpg.bind_item_theme(ui.PLT_TREND_CURSOR, cursor_theme)
+                else:
+                    dpg.set_value(ui.PLT_TREND_CURSOR, [[rel_time]])
+                dpg.configure_item(ui.PLT_TREND_CURSOR, show=True)
+                return
+
+        # Hide cursor when streaming or no data
+        if dpg.does_item_exist(ui.PLT_TREND_CURSOR):
+            dpg.configure_item(ui.PLT_TREND_CURSOR, show=False)
 
     def _update_results_section_visibility(self):
         """Show per-channel result sections only for enabled channels."""
@@ -429,19 +478,29 @@ class GUI:
     # Connection summary (left panel display)
     # ------------------------------------------------------------------
 
+    @property
+    def _has_loaded_data(self) -> bool:
+        """True when frame_cache has data but no device is connected."""
+        return (self.collector.sensor is None
+                and len(self.collector.data['frame_cache']) > 0)
+
     def _update_connection_summary(self):
         """Refresh device info and per-channel lines in the left panel."""
         sensor = self.collector.sensor
+        has_data = self._has_loaded_data
+
         if sensor is not None:
             self._set_device_status('connected')
+        elif has_data:
+            self._set_device_status('file_loaded')
         else:
             self._set_device_status('disconnected')
 
         # Rebuild Device card info group
         if dpg.does_item_exist(ui.DEVICE_INFO_GROUP):
             dpg.delete_item(ui.DEVICE_INFO_GROUP, children_only=True)
+            dim = _c('ON_SURFACE')
             if sensor is not None:
-                dim = _c('ON_SURFACE')
                 for line in [
                     sensor.model_name,
                     f'  S/N: {sensor.serial_number}',
@@ -449,17 +508,28 @@ class GUI:
                     f'  Ch:  {sensor.num_channels}',
                 ]:
                     dpg.add_text(line, parent=ui.DEVICE_INFO_GROUP, color=dim)
-            # Resize Device card: base + (4 lines when connected, 0 when not) + btn
-            n_info = 4 if sensor is not None else 0
+            elif has_data:
+                n_frames = len(self.collector.data['frame_cache'])
+                n_ch = len(self.collector.config.enabled_channels)
+                dpg.add_text(f'File loaded', parent=ui.DEVICE_INFO_GROUP, color=dim)
+                dpg.add_text(f'  {n_frames} frames, {n_ch} channels',
+                             parent=ui.DEVICE_INFO_GROUP, color=dim)
+            # Resize Device card
+            if sensor is not None:
+                n_info = 4
+            elif has_data:
+                n_info = 2
+            else:
+                n_info = 0
             device_h = _CARD_BASE_H + n_info * _CARD_LINE_H + 2 + _CARD_BTN_H + 8
-            # Find the Device card by scanning its known child (DEVICE_INFO_GROUP parent)
             dev_card = dpg.get_item_parent(ui.DEVICE_INFO_GROUP)
             if dev_card:
                 dpg.configure_item(dev_card, height=device_h)
 
+        show_channels = (sensor is not None) or has_data
         if dpg.does_item_exist(ui.CONN_CHANNEL_SUMMARY):
             dpg.delete_item(ui.CONN_CHANNEL_SUMMARY, children_only=True)
-            if self.collector.sensor is not None:
+            if show_channels:
                 for ch in sorted(self.collector.config.enabled_channels):
                     scope_s = self.collector.scope_sensors.get(ch)
                     sname   = scope_s.name if scope_s else '(none)'
@@ -468,32 +538,37 @@ class GUI:
                         f'Ch {chr(65+ch)} : {sname} : {tunit}',
                         parent=ui.CONN_CHANNEL_SUMMARY,
                     )
-                # Signal generator summary line
-                sigcfg = self.collector.siggen_config
-                if sigcfg:
-                    wave = next(
-                        (k for k, v in _SIGGEN_WAVE_TYPES.items()
-                         if v == sigcfg.get('wave_type')), 'Sine')
-                    freq_hz   = float(sigcfg.get('freq_hz', 0))
-                    pktopk_mv = float(sigcfg.get('pktopk_uv', 0)) / 1000.0
-                    freq_str = (f'{freq_hz/1000:.3g} kHz' if freq_hz >= 1000
-                                else f'{freq_hz:.0f} Hz')
-                    amp_str  = (f'{pktopk_mv/1000:.3g} V' if pktopk_mv >= 1000
-                                else f'{pktopk_mv:.0f} mV')
-                    gen_text = f'Gen : {wave} : {freq_str} x {amp_str}'
-                else:
-                    gen_text = 'Gen : Off'
-                dpg.add_text(gen_text, parent=ui.CONN_CHANNEL_SUMMARY,
-                             color=_c('ON_SURFACE'))
+                # Signal generator summary line (only when device connected)
+                if sensor is not None:
+                    sigcfg = self.collector.siggen_config
+                    if sigcfg:
+                        wave = next(
+                            (k for k, v in _SIGGEN_WAVE_TYPES.items()
+                             if v == sigcfg.get('wave_type')), 'Sine')
+                        freq_hz   = float(sigcfg.get('freq_hz', 0))
+                        pktopk_mv = float(sigcfg.get('pktopk_uv', 0)) / 1000.0
+                        freq_str = (f'{freq_hz/1000:.3g} kHz' if freq_hz >= 1000
+                                    else f'{freq_hz:.0f} Hz')
+                        amp_str  = (f'{pktopk_mv/1000:.3g} V' if pktopk_mv >= 1000
+                                    else f'{pktopk_mv:.0f} mV')
+                        gen_text = f'Gen : {wave} : {freq_str} x {amp_str}'
+                    else:
+                        gen_text = 'Gen : Off'
+                    dpg.add_text(gen_text, parent=ui.CONN_CHANNEL_SUMMARY,
+                                 color=_c('ON_SURFACE'))
 
         # Resize Channels card to match actual line count
         if dpg.does_item_exist(ui.CHANNELS_CARD):
-            if self.collector.sensor is not None:
-                n_lines = len(self.collector.config.enabled_channels) + 1  # +gen
+            if show_channels:
+                n_lines = len(self.collector.config.enabled_channels)
+                if sensor is not None:
+                    n_lines += 1  # +gen line
             else:
                 n_lines = 0
             h = _CARD_BASE_H + n_lines * _CARD_LINE_H + 2 + 3*_CARD_BTN_H + 8
             dpg.configure_item(ui.CHANNELS_CARD, height=h)
+
+        self._update_acq_button_state()
 
     # ------------------------------------------------------------------
     # Spectrum info display
@@ -555,6 +630,13 @@ class GUI:
     # Acquisition toggle
     # ------------------------------------------------------------------
 
+    def _update_acq_button_state(self):
+        """Enable/disable acquisition buttons based on device connection."""
+        has_device = self.collector.stream is not None
+        for tag in [ui.ACQ_TOGGLE, ui.ACQ_SINGLE]:
+            if dpg.does_item_exist(tag):
+                dpg.configure_item(tag, enabled=has_device)
+
     def _toggle_acquisition(self, sender=None, data=None):
         if self.collector.is_streaming:
             self._stop_stream()
@@ -595,13 +677,22 @@ class GUI:
     # File handling
     # ------------------------------------------------------------------
 
-    def _on_browse_prev(self, sender=None, data=None):
-        """Browse to an older cached frame."""
-        self.collector.browse_frame(+1)
-
-    def _on_browse_next(self, sender=None, data=None):
-        """Browse to a newer cached frame."""
-        self.collector.browse_frame(-1)
+    def _on_browse(self, sender=None, data=None):
+        """Navigate the frame cache based on which browse button was clicked."""
+        cache = self.collector.data['frame_cache']
+        if not cache:
+            return
+        tag = dpg.get_item_alias(sender) if sender else None
+        if tag == ui.ACQ_BROWSE_FIRST:
+            self.collector._cache_cursor = len(cache) - 1
+            self.collector.reprocess_last_block()
+        elif tag == ui.ACQ_BROWSE_PREV:
+            self.collector.browse_frame(+1)
+        elif tag == ui.ACQ_BROWSE_NEXT:
+            self.collector.browse_frame(-1)
+        elif tag == ui.ACQ_BROWSE_LAST:
+            self.collector._cache_cursor = 0
+            self.collector.reprocess_last_block()
 
     # Default time-series window: ~10 cycles at 60 Hz ≈ 167 ms, rounded to 300 ms
     # so a typical 60 Hz fundamental fills the trace legibly on autoscale.
@@ -676,11 +767,24 @@ class GUI:
         if dpg.does_item_exist(ui.PLT_TREND_AX_TIME):
             dpg.set_axis_limits(ui.PLT_TREND_AX_TIME, 0.0, 1.0)
 
-    def _on_save_click(self, sender=None, data=None):
-        dpg.show_item(ui.DLG_SAVE_FILE)
+    @staticmethod
+    def _native_file_dialog(save: bool = False) -> str:
+        """Open the platform-native file dialog; returns path string or ''."""
+        from plyer import filechooser
+        filters = [f'*{vibechecker.EXT}']
+        path = str(Path(vibechecker.SAVEDIR).resolve())
+        if save:
+            result = filechooser.save_file(
+                title='Save Vibration Data', path=path, filters=filters)
+        else:
+            result = filechooser.open_file(
+                title='Load Vibration Data', path=path, filters=filters)
+        if result:
+            return result[0]
+        return ''
 
-    def _on_save_dialog(self, sender, data):
-        path_str = data.get('file_path_name', '')
+    def _on_save_click(self, sender=None, data=None):
+        path_str = self._native_file_dialog(save=True)
         if not path_str:
             return
         p = Path(path_str)
@@ -688,11 +792,48 @@ class GUI:
             p = p.with_suffix(vibechecker.EXT)
         self.collector.save_data(p)
 
-    def _on_load_dialog(self, sender, data):
-        path_str = data.get('file_path_name', '')
+    def _on_load_click(self, sender=None, data=None):
+        path_str = self._native_file_dialog(save=False)
         if not path_str:
             return
-        self.collector.load_data(Path(path_str))
+        self._on_load_file(Path(path_str))
+
+    def _on_load_file(self, path: Path):
+        """Load an h5 file and sync all GUI state to the loaded data."""
+        if self.collector.is_streaming:
+            self._stop_stream()
+
+        # Temporarily unhook display_frame so load_data's reprocess_last_block
+        # doesn't fire into non-existent series.
+        self.collector.callbacks.pop('plots', None)
+        self.collector.load_data(path)
+
+        cache = self.collector.data['frame_cache']
+        if not cache:
+            self.collector.callbacks['plots'] = self.display_frame
+            return
+
+        # Determine channels present in the loaded data
+        loaded_channels: set[int] = set()
+        for frame in cache:
+            loaded_channels.update(k for k in frame if isinstance(k, int))
+
+        # Remove stale series and trend cursor, then create series for loaded channels
+        for ch in range(_MAX_CHANNELS):
+            self._remove_channel_series(ch)
+        if dpg.does_item_exist(ui.PLT_TREND_CURSOR):
+            dpg.delete_item(ui.PLT_TREND_CURSOR)
+        for ch in sorted(loaded_channels):
+            self._add_channel_series(ch)
+
+        # Re-register callback and display the last frame
+        self.collector.callbacks['plots'] = self.display_frame
+        self._update_axis_assignment()
+        self._update_results_section_visibility()
+        self._update_connection_summary()
+        self._update_spectrum_info()
+        self._autoscale_pending = True
+        self.collector.reprocess_last_block()
 
     # ------------------------------------------------------------------
     # Device Setup Dialog
@@ -1321,29 +1462,6 @@ class GUI:
     def create_gui(self):
         dpg.create_context()
 
-        # File dialogs
-        with dpg.file_dialog(
-                show=False,
-                default_path=str(vibechecker.SAVEDIR),
-                callback=self._on_save_dialog,
-                tag=ui.DLG_SAVE_FILE,
-                width=700, height=400):
-            dpg.add_file_extension(
-                f'Vibe Samples (*{vibechecker.EXT}){{{vibechecker.EXT}}}',
-                color=(150, 255, 150, 255))
-            dpg.add_file_extension('.*', color=(0, 150, 150, 150))
-
-        with dpg.file_dialog(
-                show=False,
-                default_path=str(vibechecker.SAVEDIR),
-                callback=self._on_load_dialog,
-                tag=ui.DLG_LOAD_FILE,
-                width=700, height=400):
-            dpg.add_file_extension(
-                f'Vibe Samples (*{vibechecker.EXT}){{{vibechecker.EXT}}}',
-                color=(150, 255, 150, 255))
-            dpg.add_file_extension('.*', color=(0, 150, 150, 150))
-
         # ── Unified Config Dialog (Device / Sensors / Spectrum tabs) ───
         _dlg_cfg_w, _dlg_cfg_h = 720, 560
         _sreg_field_w = int((_dlg_cfg_w - 200 - 40) * 0.618)  # ~297px
@@ -1619,14 +1737,22 @@ class GUI:
                                            tag=ui.ACQ_CLEAR_CACHE,
                                            callback=self._clear_cache,
                                            width=-1)
-                        dpg.add_spacer(height=2)
+                        dpg.add_spacer(height=4)
+                        dpg.add_separator()
+                        dpg.add_text('Browse Waveforms', color=_c('ON_SURFACE'))
                         with dpg.group(horizontal=True):
+                            dpg.add_button(label='<<', tag=ui.ACQ_BROWSE_FIRST,
+                                           callback=self._on_browse,
+                                           width=28, enabled=False)
                             dpg.add_button(label='<', tag=ui.ACQ_BROWSE_PREV,
-                                           callback=self._on_browse_prev,
+                                           callback=self._on_browse,
                                            width=28, enabled=False)
                             dpg.add_text('No frames', tag=ui.ACQ_BROWSE_LABEL)
                             dpg.add_button(label='>', tag=ui.ACQ_BROWSE_NEXT,
-                                           callback=self._on_browse_next,
+                                           callback=self._on_browse,
+                                           width=28, enabled=False)
+                            dpg.add_button(label='>>', tag=ui.ACQ_BROWSE_LAST,
+                                           callback=self._on_browse,
                                            width=28, enabled=False)
                         dpg.add_spacer(height=6)
                         dpg.add_separator()
@@ -1654,8 +1780,7 @@ class GUI:
                                            callback=self._on_save_click,
                                            width=_BTN_HALF)
                             dpg.add_button(label='Load', tag=ui.FILE_LOAD,
-                                           callback=lambda: dpg.show_item(
-                                               ui.DLG_LOAD_FILE),
+                                           callback=self._on_load_click,
                                            width=_BTN_HALF)
 
                 # ── Main column (center — plots) ──────────────────────
