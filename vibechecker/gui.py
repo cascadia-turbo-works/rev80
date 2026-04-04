@@ -403,8 +403,11 @@ class GUI:
         cache = self.collector.data['frame_cache']
         if not cache:
             return
-        idx = min(self.collector._cache_cursor, len(cache) - 1)
-        frame = cache[-(idx + 1)]
+        try:
+            idx = min(self.collector._cache_cursor, len(cache) - 1)
+            frame = cache[-(idx + 1)]
+        except IndexError:
+            return  # rare race: cache shifted between len() and index
         self.display_frame(frame)
 
     def _redraw(self, sender=None, data=None):
