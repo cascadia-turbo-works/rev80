@@ -77,56 +77,45 @@ python -m vibechecker --debug
 
 ## Architecture
 
-The app is a linear pipeline with no message bus. Each layer hands data directly to the next via registered callbacks.
+The app is a linear pipeline. The hardware thread and the GUI render loop are decoupled via a `threading.Event` — the collector never calls into DPG directly.
 
 ```text
-┌──────────────────────────────────────────────────────────┐
-│  PicoScopeStream  (picoscope.py)                         │
-│  OR  SimulatedSensor  (simulation.py)                    │
-│                                                          │
-│  → polls hardware at blocksize intervals                 │
-│  → ADC counts → mV via adc2mV()                         │
-│  → fires callback(dict) with all channels                │
-└───────────────────────────┬──────────────────────────────┘
-                            │  dict: {status, rel_time,
-                            │         timestamp, unit,
-                            │         channels, data,
-                            │         overflow_mask}
-                            ▼
-┌──────────────────────────────────────────────────────────┐
-│  DataCollector  (collector.py)                           │
-│  → per-channel mV → EU via ScopeSensor.sensitivity      │
-│  → per-channel Butterworth highpass + lowpass filter     │
-│  → wraps each channel in VibeSample                      │
-│  → appends frame dict to 32-frame ring cache             │
-│  → fans out to GUI callbacks                             │
-│  → accumulates trend (overall amplitude per channel)     │
-└───────────────────────────┬──────────────────────────────┘
-                            │  frame dict: {ch: VibeSample, …}
-                            ▼
-┌──────────────────────────────────────────────────────────┐
-│  VibeSample.process(config)  (sample.py)                 │
-│  → Welch FFT with configurable window and overlap        │
-│  → frequency-domain integration (accel → vel → disp)    │
-│  → peak detection                                        │
-│  → returns ChannelResult (frozen dataclass)              │
-└───────────────────────────┬──────────────────────────────┘
-                            │  ChannelResult
-                            ▼
-┌──────────────────────────────────────────────────────────┐
-│  GUI  (gui.py)  — dearpygui                              │
-│  → updates time-domain and spectrum line series          │
-│  → updates peak table, trend plot, overall amplitude     │
-│  → no axis auto-fit; Autoscale button fits on demand     │
-└──────────────────────────────────────────────────────────┘
-                            │
-                            ▼ (on save)
-┌──────────────────────────────────────────────────────────┐
-│  HDF5 files  in  DEVDATA/                                │
-│  DataCollector.save_data() / load_data()                 │
-│  multi-channel layout: /frames/{i}/channels/{ch}/…       │
-└──────────────────────────────────────────────────────────┘
+  Hardware thread                           Main thread
+  ─────────────────                         ───────────────────
+
+┌────────────────────────────┐
+│  PicoScopeStream           │
+│  OR  SimulatedSensor       │
+│  → polls hardware          │
+│  → ADC → mV → callback     │
+└─────────────┬──────────────┘
+              │ dict: {status, rel_time,
+              │  timestamp, unit, channels,
+              │  data, overflow_mask}
+              ▼
+┌────────────────────────────┐
+│  DataCollector             │
+│  → mV → EU (ScopeSensor)  │
+│  → Butterworth HP + LP    │
+│  → VibeSample per channel  │
+│  → frame_cache.append()   │
+│  → new_frame_event.set()  │─ ─ ─ ─ ─ ─ ─▶┌────────────────────────────┐
+└────────────────────────────┘               │  GUI render loop            │
+                                             │  poll_new_frames():         │
+                                             │    if event set:            │
+                                             │      grab frame_cache[-1]  │
+                                             │      VibeSample.process()  │
+                                             │      display_frame()       │
+                                             └─────────────┬──────────────┘
+                                                           │ (on save)
+                                                           ▼
+                                             ┌────────────────────────────┐
+                                             │  HDF5 files in DEVDATA/    │
+                                             │  save_data() / load_data() │
+                                             └────────────────────────────┘
 ```
+
+When the GUI is slower than the hardware data rate, it skips to the latest frame — all earlier frames remain in the 32-frame ring cache for browsing. The hardware thread is never blocked by GUI rendering.
 
 ---
 
@@ -142,9 +131,9 @@ The app is a linear pipeline with no message bus. Each layer hands data directly
 | `scope_sensor.py` | `ScopeSensor` dataclass — IEPE sensor metadata: name, sensitivity (mV/EU), engineering units, amplitude mode, UUID |
 | `scope_sensor_registry.py` | `ScopeSensorRegistry` — YAML-backed CRUD for user sensor library and per-channel assignments; persists signal generator config |
 | `sample.py` | `AcquisitionSettings` — spectrum and filter config with derived properties; `VibeSample` — single-channel time-domain block with HDF5 I/O and `process()` → `ChannelResult`; `ChannelResult` — frozen display-ready result |
-| `collector.py` | `DataCollector` — multi-channel acquisition state machine: stream lifecycle, per-channel filter application, 32-frame ring cache, trend accumulation, HDF5 save/load |
+| `collector.py` | `DataCollector` — multi-channel acquisition state machine: stream lifecycle, per-channel filter application, 32-frame ring cache, `new_frame_event` signal for GUI, trend accumulation, HDF5 save/load |
 | `simulation.py` | `SimulatedSensor` (daemon thread) + signal generators: `GenerateTone`, `GenerateNoise`, `GenerateBearingVibration_SpectralMethod`, `GenerateBearingVibration_TemporalMethod` |
-| `gui.py` | `GUI` class — dearpygui three-column layout, channel config panel, sensor library, spectrum and time-domain plots, trend plots, file I/O |
+| `gui.py` | `GUI` class — dearpygui three-column layout with manual render loop (`poll_new_frames`), channel config panel, sensor library, spectrum and time-domain plots, trend plots, file I/O |
 
 ---
 
@@ -185,7 +174,7 @@ A watchdog thread monitors for >5 s silence and attempts up to 3 reconnect cycle
 4. Optionally applies a **4th-order Butterworth lowpass** filter
 5. Wraps each channel's data in a `VibeSample`
 6. Assembles a frame dict `{ch: VibeSample, 'overflow': mask}` and appends it to a 32-frame ring cache
-7. Fires registered GUI callbacks with the frame dict
+7. Sets `new_frame_event` to signal the GUI render loop
 
 ### 3. Spectral Analysis — `VibeSample.process()` (`sample.py`)
 
@@ -196,13 +185,14 @@ A watchdog thread monitors for >5 s silence and attempts up to 3 reconnect cycle
 - **Peak detection** — `scipy.signal.find_peaks` sorted descending by amplitude
 - **Overall amplitude** — broadband RMS/0-P/P-P computed from time-domain data
 
-### 4. Visualisation — `GUI.display_frame()` (`gui.py`)
+### 4. Visualisation — `GUI.poll_new_frames()` / `display_frame()` (`gui.py`)
 
-On every streaming block, for each active channel:
+The GUI uses a manual render loop (`while dpg.is_dearpygui_running()`). Each tick, `poll_new_frames()` checks `DataCollector.new_frame_event`. If set, it grabs the latest frame from `frame_cache` and calls `display_frame()`:
 
-- Calls `sample.process(config)` → `ChannelResult`
+- Calls `sample.process(config)` → `ChannelResult` for each active channel
 - Updates time-domain and spectrum line series via `dpg.set_value()`
 - Updates peak table and trend plot
+- If multiple frames arrived since the last tick, only the newest is rendered — earlier frames remain in cache for browsing
 - Axis limits are **not** automatically adjusted; press **Autoscale** to fit all axes on demand
 
 ---
