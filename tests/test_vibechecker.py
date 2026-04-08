@@ -116,6 +116,39 @@ def test_save_load_roundtrip():
 
 
 # ---------------------------------------------------------------------------
+# Event-based frame delivery (no GUI callback registered)
+# ---------------------------------------------------------------------------
+
+def test_new_frame_event_set_on_stream():
+    """Streaming sets new_frame_event without any GUI callback registered."""
+    collector = DataCollector(sim_sensor, acq_settings)
+    assert not collector.new_frame_event.is_set()
+
+    collector.start_stream()
+    # Wait for at least one frame
+    got_frame = collector.new_frame_event.wait(timeout=acq_settings.acquisition_period * 3)
+    collector.stop_stream()
+    collector.disconnect_sensor()
+
+    assert got_frame, 'new_frame_event was never set during streaming'
+    assert len(collector.data['frame_cache']) >= 1, 'frame_cache empty after streaming'
+
+
+def test_new_frame_event_set_on_reprocess():
+    """reprocess_last_block sets new_frame_event for the GUI poll loop."""
+    collector = DataCollector(sim_sensor, acq_settings)
+    collector.collect_sample()
+    collector.disconnect_sensor()
+
+    assert len(collector.data['frame_cache']) >= 1
+    collector.new_frame_event.clear()
+
+    collector.reprocess_last_block()
+    assert collector.new_frame_event.is_set(), \
+        'reprocess_last_block should set new_frame_event'
+
+
+# ---------------------------------------------------------------------------
 # GUI build smoke test
 # ---------------------------------------------------------------------------
 
