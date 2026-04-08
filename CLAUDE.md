@@ -36,37 +36,43 @@ Tests are parametrized over all detected sensors (including `SimulatedSensor`), 
 The app follows a layered pipeline:
 
 ```
+Hardware thread                          Main thread
+───────────────                          ───────────────
 VibeSensor / SimulatedSensor
-        │  (sounddevice InputStream or SimulatedSensor thread)
+        │  (PicoScopeStream or SimulatedSensor callback)
         ▼
-DataCollector          ← owns AcquisitionSettings, Queue, callback registry
-        │  (receive_data → optional Butterworth filter → VibeSample)
-        ▼
-VibeSample             ← raw time-domain block; computes FFT/Welch via .fft()
-        │  (saved/loaded as HDF5 .h5 files in DEVDATA/)
-        ▼
-GUI (dearpygui)        ← registers callbacks on DataCollector, drives plots
+DataCollector                            GUI (dearpygui)
+  receive_data()                           poll_new_frames()
+    → Butterworth filter                     if new_frame_event:
+    → VibeSample per channel                   grab frame_cache[-1]
+    → frame_cache.append()                     VibeSample.process()
+    → new_frame_event.set()  ─────────────→    display_frame()
 ```
+
+The collector and GUI are decoupled via `threading.Event`. The hardware
+thread never touches DPG widgets. When the GUI is slower than the data
+rate, it skips to the latest frame — all earlier frames remain in the
+32-frame ring cache for browsing.
 
 ### Key modules
 
 | Module | Role |
 |---|---|
-| `util.py` | Constants (`SAMPLERATES`, `BLOCKSIZES`, `MAXFREQS`, `BINSIZES`), unit conversion, `UI_Elements` tag registry |
-| `sensor.py` | `VibeSensor` dataclass — wraps sounddevice stream; `VibeSensor.find()` enumerates hardware + simulation |
+| `util.py` | Constants (`MAXFREQ_PRESETS`, `BINSIZE_PRESETS`), unit taxonomy and SI conversion, `UI_Elements` tag registry |
+| `sensor.py` | `VibeSensor` dataclass — device metadata; `find()` enumerates PicoScopes; `simulated()` returns test sensor; `connect()` returns the appropriate stream |
 | `simulation.py` | `SimulatedSensor` (threading-based fake stream) + signal generators for offline dev/test |
-| `sample.py` | `AcquisitionSettings` (blocksize/samplerate/maxfreq/binsize with interdependency enforcement) + `VibeSample` (HDF5 I/O, FFT via Welch, unit conversion) |
-| `collector.py` | `DataCollector` — state machine for start/stop streaming, single-shot capture, save/load, trend accumulation |
-| `digiducer.py` | `FindDigiducer()` — probes sounddevice for Digiducer USB audio devices |
-| `gui.py` | `GUI` class — all dearpygui layout, callbacks wired to `DataCollector` |
+| `sample.py` | `AcquisitionSettings` (derived samplerate/blocksize from maxfreq/binsize) + `VibeSample` (HDF5 I/O, `process()` → `ChannelResult`) |
+| `collector.py` | `DataCollector` — stream lifecycle, per-channel filters, 32-frame ring cache, trend accumulation, `new_frame_event` signal, HDF5 save/load |
+| `digiducer.py` | `FindDigiducer()` — legacy Digiducer USB audio device discovery |
+| `gui.py` | `GUI` class — dearpygui layout, `poll_new_frames()` render loop, plots and config dialogs |
 | `logger.py` | YAML-configured logging; log files written to `log/` |
 
 ### Data flow details
 
-- `VibeSensor._callback` is the sounddevice callback; it scales raw float32 data by per-channel `scale` factors and packages a dict.
-- `DataCollector.receive_data` applies an optional 4th-order Butterworth highpass filter (default `butter_fc=10 Hz`) then wraps the result in a `VibeSample`.
-- In streaming mode, `DataCollector.data_callback` fires registered `callbacks` (GUI update functions). In single-shot mode it routes through a `Queue`.
-- `VibeSample.fft()` uses `scipy.signal.welch` with a Hann window. Velocity spectrum is derived by dividing acceleration spectrum by `(2πf)²`.
+- `VibeSensor._callback` is the hardware stream callback; it scales raw data by per-channel `scale` factors and packages a dict.
+- `DataCollector.receive_data` applies per-channel Butterworth highpass/lowpass filters (configurable, default HP 10 Hz) then wraps each channel in a `VibeSample`.
+- `DataCollector.data_callback` appends the frame to a 32-frame ring cache and sets `new_frame_event`. The GUI's `poll_new_frames()` checks this event each render tick and displays the latest frame. Programmatic consumers (e.g. `collect_sample` one-shot) still use the `callbacks` dict directly.
+- `VibeSample.process()` uses `scipy.signal.welch` with configurable window/overlap. Cross-modality conversion (accel/vel/disp) uses frequency-domain integration via `(2*pi*f)^n` scaling.
 - Data is saved as HDF5 (`.h5`) into `DEVDATA/`. File names include an ISO timestamp with `:` replaced by `-` for FAT32 compatibility.
 
 ### AcquisitionSettings interdependencies
@@ -75,4 +81,4 @@ Changing `maxfreq` auto-adjusts `samplerate`; changing `binsize` auto-adjusts `b
 
 ### Simulated sensor
 
-`VibeSensor.simulated()` returns a sensor with `is_simulation=True`. `VibeSensor.connect()` checks this flag and returns a `SimulatedSensor` instead of a sounddevice stream. The simulation generates bearing-defect signals with configurable running rate and fault multiples — useful for offline UI/algorithm development.
+`VibeSensor.simulated()` returns a sensor with `is_simulation=True`. `VibeSensor.connect()` checks this flag and returns a `SimulatedSensor` instead of a hardware stream. The simulation generates bearing-defect signals with configurable running rate and fault multiples — useful for offline UI/algorithm development.
