@@ -1,5 +1,6 @@
 # Data Collector
 
+import json
 import threading
 import time
 import numpy as np
@@ -421,16 +422,31 @@ class DataCollector:
     # Persistence
     # ------------------------------------------------------------------
 
+    # File format version written by save_data.
+    # Version 1 (legacy): metadata as child datasets, channels under 'channels/' subgroup,
+    #   scope sensor as YAML dataset.
+    # Version 2 (current): metadata as group .attrs, channels as direct frame children,
+    #   scope sensor fields as channel group .attrs, /acquisition group with config attrs.
+    _FILE_VERSION = 2
+
     def save_data(self, target: Path):
-        """Save frame cache and trend history to an HDF5 file.
+        """Save frame cache and trend history to an HDF5 file (v2 format).
 
         Layout::
 
-            /frames/{i}/meta/{timestamp, rel_time, samplerate, status}
-            /frames/{i}/channels/{ch}/data   (N,) float64
-            /frames/{i}/channels/{ch}/unit   str
-            /trend/{ch}/rel_times            (M,)
-            /trend/{ch}/overall              (M,)
+            /version                           int scalar
+            /notes                             str
+            /acquisition                       (group, attrs: maxfreq, binsize, …
+                                                channel_names_json, channel_target_units_json)
+            /frames/{i}                        (group, attrs: timestamp, rel_time,
+                                                samplerate, status)
+            /frames/{i}/{ch}/data              (N,) float64
+            /frames/{i}/{ch}                   (group, attrs: unit, modality, coupling,
+                                                sensor_name, sensor_id, sensor_sensitivity,
+                                                sensor_eu, sensor_target_unit,
+                                                sensor_amplitude_mode, sensor_notes)
+            /trend/{ch}/rel_times              (M,) float64
+            /trend/{ch}/overall                (M,) float64
         """
         if target.exists():
             log.warning('Save target exists. Delete existing file before saving.')
@@ -438,26 +454,46 @@ class DataCollector:
 
         frames = list(self.data['frame_cache'])
         with h5py.File(target, 'w') as f:
+            f.create_dataset('version', data=self._FILE_VERSION)
+            f.create_dataset('notes',   data=self.notes)
+
+            # Acquisition config group
+            acq_grp = f.create_group('acquisition')
+            cfg_dict = self.config.to_dict()
+            for k, v in cfg_dict.items():
+                if isinstance(v, dict):
+                    # dicts (channel_names, channel_target_units) → JSON string attr
+                    acq_grp.attrs[k] = json.dumps({str(ck): cv for ck, cv in v.items()})
+                elif v is None:
+                    acq_grp.attrs[k] = ''           # trend_fmax=None encoded as ''
+                else:
+                    acq_grp.attrs[k] = v
+
             frames_grp = f.create_group('frames')
             for i, frame_samples in enumerate(frames):
                 fg = frames_grp.create_group(str(i))
                 ch_only = {k: v for k, v in frame_samples.items() if isinstance(k, int)}
                 first = next(iter(ch_only.values()))
-                meta = fg.create_group('meta')
-                meta.create_dataset('timestamp',  data=first.timestamp)
-                meta.create_dataset('rel_time',   data=first.rel_time)
-                meta.create_dataset('samplerate', data=first.samplerate)
-                meta.create_dataset('status',     data=first.status)
-                ch_grp = fg.create_group('channels')
+                fg.attrs['timestamp']  = first.timestamp
+                fg.attrs['rel_time']   = first.rel_time
+                fg.attrs['samplerate'] = first.samplerate
+                fg.attrs['status']     = first.status
+
                 for ch, sample in ch_only.items():
-                    cg = ch_grp.create_group(str(ch))
-                    cg.create_dataset('data',     data=sample.data)
-                    cg.create_dataset('unit',     data=sample.unit)
-                    cg.create_dataset('modality', data=sample.modality)
-                    cg.create_dataset('coupling', data=self.config.coupling_for(ch))
+                    cg = fg.create_group(str(ch))
+                    cg.create_dataset('data', data=sample.data)
+                    cg.attrs['unit']     = sample.unit
+                    cg.attrs['modality'] = sample.modality
+                    cg.attrs['coupling'] = self.config.coupling_for(ch)
                     scope_s = self.scope_sensors.get(ch)
                     if scope_s is not None:
-                        cg.create_dataset('scope_sensor', data=yaml.dump(scope_s.to_dict()))
+                        cg.attrs['sensor_name']           = scope_s.name
+                        cg.attrs['sensor_id']             = scope_s.id
+                        cg.attrs['sensor_sensitivity']    = scope_s.sensitivity
+                        cg.attrs['sensor_eu']             = scope_s.engineering_units
+                        cg.attrs['sensor_target_unit']    = scope_s.target_unit
+                        cg.attrs['sensor_amplitude_mode'] = scope_s.amplitude_mode
+                        cg.attrs['sensor_notes']          = scope_s.notes
 
             trend_grp = f.create_group('trend')
             for ch, td in self.data['trend'].items():
@@ -466,81 +502,39 @@ class DataCollector:
                     tg.create_dataset('rel_times', data=np.array(td['rel_times']))
                     tg.create_dataset('overall',   data=np.array(td['overall']))
 
-            f.create_dataset('notes', data=self.notes)
-
         log.info(f'Saved {len(frames)} frames to {target}')
 
     def load_data(self, target: Path):
-        """Load frame cache and trend from an HDF5 file, then reprocess for display."""
+        """Load frame cache and trend from an HDF5 file, then reprocess for display.
+
+        Supports v2 (current) and v1 (legacy) file formats.
+        #TODO: remove v1 back-compat once all files have been resaved in v2.
+        """
         if not target.is_file():
             log.error(f'load_data: file does not exist: {target}')
             return
 
-        def decode(x): return x.decode() if isinstance(x, bytes) else x
+        def decode(x): return x.decode() if isinstance(x, bytes) else str(x)
 
         self.data['frame_cache'].clear()
         self.data['trend'] = {}
         self._loaded_channel_sensor_configs = {}
 
         with h5py.File(target, 'r') as f:
-            if 'frames' in f:
-                frames_grp = f['frames']
-                for idx in sorted(frames_grp.keys(), key=int):
-                    fg = frames_grp[idx]
-                    meta = fg['meta']
-                    ts_str    = decode(meta['timestamp'][()])
-                    rel_time  = float(meta['rel_time'][()])
-                    samplerate = int(meta['samplerate'][()])
-                    status    = decode(meta['status'][()])
-                    try:
-                        timestamp = datetime.fromisoformat(ts_str)
-                    except (ValueError, TypeError):
-                        timestamp = datetime.now()
-
-                    frame_samples: dict[int, vibechecker.VibeSample] = {}
-                    for ch_str, cg in fg['channels'].items():
-                        ch = int(ch_str)
-                        data     = np.ascontiguousarray(cg['data'][()],
-                                                        dtype=np.float64)
-                        unit     = decode(cg['unit'][()])
-                        modality = decode(cg['modality'][()]) if 'modality' in cg \
-                                   else 'acceleration'
-                        frame_samples[ch] = vibechecker.VibeSample(
-                            status=status,
-                            _timestamp=timestamp,
-                            samplerate=samplerate,
-                            unit=unit,
-                            data=data,
-                            rel_time=rel_time,
-                            modality=modality,
-                        )
-                        # Read scope sensor config (only from first frame to avoid redundancy)
-                        if ch not in self._loaded_channel_sensor_configs:
-                            if 'scope_sensor' in cg:
-                                d = yaml.safe_load(decode(cg['scope_sensor'][()]))
-                                self._loaded_channel_sensor_configs[ch] = d or {}
-                            else:
-                                self._loaded_channel_sensor_configs[ch] = {}
-                    self.data['frame_cache'].append(frame_samples)
-
-            if 'notes' in f:
-                self.notes = decode(f['notes'][()])
-
-            if 'trend' in f:
-                for ch_str, tg in f['trend'].items():
-                    ch = int(ch_str)
-                    self.data['trend'][ch] = {
-                        'rel_times': list(np.array(tg['rel_times'][()])),
-                        'overall':   list(np.array(tg['overall'][()])),
-                    }
+            version = int(f['version'][()]) if 'version' in f else 1
+            if version >= 2:
+                self._load_v2(f, decode)
+            else:
+                log.info(f'Loading legacy v1 file: {target}')
+                self._load_v1(f, decode)
 
         n = len(self.data['frame_cache'])
-        log.info(f'Loaded {n} frames from {target}')
+        log.info(f'Loaded {n} frames (format v{version}) from {target}')
 
         if not n:
             return
 
-        # Auto-configure enabled_channels and acquisition settings from file
+        # Auto-configure enabled_channels and adjust maxfreq from file data
         all_channels: set[int] = set()
         file_samplerate: int = 0
         for frame in self.data['frame_cache']:
@@ -563,3 +557,108 @@ class DataCollector:
 
         self.init_trend_channels()
         self.reprocess_last_block()
+
+    # ------------------------------------------------------------------
+    # Private HDF5 format readers
+    # ------------------------------------------------------------------
+
+    def _load_v2(self, f: 'h5py.File', decode) -> None:
+        """Read v2 format: metadata in .attrs, channels as direct frame children."""
+        if 'notes' in f:
+            self.notes = decode(f['notes'][()])
+
+        if 'frames' not in f:
+            return
+        for idx in sorted(f['frames'].keys(), key=int):
+            fg = f['frames'][idx]
+            ts_str     = decode(fg.attrs['timestamp'])
+            rel_time   = float(fg.attrs['rel_time'])
+            samplerate = int(fg.attrs['samplerate'])
+            status     = decode(fg.attrs['status'])
+            try:
+                timestamp = datetime.fromisoformat(ts_str)
+            except (ValueError, TypeError):
+                timestamp = datetime.now()
+
+            frame_samples: dict[int, vibechecker.VibeSample] = {}
+            for ch_str, cg in fg.items():
+                if ch_str == 'data' or not ch_str.isdigit():
+                    continue
+                ch       = int(ch_str)
+                data     = np.ascontiguousarray(cg['data'][()], dtype=np.float64)
+                unit     = decode(cg.attrs.get('unit', 'mV'))
+                modality = decode(cg.attrs.get('modality', 'acceleration'))
+                frame_samples[ch] = vibechecker.VibeSample(
+                    status=status, _timestamp=timestamp,
+                    samplerate=samplerate, unit=unit,
+                    data=data, rel_time=rel_time, modality=modality,
+                )
+                if ch not in self._loaded_channel_sensor_configs:
+                    if 'sensor_id' in cg.attrs:
+                        self._loaded_channel_sensor_configs[ch] = {
+                            'id':                decode(cg.attrs['sensor_id']),
+                            'name':              decode(cg.attrs['sensor_name']),
+                            'sensitivity':       float(cg.attrs['sensor_sensitivity']),
+                            'engineering_units': decode(cg.attrs['sensor_eu']),
+                            'target_unit':       decode(cg.attrs.get('sensor_target_unit', '')),
+                            'amplitude_mode':    decode(cg.attrs.get('sensor_amplitude_mode', '0-P')),
+                            'notes':             decode(cg.attrs.get('sensor_notes', '')),
+                        }
+                    else:
+                        self._loaded_channel_sensor_configs[ch] = {}
+            self.data['frame_cache'].append(frame_samples)
+
+        if 'trend' in f:
+            for ch_str, tg in f['trend'].items():
+                self.data['trend'][int(ch_str)] = {
+                    'rel_times': list(np.array(tg['rel_times'][()])),
+                    'overall':   list(np.array(tg['overall'][()])),
+                }
+
+    def _load_v1(self, f: 'h5py.File', decode) -> None:
+        """Read legacy v1 format: metadata as child datasets, channels under 'channels/'.
+        #TODO: remove once all files have been resaved in v2 format.
+        """
+        if 'notes' in f:
+            self.notes = decode(f['notes'][()])
+
+        if 'frames' not in f:
+            return
+        for idx in sorted(f['frames'].keys(), key=int):
+            fg = f['frames'][idx]
+            meta       = fg['meta']
+            ts_str     = decode(meta['timestamp'][()])
+            rel_time   = float(meta['rel_time'][()])
+            samplerate = int(meta['samplerate'][()])
+            status     = decode(meta['status'][()])
+            try:
+                timestamp = datetime.fromisoformat(ts_str)
+            except (ValueError, TypeError):
+                timestamp = datetime.now()
+
+            frame_samples: dict[int, vibechecker.VibeSample] = {}
+            for ch_str, cg in fg['channels'].items():
+                ch       = int(ch_str)
+                data     = np.ascontiguousarray(cg['data'][()], dtype=np.float64)
+                unit     = decode(cg['unit'][()])
+                modality = decode(cg['modality'][()]) if 'modality' in cg else 'acceleration'
+                frame_samples[ch] = vibechecker.VibeSample(
+                    status=status, _timestamp=timestamp,
+                    samplerate=samplerate, unit=unit,
+                    data=data, rel_time=rel_time, modality=modality,
+                )
+                if ch not in self._loaded_channel_sensor_configs:
+                    if 'scope_sensor' in cg:
+                        # v1.5: YAML blob
+                        d = yaml.safe_load(decode(cg['scope_sensor'][()]))
+                        self._loaded_channel_sensor_configs[ch] = d or {}
+                    else:
+                        self._loaded_channel_sensor_configs[ch] = {}
+            self.data['frame_cache'].append(frame_samples)
+
+        if 'trend' in f:
+            for ch_str, tg in f['trend'].items():
+                self.data['trend'][int(ch_str)] = {
+                    'rel_times': list(np.array(tg['rel_times'][()])),
+                    'overall':   list(np.array(tg['overall'][()])),
+                }
