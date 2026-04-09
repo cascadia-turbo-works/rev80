@@ -232,12 +232,12 @@ def test_save_data_persists_scope_sensor():
     collector.save_data(fname)
 
     with h5py.File(fname, 'r') as f:
-        ch_grp = f['frames']['0']['channels']['0']
-        assert 'scope_sensor' in ch_grp, 'scope_sensor dataset missing'
-        d = yaml.safe_load(ch_grp['scope_sensor'][()].decode())
-        assert d['sensitivity'] == pytest.approx(10.0)
-        assert d['engineering_units'] == 'g'
-        assert d['name'] == 'Test Sensor'
+        assert int(f['version'][()]) == 2, 'Expected v2 format'
+        ch_grp = f['frames']['0']['0']           # v2: channels are direct frame children
+        assert 'sensor_id' in ch_grp.attrs, 'sensor_id attr missing'
+        assert float(ch_grp.attrs['sensor_sensitivity']) == pytest.approx(10.0)
+        assert ch_grp.attrs['sensor_eu'] == 'g'
+        assert ch_grp.attrs['sensor_name'] == 'Test Sensor'
 
     fname.remove_p()
 
