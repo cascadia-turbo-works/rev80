@@ -5,6 +5,8 @@ FFT peak validation via siggen loopback) live in test_picoscope_hw.py.
 """
 
 import time
+import yaml
+import h5py
 import numpy as np
 import pytest
 from path import Path
@@ -17,6 +19,7 @@ from vibechecker import (
     GUI,
     get_logger,
 )
+from vibechecker.scope_sensor import ScopeSensor
 
 DATADIR = Path('DEVDATA')
 log = get_logger('test')
@@ -191,6 +194,95 @@ def test_load_offline_adjusts_maxfreq():
         f'samplerate {offline.config.samplerate} should be >= '
         f'{high_freq_config.samplerate} after loading high-freq file'
     )
+
+    fname.remove_p()
+
+
+# ---------------------------------------------------------------------------
+# Channel naming — AcquisitionSettings helpers
+# ---------------------------------------------------------------------------
+
+def test_channel_name_defaults_and_override():
+    """name_for() returns default 'Ch A' and respects explicit override."""
+    cfg = AcquisitionSettings()
+    assert cfg.name_for(0) == 'Ch A'
+    assert cfg.name_for(1) == 'Ch B'
+    assert cfg.name_for(7) == 'Ch H'
+    cfg.channel_names[0] = 'Drive End'
+    assert cfg.name_for(0) == 'Drive End'
+    assert cfg.name_for(1) == 'Ch B'   # unset channels keep default
+
+
+# ---------------------------------------------------------------------------
+# Scope sensor config persisted in h5
+# ---------------------------------------------------------------------------
+
+def test_save_data_persists_scope_sensor():
+    """save_data writes scope_sensor YAML for assigned channels."""
+    sensor = ScopeSensor(name='Test Sensor', engineering_units='g',
+                         sensitivity=10.0, amplitude_mode='0-P')
+    collector = DataCollector(sim_sensor, acq_settings)
+    collector.set_scope_sensor(0, sensor)
+    collector.collect_sample()
+    collector.disconnect_sensor()
+
+    DATADIR.makedirs_p()
+    fname = DATADIR / 'pytest_sensor_save.h5'
+    fname.remove_p()
+    collector.save_data(fname)
+
+    with h5py.File(fname, 'r') as f:
+        ch_grp = f['frames']['0']['channels']['0']
+        assert 'scope_sensor' in ch_grp, 'scope_sensor dataset missing'
+        d = yaml.safe_load(ch_grp['scope_sensor'][()].decode())
+        assert d['sensitivity'] == pytest.approx(10.0)
+        assert d['engineering_units'] == 'g'
+        assert d['name'] == 'Test Sensor'
+
+    fname.remove_p()
+
+
+def test_load_data_restores_scope_sensor_configs():
+    """load_data populates _loaded_channel_sensor_configs from saved YAML."""
+    sensor = ScopeSensor(name='Load Test', engineering_units='in/s',
+                         sensitivity=50.0, amplitude_mode='RMS')
+    collector = DataCollector(sim_sensor, acq_settings)
+    collector.set_scope_sensor(0, sensor)
+    collector.collect_sample()
+    collector.disconnect_sensor()
+
+    DATADIR.makedirs_p()
+    fname = DATADIR / 'pytest_sensor_load.h5'
+    fname.remove_p()
+    collector.save_data(fname)
+
+    fresh = DataCollector(config=acq_settings)
+    fresh.load_data(fname)
+
+    cfg = fresh._loaded_channel_sensor_configs
+    assert 0 in cfg, 'Channel 0 missing from _loaded_channel_sensor_configs'
+    assert cfg[0]['sensitivity'] == pytest.approx(50.0)
+    assert cfg[0]['id'] == sensor.id
+    assert cfg[0]['engineering_units'] == 'in/s'
+
+    fname.remove_p()
+
+
+def test_notes_roundtrip():
+    """Measurement notes survive save/load."""
+    collector = DataCollector(sim_sensor, acq_settings)
+    collector.notes = 'Motor bearing — drive end'
+    collector.collect_sample()
+    collector.disconnect_sensor()
+
+    DATADIR.makedirs_p()
+    fname = DATADIR / 'pytest_notes.h5'
+    fname.remove_p()
+    collector.save_data(fname)
+
+    fresh = DataCollector(config=acq_settings)
+    fresh.load_data(fname)
+    assert fresh.notes == 'Motor bearing — drive end'
 
     fname.remove_p()
 
