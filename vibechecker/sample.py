@@ -31,6 +31,8 @@ class AcquisitionSettings:
     enabled_channels: list = field(default_factory=lambda: [0])
     channel_voltage_ranges: dict = field(default_factory=lambda: {0: 7})
     channel_couplings: dict = field(default_factory=dict)
+    channel_names: dict = field(default_factory=dict)         # {ch: str}  default: 'Ch A'
+    channel_target_units: dict = field(default_factory=dict)  # {ch: str}  '' = use sensor EU
     # Trend history
     trend_max_points: int = 500
     trend_fmin: float = 0.0
@@ -52,6 +54,14 @@ class AcquisitionSettings:
     def coupling_for(self, ch: int) -> str:
         return self.channel_couplings.get(ch, self.coupling)
 
+    def name_for(self, ch: int) -> str:
+        """Return user-assigned channel name, or default 'Ch A', 'Ch B', …"""
+        return self.channel_names.get(ch, f'Ch {chr(65 + ch)}')
+
+    def target_unit_for(self, ch: int) -> str:
+        """Return per-channel target display unit, or '' to use sensor EU."""
+        return self.channel_target_units.get(ch, '')
+
     @classmethod
     def copy(cls, settings: 'AcquisitionSettings') -> 'AcquisitionSettings':
         c = cls()
@@ -62,17 +72,19 @@ class AcquisitionSettings:
     def to_dict(self) -> dict:
         """Serialise user-facing fields to the 'acquisition' section of a device config."""
         return {
-            'maxfreq':          self._fm,
-            'binsize':          self._df,
-            'fft_window':       self.fft_window,
-            'welch_overlap':    self.welch_overlap,
-            'highpass_enabled': self.highpass_enabled,
-            'highpass_fc':      self.highpass_fc,
-            'lowpass_enabled':  self.lowpass_enabled,
-            'lowpass_fc':       self.lowpass_fc,
-            'trend_max_points': self.trend_max_points,
-            'trend_fmin':       self.trend_fmin,
-            'trend_fmax':       self.trend_fmax,
+            'maxfreq':              self._fm,
+            'binsize':              self._df,
+            'fft_window':           self.fft_window,
+            'welch_overlap':        self.welch_overlap,
+            'highpass_enabled':     self.highpass_enabled,
+            'highpass_fc':          self.highpass_fc,
+            'lowpass_enabled':      self.lowpass_enabled,
+            'lowpass_fc':           self.lowpass_fc,
+            'trend_max_points':     self.trend_max_points,
+            'trend_fmin':           self.trend_fmin,
+            'trend_fmax':           self.trend_fmax,
+            'channel_names':        dict(self.channel_names),
+            'channel_target_units': dict(self.channel_target_units),
         }
 
     @classmethod
@@ -94,6 +106,8 @@ class AcquisitionSettings:
         if 'trend_fmin'       in d: obj.trend_fmin        = float(d['trend_fmin'])
         if 'trend_fmax'       in d:
             obj.trend_fmax = float(d['trend_fmax']) if d['trend_fmax'] is not None else None
+        if 'channel_names'        in d: obj.channel_names        = {int(k): str(v) for k, v in d['channel_names'].items()}
+        if 'channel_target_units' in d: obj.channel_target_units = {int(k): str(v) for k, v in d['channel_target_units'].items()}
         return obj
 
     # ── Derived values ───────────────────────────────────────────────

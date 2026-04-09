@@ -5,6 +5,7 @@ import time
 import numpy as np
 import scipy.signal
 import h5py
+import yaml
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -46,6 +47,8 @@ class DataCollector:
         self.siggen_config: dict | None = None
         self._last_frame_t: float | None = None   # arrival time of previous frame
         self._lag_warn_t: float = 0.0             # wall time of last lag warning
+        self.notes: str = ''
+        self._loaded_channel_sensor_configs: dict[int, dict] = {}
 
         if sensor is not None:
             self.connect_sensor(sensor)
@@ -66,8 +69,11 @@ class DataCollector:
     def get_active_eu(self, ch: int = 0) -> str:
         """Return the display/target unit for a channel.
 
-        Priority: scope_sensor.effective_target_unit() > VibeSensor unit > 'mV'.
+        Priority: channel_target_units > scope_sensor.effective_target_unit() > VibeSensor unit > 'mV'.
         """
+        ch_tu = self.config.channel_target_units.get(ch, '')
+        if ch_tu:
+            return ch_tu
         scope_sensor = self.scope_sensors.get(ch)
         if scope_sensor is not None:
             return scope_sensor.effective_target_unit()
@@ -449,6 +455,9 @@ class DataCollector:
                     cg.create_dataset('unit',     data=sample.unit)
                     cg.create_dataset('modality', data=sample.modality)
                     cg.create_dataset('coupling', data=self.config.coupling_for(ch))
+                    scope_s = self.scope_sensors.get(ch)
+                    if scope_s is not None:
+                        cg.create_dataset('scope_sensor', data=yaml.dump(scope_s.to_dict()))
 
             trend_grp = f.create_group('trend')
             for ch, td in self.data['trend'].items():
@@ -456,6 +465,8 @@ class DataCollector:
                     tg = trend_grp.create_group(str(ch))
                     tg.create_dataset('rel_times', data=np.array(td['rel_times']))
                     tg.create_dataset('overall',   data=np.array(td['overall']))
+
+            f.create_dataset('notes', data=self.notes)
 
         log.info(f'Saved {len(frames)} frames to {target}')
 
@@ -469,6 +480,7 @@ class DataCollector:
 
         self.data['frame_cache'].clear()
         self.data['trend'] = {}
+        self._loaded_channel_sensor_configs = {}
 
         with h5py.File(target, 'r') as f:
             if 'frames' in f:
@@ -502,7 +514,17 @@ class DataCollector:
                             rel_time=rel_time,
                             modality=modality,
                         )
+                        # Read scope sensor config (only from first frame to avoid redundancy)
+                        if ch not in self._loaded_channel_sensor_configs:
+                            if 'scope_sensor' in cg:
+                                d = yaml.safe_load(decode(cg['scope_sensor'][()]))
+                                self._loaded_channel_sensor_configs[ch] = d or {}
+                            else:
+                                self._loaded_channel_sensor_configs[ch] = {}
                     self.data['frame_cache'].append(frame_samples)
+
+            if 'notes' in f:
+                self.notes = decode(f['notes'][()])
 
             if 'trend' in f:
                 for ch_str, tg in f['trend'].items():

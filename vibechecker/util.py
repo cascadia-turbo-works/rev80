@@ -197,6 +197,7 @@ class UI_Elements:
     # ── File Handling section ──────────────────────────────────────────────
     FILE_SAVE = 'FILE_SAVE'
     FILE_LOAD = 'FILE_LOAD'
+    ACQ_NOTES = 'ACQ_NOTES'
 
     # ── Dialogs ────────────────────────────────────────────────────────────
     DLG_CONFIG           = 'DLG_CONFIG'
@@ -281,6 +282,18 @@ class UI_Elements:
     @staticmethod
     def scope_ch_coupling(ch: int) -> str:
         return f'SCOPE_CH{ch}_COUPLING'
+
+    @staticmethod
+    def scope_ch_name(ch: int) -> str:
+        return f'SCOPE_CH{ch}_NAME'
+
+    @staticmethod
+    def scope_ch_target_unit(ch: int) -> str:
+        return f'SCOPE_CH{ch}_TARGET_UNIT'
+
+    @staticmethod
+    def ch_header_text(ch: int) -> str:
+        return f'CH{ch}_HEADER_TEXT'
 
     @staticmethod
     def ch_overflow_warning(ch: int) -> str:
