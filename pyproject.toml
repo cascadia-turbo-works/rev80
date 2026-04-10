@@ -21,7 +21,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "ipykernel", "pyinstaller"]
+dev = ["pytest", "ipykernel", "pyinstaller", "ruff"]
 
 [tool.setuptools.packages.find]
 include = ["vibechecker*"]
@@ -32,3 +32,12 @@ build-backend = "setuptools.build_meta"
 
 [tool.pytest.ini_options]
 pythonpath = "."
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+ignore = [
+    "E402",   # module-level import not at top — intentional in picoscope.py (DLL guard)
+    "E701",   # multiple statements on one line — used in from_dict for compact tabular style
+]
