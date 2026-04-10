@@ -19,11 +19,37 @@ log = vibechecker.get_logger('gui')
 ui = vibechecker.UI_Elements()
 
 # Layout constants
-WINDOW_WIDTH    = 1500
-WINDOW_HEIGHT   = 1000
-CONTROLS_WIDTH  = 300
-RESULTS_WIDTH   = 300
+# TODO: make left/right panel widths and plot heights resizable by mouse drag.
+#   DPG supports this via dpg.add_drag_line or manual splitter groups; defer
+#   until the panel layout is otherwise stable.
+WINDOW_WIDTH     = 1500
+WINDOW_HEIGHT    = 1000
+CONTROLS_WIDTH   = 300
+RESULTS_WIDTH    = 300
 TIME_PLOT_HEIGHT = 300
+
+# Config dialog dimensions — referenced wherever the dialog is built or positioned
+_DLG_CFG_W = 720
+_DLG_CFG_H = 560
+# Field widths inside the config dialog (golden-ratio of dialog width)
+_DLG_FIELD_W   = int(_DLG_CFG_W * 0.618)   # ~444 px  — full-width text/combo
+_SREG_LIST_W   = 200                         # sensor registry list pane
+_SREG_FIELD_W  = int((_DLG_CFG_W - _SREG_LIST_W - 40) * 0.618)  # ~297 px
+
+# Channel-row widget widths (inside the Channels tab collapsing headers)
+_CH_COUPLING_W  = 80
+_CH_RANGE_W     = 100
+_CH_INDENT      = 16
+_CH_HALF_FIELD_W = _DLG_FIELD_W // 2   # half-width for paired combos on one row
+
+# Height reserved at the bottom of the config dialog for the close-button row
+_DLG_CLOSE_H   = 36
+# Sensor registry button width (Add / Delete)
+_SREG_BTN_W    = 88
+# Signal generator control widget width
+_DLG_SIGGEN_W  = 160
+# Spacer pushing the Device-tab "Refresh" button to the right edge
+_DLG_DEVICE_TAB_SPACER = _DLG_CFG_W - 434
 
 _MAX_CHANNELS         = 8
 _DEFAULT_NUM_CHANNELS = 4
@@ -262,11 +288,8 @@ class GUI:
                     dpg.add_text(f'{df.iloc[i, j]}')
 
     def _get_amplitude_mode(self, ch: int) -> str:
-        """Return the amplitude mode for a channel from its scope sensor."""
-        scope_sensor = self.collector.scope_sensors.get(ch)
-        if scope_sensor is not None:
-            return scope_sensor.amplitude_mode
-        return '0-P'
+        """Return amplitude mode: channel config → default '0-P'."""
+        return self.collector.config.amplitude_mode_for(ch) or '0-P'
 
     def _compute_channel_result(self, ch: int,
                                  sample: vibechecker.VibeSample
@@ -360,7 +383,7 @@ class GUI:
 
             if rel_time is not None and dpg.does_item_exist(ui.PLT_TREND_AX_OVERALL):
                 if not dpg.does_item_exist(ui.PLT_TREND_CURSOR):
-                    dpg.add_vline_series([rel_time], tag=ui.PLT_TREND_CURSOR,
+                    dpg.add_inf_line_series([rel_time], tag=ui.PLT_TREND_CURSOR,
                                          parent=ui.PLT_TREND_AX_OVERALL,
                                          label='##cursor')
                     with dpg.theme() as cursor_theme:
@@ -512,7 +535,7 @@ class GUI:
             elif has_data:
                 n_frames = len(self.collector.data['frame_cache'])
                 n_ch = len(self.collector.config.enabled_channels)
-                dpg.add_text(f'File loaded', parent=ui.DEVICE_INFO_GROUP, color=dim)
+                dpg.add_text('File loaded', parent=ui.DEVICE_INFO_GROUP, color=dim)
                 dpg.add_text(f'  {n_frames} frames, {n_ch} channels',
                              parent=ui.DEVICE_INFO_GROUP, color=dim)
             # Resize Device card
@@ -532,13 +555,17 @@ class GUI:
             dpg.delete_item(ui.CONN_CHANNEL_SUMMARY, children_only=True)
             if show_channels:
                 for ch in sorted(self.collector.config.enabled_channels):
-                    scope_s = self.collector.scope_sensors.get(ch)
-                    sname   = scope_s.name if scope_s else '(none)'
-                    tunit   = self.collector.get_active_eu(ch)
-                    dpg.add_text(
-                        f'{self.collector.config.name_for(ch)} : {sname} : {tunit}',
-                        parent=ui.CONN_CHANNEL_SUMMARY,
-                    )
+                    scope_s  = self.collector.scope_sensors.get(ch)
+                    sname    = scope_s.name if scope_s else '(none)'
+                    tunit    = self.collector.get_active_eu(ch)
+                    ch_color = _CH_COLORS[ch % len(_CH_COLORS)]
+                    with dpg.group(horizontal=True, parent=ui.CONN_CHANNEL_SUMMARY):
+                        with dpg.drawlist(width=12, height=12):
+                            dpg.draw_rectangle(pmin=(1, 1), pmax=(11, 11), fill=ch_color,
+                                               color=(0, 0, 0, 0), rounding=2)
+                        dpg.add_text(
+                            f' {self.collector.config.name_for(ch)} : {sname} : {tunit}',
+                        )
                 # Signal generator summary line (only when device connected)
                 if sensor is not None:
                     sigcfg = self.collector.siggen_config
@@ -806,6 +833,11 @@ class GUI:
         if self.collector.is_streaming:
             self._stop_stream()
 
+        # Disconnect any attached hardware so file channels are unambiguously active
+        if self.collector.sensor is not None:
+            self.collector.disconnect_sensor()
+            self._set_device_status('disconnected')
+
         # Temporarily unhook display_frame so load_data's reprocess_last_block
         # doesn't fire into non-existent series.
         self.collector.callbacks.pop('plots', None)
@@ -821,6 +853,10 @@ class GUI:
         for frame in cache:
             loaded_channels.update(k for k in frame if isinstance(k, int))
 
+        # Update _num_channels from file data (mirrors what device connect does from hardware)
+        if loaded_channels:
+            self._num_channels = max(loaded_channels) + 1
+
         # Remove stale series and trend cursor, then create series for loaded channels
         for ch in range(_MAX_CHANNELS):
             self._remove_channel_series(ch)
@@ -828,6 +864,23 @@ class GUI:
             dpg.delete_item(ui.PLT_TREND_CURSOR)
         for ch in sorted(loaded_channels):
             self._add_channel_series(ch)
+
+        # Auto-add any sensors from the file that aren't in the local registry,
+        # then assign them to channels so scope_sensors is populated for the config dialog.
+        for sid, sensor_dict in self.collector._loaded_scope_sensors.items():
+            if self.registry.find_by_id(sid) is None:
+                try:
+                    sensor = ScopeSensor.from_dict(sensor_dict)
+                    self.registry.add(sensor)
+                    log.info(f'Added sensor from file to registry: {sensor.name!r} ({sid})')
+                except Exception as exc:
+                    log.warning(f'Could not restore sensor {sid!r} from file: {exc}')
+
+        # Wire scope sensors to channels from the loaded channel configs
+        for ch, sensor_cfg in self.collector._loaded_channel_sensor_configs.items():
+            sid = sensor_cfg.get('id')
+            sensor = self.registry.find_by_id(sid) if sid else None
+            self.collector.set_scope_sensor(ch, sensor)
 
         # Re-register callback and display the last frame
         self.collector.callbacks['plots'] = self.display_frame
@@ -871,10 +924,10 @@ class GUI:
 
     def _start_device_discovery(self, sender=None, data=None):
         """Clear device list, show placeholder, then discover in a background thread."""
-        if dpg.does_item_exist('DEVSETUP_DEVICE_LIST_GROUP'):
-            dpg.delete_item('DEVSETUP_DEVICE_LIST_GROUP', children_only=True)
+        if dpg.does_item_exist(ui.DEVSETUP_DEVICE_LIST_GROUP):
+            dpg.delete_item(ui.DEVSETUP_DEVICE_LIST_GROUP, children_only=True)
             dpg.add_text('... Populating sensor list ...',
-                         parent='DEVSETUP_DEVICE_LIST_GROUP')
+                         parent=ui.DEVSETUP_DEVICE_LIST_GROUP)
         threading.Thread(target=self._discover_devices, daemon=True).start()
 
     def _discover_devices(self):
@@ -900,19 +953,19 @@ class GUI:
 
     def _repopulate_device_list(self):
         """Rebuild the detected-device rows inside the Device Setup dialog."""
-        if not dpg.does_item_exist('DEVSETUP_DEVICE_LIST_GROUP'):
+        if not dpg.does_item_exist(ui.DEVSETUP_DEVICE_LIST_GROUP):
             return
-        dpg.delete_item('DEVSETUP_DEVICE_LIST_GROUP', children_only=True)
+        dpg.delete_item(ui.DEVSETUP_DEVICE_LIST_GROUP, children_only=True)
         if not self.found_sensors:
             if vibechecker.PICOSCOPE_DRIVER_MISSING:
                 dpg.add_text(
                     'PicoScope driver not found.\nInstall PicoSDK to connect a device.',
-                    parent='DEVSETUP_DEVICE_LIST_GROUP',
+                    parent=ui.DEVSETUP_DEVICE_LIST_GROUP,
                     color=_c('YELLOW'),
                 )
             else:
                 dpg.add_text('No devices found.',
-                             parent='DEVSETUP_DEVICE_LIST_GROUP')
+                             parent=ui.DEVSETUP_DEVICE_LIST_GROUP)
             return
         for sensor in self.found_sensors:
             is_connected = (
@@ -921,7 +974,7 @@ class GUI:
             )
             btn_label = 'Disconnect' if is_connected else 'Connect'
             conn_color = _c('GREEN_LIGHT') if is_connected else _c('ON_SURFACE')
-            with dpg.group(parent='DEVSETUP_DEVICE_LIST_GROUP'):
+            with dpg.group(parent=ui.DEVSETUP_DEVICE_LIST_GROUP):
                 with dpg.group(horizontal=True):
                     dpg.add_button(label=btn_label, user_data=sensor,
                                    callback=self._on_device_connect_toggle,
@@ -937,23 +990,37 @@ class GUI:
 
     def _rebuild_device_channel_rows(self):
         """Rebuild per-channel rows inside the Device Setup dialog."""
-        if not dpg.does_item_exist('DEVSETUP_CHANNEL_GROUP'):
+        if not dpg.does_item_exist(ui.DEVSETUP_CHANNEL_GROUP):
             return
         for ch in range(_MAX_CHANNELS):
-            for tag in [ui.scope_ch_enabled(ch), ui.scope_ch_sensor(ch),
-                        ui.scope_ch_range(ch), ui.scope_ch_coupling(ch),
-                        ui.scope_ch_name(ch), ui.scope_ch_target_unit(ch)]:
+            for tag in [ui.scope_ch_header(ch), ui.scope_ch_enabled(ch),
+                        ui.scope_ch_sensor(ch), ui.scope_ch_range(ch),
+                        ui.scope_ch_coupling(ch), ui.scope_ch_name(ch),
+                        ui.scope_ch_target_unit(ch), ui.scope_ch_amplitude_mode(ch),
+                        ui.scope_ch_name_text(ch)]:
                 if dpg.does_alias_exist(tag):
                     dpg.remove_alias(tag)
-        dpg.delete_item('DEVSETUP_CHANNEL_GROUP', children_only=True)
-        if self.collector.sensor is None:
+            for theme_tag in [ui.scope_ch_hdr_theme(ch, True), ui.scope_ch_hdr_theme(ch, False)]:
+                if dpg.does_item_exist(theme_tag):
+                    dpg.delete_item(theme_tag)
+        dpg.delete_item(ui.DEVSETUP_CHANNEL_GROUP, children_only=True)
+        if self.collector.sensor is None and not self.collector.data['frame_cache']:
             dpg.add_text('No device connected.',
-                         parent='DEVSETUP_CHANNEL_GROUP')
+                         parent=ui.DEVSETUP_CHANNEL_GROUP)
             return
         sensor_items = ['(none)'] + self.registry.names()
-        tu_items = ['(use sensor)'] + sorted(UNIT_TO_SI.keys())
+        tu_items     = ['(use sensor)'] + sorted(UNIT_TO_SI.keys())
         enabled_set  = set(self.collector.config.enabled_channels)
-        for ch in range(self._num_channels):
+        # In file mode, show all channels present in the cache (regardless of enabled state).
+        # In hardware mode, show all channels the device exposes.
+        if self.collector.sensor is not None:
+            channel_list = list(range(self._num_channels))
+        else:
+            file_channels: set[int] = set()
+            for frame in self.collector.data.get('frame_cache', []):
+                file_channels.update(k for k in frame if isinstance(k, int))
+            channel_list = sorted(file_channels)
+        for ch in channel_list:
             is_enabled = ch in enabled_set
             scope_s    = self.collector.scope_sensors.get(ch)
             default_s  = scope_s.name if scope_s else '(none)'
@@ -961,55 +1028,88 @@ class GUI:
             default_r  = (_VOLTAGE_RANGE_LABELS[range_idx]
                           if range_idx < len(_VOLTAGE_RANGE_LABELS)
                           else _VOLTAGE_RANGE_LABELS[7])
-            default_c  = self.collector.config.coupling_for(ch)
-            ch_tu      = self.collector.config.target_unit_for(ch) or '(use sensor)'
-            ch_name    = self.collector.config.name_for(ch)
-            summary    = f'{ch_name} — {default_c}  {default_r}  {default_s}'
+            default_c   = self.collector.config.coupling_for(ch)
+            ch_tu       = self.collector.config.target_unit_for(ch) or '(use sensor)'
+            ch_amp      = self.collector.config.amplitude_mode_for(ch) or '0-P'
+            ch_name     = self.collector.config.name_for(ch)
+            summary     = f'{default_c}  {default_r}  {default_s}'
+            ch_color    = _CH_COLORS[ch % len(_CH_COLORS)]
+            grey_color  = _c('ON_SURFACE')
+            # Per-channel header themes: enabled = channel color, disabled = grey
+            with dpg.theme(tag=ui.scope_ch_hdr_theme(ch, True)):
+                with dpg.theme_component(dpg.mvCollapsingHeader):
+                    dpg.add_theme_color(dpg.mvThemeCol_Text, ch_color,
+                                        category=dpg.mvThemeCat_Core)
+            with dpg.theme(tag=ui.scope_ch_hdr_theme(ch, False)):
+                with dpg.theme_component(dpg.mvCollapsingHeader):
+                    dpg.add_theme_color(dpg.mvThemeCol_Text, grey_color,
+                                        category=dpg.mvThemeCat_Core)
+            # Line 1: color swatch + channel name
+            with dpg.group(horizontal=True, parent=ui.DEVSETUP_CHANNEL_GROUP):
+                with dpg.drawlist(width=16, height=16):
+                    dpg.draw_rectangle(pmin=(2, 2), pmax=(14, 14), fill=ch_color,
+                                       color=(0, 0, 0, 0), rounding=2)
+                dpg.add_text(ch_name, tag=ui.scope_ch_name_text(ch))
+            # Line 2: collapsing header with settings summary
             with dpg.collapsing_header(label=summary,
-                                       parent='DEVSETUP_CHANNEL_GROUP'):
-                dpg.add_checkbox(
-                    label='Enabled',
-                    tag=ui.scope_ch_enabled(ch),
-                    default_value=is_enabled,
-                    callback=lambda s, d, c=ch: self._on_channel_enable_change(c),
-                )
+                                       tag=ui.scope_ch_header(ch),
+                                       parent=ui.DEVSETUP_CHANNEL_GROUP) as _hdr:
+                dpg.bind_item_theme(_hdr, ui.scope_ch_hdr_theme(ch, is_enabled))
                 dpg.add_input_text(
                     label='Name',
                     tag=ui.scope_ch_name(ch),
                     default_value=ch_name,
-                    width=-1,
+                    indent=_CH_INDENT,
+                    width=_DLG_FIELD_W,
+                    callback=lambda s, d, c=ch: self._refresh_channel_header(c),
                 )
-                dpg.add_combo(
-                    label='Coupling',
-                    tag=ui.scope_ch_coupling(ch),
-                    items=['AC', 'DC'],
-                    default_value=default_c,
-                    width=80,
-                    callback=lambda s, d, c=ch: self._on_coupling_combo_change(c, d),
-                )
-                dpg.add_combo(
-                    label='Range',
-                    tag=ui.scope_ch_range(ch),
-                    items=_VOLTAGE_RANGE_LABELS,
-                    default_value=default_r,
-                    width=100,
-                    callback=lambda s, d, c=ch: self._on_range_combo_change(c, d),
-                )
+                with dpg.group(horizontal=True, indent=_CH_INDENT):
+                    dpg.add_checkbox(
+                        label='Enabled',
+                        tag=ui.scope_ch_enabled(ch),
+                        default_value=is_enabled,
+                        callback=lambda s, d, c=ch: self._on_channel_enable_change(c),
+                    )
+                    dpg.add_combo(
+                        label='Coupling',
+                        tag=ui.scope_ch_coupling(ch),
+                        items=['AC', 'DC'],
+                        default_value=default_c,
+                        width=_CH_COUPLING_W,
+                        callback=lambda s, d, c=ch: self._on_coupling_combo_change(c, d),
+                    )
+                    dpg.add_combo(
+                        label='Range',
+                        tag=ui.scope_ch_range(ch),
+                        items=_VOLTAGE_RANGE_LABELS,
+                        default_value=default_r,
+                        width=_CH_RANGE_W,
+                        callback=lambda s, d, c=ch: self._on_range_combo_change(c, d),
+                    )
                 dpg.add_combo(
                     label='Sensor',
                     tag=ui.scope_ch_sensor(ch),
                     items=sensor_items,
                     default_value=default_s,
-                    width=-1,
+                    indent=_CH_INDENT,
+                    width=_DLG_FIELD_W,
                     callback=lambda s, d, c=ch: self._on_sensor_combo_change(c, d),
                 )
-                dpg.add_combo(
-                    label='Target Unit',
-                    tag=ui.scope_ch_target_unit(ch),
-                    items=tu_items,
-                    default_value=ch_tu,
-                    width=-1,
-                )
+                with dpg.group(horizontal=True, indent=_CH_INDENT):
+                    dpg.add_combo(
+                        label='Unit',
+                        tag=ui.scope_ch_target_unit(ch),
+                        items=tu_items,
+                        default_value=ch_tu,
+                        width=_CH_HALF_FIELD_W,
+                    )
+                    dpg.add_combo(
+                        label='Amplitude',
+                        tag=ui.scope_ch_amplitude_mode(ch),
+                        items=list(vibechecker.AMPLITUDE_MODES),
+                        default_value=ch_amp,
+                        width=_CH_HALF_FIELD_W,
+                    )
 
     def _on_device_connect_toggle(self, sender, data, user_data):
         """Connect or disconnect a device row in the Device Setup dialog."""
@@ -1080,15 +1180,31 @@ class GUI:
                     self.collector.config.channel_target_units[ch] = tu
                 else:
                     self.collector.config.channel_target_units.pop(ch, None)
+            amp_tag = ui.scope_ch_amplitude_mode(ch)
+            if dpg.does_item_exist(amp_tag):
+                amp = dpg.get_value(amp_tag)
+                if amp in vibechecker.AMPLITUDE_MODES:
+                    self.collector.config.channel_amplitude_modes[ch] = amp
+                else:
+                    self.collector.config.channel_amplitude_modes.pop(ch, None)
         self.collector.config.enabled_channels.sort()
-        # Sync plot series visibility with final widget state
+        # Sync plot series visibility with final widget state (hide/show, preserve data)
         for ch in range(self._num_channels):
             enabled_tag = ui.scope_ch_enabled(ch)
             if dpg.does_item_exist(enabled_tag):
+                series_tags = [ui.plt_time_series(ch), ui.plt_freq_series(ch),
+                               ui.plt_trend_series(ch), ui.plt_freq_peaks(ch)]
                 if dpg.get_value(enabled_tag):
-                    self._add_channel_series(ch)
+                    if any(dpg.does_item_exist(t) for t in series_tags):
+                        for t in series_tags:
+                            if dpg.does_item_exist(t):
+                                dpg.show_item(t)
+                    else:
+                        self._add_channel_series(ch)
                 else:
-                    self._remove_channel_series(ch)
+                    for t in series_tags:
+                        if dpg.does_item_exist(t):
+                            dpg.hide_item(t)
 
     def _on_config_close(self, sender=None, data=None):
         """Apply all tab settings, do a single reconnect, then hide the dialog.
@@ -1274,39 +1390,36 @@ class GUI:
                 dpg.configure_item(tag, items=sensor_items)
 
     def _load_registry_sensor_fields(self, sensor: ScopeSensor | None):
-        if not dpg.does_item_exist('SREG_FIELD_NAME'):
+        if not dpg.does_item_exist(ui.SREG_FIELD_NAME):
             return
         if sensor is None:
-            dpg.set_value('SREG_FIELD_NAME', '')
-            dpg.set_value('SREG_FIELD_UNITS', 'g')
-            dpg.set_value('SREG_FIELD_SENS', 0.0)
-            dpg.set_value('SREG_FIELD_AMP_MODE', '0-P')
-            dpg.set_value('SREG_FIELD_NOTES', '')
+            dpg.set_value(ui.SREG_FIELD_NAME, '')
+            dpg.set_value(ui.SREG_FIELD_UNITS, 'g')
+            dpg.set_value(ui.SREG_FIELD_SENS, 0.0)
+            dpg.set_value(ui.SREG_FIELD_NOTES, '')
         else:
-            dpg.set_value('SREG_FIELD_NAME', sensor.name)
-            dpg.set_value('SREG_FIELD_UNITS', sensor.engineering_units)
-            dpg.set_value('SREG_FIELD_SENS', float(sensor.sensitivity))
-            dpg.set_value('SREG_FIELD_AMP_MODE', sensor.amplitude_mode)
-            dpg.set_value('SREG_FIELD_NOTES', sensor.notes or '')
+            dpg.set_value(ui.SREG_FIELD_NAME, sensor.name)
+            dpg.set_value(ui.SREG_FIELD_UNITS, sensor.engineering_units)
+            dpg.set_value(ui.SREG_FIELD_SENS, float(sensor.sensitivity))
+            dpg.set_value(ui.SREG_FIELD_NOTES, sensor.notes or '')
 
     def _save_registry_sensor_fields(self):
         """Persist the right-pane fields to the registry if a sensor is selected."""
         if self._editing_scope_sensor_id is None:
             return
-        if not dpg.does_item_exist('SREG_FIELD_NAME'):
+        if not dpg.does_item_exist(ui.SREG_FIELD_NAME):
             return
-        name = dpg.get_value('SREG_FIELD_NAME').strip()
+        name = dpg.get_value(ui.SREG_FIELD_NAME).strip()
         if not name:
             return
         existing = self.registry.find_by_id(self._editing_scope_sensor_id)
         sensor = ScopeSensor(
             name=name,
-            engineering_units=dpg.get_value('SREG_FIELD_UNITS'),
-            sensitivity=float(dpg.get_value('SREG_FIELD_SENS')),
+            engineering_units=dpg.get_value(ui.SREG_FIELD_UNITS),
+            sensitivity=float(dpg.get_value(ui.SREG_FIELD_SENS)),
             target_unit=existing.target_unit if existing else '',
-            amplitude_mode=dpg.get_value('SREG_FIELD_AMP_MODE'),
             id=self._editing_scope_sensor_id,
-            notes=dpg.get_value('SREG_FIELD_NOTES').strip(),
+            notes=dpg.get_value(ui.SREG_FIELD_NOTES).strip(),
         )
         try:
             self.registry.update(sensor)
@@ -1361,8 +1474,9 @@ class GUI:
                                  if c in self.collector.scope_sensors else None,
                 'voltage_range': self.collector.config.voltage_range_for(c),
                 'coupling':      self.collector.config.coupling_for(c),
-                'channel_name':  self.collector.config.channel_names.get(c, ''),
-                'target_unit':   self.collector.config.channel_target_units.get(c, ''),
+                'channel_name':   self.collector.config.channel_names.get(c, ''),
+                'target_unit':    self.collector.config.channel_target_units.get(c, ''),
+                'amplitude_mode': self.collector.config.channel_amplitude_modes.get(c, ''),
             }
             for c in range(self._num_channels)
         }
@@ -1377,17 +1491,32 @@ class GUI:
         if not dpg.does_item_exist(ui.scope_ch_enabled(ch)):
             return
         enabled = dpg.get_value(ui.scope_ch_enabled(ch))
+        series_tags = [ui.plt_time_series(ch), ui.plt_freq_series(ch),
+                       ui.plt_trend_series(ch), ui.plt_freq_peaks(ch)]
         if enabled:
             if ch not in self.collector.config.enabled_channels:
                 self.collector.config.enabled_channels.append(ch)
                 self.collector.config.enabled_channels.sort()
-            self._add_channel_series(ch)
+            # Show if series already exists (file or prior capture); create if not
+            if any(dpg.does_item_exist(t) for t in series_tags):
+                for t in series_tags:
+                    if dpg.does_item_exist(t):
+                        dpg.show_item(t)
+            else:
+                self._add_channel_series(ch)
         else:
             self.collector.config.enabled_channels = [
                 c for c in self.collector.config.enabled_channels if c != ch
             ]
-            self._remove_channel_series(ch)
+            for t in series_tags:
+                if dpg.does_item_exist(t):
+                    dpg.hide_item(t)
         self._save_channel_assignments()
+        # Reflect enabled/disabled state in the header text color
+        header_tag = ui.scope_ch_header(ch)
+        theme_tag  = ui.scope_ch_hdr_theme(ch, enabled)
+        if dpg.does_item_exist(header_tag) and dpg.does_item_exist(theme_tag):
+            dpg.bind_item_theme(header_tag, theme_tag)
         self._update_connection_summary()
         self._update_axis_assignment()
         self._update_results_section_visibility()
@@ -1413,12 +1542,27 @@ class GUI:
         if not self.collector.is_streaming:
             self.collector.reprocess_last_block()
 
+    def _refresh_channel_header(self, ch: int):
+        """Update the name display text and collapsing-header summary label."""
+        header_tag  = ui.scope_ch_header(ch)
+        name_tag    = ui.scope_ch_name_text(ch)
+        if not dpg.does_item_exist(header_tag):
+            return
+        name   = dpg.get_value(ui.scope_ch_name(ch)).strip() or self.collector.config.name_for(ch)
+        coup   = dpg.get_value(ui.scope_ch_coupling(ch))   if dpg.does_item_exist(ui.scope_ch_coupling(ch))   else self.collector.config.coupling_for(ch)
+        rng    = dpg.get_value(ui.scope_ch_range(ch))      if dpg.does_item_exist(ui.scope_ch_range(ch))      else ''
+        sensor = dpg.get_value(ui.scope_ch_sensor(ch))     if dpg.does_item_exist(ui.scope_ch_sensor(ch))     else '(none)'
+        if dpg.does_item_exist(name_tag):
+            dpg.set_value(name_tag, name)
+        dpg.configure_item(header_tag, label=f'{coup}  {rng}  {sensor}')
+
     def _on_coupling_combo_change(self, ch: int, value: str):
         if value in ('AC', 'DC'):
             self.collector.config.channel_couplings[ch] = value
             if (self.collector.sensor is not None
                     and not dpg.is_item_visible(ui.DLG_CONFIG)):
                 self.collector.reconnect_stream()
+        self._refresh_channel_header(ch)
 
     def _on_range_combo_change(self, ch: int, label: str):
         if label not in _VOLTAGE_RANGE_LABELS:
@@ -1427,6 +1571,7 @@ class GUI:
         if (self.collector.sensor is not None
                 and not dpg.is_item_visible(ui.DLG_CONFIG)):
             self.collector.reconnect_stream()
+        self._refresh_channel_header(ch)
 
     def _on_sensor_combo_change(self, ch: int, sensor_name: str):
         if not dpg.does_item_exist(ui.scope_ch_sensor(ch)):
@@ -1438,6 +1583,7 @@ class GUI:
         self._update_connection_summary()
         self._update_axis_assignment()
         self._redraw_all_channels()
+        self._refresh_channel_header(ch)
 
     def _restore_channel_assignments(self, device_cfg: dict | None = None):
         """Apply saved channel assignments, siggen, and acquisition config to the collector."""
@@ -1447,21 +1593,10 @@ class GUI:
             else:
                 device_cfg = _cfg.load_device_config('__default__')
 
-        # Restore acquisition settings
+        # Restore acquisition settings wholesale; channel-specific dicts applied below
         acq_dict = device_cfg.get('acquisition', {})
         if acq_dict:
-            restored = AcquisitionSettings.from_dict(acq_dict)
-            self.collector.config.maxfreq          = restored.maxfreq
-            self.collector.config.binsize          = restored.binsize
-            self.collector.config.fft_window       = restored.fft_window
-            self.collector.config.welch_overlap    = restored.welch_overlap
-            self.collector.config.highpass_enabled = restored.highpass_enabled
-            self.collector.config.highpass_fc      = restored.highpass_fc
-            self.collector.config.lowpass_enabled  = restored.lowpass_enabled
-            self.collector.config.lowpass_fc       = restored.lowpass_fc
-            self.collector.config.trend_max_points = restored.trend_max_points
-            self.collector.config.trend_fmin       = restored.trend_fmin
-            self.collector.config.trend_fmax       = restored.trend_fmax
+            self.collector.config = AcquisitionSettings.from_dict(acq_dict)
 
         # Restore siggen
         siggen = device_cfg.get('siggen')
@@ -1477,8 +1612,9 @@ class GUI:
             voltage_range = info.get('voltage_range', 7)
             coupling      = info.get('coupling', 'AC')
             channel_name  = info.get('channel_name', '')
-            target_unit   = info.get('target_unit', '')
-            sensor        = self.registry.find_by_id(sensor_id) if sensor_id else None
+            target_unit    = info.get('target_unit', '')
+            amplitude_mode = info.get('amplitude_mode', '')
+            sensor         = self.registry.find_by_id(sensor_id) if sensor_id else None
             self.collector.set_scope_sensor(ch, sensor)
             self.collector.config.channel_voltage_ranges[ch] = voltage_range
             self.collector.config.channel_couplings[ch] = coupling
@@ -1486,6 +1622,8 @@ class GUI:
                 self.collector.config.channel_names[ch] = channel_name
             if target_unit:
                 self.collector.config.channel_target_units[ch] = target_unit
+            if amplitude_mode:
+                self.collector.config.channel_amplitude_modes[ch] = amplitude_mode
             if enabled and ch not in self.collector.config.enabled_channels:
                 self.collector.config.enabled_channels.append(ch)
             elif not enabled and ch in self.collector.config.enabled_channels:
@@ -1519,35 +1657,38 @@ class GUI:
         dpg.create_context()
 
         # ── Unified Config Dialog (Device / Sensors / Spectrum tabs) ───
-        _dlg_cfg_w, _dlg_cfg_h = 720, 560
-        _sreg_field_w = int((_dlg_cfg_w - 200 - 40) * 0.618)  # ~297px
         with dpg.window(label='Configuration', modal=True, show=False,
-                        tag=ui.DLG_CONFIG, width=_dlg_cfg_w, height=_dlg_cfg_h,
-                        pos=((WINDOW_WIDTH - _dlg_cfg_w) // 2,
-                             (WINDOW_HEIGHT - _dlg_cfg_h) // 2)):
-            with dpg.tab_bar(tag=ui.CONFIG_TAB_BAR):
+                        tag=ui.DLG_CONFIG, width=_DLG_CFG_W, height=_DLG_CFG_H,
+                        pos=((WINDOW_WIDTH - _DLG_CFG_W) // 2,
+                             (WINDOW_HEIGHT - _DLG_CFG_H) // 2),
+                        no_scrollbar=True, no_scroll_with_mouse=True):
+            with dpg.child_window(height=-_DLG_CLOSE_H, no_scrollbar=True, border=False):
+              with dpg.tab_bar(tag=ui.CONFIG_TAB_BAR):
 
                 # ── Device tab ─────────────────────────────────────────
                 with dpg.tab(label='Device', tag=ui.CONFIG_TAB_DEVICE):
+                  with dpg.child_window(autosize_x=True, height=-1):
                     with dpg.group(horizontal=True):
                         dpg.add_text('Detected Devices')
-                        dpg.add_spacer(width=286)
+                        dpg.add_spacer(width=_DLG_DEVICE_TAB_SPACER)
                         dpg.add_button(label='Refresh', small=True,
                                        callback=self._start_device_discovery)
-                    with dpg.group(tag='DEVSETUP_DEVICE_LIST_GROUP'):
+                    with dpg.group(tag=ui.DEVSETUP_DEVICE_LIST_GROUP):
                         pass
 
                 # ── Channels tab ────────────────────────────────────────
                 with dpg.tab(label='Channels', tag=ui.CONFIG_TAB_CHANNELS):
+                  with dpg.child_window(autosize_x=True, height=-1):
                     dpg.add_text('Channel Configuration')
                     dpg.add_separator()
-                    with dpg.group(tag='DEVSETUP_CHANNEL_GROUP'):
+                    with dpg.group(tag=ui.DEVSETUP_CHANNEL_GROUP):
                         dpg.add_text('No device connected.')
 
                 # ── Sensors tab ────────────────────────────────────────
                 with dpg.tab(label='Sensors', tag=ui.CONFIG_TAB_SENSORS):
+                  with dpg.child_window(height=-1, no_scrollbar=True, border=False):
                     with dpg.group(horizontal=True):
-                        with dpg.child_window(width=200, autosize_y=True):
+                        with dpg.child_window(width=_SREG_LIST_W, height=-1):
                             dpg.add_listbox(items=self.registry.names(),
                                             tag=ui.SCOPE_REGISTRY_LIST,
                                             num_items=15, width=-1,
@@ -1557,33 +1698,29 @@ class GUI:
                                 dpg.add_button(label='Add',
                                                tag=ui.SCOPE_REGISTRY_ADD,
                                                callback=self._on_registry_add,
-                                               width=88)
+                                               width=_SREG_BTN_W)
                                 dpg.add_button(label='Delete',
                                                tag=ui.SCOPE_REGISTRY_DELETE,
                                                callback=self._on_registry_delete,
                                                width=-1)
-                        with dpg.child_window(autosize_x=True, autosize_y=True):
+                        with dpg.child_window(autosize_x=True, height=-1):
                             dpg.add_input_text(label='Name',
-                                               tag='SREG_FIELD_NAME',
-                                               width=_sreg_field_w)
+                                               tag=ui.SREG_FIELD_NAME,
+                                               width=_SREG_FIELD_W)
                             dpg.add_combo(label='Source EU',
-                                          tag='SREG_FIELD_UNITS',
+                                          tag=ui.SREG_FIELD_UNITS,
                                           items=vibechecker.EU_OPTIONS,
-                                          width=_sreg_field_w)
+                                          width=_SREG_FIELD_W)
                             dpg.add_input_float(label='Sensitivity (mV/eu)',
-                                                tag='SREG_FIELD_SENS',
-                                                format='%.6f', width=_sreg_field_w)
-                            dpg.add_combo(label='Amplitude',
-                                          tag='SREG_FIELD_AMP_MODE',
-                                          items=vibechecker.AMPLITUDE_MODES,
-                                          default_value='0-P',
-                                          width=_sreg_field_w)
+                                                tag=ui.SREG_FIELD_SENS,
+                                                format='%.6f', width=_SREG_FIELD_W)
                             dpg.add_input_text(label='Notes',
-                                               tag='SREG_FIELD_NOTES',
-                                               width=_sreg_field_w)
+                                               tag=ui.SREG_FIELD_NOTES,
+                                               width=_SREG_FIELD_W)
 
                 # ── Spectrum tab ───────────────────────────────────────
                 with dpg.tab(label='Spectrum', tag=ui.CONFIG_TAB_SPECTRUM):
+                  with dpg.child_window(autosize_x=True, height=-1):
                     _w = 160
                     # Control: Freq. Range
                     dpg.add_combo(label='Freq. Range', tag=ui.SPEC_DLG_MAXFREQ,
@@ -1639,6 +1776,7 @@ class GUI:
 
                 # ── Signal Generator tab ────────────────────────────────
                 with dpg.tab(label='Generate', tag=ui.CONFIG_TAB_SIGGEN):
+                  with dpg.child_window(autosize_x=True, height=-1):
                     dpg.add_text('PicoScope Signal Generator')
                     dpg.add_separator()
                     dpg.add_checkbox(label='Enable signal generator',
@@ -1647,22 +1785,22 @@ class GUI:
                     dpg.add_combo(label='Waveform',
                                   tag=ui.SIGGEN_WAVE_TYPE,
                                   items=list(_SIGGEN_WAVE_TYPES.keys()),
-                                  default_value='Sine', width=160)
+                                  default_value='Sine', width=_DLG_SIGGEN_W)
                     dpg.add_input_float(label='Frequency (Hz)',
                                         tag=ui.SIGGEN_FREQ_HZ,
                                         default_value=1000.0,
                                         min_value=0.0, max_value=20_000_000.0,
-                                        width=160)
+                                        width=_DLG_SIGGEN_W)
                     dpg.add_input_float(label='Amplitude pk-pk (mV)',
                                         tag=ui.SIGGEN_PKTOPK_MV,
                                         default_value=1000.0,
                                         min_value=0.0, max_value=4000.0,
-                                        width=160)
+                                        width=_DLG_SIGGEN_W)
                     dpg.add_input_float(label='Offset (mV)',
                                         tag=ui.SIGGEN_OFFSET_MV,
                                         default_value=0.0,
                                         min_value=-2000.0, max_value=2000.0,
-                                        width=160)
+                                        width=_DLG_SIGGEN_W)
                     dpg.add_spacer(height=6)
                     dpg.add_text('Note: Only active on PicoScope hardware.',
                                  color=_c('ON_SURFACE'))
@@ -1702,7 +1840,7 @@ class GUI:
             self._toggle_themes[state] = _t
 
         # ── Main window ────────────────────────────────────────────────
-        with dpg.window(label='Vibe Checkup', tag='primary_window'):
+        with dpg.window(label='Vibe Checkup', tag=ui.PRIMARY_WINDOW):
             with dpg.group(horizontal=True):
 
                 # ── Controls column (left) ────────────────────────────
@@ -1937,8 +2075,15 @@ class GUI:
                                               tag=ui.ch_result_section(_ch),
                                               show=False) as _sr:
                             dpg.bind_item_theme(_sr, self._sect_theme)
-                            dpg.add_text(self.collector.config.name_for(_ch),
-                                        tag=ui.ch_header_text(_ch))
+                            with dpg.group(horizontal=True):
+                                with dpg.drawlist(width=14, height=14):
+                                    dpg.draw_rectangle(
+                                        pmin=(2, 2), pmax=(12, 12),
+                                        fill=_CH_COLORS[_ch % len(_CH_COLORS)],
+                                        color=(0, 0, 0, 0), rounding=2,
+                                    )
+                                dpg.add_text(self.collector.config.name_for(_ch),
+                                             tag=ui.ch_header_text(_ch))
                             dpg.add_separator()
                             dpg.add_input_text(label='Overall',
                                                tag=ui.ch_overall_value(_ch),
@@ -1971,7 +2116,7 @@ class GUI:
         dpg.create_viewport(title='Vibe Logger',
                             width=WINDOW_WIDTH, height=WINDOW_HEIGHT)
         dpg.show_viewport()
-        dpg.set_primary_window('primary_window', True)
+        dpg.set_primary_window(ui.PRIMARY_WINDOW, True)
         log.info('Start DPG backend')
         dpg.start_dearpygui()
 
