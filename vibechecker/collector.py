@@ -1,12 +1,10 @@
 # Data Collector
 
-import json
 import threading
 import time
 import numpy as np
 import scipy.signal
 import h5py
-import yaml
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -50,6 +48,7 @@ class DataCollector:
         self._lag_warn_t: float = 0.0             # wall time of last lag warning
         self.notes: str = ''
         self._loaded_channel_sensor_configs: dict[int, dict] = {}
+        self._loaded_scope_sensors: dict[str, dict] = {}   # {sensor_id: ScopeSensor.to_dict()}
 
         if sensor is not None:
             self.connect_sensor(sensor)
@@ -423,93 +422,121 @@ class DataCollector:
     # ------------------------------------------------------------------
 
     # File format version written by save_data.
-    # Version 1 (legacy): metadata as child datasets, channels under 'channels/' subgroup,
-    #   scope sensor as YAML dataset.
-    # Version 2 (current): metadata as group .attrs, channels as direct frame children,
-    #   scope sensor fields as channel group .attrs, /acquisition group with config attrs.
-    _FILE_VERSION = 2
+    # v1 (legacy): metadata as child datasets, channels under 'channels/' subgroup,
+    #   scope sensor as YAML text dataset.
+    # v2 (intermediate): metadata in frame group .attrs, channel metadata in frame children,
+    #   scope sensor fields as per-frame channel attrs, /acquisition group.
+    # v3 (current): structured /metadata group; sensor library; channel config stored once;
+    #   shared trend rel_times axis.
+    _FILE_VERSION = 3
 
     def save_data(self, target: Path):
-        """Save frame cache and trend history to an HDF5 file (v2 format).
+        """Save frame cache and trend history to an HDF5 file (v3 format).
 
         Layout::
 
-            /version                           int scalar
-            /notes                             str
-            /acquisition                       (group, attrs: maxfreq, binsize, …
-                                                channel_names_json, channel_target_units_json)
-            /frames/{i}                        (group, attrs: timestamp, rel_time,
-                                                samplerate, status)
-            /frames/{i}/{ch}/data              (N,) float64
-            /frames/{i}/{ch}                   (group, attrs: unit, modality, coupling,
-                                                sensor_name, sensor_id, sensor_sensitivity,
-                                                sensor_eu, sensor_target_unit,
-                                                sensor_amplitude_mode, sensor_notes)
-            /trend/{ch}/rel_times              (M,) float64
-            /trend/{ch}/overall                (M,) float64
+            /metadata                               group
+            /metadata.attrs                         version, notes
+            /metadata/acquisition                   group
+            /metadata/acquisition.attrs             maxfreq, binsize, fft_window,
+                                                    welch_overlap, highpass_enabled,
+                                                    highpass_fc, lowpass_enabled, lowpass_fc,
+                                                    trend_max_points, trend_fmin, trend_fmax
+            /metadata/scope_sensors/{id}            group (one per unique sensor used)
+            /metadata/scope_sensors/{id}.attrs      name, id, sensitivity, engineering_units,
+                                                    target_unit, notes
+            /metadata/channels/{ch}                 group (one per enabled channel)
+            /metadata/channels/{ch}.attrs           name, unit, coupling, voltage_range,
+                                                    scope_sensor_id, target_unit
+            /frames/{i}                             group
+            /frames/{i}.attrs                       timestamp, rel_time, samplerate, status
+            /frames/{i}/{ch}/data                   (N,) float64
+            /trend/rel_times                        (M,) float64  (shared time axis)
+            /trend/{ch}/data                        (M,) float64  (channel overall amplitude)
         """
-        if target.exists():
-            log.warning('Save target exists. Delete existing file before saving.')
-            return
-
         frames = list(self.data['frame_cache'])
         with h5py.File(target, 'w') as f:
-            f.create_dataset('version', data=self._FILE_VERSION)
-            f.create_dataset('notes',   data=self.notes)
+            # ── /metadata ──────────────────────────────────────────────
+            meta_grp = f.create_group('metadata')
+            meta_grp.attrs['version'] = self._FILE_VERSION
+            meta_grp.attrs['notes']   = self.notes
 
-            # Acquisition config group
-            acq_grp = f.create_group('acquisition')
+            # /metadata/acquisition — scalar acq settings only (channel dicts in /metadata/channels)
+            acq_grp = meta_grp.create_group('acquisition')
             cfg_dict = self.config.to_dict()
             for k, v in cfg_dict.items():
-                if isinstance(v, dict):
-                    # dicts (channel_names, channel_target_units) → JSON string attr
-                    acq_grp.attrs[k] = json.dumps({str(ck): cv for ck, cv in v.items()})
-                elif v is None:
-                    acq_grp.attrs[k] = ''           # trend_fmax=None encoded as ''
-                else:
-                    acq_grp.attrs[k] = v
+                if k in ('channel_names', 'channel_target_units', 'channel_amplitude_modes'):
+                    continue    # stored per-channel in /metadata/channels
+                acq_grp.attrs[k] = '' if v is None else v
 
+            # /metadata/scope_sensors — sensor library: one subgroup per unique sensor
+            ss_grp = meta_grp.create_group('scope_sensors')
+            seen_ids: set[str] = set()
+            for scope_s in self.scope_sensors.values():
+                if scope_s.id not in seen_ids:
+                    seen_ids.add(scope_s.id)
+                    sg = ss_grp.create_group(scope_s.id)
+                    for k, v in scope_s.to_dict().items():
+                        sg.attrs[k] = v
+
+            # /metadata/channels — channel config (constant for entire dataset)
+            # Determine the actual sample unit per channel from the first available frame
+            ch_sample_units: dict[int, str] = {}
+            for frame_s in frames:
+                for fch, fsamp in ((k, v) for k, v in frame_s.items() if isinstance(k, int)):
+                    if fch not in ch_sample_units:
+                        ch_sample_units[fch] = fsamp.unit
+            ch_meta_grp = meta_grp.create_group('channels')
+            for ch in self.config.enabled_channels:
+                scope_s = self.scope_sensors.get(ch)
+                cg = ch_meta_grp.create_group(str(ch))
+                cg.attrs['name']            = self.config.name_for(ch)
+                cg.attrs['unit']            = ch_sample_units.get(ch,
+                                                scope_s.engineering_units if scope_s else 'mV')
+                cg.attrs['coupling']        = self.config.coupling_for(ch)
+                cg.attrs['voltage_range']   = self.config.voltage_range_for(ch)
+                cg.attrs['scope_sensor_id'] = scope_s.id if scope_s else ''
+                cg.attrs['target_unit']     = self.config.target_unit_for(ch)
+                cg.attrs['amplitude_mode']  = self.config.amplitude_mode_for(ch)
+
+            # ── /frames ────────────────────────────────────────────────
+            enabled = set(self.config.enabled_channels)
             frames_grp = f.create_group('frames')
             for i, frame_samples in enumerate(frames):
                 fg = frames_grp.create_group(str(i))
-                ch_only = {k: v for k, v in frame_samples.items() if isinstance(k, int)}
+                # Only save enabled channels — disabling a channel excludes it from the file
+                ch_only = {k: v for k, v in frame_samples.items()
+                           if isinstance(k, int) and k in enabled}
+                if not ch_only:
+                    continue
                 first = next(iter(ch_only.values()))
                 fg.attrs['timestamp']  = first.timestamp
                 fg.attrs['rel_time']   = first.rel_time
                 fg.attrs['samplerate'] = first.samplerate
                 fg.attrs['status']     = first.status
-
                 for ch, sample in ch_only.items():
-                    cg = fg.create_group(str(ch))
-                    cg.create_dataset('data', data=sample.data)
-                    cg.attrs['unit']     = sample.unit
-                    cg.attrs['modality'] = sample.modality
-                    cg.attrs['coupling'] = self.config.coupling_for(ch)
-                    scope_s = self.scope_sensors.get(ch)
-                    if scope_s is not None:
-                        cg.attrs['sensor_name']           = scope_s.name
-                        cg.attrs['sensor_id']             = scope_s.id
-                        cg.attrs['sensor_sensitivity']    = scope_s.sensitivity
-                        cg.attrs['sensor_eu']             = scope_s.engineering_units
-                        cg.attrs['sensor_target_unit']    = scope_s.target_unit
-                        cg.attrs['sensor_amplitude_mode'] = scope_s.amplitude_mode
-                        cg.attrs['sensor_notes']          = scope_s.notes
+                    fg.create_group(str(ch)).create_dataset('data', data=sample.data)
 
+            # ── /trend ─────────────────────────────────────────────────
             trend_grp = f.create_group('trend')
-            for ch, td in self.data['trend'].items():
+            # rel_times is shared across channels (simultaneous capture)
+            shared_rel_times: list = []
+            for td in self.data['trend'].values():
                 if td['rel_times']:
-                    tg = trend_grp.create_group(str(ch))
-                    tg.create_dataset('rel_times', data=np.array(td['rel_times']))
-                    tg.create_dataset('overall',   data=np.array(td['overall']))
+                    shared_rel_times = td['rel_times']
+                    break
+            if shared_rel_times:
+                trend_grp.create_dataset('rel_times',
+                                         data=np.array(shared_rel_times))
+            for ch, td in self.data['trend'].items():
+                if ch in enabled and td['overall']:
+                    trend_grp.create_group(str(ch)).create_dataset(
+                        'data', data=np.array(td['overall']))
 
         log.info(f'Saved {len(frames)} frames to {target}')
 
     def load_data(self, target: Path):
-        """Load frame cache and trend from an HDF5 file, then reprocess for display.
-
-        Supports v2 (current) and v1 (legacy) file formats.
-        #TODO: remove v1 back-compat once all files have been resaved in v2.
-        """
+        """Load frame cache and trend from an HDF5 file (v3 format), then reprocess."""
         if not target.is_file():
             log.error(f'load_data: file does not exist: {target}')
             return
@@ -519,22 +546,18 @@ class DataCollector:
         self.data['frame_cache'].clear()
         self.data['trend'] = {}
         self._loaded_channel_sensor_configs = {}
+        self._loaded_scope_sensors = {}
 
         with h5py.File(target, 'r') as f:
-            version = int(f['version'][()]) if 'version' in f else 1
-            if version >= 2:
-                self._load_v2(f, decode)
-            else:
-                log.info(f'Loading legacy v1 file: {target}')
-                self._load_v1(f, decode)
+            self._load_v3(f, decode)
 
         n = len(self.data['frame_cache'])
-        log.info(f'Loaded {n} frames (format v{version}) from {target}')
+        log.debug(f'Loaded {n} frames from {target}')
 
         if not n:
             return
 
-        # Auto-configure enabled_channels and adjust maxfreq from file data
+        # Sync enabled_channels from frame data and clamp maxfreq to file samplerate
         all_channels: set[int] = set()
         file_samplerate: int = 0
         for frame in self.data['frame_cache']:
@@ -546,14 +569,9 @@ class DataCollector:
 
         if all_channels:
             self.config.enabled_channels = sorted(all_channels)
-            log.info(f'Enabled channels from file: {self.config.enabled_channels}')
 
-        if file_samplerate > 0:
-            file_maxfreq = file_samplerate / 2
-            if self.config.samplerate < file_samplerate:
-                self.config.maxfreq = file_maxfreq
-                log.info(f'Adjusted maxfreq to {file_maxfreq} Hz '
-                         f'(file samplerate: {file_samplerate})')
+        if file_samplerate > 0 and self.config.samplerate < file_samplerate:
+            self.config.maxfreq = file_samplerate / 2
 
         self.init_trend_channels()
         self.reprocess_last_block()
@@ -562,11 +580,62 @@ class DataCollector:
     # Private HDF5 format readers
     # ------------------------------------------------------------------
 
-    def _load_v2(self, f: 'h5py.File', decode) -> None:
-        """Read v2 format: metadata in .attrs, channels as direct frame children."""
-        if 'notes' in f:
-            self.notes = decode(f['notes'][()])
+    def _load_v3(self, f: 'h5py.File', decode) -> None:
+        """Read v3 format: structured /metadata group, sensor library, shared trend axis."""
+        meta_grp = f['metadata']
+        self.notes = decode(meta_grp.attrs.get('notes', ''))
 
+        # Acquisition settings — replace config wholesale; channel dicts populated below
+        if 'acquisition' in meta_grp:
+            acq_dict = {k: (None if v == '' else v)
+                        for k, v in meta_grp['acquisition'].attrs.items()}
+            self.config = vibechecker.AcquisitionSettings.from_dict(acq_dict)
+
+        # Scope sensor library — {sensor_id: dict}
+        if 'scope_sensors' in meta_grp:
+            for sid, sg in meta_grp['scope_sensors'].items():
+                d: dict = {}
+                for k, v in sg.attrs.items():
+                    if isinstance(v, (bytes, np.bytes_)):
+                        d[k] = v.decode()
+                    elif isinstance(v, (np.integer,)):
+                        d[k] = int(v)
+                    elif isinstance(v, (np.floating,)):
+                        d[k] = float(v)
+                    else:
+                        d[k] = v
+                d['id'] = sid          # ensure id matches group name
+                self._loaded_scope_sensors[sid] = d
+
+        # Channel metadata — restore names, target units, and sensor configs
+        ch_units: dict[int, str] = {}
+        if 'channels' in meta_grp:
+            for ch_str, cg in meta_grp['channels'].items():
+                ch          = int(ch_str)
+                name        = decode(cg.attrs.get('name', ''))
+                unit        = decode(cg.attrs.get('unit', 'mV'))
+                target_unit = decode(cg.attrs.get('target_unit', ''))
+                sensor_id   = decode(cg.attrs.get('scope_sensor_id', ''))
+                coupling       = decode(cg.attrs.get('coupling', 'AC'))
+                voltage_range  = int(cg.attrs.get('voltage_range', 7))
+                amplitude_mode = decode(cg.attrs.get('amplitude_mode', ''))
+                if name:
+                    self.config.channel_names[ch] = name
+                if target_unit:
+                    self.config.channel_target_units[ch] = target_unit
+                if amplitude_mode:
+                    self.config.channel_amplitude_modes[ch] = amplitude_mode
+                self.config.channel_couplings[ch]      = coupling
+                self.config.channel_voltage_ranges[ch] = voltage_range
+                ch_units[ch] = unit
+                if sensor_id and sensor_id in self._loaded_scope_sensors:
+                    self._loaded_channel_sensor_configs[ch] = dict(
+                        self._loaded_scope_sensors[sensor_id]
+                    )
+                else:
+                    self._loaded_channel_sensor_configs[ch] = {}
+
+        # Frames
         if 'frames' not in f:
             return
         for idx in sorted(f['frames'].keys(), key=int):
@@ -582,83 +651,29 @@ class DataCollector:
 
             frame_samples: dict[int, vibechecker.VibeSample] = {}
             for ch_str, cg in fg.items():
-                if ch_str == 'data' or not ch_str.isdigit():
+                if not ch_str.isdigit():
                     continue
-                ch       = int(ch_str)
-                data     = np.ascontiguousarray(cg['data'][()], dtype=np.float64)
-                unit     = decode(cg.attrs.get('unit', 'mV'))
-                modality = decode(cg.attrs.get('modality', 'acceleration'))
+                ch   = int(ch_str)
+                data = np.ascontiguousarray(cg['data'][()], dtype=np.float64)
+                unit = ch_units.get(ch, 'mV')
                 frame_samples[ch] = vibechecker.VibeSample(
                     status=status, _timestamp=timestamp,
                     samplerate=samplerate, unit=unit,
-                    data=data, rel_time=rel_time, modality=modality,
+                    data=data, rel_time=rel_time,
                 )
-                if ch not in self._loaded_channel_sensor_configs:
-                    if 'sensor_id' in cg.attrs:
-                        self._loaded_channel_sensor_configs[ch] = {
-                            'id':                decode(cg.attrs['sensor_id']),
-                            'name':              decode(cg.attrs['sensor_name']),
-                            'sensitivity':       float(cg.attrs['sensor_sensitivity']),
-                            'engineering_units': decode(cg.attrs['sensor_eu']),
-                            'target_unit':       decode(cg.attrs.get('sensor_target_unit', '')),
-                            'amplitude_mode':    decode(cg.attrs.get('sensor_amplitude_mode', '0-P')),
-                            'notes':             decode(cg.attrs.get('sensor_notes', '')),
-                        }
-                    else:
-                        self._loaded_channel_sensor_configs[ch] = {}
             self.data['frame_cache'].append(frame_samples)
 
+        # Trend — shared rel_times axis, per-channel overall amplitude
         if 'trend' in f:
-            for ch_str, tg in f['trend'].items():
+            trend_grp = f['trend']
+            shared_rel_times: list = []
+            if 'rel_times' in trend_grp:
+                shared_rel_times = list(np.array(trend_grp['rel_times'][()]))
+            for ch_str, tg in trend_grp.items():
+                if not ch_str.isdigit():
+                    continue
                 self.data['trend'][int(ch_str)] = {
-                    'rel_times': list(np.array(tg['rel_times'][()])),
-                    'overall':   list(np.array(tg['overall'][()])),
+                    'rel_times': shared_rel_times,
+                    'overall':   list(np.array(tg['data'][()])),
                 }
 
-    def _load_v1(self, f: 'h5py.File', decode) -> None:
-        """Read legacy v1 format: metadata as child datasets, channels under 'channels/'.
-        #TODO: remove once all files have been resaved in v2 format.
-        """
-        if 'notes' in f:
-            self.notes = decode(f['notes'][()])
-
-        if 'frames' not in f:
-            return
-        for idx in sorted(f['frames'].keys(), key=int):
-            fg = f['frames'][idx]
-            meta       = fg['meta']
-            ts_str     = decode(meta['timestamp'][()])
-            rel_time   = float(meta['rel_time'][()])
-            samplerate = int(meta['samplerate'][()])
-            status     = decode(meta['status'][()])
-            try:
-                timestamp = datetime.fromisoformat(ts_str)
-            except (ValueError, TypeError):
-                timestamp = datetime.now()
-
-            frame_samples: dict[int, vibechecker.VibeSample] = {}
-            for ch_str, cg in fg['channels'].items():
-                ch       = int(ch_str)
-                data     = np.ascontiguousarray(cg['data'][()], dtype=np.float64)
-                unit     = decode(cg['unit'][()])
-                modality = decode(cg['modality'][()]) if 'modality' in cg else 'acceleration'
-                frame_samples[ch] = vibechecker.VibeSample(
-                    status=status, _timestamp=timestamp,
-                    samplerate=samplerate, unit=unit,
-                    data=data, rel_time=rel_time, modality=modality,
-                )
-                if ch not in self._loaded_channel_sensor_configs:
-                    if 'scope_sensor' in cg:
-                        # v1.5: YAML blob
-                        d = yaml.safe_load(decode(cg['scope_sensor'][()]))
-                        self._loaded_channel_sensor_configs[ch] = d or {}
-                    else:
-                        self._loaded_channel_sensor_configs[ch] = {}
-            self.data['frame_cache'].append(frame_samples)
-
-        if 'trend' in f:
-            for ch_str, tg in f['trend'].items():
-                self.data['trend'][int(ch_str)] = {
-                    'rel_times': list(np.array(tg['rel_times'][()])),
-                    'overall':   list(np.array(tg['overall'][()])),
-                }
