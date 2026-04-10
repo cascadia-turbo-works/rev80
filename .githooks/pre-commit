@@ -1,0 +1,8 @@
+#!/usr/bin/env sh
+# Run ruff on vibechecker/ before every commit.
+# Install once with: git config core.hooksPath .githooks
+
+python -m ruff check vibechecker/ || {
+    echo "ruff found issues — fix them or use 'git commit --no-verify' to skip."
+    exit 1
+}
