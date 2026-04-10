@@ -115,7 +115,7 @@ def test_save_load_roundtrip():
     assert loaded_sample.unit == first_sample.unit,             'unit differs after load'
     assert np.allclose(loaded_sample.data, first_sample.data),  'data differs after load'
 
-    fname.remove_p()
+    #fname.remove_p()
 
 
 # ---------------------------------------------------------------------------
@@ -218,9 +218,9 @@ def test_channel_name_defaults_and_override():
 # ---------------------------------------------------------------------------
 
 def test_save_data_persists_scope_sensor():
-    """save_data writes scope_sensor YAML for assigned channels."""
+    """save_data writes scope sensor into the /metadata sensor library (v3 format)."""
     sensor = ScopeSensor(name='Test Sensor', engineering_units='g',
-                         sensitivity=10.0, amplitude_mode='0-P')
+                         sensitivity=10.0)
     collector = DataCollector(sim_sensor, acq_settings)
     collector.set_scope_sensor(0, sensor)
     collector.collect_sample()
@@ -232,20 +232,26 @@ def test_save_data_persists_scope_sensor():
     collector.save_data(fname)
 
     with h5py.File(fname, 'r') as f:
-        assert int(f['version'][()]) == 2, 'Expected v2 format'
-        ch_grp = f['frames']['0']['0']           # v2: channels are direct frame children
-        assert 'sensor_id' in ch_grp.attrs, 'sensor_id attr missing'
-        assert float(ch_grp.attrs['sensor_sensitivity']) == pytest.approx(10.0)
-        assert ch_grp.attrs['sensor_eu'] == 'g'
-        assert ch_grp.attrs['sensor_name'] == 'Test Sensor'
+        assert int(f['metadata'].attrs['version']) == 3, 'Expected v3 format'
+        # Sensor library: one entry per unique sensor used
+        ss_grp = f['metadata']['scope_sensors']
+        assert len(ss_grp) >= 1, 'Expected at least 1 sensor in library'
+        assert sensor.id in ss_grp, f'Sensor id {sensor.id!r} not found in library'
+        sg = ss_grp[sensor.id]
+        assert float(sg.attrs['sensitivity']) == pytest.approx(10.0)
+        assert sg.attrs['engineering_units'] == 'g'
+        assert sg.attrs['name'] == 'Test Sensor'
+        # Channel metadata references the sensor by id
+        ch_meta = f['metadata']['channels']['0']
+        assert ch_meta.attrs['scope_sensor_id'] == sensor.id
 
     fname.remove_p()
 
 
 def test_load_data_restores_scope_sensor_configs():
-    """load_data populates _loaded_channel_sensor_configs from saved YAML."""
+    """load_data populates _loaded_channel_sensor_configs and _loaded_scope_sensors (v3)."""
     sensor = ScopeSensor(name='Load Test', engineering_units='in/s',
-                         sensitivity=50.0, amplitude_mode='RMS')
+                         sensitivity=50.0)
     collector = DataCollector(sim_sensor, acq_settings)
     collector.set_scope_sensor(0, sensor)
     collector.collect_sample()
@@ -259,11 +265,17 @@ def test_load_data_restores_scope_sensor_configs():
     fresh = DataCollector(config=acq_settings)
     fresh.load_data(fname)
 
+    # Per-channel sensor config (keyed to registry id)
     cfg = fresh._loaded_channel_sensor_configs
     assert 0 in cfg, 'Channel 0 missing from _loaded_channel_sensor_configs'
     assert cfg[0]['sensitivity'] == pytest.approx(50.0)
     assert cfg[0]['id'] == sensor.id
     assert cfg[0]['engineering_units'] == 'in/s'
+
+    # Sensor library (for auto-adding to registry on GUI load)
+    lib = fresh._loaded_scope_sensors
+    assert sensor.id in lib, 'Sensor id missing from _loaded_scope_sensors'
+    assert lib[sensor.id]['name'] == 'Load Test'
 
     fname.remove_p()
 
