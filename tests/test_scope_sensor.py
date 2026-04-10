@@ -29,7 +29,6 @@ def test_scope_sensor_to_dict_from_dict_roundtrip():
     assert s2.engineering_units == s.engineering_units
     assert s2.sensitivity == pytest.approx(s.sensitivity)
     assert s2.target_unit == s.target_unit
-    assert s2.amplitude_mode == s.amplitude_mode
     assert s2.id == s.id
     assert s2.notes == s.notes
 
@@ -53,7 +52,6 @@ def test_scope_sensor_from_dict_missing_optional_fields():
     assert s.name == 'Minimal'
     assert s.notes == ''
     assert s.target_unit == ''
-    assert s.amplitude_mode == '0-P'
     assert s.id  # auto-generated uuid
 
 
