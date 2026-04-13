@@ -1053,7 +1053,7 @@ class GUI:
             ch_tu       = self.collector.config.target_unit_for(ch) or '(use sensor)'
             ch_amp      = self.collector.config.amplitude_mode_for(ch) or '0-P'
             ch_name     = self.collector.config.name_for(ch)
-            summary     = f'{default_c}  {default_r}  {default_s}'
+            summary     = f'{default_c}  {default_r}  {default_s} -> {ch_tu} {ch_amp}'
             ch_color    = _CH_COLORS[ch % len(_CH_COLORS)]
             grey_color  = _c('ON_SURFACE')
             # Per-channel header themes: enabled = channel color, disabled = grey
@@ -1067,6 +1067,12 @@ class GUI:
                                         category=dpg.mvThemeCat_Core)
             # Line 1: color swatch + channel name
             with dpg.group(horizontal=True, parent=ui.DEVSETUP_CHANNEL_GROUP):
+                dpg.add_checkbox(
+                    label='Enable',
+                    tag=ui.scope_ch_enabled(ch),
+                    default_value=is_enabled,
+                    callback=lambda s, d, c=ch: self._on_channel_enable_change(c),
+                )
                 with dpg.drawlist(width=16, height=16):
                     dpg.draw_rectangle(pmin=(2, 2), pmax=(14, 14), fill=ch_color,
                                        color=(0, 0, 0, 0), rounding=2)
@@ -1075,7 +1081,7 @@ class GUI:
             with dpg.collapsing_header(label=summary,
                                        tag=ui.scope_ch_header(ch),
                                        parent=ui.DEVSETUP_CHANNEL_GROUP) as _hdr:
-                dpg.bind_item_theme(_hdr, ui.scope_ch_hdr_theme(ch, is_enabled))
+                # dpg.bind_item_theme(_hdr, ui.scope_ch_hdr_theme(ch, is_enabled))
                 dpg.add_input_text(
                     label='Name',
                     tag=ui.scope_ch_name(ch),
@@ -1085,12 +1091,6 @@ class GUI:
                     callback=lambda s, d, c=ch: self._refresh_channel_header(c),
                 )
                 with dpg.group(horizontal=True, indent=_CH_INDENT):
-                    dpg.add_checkbox(
-                        label='Enabled',
-                        tag=ui.scope_ch_enabled(ch),
-                        default_value=is_enabled,
-                        callback=lambda s, d, c=ch: self._on_channel_enable_change(c),
-                    )
                     dpg.add_combo(
                         label='Coupling',
                         tag=ui.scope_ch_coupling(ch),
