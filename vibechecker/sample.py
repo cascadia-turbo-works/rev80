@@ -350,8 +350,7 @@ class VibeSample:
         spectrum_amp = np.sqrt(np.maximum(display_spectrum, 0)) * amp_factor
 
         # ── Peaks ────────────────────────────────────────────────────
-        peaks, _ = signal.find_peaks(spectrum_amp,
-                                     distance=max(1, int(len(freq) / 50)))
+        peaks, _ = signal.find_peaks(spectrum_amp, distance=5)
         peaks = np.array(peaks[np.argsort(-spectrum_amp[peaks])])
 
         # ── Overall broadband amplitude (trend freq window) ──────────
