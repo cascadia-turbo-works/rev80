@@ -1,5 +1,4 @@
 import numpy as np
-from pathlib import Path
 
 from vibechecker._paths import data_dir
 
@@ -69,6 +68,10 @@ EU_OPTIONS: list = [
 #   RMS  = sqrt(spectrum)
 #   0-P  = RMS * sqrt(2)
 #   P-P  = 0-P * 2
+# TODO: add 'PSD' (eu²/Hz) and 'ASD' (eu/√Hz) density modes.  These require
+#   switching scipy.welch to scaling='density' and adjusting the amplitude
+#   pipeline in VibeSample.process() — do not mix spectrum and density
+#   normalization in the same AMPLITUDE_SCALE lookup.
 AMPLITUDE_MODES: list = ['RMS', '0-P', 'P-P']
 AMPLITUDE_SCALE: dict = {
     'RMS': 1.0,
@@ -188,13 +191,19 @@ class UI_Elements:
     ACQ_CLEAR_CACHE    = 'ACQ_CLEAR_CACHE'     # wipe frame cache + trend
     CHANNELS_CARD      = 'CHANNELS_CARD'        # left-panel Channels card window
     CHANNELS_GEN_LINE  = 'CHANNELS_GEN_LINE'   # "Gen : wave : freq x amp" text
-    ACQ_BROWSE_PREV    = 'ACQ_BROWSE_PREV'     # ← older frame
-    ACQ_BROWSE_NEXT    = 'ACQ_BROWSE_NEXT'     # → newer frame
+    ACQ_BROWSE_FIRST   = 'ACQ_BROWSE_FIRST'     # << oldest frame
+    ACQ_BROWSE_PREV    = 'ACQ_BROWSE_PREV'     # < older frame
+    ACQ_BROWSE_NEXT    = 'ACQ_BROWSE_NEXT'     # > newer frame
+    ACQ_BROWSE_LAST    = 'ACQ_BROWSE_LAST'     # >> newest frame
     ACQ_BROWSE_LABEL   = 'ACQ_BROWSE_LABEL'    # "Frame N / M" text
 
     # ── File Handling section ──────────────────────────────────────────────
     FILE_SAVE = 'FILE_SAVE'
     FILE_LOAD = 'FILE_LOAD'
+    ACQ_NOTES = 'ACQ_NOTES'
+
+    # ── Primary window ─────────────────────────────────────────────────────
+    PRIMARY_WINDOW = 'primary_window'
 
     # ── Dialogs ────────────────────────────────────────────────────────────
     DLG_CONFIG           = 'DLG_CONFIG'
@@ -211,8 +220,7 @@ class UI_Elements:
     SIGGEN_FREQ_HZ       = 'SIGGEN_FREQ_HZ'
     SIGGEN_PKTOPK_MV     = 'SIGGEN_PKTOPK_MV'
     SIGGEN_OFFSET_MV     = 'SIGGEN_OFFSET_MV'
-    DLG_SAVE_FILE       = 'DLG_SAVE_FILE'
-    DLG_LOAD_FILE       = 'DLG_LOAD_FILE'
+    # DLG_SAVE_FILE / DLG_LOAD_FILE removed — replaced by tkinter dialogs
 
     # Spectrum dialog inputs — controls
     SPEC_DLG_MAXFREQ    = 'SPEC_DLG_MAXFREQ'
@@ -235,6 +243,14 @@ class UI_Elements:
     SCOPE_REGISTRY_LIST   = 'SCOPE_REGISTRY_LIST'
     SCOPE_REGISTRY_ADD    = 'SCOPE_REGISTRY_ADD'
     SCOPE_REGISTRY_DELETE = 'SCOPE_REGISTRY_DELETE'
+    SREG_FIELD_NAME       = 'SREG_FIELD_NAME'    # sensor name input
+    SREG_FIELD_UNITS      = 'SREG_FIELD_UNITS'   # engineering units combo
+    SREG_FIELD_SENS       = 'SREG_FIELD_SENS'    # sensitivity input
+    SREG_FIELD_NOTES      = 'SREG_FIELD_NOTES'   # notes input
+
+    # ── Device setup dialog internal groups ────────────────────────────────
+    DEVSETUP_DEVICE_LIST_GROUP = 'DEVSETUP_DEVICE_LIST_GROUP'  # device picker rows
+    DEVSETUP_CHANNEL_GROUP     = 'DEVSETUP_CHANNEL_GROUP'      # per-channel rows
 
     # ── Plots ──────────────────────────────────────────────────────────────
     PLT_SAMPLE          = 'PLT_SAMPLE'
@@ -256,6 +272,7 @@ class UI_Elements:
     PLT_TREND_AX_TIME    = 'PLT_TREND_AX_TIME'
     PLT_TREND_AX_OVERALL = 'PLT_TREND_AX_OVERALL'
     PLT_TREND_DATA       = 'PLT_TREND_DATA'
+    PLT_TREND_CURSOR     = 'PLT_TREND_CURSOR'    # vertical line at browsed frame time
 
     FFT_PEAKS_DISPLAY_COUNT = 'FFT_PEAK_DISPLAY_COUNT'
     FFT_PEAKS_TABLE         = 'FFT_PEAKS_TABLE'
@@ -264,6 +281,10 @@ class UI_Elements:
     CH_WARNINGS_SECTION = 'CH_WARNINGS_SECTION'
 
     # ── Per-channel dynamic tags ───────────────────────────────────────────
+    @staticmethod
+    def scope_ch_header(ch: int) -> str:
+        return f'SCOPE_CH{ch}_HEADER'
+
     @staticmethod
     def scope_ch_enabled(ch: int) -> str:
         return f'SCOPE_CH{ch}_ENABLED'
@@ -279,6 +300,30 @@ class UI_Elements:
     @staticmethod
     def scope_ch_coupling(ch: int) -> str:
         return f'SCOPE_CH{ch}_COUPLING'
+
+    @staticmethod
+    def scope_ch_name(ch: int) -> str:
+        return f'SCOPE_CH{ch}_NAME'
+
+    @staticmethod
+    def scope_ch_target_unit(ch: int) -> str:
+        return f'SCOPE_CH{ch}_TARGET_UNIT'
+
+    @staticmethod
+    def scope_ch_amplitude_mode(ch: int) -> str:
+        return f'SCOPE_CH{ch}_AMP_MODE'
+
+    @staticmethod
+    def scope_ch_name_text(ch: int) -> str:
+        return f'SCOPE_CH{ch}_NAME_TEXT'
+
+    @staticmethod
+    def scope_ch_hdr_theme(ch: int, enabled: bool) -> str:
+        return f'SCOPE_CH{ch}_HDR_THEME_{"ON" if enabled else "OFF"}'
+
+    @staticmethod
+    def ch_header_text(ch: int) -> str:
+        return f'CH{ch}_HEADER_TEXT'
 
     @staticmethod
     def ch_overflow_warning(ch: int) -> str:

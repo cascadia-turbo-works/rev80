@@ -26,7 +26,6 @@ class ScopeSensor:
     engineering_units: str          # source EU from datasheet (e.g. 'g', 'mm/s')
     sensitivity: float              # mV / eu  (datasheet value, e.g. 10.2 mV/g)
     target_unit: str = ''           # display/integration target; '' = same as engineering_units
-    amplitude_mode: str = '0-P'    # 'RMS', '0-P', or 'P-P'
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     notes: str = ''
 
@@ -40,7 +39,6 @@ class ScopeSensor:
             'engineering_units': self.engineering_units,
             'sensitivity': self.sensitivity,
             'target_unit': self.target_unit,
-            'amplitude_mode': self.amplitude_mode,
             'id': self.id,
             'notes': self.notes,
         }
@@ -52,7 +50,6 @@ class ScopeSensor:
             engineering_units=d['engineering_units'],
             sensitivity=float(d['sensitivity']),
             target_unit=d.get('target_unit', ''),
-            amplitude_mode=d.get('amplitude_mode', '0-P'),
             id=d.get('id', str(uuid.uuid4())),
             notes=d.get('notes', ''),
             # 'modality' key in old YAML files is silently ignored
