@@ -2081,10 +2081,11 @@ class GUI:
                             )
 
                     dpg.add_spacer(height=4)
-                    dpg.add_input_int(label='# Peaks',
+                    dpg.add_input_int(label='Peak Display',
                                       tag=ui.FFT_PEAKS_DISPLAY_COUNT,
-                                      default_value=3, callback=self._redraw,
-                                      width=60)
+                                      default_value=6,
+                                      callback=self._redraw,
+                                      width=100)
                     dpg.add_spacer(height=4)
 
                     # Per-channel result sections (all hidden by default;
