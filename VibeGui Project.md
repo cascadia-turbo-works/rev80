@@ -226,7 +226,7 @@ Branch: `feature/windows-build`
 - [x] PyInstaller spec (`vibechecker.spec`) — one-dir bundle, ~40MB
 - [x] Inno Setup installer script (`installer/vibechecker.iss`) — non-admin install, PicoSDK prerequisite check
 - [x] Build scripts: `build.sh` (Git Bash) and `build.bat`
-- [ ] App icon — graphic design needed (`assets/vibechecker.ico`, 16/32/48/256px)
+- [x] App icon — graphic design needed (`assets/vibechecker.ico`, 16/32/48/256px)
 - [ ] Code signing for distribution
 - [ ] Resolve frozen app startup crash (dearpygui context init failing on Windows VM — under investigation)
 
