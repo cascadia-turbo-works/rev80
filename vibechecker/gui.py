@@ -2025,12 +2025,6 @@ class GUI:
                         )
                         dpg.add_spacer(height=4)
                         dpg.add_separator()
-                        dpg.add_text('Measurement Notes', color=_c('ON_SURFACE'))
-                        dpg.add_input_text(tag=ui.ACQ_NOTES, multiline=True,
-                                           width=-1, height=90,
-                                           hint='Worksite, machine, sensor location…')
-                        dpg.add_spacer(height=4)
-                        dpg.add_separator()
                         with dpg.group(horizontal=True):
                             dpg.add_button(
                                 label="Save", tag=ui.FILE_SAVE, callback=self._on_save_click, width=_BTN_HALF
