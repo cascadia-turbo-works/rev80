@@ -410,7 +410,7 @@ class GUI:
             if dpg.does_item_exist(tag):
                 dpg.configure_item(tag, show=(ch in enabled))
 
-    def display_frame(self, samples: dict):
+    def _display_frame(self, samples: dict):
         """Compute ChannelResults from raw samples and update all GUI plots."""
         if self.collector.is_streaming:
             self._set_stream_status("active")
@@ -451,7 +451,7 @@ class GUI:
 
     def _ensure_legends(self):
         """Re-create any plot legend that has been lost (DPG can drop them on
-        dynamic series add/remove).  Called every display_frame so recovery is
+        dynamic series add/remove).  Called every _display_frame so recovery is
         immediate."""
         for plot_tag, legend_tag in [
             (ui.PLT_FREQ, ui.PLT_FREQ_LEGEND),
@@ -461,7 +461,7 @@ class GUI:
             if dpg.does_item_exist(plot_tag) and not dpg.does_item_exist(legend_tag):
                 dpg.add_plot_legend(location=dpg.mvPlot_Location_East, tag=legend_tag, parent=plot_tag)
 
-    def poll_new_frames(self):
+    def _poll_new_frames(self):
         """Check for new data from the collector and display the latest frame.
 
         Called once per DPG render tick from the manual render loop.
@@ -481,7 +481,7 @@ class GUI:
             frame = cache[-(idx + 1)]
         except IndexError:
             return  # rare race: cache shifted between len() and index
-        self.display_frame(frame)
+        self._display_frame(frame)
 
     def _redraw(self, sender=None, data=None):
         if not self.collector.is_streaming:
@@ -710,7 +710,7 @@ class GUI:
         self.collector.collect_sample()
         self._set_stream_status("idle")
         # Frame is now in cache and new_frame_event is set;
-        # poll_new_frames will display it on the next render tick.
+        # _poll_new_frames will display it on the next render tick.
 
     # ------------------------------------------------------------------
     # File handling
@@ -823,9 +823,6 @@ class GUI:
         return ""
 
     def _on_save_click(self, sender=None, data=None):
-        dpg.show_item(ui.DLG_SAVE_FILE)
-
-    def _on_save_click(self, sender=None, data=None):
         path_str = self._native_file_dialog(save=True)
         if not path_str:
             return
@@ -852,14 +849,14 @@ class GUI:
             self.collector.disconnect_sensor()
             self._set_device_status("disconnected")
 
-        # Temporarily unhook display_frame so load_data's reprocess_last_block
+        # Temporarily unhook _display_frame so load_data's reprocess_last_block
         # doesn't fire into non-existent series.
         self.collector.callbacks.pop("plots", None)
         self.collector.load_data(path)
 
         cache = self.collector.data["frame_cache"]
         if not cache:
-            self.collector.callbacks["plots"] = self.display_frame
+            self.collector.callbacks["plots"] = self._display_frame
             return
 
         # Determine channels present in the loaded data
@@ -897,7 +894,7 @@ class GUI:
             self.collector.set_scope_sensor(ch, sensor)
 
         # Re-register callback and display the last frame
-        self.collector.callbacks["plots"] = self.display_frame
+        self.collector.callbacks["plots"] = self._display_frame
         self._update_axis_assignment()
         self._update_results_section_visibility()
         self._update_connection_summary()
@@ -1656,7 +1653,7 @@ class GUI:
     # GUI construction
     # ------------------------------------------------------------------
 
-    def create_gui(self):
+    def _create_gui(self):
         dpg.create_context()
 
         # ── Unified Config Dialog (Device / Sensors / Spectrum tabs) ───
@@ -2157,7 +2154,7 @@ class GUI:
 
     def initialize(self):
         _cfg.ensure_default_config()
-        self.create_gui()
+        self._create_gui()
         self._update_spectrum_info()
         self._update_connection_summary()
         self._update_axis_assignment()
@@ -2178,7 +2175,7 @@ class GUI:
         dpg.set_primary_window(ui.PRIMARY_WINDOW, True)
         log.info("Start DPG backend")
         while dpg.is_dearpygui_running():
-            self.poll_new_frames()
+            self._poll_new_frames()
             dpg.render_dearpygui_frame()
 
     def cleanup(self):
