@@ -42,11 +42,11 @@ VibeSensor / SimulatedSensor
         │  (PicoScopeStream or SimulatedSensor callback)
         ▼
 DataCollector                            GUI (dearpygui)
-  receive_data()                           poll_new_frames()
+  receive_data()                           _poll_new_frames()
     → Butterworth filter                     if new_frame_event:
     → mV → EU via ScopeSensor.sensitivity      grab frame_cache[-1]
     → VibeSample per channel                   VibeSample.process()
-    → frame_cache.append()                     display_frame()
+    → frame_cache.append()                     _display_frame()
     → new_frame_event.set()  ─────────────→
 ```
 
@@ -68,7 +68,7 @@ rate, it skips to the latest frame — all earlier frames remain in the
 | `sample.py` | `AcquisitionSettings` (derived samplerate/blocksize from maxfreq/binsize; per-channel names, target units, amplitude modes, couplings, voltage ranges) + `VibeSample` (HDF5 I/O, `process()` → `ChannelResult`) |
 | `collector.py` | `DataCollector` — stream lifecycle, per-channel Butterworth filter bank, channel→`ScopeSensor` assignment (mV→EU), 32-frame ring cache, trend accumulation, `new_frame_event` signal, HDF5 save/load |
 | `config.py` | OS-aware device config directory (`~/.config/vibechecker/` on Linux, `%APPDATA%/vibechecker/` on Windows); per-device YAML persistence with atomic writes; default config fallback |
-| `gui.py` | `GUI` class — dearpygui 3-panel layout (controls / plots / results), `poll_new_frames()` render loop, config dialogs (Device/Channels/Sensor/Spectrum/Siggen), spectrum FFT window/preset controls, per-channel result cards, trend plot, HDF5 file load/save |
+| `gui.py` | `GUI` class — dearpygui 3-panel layout (controls / plots / results), `_poll_new_frames()` render loop, config dialogs (Device/Channels/Sensor/Spectrum/Siggen), spectrum FFT window/preset controls, per-channel result cards, trend plot, HDF5 file load/save |
 | `logger.py` | YAML-configured logging; rotating log files written to `log/` |
 | `_paths.py` | Runtime-safe path resolution — development vs. PyInstaller frozen bundle; `resource_path()`, `data_dir()`, `log_dir()` |
 | `_pico_loader.py` | Windows-only: registers PicoSDK DLL search path before `picosdk` import |
@@ -77,7 +77,7 @@ rate, it skips to the latest frame — all earlier frames remain in the
 
 - `VibeSensor._callback` is the hardware stream callback; it scales raw ADC counts to mV via per-channel voltage range and packages a dict keyed by channel index.
 - `DataCollector.receive_data` looks up the `ScopeSensor` assigned to each channel, applies per-channel Butterworth highpass/lowpass filters, converts mV→EU via `sensitivity`, then wraps each channel in a `VibeSample`.
-- `DataCollector._data_callback` appends the frame to a 32-frame ring cache (deque) and sets `new_frame_event`. The GUI's `poll_new_frames()` checks this event each render tick and displays the latest frame.
+- `DataCollector._data_callback` appends the frame to a 32-frame ring cache (deque) and sets `new_frame_event`. The GUI's `_poll_new_frames()` checks this event each render tick and displays the latest frame.
 - `VibeSample.process()` uses `scipy.signal.welch` with configurable window/overlap. Cross-modality conversion (accel↔vel↔disp) uses frequency-domain integration via `(2πf)^n` scaling. Returns a `ChannelResult` frozen dataclass.
 - Data is saved as HDF5 (`.h5`) into `DEVDATA/`. File names include an ISO timestamp with `:` replaced by `-` for FAT32 compatibility.
 
