@@ -849,14 +849,10 @@ class GUI:
             self.collector.disconnect_sensor()
             self._set_device_status("disconnected")
 
-        # Temporarily unhook _display_frame so load_data's reprocess_last_block
-        # doesn't fire into non-existent series.
-        self.collector.callbacks.pop("plots", None)
         self.collector.load_data(path)
 
         cache = self.collector.data["frame_cache"]
         if not cache:
-            self.collector.callbacks["plots"] = self._display_frame
             return
 
         # Determine channels present in the loaded data
@@ -893,8 +889,6 @@ class GUI:
             sensor = self.registry.find_by_id(sid) if sid else None
             self.collector.set_scope_sensor(ch, sensor)
 
-        # Re-register callback and display the last frame
-        self.collector.callbacks["plots"] = self._display_frame
         self._update_axis_assignment()
         self._update_results_section_visibility()
         self._update_connection_summary()
