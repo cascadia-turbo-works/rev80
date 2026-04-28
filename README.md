@@ -222,11 +222,11 @@ The app is a linear pipeline. The hardware thread and the GUI render loop are de
 │  → frame_cache.append()   │
 │  → new_frame_event.set()  │─ ─ ─ ─ ─ ─ ─▶┌────────────────────────────┐
 └────────────────────────────┘               │  GUI render loop            │
-                                             │  poll_new_frames():         │
+                                             │  _poll_new_frames():         │
                                              │    if event set:            │
                                              │      grab frame_cache[-1]  │
                                              │      VibeSample.process()  │
-                                             │      display_frame()       │
+                                             │      _display_frame()       │
                                              └─────────────┬──────────────┘
                                                            │ (on save)
                                                            ▼
@@ -254,7 +254,7 @@ When the GUI is slower than the hardware data rate, it skips to the latest frame
 | `sample.py` | `AcquisitionSettings` — spectrum and filter config with derived properties; `VibeSample` — single-channel time-domain block with HDF5 I/O and `process()` → `ChannelResult`; `ChannelResult` — frozen display-ready result |
 | `collector.py` | `DataCollector` — multi-channel acquisition state machine: stream lifecycle, per-channel filter application, 32-frame ring cache, `new_frame_event` signal for GUI, trend accumulation, HDF5 save/load |
 | `simulation.py` | `SimulatedSensor` (daemon thread) + signal generators: `GenerateTone`, `GenerateNoise`, `GenerateBearingVibration_SpectralMethod`, `GenerateBearingVibration_TemporalMethod` |
-| `gui.py` | `GUI` class — dearpygui three-column layout with manual render loop (`poll_new_frames`), channel config panel, sensor library, spectrum and time-domain plots, trend plots, file I/O |
+| `gui.py` | `GUI` class — dearpygui three-column layout with manual render loop (`_poll_new_frames`), channel config panel, sensor library, spectrum and time-domain plots, trend plots, file I/O |
 
 ---
 
@@ -306,9 +306,9 @@ A watchdog thread monitors for >5 s silence and attempts up to 3 reconnect cycle
 - **Peak detection** — `scipy.signal.find_peaks` sorted descending by amplitude
 - **Overall amplitude** — broadband RMS/0-P/P-P computed from time-domain data
 
-### 4. Visualisation — `GUI.poll_new_frames()` / `display_frame()` (`gui.py`)
+### 4. Visualisation — `GUI._poll_new_frames()` / `_display_frame()` (`gui.py`)
 
-The GUI uses a manual render loop (`while dpg.is_dearpygui_running()`). Each tick, `poll_new_frames()` checks `DataCollector.new_frame_event`. If set, it grabs the latest frame from `frame_cache` and calls `display_frame()`:
+The GUI uses a manual render loop (`while dpg.is_dearpygui_running()`). Each tick, `_poll_new_frames()` checks `DataCollector.new_frame_event`. If set, it grabs the latest frame from `frame_cache` and calls `_display_frame()`:
 
 - Calls `sample.process(config)` → `ChannelResult` for each active channel
 - Updates time-domain and spectrum line series via `dpg.set_value()`

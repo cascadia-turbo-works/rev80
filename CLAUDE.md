@@ -77,7 +77,7 @@ rate, it skips to the latest frame — all earlier frames remain in the
 
 - `VibeSensor._callback` is the hardware stream callback; it scales raw ADC counts to mV via per-channel voltage range and packages a dict keyed by channel index.
 - `DataCollector.receive_data` looks up the `ScopeSensor` assigned to each channel, applies per-channel Butterworth highpass/lowpass filters, converts mV→EU via `sensitivity`, then wraps each channel in a `VibeSample`.
-- `DataCollector._data_callback` appends the frame to a 32-frame ring cache (deque) and sets `new_frame_event`. The GUI's `_poll_new_frames()` checks this event each render tick and displays the latest frame.
+- `DataCollector._data_callback` appends the frame to a 32-frame ring cache (deque) and sets `new_frame_event`. All consumers — GUI render loop, `collect_sample`, tests — read from `frame_cache` via `new_frame_event`; there is no separate callbacks fan-out.
 - `VibeSample.process()` uses `scipy.signal.welch` with configurable window/overlap. Cross-modality conversion (accel↔vel↔disp) uses frequency-domain integration via `(2πf)^n` scaling. Returns a `ChannelResult` frozen dataclass.
 - Data is saved as HDF5 (`.h5`) into `DEVDATA/`. File names include an ISO timestamp with `:` replaced by `-` for FAT32 compatibility.
 
