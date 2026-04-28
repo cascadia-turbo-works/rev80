@@ -442,8 +442,7 @@ class GUI:
             self._update_freq_plot(result, ch)
             if self.collector.is_streaming:
                 self.collector.update_trend(ch, result.rel_time, result.overall)
-        if self.collector.is_streaming:
-            self._update_trend_plot()
+        self._update_trend_plot()
         self._update_browse_label()
         self._ensure_legends()
         if self._autoscale_pending:
