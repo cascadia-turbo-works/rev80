@@ -168,12 +168,10 @@ def test_pipeline_scope_sensor_scales_mv_data():
         'rel_time': 0.0,
     }
 
-    received = []
-    collector.callbacks['test'] = received.append
     collector.receive_data(packet)
 
-    assert len(received) == 1
-    sample = received[0][0]
+    frame = collector.data['frame_cache'][-1]
+    sample = frame[0]
     assert sample.unit == 'g'
     # 50 mV / 10 mV/g = 5 g
     assert np.allclose(sample.data, raw_mv / sensitivity, atol=1e-6)
@@ -202,10 +200,9 @@ def test_pipeline_scope_sensor_clear():
         'rel_time': 0.0,
     }
 
-    received = []
-    collector.callbacks['test'] = received.append
     collector.receive_data(packet)
 
-    sample = received[0][0]
+    frame = collector.data['frame_cache'][-1]
+    sample = frame[0]
     # Unit should still be mV since no sensor is assigned
     assert sample.unit == 'mV'

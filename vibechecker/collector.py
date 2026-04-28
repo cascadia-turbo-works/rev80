@@ -46,7 +46,6 @@ class DataCollector:
         self.data: Dict = {}
         self.config = config if config else vibechecker.AcquisitionSettings()
         self.scope_sensors: dict[int, ScopeSensor] = {}
-        self.callbacks: dict = {}
         self._cache_cursor: int = 0
         self.siggen_config: dict | None = None
         self._last_frame_t: float | None = None  # arrival time of previous frame
@@ -294,25 +293,23 @@ class DataCollector:
         """Collect one block from each enabled channel.
 
         Returns dict[int, VibeSample].  The captured frame is stored in
-        frame_cache via the normal _data_callback path.
+        frame_cache and signalled via new_frame_event, consistent with the
+        normal streaming path.
         """
         if self.is_streaming:
             self.stop_stream()
 
-        captured: dict = {}
-        done = threading.Event()
-
-        def _one_shot(samples: dict):
-            captured.update(samples)
-            done.set()
-
-        self.callbacks["_collect_sample"] = _one_shot
+        self.new_frame_event.clear()
         self.start_stream()
-        done.wait(timeout=self.config.acquisition_period * 3)
+        timed_out = not self.new_frame_event.wait(timeout=self.config.acquisition_period * 3)
         self.stop_stream()
-        self.callbacks.pop("_collect_sample", None)
 
-        return captured
+        if timed_out:
+            log.warning("collect_sample timed out waiting for a frame")
+            return {}
+
+        cache = self.data["frame_cache"]
+        return dict(cache[-1]) if cache else {}
 
     # ------------------------------------------------------------------
     # Data pipeline
@@ -384,19 +381,14 @@ class DataCollector:
 
         Appends the frame to frame_cache, then sets new_frame_event so
         the GUI render loop can pick up the latest frame on its next tick.
-        Programmatic callbacks (e.g. collect_sample one-shot) still fire
-        directly via self.callbacks.
+        All consumers — GUI, collect_sample, tests — read from frame_cache
+        via new_frame_event rather than receiving samples directly.
         """
         if samples:
             self.data["frame_cache"].append(samples)
             self.data["frame_count"] += 1
             self._cache_cursor = 0
 
-        # Fire programmatic callbacks (collect_sample one-shot, test hooks)
-        for fn in self.callbacks.values():
-            fn(samples)
-
-        # Signal the GUI render loop — it will grab frame_cache[-1]
         self.new_frame_event.set()
 
     # ------------------------------------------------------------------
