@@ -35,8 +35,6 @@ sim_sensor   = VibeSensor.simulated()
 def test_stream_cycle():
     """start_stream / stop_stream cycle works and leaves stream in clean state."""
     collector = DataCollector(sim_sensor)
-    received = []
-    collector.callbacks['test'] = lambda samples: received.extend(samples.values())
 
     for _ in range(2):
         collector.start_stream()

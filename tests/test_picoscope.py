@@ -338,11 +338,9 @@ class TestPicoScopeStreamInterface:
 class TestMvPassthrough:
 
     def _collect(self, collector, samp):
-        result = {}
-        collector.callbacks['_test'] = lambda s: result.update(s)
         collector.receive_data(samp)
-        collector.callbacks.pop('_test', None)
-        return result
+        cache = collector.data['frame_cache']
+        return dict(cache[-1]) if cache else {}
 
     def test_receive_data_single_channel_returns_dict(self):
         """receive_data returns a dict keyed by channel index."""
