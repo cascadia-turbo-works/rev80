@@ -48,12 +48,10 @@ def _make_multichannel_samp(n, channels, value_per_channel=None):
 
 
 def _collect(collector, samp):
-    """Push a raw sample through receive_data, return the resulting dict."""
-    result = {}
-    collector.callbacks['_test'] = lambda s: result.update(s)
+    """Push a raw sample through receive_data, return the resulting frame dict."""
     collector.receive_data(samp)
-    collector.callbacks.pop('_test', None)
-    return result
+    cache = collector.data['frame_cache']
+    return dict(cache[-1]) if cache else {}
 
 
 # ---------------------------------------------------------------------------
@@ -275,22 +273,18 @@ class TestFrameCache:
     def test_frame_cache_grows_on_each_block(self):
         collector = DataCollector()
         collector.config.highpass_enabled = False
-        received = []
-        collector.callbacks['t'] = lambda s: received.append(s)
         self._push(collector, n_blocks=3)
         assert len(collector.data['frame_cache']) == 3
 
     def test_frame_cache_bounded_at_32(self):
         collector = DataCollector()
         collector.config.highpass_enabled = False
-        collector.callbacks['t'] = lambda s: None
         self._push(collector, n_blocks=40)
         assert len(collector.data['frame_cache']) == 32
 
     def test_frame_cache_contains_vibesamples(self):
         collector = DataCollector()
         collector.config.highpass_enabled = False
-        collector.callbacks['t'] = lambda s: None
         self._push(collector, n_blocks=1)
         frame = collector.data['frame_cache'][-1]
         assert isinstance(frame, dict)
@@ -300,7 +294,6 @@ class TestFrameCache:
     def test_browse_frame_moves_cursor(self):
         collector = DataCollector()
         collector.config.highpass_enabled = False
-        collector.callbacks['t'] = lambda s: None
         self._push(collector, n_blocks=5)
         assert collector._cache_cursor == 0
         collector.browse_frame(+1)
@@ -309,7 +302,6 @@ class TestFrameCache:
     def test_browse_frame_clamps_at_bounds(self):
         collector = DataCollector()
         collector.config.highpass_enabled = False
-        collector.callbacks['t'] = lambda s: None
         self._push(collector, n_blocks=3)
         collector.browse_frame(+100)
         assert collector._cache_cursor == 2   # clamped to len-1
@@ -317,7 +309,6 @@ class TestFrameCache:
     def test_new_block_resets_cursor(self):
         collector = DataCollector()
         collector.config.highpass_enabled = False
-        collector.callbacks['t'] = lambda s: None
         self._push(collector, n_blocks=4)
         collector.browse_frame(+2)
         assert collector._cache_cursor == 2

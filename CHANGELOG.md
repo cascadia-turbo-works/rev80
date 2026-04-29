@@ -5,6 +5,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — refactor/event-pipeline (develop)
+
+### Changed
+- **`collector.py`** — removed `callbacks` dict entirely; all consumers now read
+  from `frame_cache` via `new_frame_event` rather than receiving samples directly
+  - `collect_sample()` rewritten: `new_frame_event.clear()` / `wait()` / `frame_cache[-1]`
+    instead of a `_one_shot` closure pinned into `callbacks`
+  - `_data_callback()` simplified: appends to cache and sets event; no callback fan-out
+- **`collector.py`** — `data_callback` renamed `_data_callback` (internal-only convention)
+- **`gui.py`** — internal methods renamed with leading underscore:
+  `display_frame` → `_display_frame`, `poll_new_frames` → `_poll_new_frames`,
+  `create_gui` → `_create_gui`
+- **`gui.py`** — removed vestigial `callbacks['plots']` registrations from `_on_load_file`;
+  file-load display now goes through `new_frame_event` → `_poll_new_frames` exclusively,
+  eliminating a latent DPG thread-safety bug (hardware-thread `_display_frame` call)
+- **`gui.py`** — trend plot (`_update_trend_plot`) now called unconditionally in
+  `_display_frame` so loaded HDF5 trend data is rendered in offline browse mode
+- **`gui.py`** — removed two merge-artifact duplicate method definitions:
+  `poll_new_frames` (stale single-quote copy) and `_on_save_click` (old DPG dialog version)
+- **`gui.py`** — removed duplicate `ACQ_NOTES` widget block in `_create_gui`
+  (caused DPG "alias already exists" crash on `test_gui_build`)
+
+### Refactored
+- **Tests** — `callbacks` references replaced with `frame_cache` reads across
+  `test_vibechecker.py`, `test_multichannel.py`, `test_picoscope.py`, `test_scope_sensor.py`
+
+---
+
 ## [Unreleased] — feature/picoscope
 
 ### Added
