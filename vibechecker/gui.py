@@ -55,7 +55,7 @@ _DEFAULT_NUM_CHANNELS = 4
 # Height of each per-channel result card so 4 cards fit the default window height
 _RESULTS_CARD_HEIGHT = (WINDOW_HEIGHT - 70) // 4  # ≈ 232 px
 # Width of paired buttons side-by-side in the left control panel
-_BTN_HALF = (CONTROLS_WIDTH - 22) // 2  # ≈ 139 px
+_BTN_HALF = (CONTROLS_WIDTH - 30) // 2
 
 # Left-panel card heights.  DPG child_window has no shrink-to-content mode:
 # autosize_y=True fills the parent rather than the content.  Heights must be
@@ -63,12 +63,15 @@ _BTN_HALF = (CONTROLS_WIDTH - 22) // 2  # ≈ 139 px
 #   text line ≈ 17 px (13 px font + 4 px ItemSpacing.y)
 #   button    ≈ 25 px (21 px frame + 4 px spacing)
 #   card base ≈ 40 px (top/bottom WindowPadding + title + separator)
-_CARD_LINE_H = 18  # per text-line height estimate (font + spacing)
-_CARD_BASE_H = 100  # card overhead: padding + title + separator + bottom pad
-_CARD_BTN_H = 26  # single button row height
-_CARD_H_DEVICE = _CARD_BASE_H + _CARD_LINE_H + 8  # disconnected baseline
-_CARD_H_ACQ = 400  # Acquisition: fixed — toggle+controls+spectrum info box
-_CARD_H_FILE = _CARD_BASE_H + _CARD_BTN_H + 96 + 30  # ≈ 252 (notes field)
+_CARD_LINE_H = 17  # per text-line height estimate (font + spacing)
+_CARD_BASE_H = 60  # card overhead: padding + title + separator + bottom pad
+_CARD_BTN_H = 25  # single button row height
+_CARD_H_DEVICE = _CARD_BASE_H + _CARD_LINE_H * 5  # disconnected baseline
+_CARD_H_CHANNELS = _CARD_BASE_H + _CARD_LINE_H
+_CARD_H_ACQ = (
+    _CARD_BASE_H + _CARD_BTN_H * 6 + _CARD_LINE_H * 10
+)  # Acquisition: 400 fixed — toggle+controls+spectrum info box
+_CARD_H_FILE = _CARD_BASE_H + _CARD_BTN_H + 125  # ≈ 252 (notes field)
 
 
 def _c(key: str, alpha: int = 255) -> tuple:
@@ -218,36 +221,57 @@ class GUI:
     def _update_axis_assignment(self):
         """Show/hide secondary axes and reassign series based on unit groups."""
         groups = self._get_unit_groups()
+
+        if len(groups) > 2:
+            log.warning(
+                "More than 2 unique output units configured %s; "
+                "only the first 2 will have dedicated axes.",
+                [g[0] for g in groups],
+            )
+            # Absorb excess channels into group 1
+            overflow = [ch for _, chs in groups[2:] for ch in chs]
+            groups = [groups[0], (groups[1][0], groups[1][1] + overflow)]
+
         if len(groups) <= 1:
+            # ── Single unit: hide all secondary axes ─────────────────────
             dpg.hide_item(ui.PLT_FREQ_AX_2)
             dpg.hide_item(ui.PLT_SAMPLE_AX_ACCEL_2)
+            dpg.hide_item(ui.PLT_TREND_AX_OVERALL_2)
             for ch in self.collector.config.enabled_channels:
-                self._reassign_series_to_axis(ch, ui.PLT_FREQ_AX_ACCEL, ui.PLT_SAMPLE_AX_ACCEL)
+                self._reassign_series_to_axis(
+                    ch, ui.PLT_FREQ_AX_ACCEL, ui.PLT_SAMPLE_AX_ACCEL, ui.PLT_TREND_AX_OVERALL
+                )
             unit = groups[0][0] if groups else "mV"
             chs = groups[0][1] if groups else []
             mode = self._get_amplitude_mode(chs[0]) if chs else "0-P"
             dpg.set_item_label(ui.PLT_FREQ_AX_ACCEL, self._freq_axis_label(unit, chs))
             dpg.set_item_label(ui.PLT_SAMPLE_AX_ACCEL, f"Amplitude, {unit}")
-            if dpg.does_item_exist(ui.PLT_TREND_AX_OVERALL):
-                dpg.set_item_label(ui.PLT_TREND_AX_OVERALL, f"Overall Vibration, {unit} {mode}")
+            dpg.set_item_label(ui.PLT_TREND_AX_OVERALL, f"Overall Vibration, {unit} {mode}")
             for ch in chs:
                 tag = ui.ch_overall_value(ch)
                 if dpg.does_item_exist(tag):
                     dpg.configure_item(tag, label=f"Overall, {unit} {mode}")
         else:
+            # ── Two units: show secondary axes and split channels ─────────
             dpg.show_item(ui.PLT_FREQ_AX_2)
             dpg.show_item(ui.PLT_SAMPLE_AX_ACCEL_2)
+            dpg.show_item(ui.PLT_TREND_AX_OVERALL_2)
             for ch in groups[0][1]:
-                self._reassign_series_to_axis(ch, ui.PLT_FREQ_AX_ACCEL, ui.PLT_SAMPLE_AX_ACCEL)
+                self._reassign_series_to_axis(
+                    ch, ui.PLT_FREQ_AX_ACCEL, ui.PLT_SAMPLE_AX_ACCEL, ui.PLT_TREND_AX_OVERALL
+                )
             for ch in groups[1][1]:
-                self._reassign_series_to_axis(ch, ui.PLT_FREQ_AX_2, ui.PLT_SAMPLE_AX_ACCEL_2)
+                self._reassign_series_to_axis(
+                    ch, ui.PLT_FREQ_AX_2, ui.PLT_SAMPLE_AX_ACCEL_2, ui.PLT_TREND_AX_OVERALL_2
+                )
             dpg.set_item_label(ui.PLT_FREQ_AX_ACCEL, self._freq_axis_label(groups[0][0], groups[0][1]))
             dpg.set_item_label(ui.PLT_SAMPLE_AX_ACCEL, f"Amplitude, {groups[0][0]}")
             dpg.set_item_label(ui.PLT_FREQ_AX_2, self._freq_axis_label(groups[1][0], groups[1][1]))
             dpg.set_item_label(ui.PLT_SAMPLE_AX_ACCEL_2, f"Amplitude, {groups[1][0]}")
-            # Trend Y: mixed units — omit unit from label
-            if dpg.does_item_exist(ui.PLT_TREND_AX_OVERALL):
-                dpg.set_item_label(ui.PLT_TREND_AX_OVERALL, "Overall Vibration")
+            mode0 = self._get_amplitude_mode(groups[0][1][0]) if groups[0][1] else "0-P"
+            mode1 = self._get_amplitude_mode(groups[1][1][0]) if groups[1][1] else "0-P"
+            dpg.set_item_label(ui.PLT_TREND_AX_OVERALL, f"Overall, {groups[0][0]} {mode0}")
+            dpg.set_item_label(ui.PLT_TREND_AX_OVERALL_2, f"Overall, {groups[1][0]} {mode1}")
             for unit, chs in groups:
                 mode = self._get_amplitude_mode(chs[0]) if chs else "0-P"
                 for ch in chs:
@@ -255,20 +279,26 @@ class GUI:
                     if dpg.does_item_exist(tag):
                         dpg.configure_item(tag, label=f"Overall, {unit} {mode}")
 
-    def _reassign_series_to_axis(self, ch: int, freq_axis: str, time_axis: str):
+    def _reassign_series_to_axis(
+        self,
+        ch: int,
+        freq_axis: str,
+        time_axis: str,
+        trend_axis: str = ui.PLT_TREND_AX_OVERALL,
+    ):
         """If a channel's series are on wrong axes, delete and recreate them."""
-        freq_tag = ui.plt_freq_series(ch)
-        time_tag = ui.plt_time_series(ch)
         wrong = False
-        if dpg.does_item_exist(freq_tag):
-            if dpg.get_item_parent(freq_tag) != dpg.get_alias_id(freq_axis):
+        for tag, axis in [
+            (ui.plt_freq_series(ch), freq_axis),
+            (ui.plt_time_series(ch), time_axis),
+            (ui.plt_trend_series(ch), trend_axis),
+        ]:
+            if dpg.does_item_exist(tag) and dpg.get_item_parent(tag) != dpg.get_alias_id(axis):
                 wrong = True
-        if dpg.does_item_exist(time_tag):
-            if dpg.get_item_parent(time_tag) != dpg.get_alias_id(time_axis):
-                wrong = True
+                break
         if wrong:
             self._remove_channel_series(ch)
-            self._add_channel_series(ch, freq_axis=freq_axis, time_axis=time_axis)
+            self._add_channel_series(ch, freq_axis=freq_axis, time_axis=time_axis, trend_axis=trend_axis)
 
     # ------------------------------------------------------------------
     # Plot update helpers
@@ -492,14 +522,18 @@ class GUI:
     # ------------------------------------------------------------------
 
     def _add_channel_series(
-        self, ch: int, freq_axis: str = ui.PLT_FREQ_AX_ACCEL, time_axis: str = ui.PLT_SAMPLE_AX_ACCEL
+        self,
+        ch: int,
+        freq_axis: str = ui.PLT_FREQ_AX_ACCEL,
+        time_axis: str = ui.PLT_SAMPLE_AX_ACCEL,
+        trend_axis: str = ui.PLT_TREND_AX_OVERALL,
     ):
         ch_label = self.collector.config.name_for(ch)
         theme = self._channel_themes[ch % len(self._channel_themes)]
         for tag, axis in [
             (ui.plt_time_series(ch), time_axis),
             (ui.plt_freq_series(ch), freq_axis),
-            (ui.plt_trend_series(ch), ui.PLT_TREND_AX_OVERALL),
+            (ui.plt_trend_series(ch), trend_axis),
         ]:
             if not dpg.does_item_exist(tag):
                 dpg.add_line_series([0.0], [0.0], label=ch_label, tag=tag, parent=axis)
@@ -599,12 +633,12 @@ class GUI:
         # Resize Channels card to match actual line count
         if dpg.does_item_exist(ui.CHANNELS_CARD):
             if show_channels:
-                n_lines = len(self.collector.config.enabled_channels)
+                n_lines = len(self.collector.config.enabled_channels) + 1
                 if sensor is not None:
                     n_lines += 1  # +gen line
             else:
                 n_lines = 0
-            h = _CARD_BASE_H + n_lines * _CARD_LINE_H + 2 + 3 * _CARD_BTN_H + 8
+            h = _CARD_H_CHANNELS + n_lines * _CARD_LINE_H
             dpg.configure_item(ui.CHANNELS_CARD, height=h)
 
         self._update_acq_button_state()
@@ -735,7 +769,8 @@ class GUI:
 
     # Default time-series window: ~10 cycles at 60 Hz ≈ 167 ms, rounded to 300 ms
     # so a typical 60 Hz fundamental fills the trace legibly on autoscale.
-    _TIME_WINDOW_MS: float = 300.0
+    _TIME_WINDOW_RANGE_MS: float = 300.0
+    _TIME_WINDOW_OFFSET_MS: float = 200.0
 
     def _autoscale_plots(self, sender=None, data=None):
         """Scale all plot axes to sensible initial bounds.
@@ -746,8 +781,15 @@ class GUI:
         don't need unlocking.
         """
         # Time Series X: fixed window for legibility (not fit-to-data)
-        if dpg.does_item_exist(ui.PLT_SAMPLE_AX_TIME):
-            dpg.set_axis_limits(ui.PLT_SAMPLE_AX_TIME, 0.0, self._TIME_WINDOW_MS)
+        if self.collector.config.acquisition_period > 0.5 and dpg.does_item_exist(ui.PLT_SAMPLE_AX_TIME):
+            dpg.set_axis_limits(
+                ui.PLT_SAMPLE_AX_TIME,
+                self._TIME_WINDOW_OFFSET_MS,
+                self._TIME_WINDOW_OFFSET_MS + self._TIME_WINDOW_RANGE_MS,
+            )
+        else:
+            # Acq period too small. Fit whole axis
+            dpg.fit_axis_data(ui.PLT_SAMPLE_AX_TIME)
 
         # Amplitude / frequency axes: fit to current data (one-shot, no lock)
         for ax in [
@@ -765,21 +807,26 @@ class GUI:
         for ch in self.collector.config.enabled_channels:
             all_times.extend(self.collector.data["trend"].get(ch, {}).get("rel_times", []))
         if all_times and dpg.does_item_exist(ui.PLT_TREND_AX_TIME):
-            dpg.set_axis_limits(ui.PLT_TREND_AX_TIME, 0.0, max(all_times) * 1.1)
+            dpg.set_axis_limits(ui.PLT_TREND_AX_TIME, 0.0, max(all_times) * 1.5)
         elif dpg.does_item_exist(ui.PLT_TREND_AX_TIME):
             dpg.fit_axis_data(ui.PLT_TREND_AX_TIME)
 
-        # Trend Y: [0, peak_overall * 1.05]
-        if dpg.does_item_exist(ui.PLT_TREND_AX_OVERALL):
+        # Trend Y: scale each axis independently by its own channels
+        groups = self._get_unit_groups()
+        trend_axes = [ui.PLT_TREND_AX_OVERALL, ui.PLT_TREND_AX_OVERALL_2]
+        for i, (_, chs) in enumerate(groups[:2]):
+            ax = trend_axes[i]
+            if not dpg.does_item_exist(ax):
+                continue
             peak = 0.0
-            for ch in self.collector.config.enabled_channels:
+            for ch in chs:
                 vals = self.collector.data["trend"].get(ch, {}).get("overall", [])
                 if vals:
                     peak = max(peak, max(vals))
             if peak > 0.0:
-                dpg.set_axis_limits(ui.PLT_TREND_AX_OVERALL, 0.0, peak * 1.05)
+                dpg.set_axis_limits(ax, 0.0, peak * 1.1)
             else:
-                dpg.fit_axis_data(ui.PLT_TREND_AX_OVERALL)
+                dpg.fit_axis_data(ax)
 
         # Unlock all explicitly-set axes one frame later so user can pan/zoom freely.
         # dpg.set_axis_limits locks the axis until set_axis_limits_auto is called;
@@ -791,7 +838,7 @@ class GUI:
 
     def _unlock_autoscaled_axes(self):
         """Release axis locks set by _autoscale_plots (called one frame later)."""
-        for ax in [ui.PLT_SAMPLE_AX_TIME, ui.PLT_TREND_AX_TIME, ui.PLT_TREND_AX_OVERALL]:
+        for ax in [ui.PLT_SAMPLE_AX_TIME, ui.PLT_TREND_AX_TIME, ui.PLT_TREND_AX_OVERALL, ui.PLT_TREND_AX_OVERALL_2]:
             if dpg.does_item_exist(ax):
                 dpg.set_axis_limits_auto(ax)
 
@@ -1989,7 +2036,7 @@ class GUI:
                     with dpg.child_window(
                         border=True,
                         autosize_x=True,
-                        height=_CARD_BASE_H + 3 * _CARD_BTN_H + 8,
+                        height=_CARD_H_CHANNELS,
                         no_scrollbar=True,
                         tag=ui.CHANNELS_CARD,
                     ) as _s_ch:
@@ -2116,6 +2163,8 @@ class GUI:
                                 dpg.add_plot_legend(location=dpg.mvPlot_Location_East, tag=ui.PLT_TREND_LEGEND)
                                 dpg.add_plot_axis(dpg.mvXAxis, label="Time, s", tag=ui.PLT_TREND_AX_TIME)
                                 dpg.add_plot_axis(dpg.mvYAxis, label="Overall Vibration", tag=ui.PLT_TREND_AX_OVERALL)
+                                dpg.add_plot_axis(dpg.mvYAxis, label="", tag=ui.PLT_TREND_AX_OVERALL_2)
+                                dpg.hide_item(ui.PLT_TREND_AX_OVERALL_2)
                     with dpg.plot(
                         label="Time Series", width=-1, height=TIME_PLOT_HEIGHT, tag=ui.PLT_SAMPLE, crosshairs=True
                     ):
