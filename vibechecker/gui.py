@@ -21,10 +21,10 @@ ui = vibechecker.UI_Elements()
 # TODO: make left/right panel widths and plot heights resizable by mouse drag.
 #   DPG supports this via dpg.add_drag_line or manual splitter groups; defer
 #   until the panel layout is otherwise stable.
-WINDOW_WIDTH     = 1500
-WINDOW_HEIGHT    = 1000
-CONTROLS_WIDTH   = 300
-RESULTS_WIDTH    = 300
+WINDOW_WIDTH = 1500
+WINDOW_HEIGHT = 1000
+CONTROLS_WIDTH = 300
+RESULTS_WIDTH = 300
 TIME_PLOT_HEIGHT = 300
 
 # Config dialog dimensions — referenced wherever the dialog is built or positioned
@@ -66,7 +66,7 @@ _BTN_HALF = (CONTROLS_WIDTH - 22) // 2  # ≈ 139 px
 _CARD_LINE_H = 18  # per text-line height estimate (font + spacing)
 _CARD_BASE_H = 100  # card overhead: padding + title + separator + bottom pad
 _CARD_BTN_H = 26  # single button row height
-_CARD_H_DEVICE = _CARD_BASE_H + _CARD_LINE_H + 2 + _CARD_BTN_H + 8  # disconnected baseline
+_CARD_H_DEVICE = _CARD_BASE_H + _CARD_LINE_H + 8  # disconnected baseline
 _CARD_H_ACQ = 400  # Acquisition: fixed — toggle+controls+spectrum info box
 _CARD_H_FILE = _CARD_BASE_H + _CARD_BTN_H + 96 + 30  # ≈ 252 (notes field)
 
@@ -954,6 +954,56 @@ class GUI:
         else:
             self.found_sensors = vibechecker.VibeSensor.find()
         self._repopulate_device_list()
+
+    def _autoconnect(self):
+        """Background startup thread: scan for PicoScopes and connect to the first found.
+
+        Runs once after the viewport is shown. Mirrors the manual connect path in
+        _on_device_connect_toggle so the user lands in a ready state without opening
+        the Device Setup dialog. Does not start the stream — the user controls that.
+
+        Safe to run concurrently with the render loop: the slow operations
+        (VibeSensor.find, connect_sensor, config load) are thread-safe; DPG updates
+        follow the same background-thread pattern as _discover_devices.
+        """
+        if vibechecker.PICOSCOPE_DRIVER_MISSING:
+            log.debug("Autoconnect: PicoScope driver not available")
+            return
+
+        sensors = vibechecker.VibeSensor.find()
+        self.found_sensors = sensors
+
+        if not sensors:
+            log.info("Autoconnect: no PicoScope found")
+            self._update_connection_summary()
+            return
+
+        sensor = sensors[0]
+        log.info(f"Autoconnect: found {sensor.model_name} (S/N {sensor.serial_number})")
+
+        try:
+            self.collector.connect_sensor(sensor)
+            self._num_channels = sensor.num_channels
+            for ch in range(_MAX_CHANNELS):
+                self._remove_channel_series(ch)
+            self.collector.reset_channel_config(sensor.num_channels)
+            device_cfg = _cfg.load_device_config(sensor.serial_number)
+            self._restore_channel_assignments(device_cfg)
+            self.collector.reconnect_stream()
+            self._set_device_status("connected")
+            log.info(f"Autoconnect: connected to {sensor.model_name}")
+        except Exception as e:
+            log.warning(f"Autoconnect failed: {e}")
+            self.collector.disconnect_sensor()
+            self._set_device_status("disconnected")
+            return
+
+        self._repopulate_device_list()
+        self._rebuild_device_channel_rows()
+        self._update_connection_summary()
+        self._update_axis_assignment()
+        self._update_results_section_visibility()
+        self._update_spectrum_info()
 
     def _repopulate_device_list(self):
         """Rebuild the detected-device rows inside the Device Setup dialog."""
@@ -1889,9 +1939,9 @@ class GUI:
                     )
                     dpg.add_button(
                         label="Channel Setup",
-                         tag=ui.BTN_CHANNELS_SETUP,
-                         callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_CHANNELS),
-                         width=-1,
+                        tag=ui.BTN_CHANNELS_SETUP,
+                        callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_CHANNELS),
+                        width=-1,
                     )
                     dpg.add_button(
                         label="Sensor Setup",
@@ -2167,6 +2217,7 @@ class GUI:
         dpg.create_viewport(title="Vibe Logger", width=WINDOW_WIDTH, height=WINDOW_HEIGHT)
         dpg.show_viewport()
         dpg.set_primary_window(ui.PRIMARY_WINDOW, True)
+        threading.Thread(target=self._autoconnect, daemon=True).start()
         log.info("Start DPG backend")
         while dpg.is_dearpygui_running():
             self._poll_new_frames()
