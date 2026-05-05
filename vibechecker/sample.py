@@ -41,6 +41,8 @@ class AcquisitionSettings:
     highpass_fc: float = 10.0      # Hz
     lowpass_enabled: bool = False
     lowpass_fc: float = 1000.0     # Hz
+    # Frame cache
+    cache_frames: int = 32         # depth of the ring cache in DataCollector
 
     _BUTTER_ORDER: int = field(default=4, repr=False)  # clamped, not user-exposed
 
@@ -83,6 +85,7 @@ class AcquisitionSettings:
             'trend_max_points':     self.trend_max_points,
             'trend_fmin':           self.trend_fmin,
             'trend_fmax':           self.trend_fmax,
+            'cache_frames':            self.cache_frames,
             'channel_names':           dict(self.channel_names),
             'channel_target_units':    dict(self.channel_target_units),
             'channel_amplitude_modes': dict(self.channel_amplitude_modes),
@@ -107,6 +110,7 @@ class AcquisitionSettings:
         if 'trend_fmin'       in d: obj.trend_fmin       = float(d['trend_fmin'])      # noqa: E701
         if 'trend_fmax'       in d:
             obj.trend_fmax = float(d['trend_fmax']) if d['trend_fmax'] is not None else None
+        if 'cache_frames'     in d: obj.cache_frames     = int(d['cache_frames'])           # noqa: E701
         if 'channel_names'           in d: obj.channel_names           = {int(k): str(v) for k, v in d['channel_names'].items()}
         if 'channel_target_units'    in d: obj.channel_target_units    = {int(k): str(v) for k, v in d['channel_target_units'].items()}
         if 'channel_amplitude_modes' in d: obj.channel_amplitude_modes = {int(k): str(v) for k, v in d['channel_amplitude_modes'].items()}

@@ -638,10 +638,10 @@ class GUI:
         if dpg.does_item_exist(ui.SPECTRUM_INFO_TEXT):
             dpg.set_value(ui.SPECTRUM_INFO_TEXT, info)
 
-    def _update_spectrum_derived(self):
-        """Refresh derived display fields in the spectrum dialog based on current combo values."""
-        mf_str = dpg.get_value(ui.SPEC_DLG_MAXFREQ) if dpg.does_item_exist(ui.SPEC_DLG_MAXFREQ) else ""
-        bs_str = dpg.get_value(ui.SPEC_DLG_BINSIZE) if dpg.does_item_exist(ui.SPEC_DLG_BINSIZE) else ""
+    def _update_acq_derived(self):
+        """Refresh derived display fields in the acquisition dialog based on current widget values."""
+        mf_str = dpg.get_value(ui.ACQ_DLG_MAXFREQ) if dpg.does_item_exist(ui.ACQ_DLG_MAXFREQ) else ""
+        bs_str = dpg.get_value(ui.ACQ_DLG_BINSIZE) if dpg.does_item_exist(ui.ACQ_DLG_BINSIZE) else ""
         try:
             maxfreq = vibechecker.MAXFREQ_PRESETS[_MAXFREQ_LABELS.index(mf_str)]
         except (ValueError, IndexError):
@@ -655,24 +655,33 @@ class GUI:
         n_fft_bins = blocksize // 2 + 1
         acq_time = blocksize / samplerate
         mem_bytes = blocksize * 8
-        if mem_bytes >= 1024 * 1024:
-            mem_str = f"{mem_bytes / (1024 * 1024):.1f} MB"
-        elif mem_bytes >= 1024:
-            mem_str = f"{mem_bytes / 1024:.1f} KB"
-        else:
-            mem_str = f"{mem_bytes} B"
-        if dpg.does_item_exist(ui.SPEC_DLG_SAMPLERATE):
-            dpg.set_value(ui.SPEC_DLG_SAMPLERATE, f"{samplerate / 1000:.1f} kS/s")
-        if dpg.does_item_exist(ui.SPEC_DLG_NFFT_BINS):
-            dpg.set_value(ui.SPEC_DLG_NFFT_BINS, str(n_fft_bins))
-        if dpg.does_item_exist(ui.SPEC_DLG_ACQ_TIME):
-            dpg.set_value(ui.SPEC_DLG_ACQ_TIME, f"{acq_time:.3f} s")
-        if dpg.does_item_exist(ui.SPEC_DLG_MEMORY):
-            dpg.set_value(ui.SPEC_DLG_MEMORY, mem_str)
 
-    def _on_spectrum_preview(self, sender=None, data=None):
-        """Update derived fields live as the user changes freq range / resolution combos."""
-        self._update_spectrum_derived()
+        cache_frames = int(dpg.get_value(ui.ACQ_DLG_CACHE_FRAMES)) if dpg.does_item_exist(ui.ACQ_DLG_CACHE_FRAMES) else self.collector.config.cache_frames
+        n_enabled = max(1, len(self.collector.config.enabled_channels))
+        rec_window = acq_time * cache_frames
+        total_mem = mem_bytes * n_enabled * cache_frames
+
+        if total_mem >= 1024 * 1024:
+            mem_str = f"{total_mem / (1024 * 1024):.1f} MB"
+        elif total_mem >= 1024:
+            mem_str = f"{total_mem / 1024:.1f} KB"
+        else:
+            mem_str = f"{total_mem} B"
+
+        if dpg.does_item_exist(ui.ACQ_DLG_SAMPLERATE):
+            dpg.set_value(ui.ACQ_DLG_SAMPLERATE, f"{samplerate / 1000:.1f} kS/s")
+        if dpg.does_item_exist(ui.ACQ_DLG_NFFT_BINS):
+            dpg.set_value(ui.ACQ_DLG_NFFT_BINS, str(n_fft_bins))
+        if dpg.does_item_exist(ui.ACQ_DLG_ACQ_TIME):
+            dpg.set_value(ui.ACQ_DLG_ACQ_TIME, f"{acq_time:.3f} s")
+        if dpg.does_item_exist(ui.ACQ_DLG_REC_WINDOW):
+            dpg.set_value(ui.ACQ_DLG_REC_WINDOW, f"{rec_window:.1f} s")
+        if dpg.does_item_exist(ui.ACQ_DLG_MEMORY):
+            dpg.set_value(ui.ACQ_DLG_MEMORY, mem_str)
+
+    def _on_acq_preview(self, sender=None, data=None):
+        """Update derived fields live as the user changes acquisition combo / int widgets."""
+        self._update_acq_derived()
 
     # ------------------------------------------------------------------
     # Acquisition toggle
@@ -943,7 +952,7 @@ class GUI:
         dpg.set_value(ui.CONFIG_TAB_BAR, tab_tag)
         # Always sync spectrum widgets so they reflect current config
         # regardless of which tab was used to open the dialog.
-        self._populate_spectrum_tab()
+        self._populate_acq_tab()
         if tab_tag == ui.CONFIG_TAB_DEVICE:
             self._start_device_discovery()
         elif tab_tag == ui.CONFIG_TAB_CHANNELS:
@@ -1291,7 +1300,7 @@ class GUI:
         open, so this is the one and only reconnect point.
         """
         # Apply all settings from every tab into collector.config
-        self._apply_spectrum_settings_from_widgets()
+        self._apply_acq_settings_from_widgets()
 
         if dpg.does_item_exist(ui.SIGGEN_ENABLED):
             if dpg.get_value(ui.SIGGEN_ENABLED):
@@ -1329,47 +1338,49 @@ class GUI:
         dpg.hide_item(ui.DLG_CONFIG)
 
     # ------------------------------------------------------------------
-    # Spectrum Setup Tab
+    # Acquisition Setup Tab
     # ------------------------------------------------------------------
 
-    def _populate_spectrum_tab(self):
-        """Sync spectrum tab widgets with current config values."""
+    def _populate_acq_tab(self):
+        """Sync acquisition tab widgets with current config values."""
         cfg = self.collector.config
         curr_mf = f"{int(cfg.maxfreq)} Hz"
         curr_bs = f"{cfg.binsize} Hz/bin"
-        if dpg.does_item_exist(ui.SPEC_DLG_MAXFREQ):
+        if dpg.does_item_exist(ui.ACQ_DLG_MAXFREQ):
             if curr_mf in _MAXFREQ_LABELS:
-                dpg.set_value(ui.SPEC_DLG_MAXFREQ, curr_mf)
-        if dpg.does_item_exist(ui.SPEC_DLG_BINSIZE):
+                dpg.set_value(ui.ACQ_DLG_MAXFREQ, curr_mf)
+        if dpg.does_item_exist(ui.ACQ_DLG_BINSIZE):
             if curr_bs in _BINSIZE_LABELS:
-                dpg.set_value(ui.SPEC_DLG_BINSIZE, curr_bs)
-        if dpg.does_item_exist(ui.SPEC_DLG_WINDOW):
-            dpg.set_value(ui.SPEC_DLG_WINDOW, cfg.fft_window)
-        if dpg.does_item_exist(ui.SPEC_DLG_OVERLAP):
-            dpg.set_value(ui.SPEC_DLG_OVERLAP, cfg.welch_overlap * 100.0)
-        if dpg.does_item_exist(ui.SPEC_DLG_HP_ENABLED):
-            dpg.set_value(ui.SPEC_DLG_HP_ENABLED, cfg.highpass_enabled)
-        if dpg.does_item_exist(ui.SPEC_DLG_HP_FC):
-            dpg.set_value(ui.SPEC_DLG_HP_FC, cfg.highpass_fc)
-        if dpg.does_item_exist(ui.SPEC_DLG_LP_ENABLED):
-            dpg.set_value(ui.SPEC_DLG_LP_ENABLED, cfg.lowpass_enabled)
-        if dpg.does_item_exist(ui.SPEC_DLG_LP_FC):
-            dpg.set_value(ui.SPEC_DLG_LP_FC, cfg.lowpass_fc)
-        if dpg.does_item_exist(ui.SPEC_DLG_TREND_FMIN):
-            dpg.set_value(ui.SPEC_DLG_TREND_FMIN, cfg.trend_fmin)
-        if dpg.does_item_exist(ui.SPEC_DLG_TREND_FMAX):
-            dpg.set_value(ui.SPEC_DLG_TREND_FMAX, cfg.trend_fmax if cfg.trend_fmax is not None else 0.0)
-        self._update_spectrum_derived()
+                dpg.set_value(ui.ACQ_DLG_BINSIZE, curr_bs)
+        if dpg.does_item_exist(ui.ACQ_DLG_WINDOW):
+            dpg.set_value(ui.ACQ_DLG_WINDOW, cfg.fft_window)
+        if dpg.does_item_exist(ui.ACQ_DLG_OVERLAP):
+            dpg.set_value(ui.ACQ_DLG_OVERLAP, cfg.welch_overlap * 100.0)
+        if dpg.does_item_exist(ui.ACQ_DLG_HP_ENABLED):
+            dpg.set_value(ui.ACQ_DLG_HP_ENABLED, cfg.highpass_enabled)
+        if dpg.does_item_exist(ui.ACQ_DLG_HP_FC):
+            dpg.set_value(ui.ACQ_DLG_HP_FC, cfg.highpass_fc)
+        if dpg.does_item_exist(ui.ACQ_DLG_LP_ENABLED):
+            dpg.set_value(ui.ACQ_DLG_LP_ENABLED, cfg.lowpass_enabled)
+        if dpg.does_item_exist(ui.ACQ_DLG_LP_FC):
+            dpg.set_value(ui.ACQ_DLG_LP_FC, cfg.lowpass_fc)
+        if dpg.does_item_exist(ui.ACQ_DLG_TREND_FMIN):
+            dpg.set_value(ui.ACQ_DLG_TREND_FMIN, cfg.trend_fmin)
+        if dpg.does_item_exist(ui.ACQ_DLG_TREND_FMAX):
+            dpg.set_value(ui.ACQ_DLG_TREND_FMAX, cfg.trend_fmax if cfg.trend_fmax is not None else 0.0)
+        if dpg.does_item_exist(ui.ACQ_DLG_CACHE_FRAMES):
+            dpg.set_value(ui.ACQ_DLG_CACHE_FRAMES, cfg.cache_frames)
+        self._update_acq_derived()
 
-    def _apply_spectrum_settings_from_widgets(self):
-        """Read spectrum tab widgets and write values into collector.config.
+    def _apply_acq_settings_from_widgets(self):
+        """Read acquisition tab widgets and write values into collector.config.
 
         Pure settings application — no stream stop/start side effects.
         Stream lifecycle is the caller's responsibility.
         """
         cfg = self.collector.config
-        mf_str = dpg.get_value(ui.SPEC_DLG_MAXFREQ)
-        bs_str = dpg.get_value(ui.SPEC_DLG_BINSIZE)
+        mf_str = dpg.get_value(ui.ACQ_DLG_MAXFREQ)
+        bs_str = dpg.get_value(ui.ACQ_DLG_BINSIZE)
         try:
             cfg.maxfreq = vibechecker.MAXFREQ_PRESETS[_MAXFREQ_LABELS.index(mf_str)]
         except (ValueError, IndexError):
@@ -1378,30 +1389,34 @@ class GUI:
             cfg.binsize = vibechecker.BINSIZE_PRESETS[_BINSIZE_LABELS.index(bs_str)]
         except (ValueError, IndexError):
             pass
-        trend_fmin = float(dpg.get_value(ui.SPEC_DLG_TREND_FMIN) or 0.0)
-        trend_fmax = float(dpg.get_value(ui.SPEC_DLG_TREND_FMAX) or 0.0)
+        trend_fmin = float(dpg.get_value(ui.ACQ_DLG_TREND_FMIN) or 0.0)
+        trend_fmax = float(dpg.get_value(ui.ACQ_DLG_TREND_FMAX) or 0.0)
         cfg.trend_fmin = trend_fmin
         cfg.trend_fmax = trend_fmax if trend_fmax > 0 else None
-        if dpg.does_item_exist(ui.SPEC_DLG_WINDOW):
-            win = dpg.get_value(ui.SPEC_DLG_WINDOW)
+        if dpg.does_item_exist(ui.ACQ_DLG_WINDOW):
+            win = dpg.get_value(ui.ACQ_DLG_WINDOW)
             if win in _FFT_WINDOWS:
                 cfg.fft_window = win
-        if dpg.does_item_exist(ui.SPEC_DLG_OVERLAP):
-            cfg.welch_overlap = float(dpg.get_value(ui.SPEC_DLG_OVERLAP)) / 100.0
-        if dpg.does_item_exist(ui.SPEC_DLG_HP_ENABLED):
-            cfg.highpass_enabled = dpg.get_value(ui.SPEC_DLG_HP_ENABLED)
-        if dpg.does_item_exist(ui.SPEC_DLG_HP_FC):
-            cfg.highpass_fc = float(dpg.get_value(ui.SPEC_DLG_HP_FC))
-        if dpg.does_item_exist(ui.SPEC_DLG_LP_ENABLED):
-            cfg.lowpass_enabled = dpg.get_value(ui.SPEC_DLG_LP_ENABLED)
-        if dpg.does_item_exist(ui.SPEC_DLG_LP_FC):
-            cfg.lowpass_fc = float(dpg.get_value(ui.SPEC_DLG_LP_FC))
+        if dpg.does_item_exist(ui.ACQ_DLG_OVERLAP):
+            cfg.welch_overlap = float(dpg.get_value(ui.ACQ_DLG_OVERLAP)) / 100.0
+        if dpg.does_item_exist(ui.ACQ_DLG_HP_ENABLED):
+            cfg.highpass_enabled = dpg.get_value(ui.ACQ_DLG_HP_ENABLED)
+        if dpg.does_item_exist(ui.ACQ_DLG_HP_FC):
+            cfg.highpass_fc = float(dpg.get_value(ui.ACQ_DLG_HP_FC))
+        if dpg.does_item_exist(ui.ACQ_DLG_LP_ENABLED):
+            cfg.lowpass_enabled = dpg.get_value(ui.ACQ_DLG_LP_ENABLED)
+        if dpg.does_item_exist(ui.ACQ_DLG_LP_FC):
+            cfg.lowpass_fc = float(dpg.get_value(ui.ACQ_DLG_LP_FC))
+        if dpg.does_item_exist(ui.ACQ_DLG_CACHE_FRAMES):
+            n = max(1, int(dpg.get_value(ui.ACQ_DLG_CACHE_FRAMES)))
+            cfg.cache_frames = n
+            self.collector.resize_frame_cache(n)
 
-    def _on_spectrum_apply(self, sender=None, data=None):
+    def _on_acq_apply(self, sender=None, data=None):
         was_streaming = self.collector.is_streaming
         if was_streaming:
             self._stop_stream()
-        self._apply_spectrum_settings_from_widgets()
+        self._apply_acq_settings_from_widgets()
         self._save_channel_assignments()  # persist acquisition settings to device YAML
         if self.collector.sensor is not None:
             self.collector.reconnect_stream()
@@ -1724,7 +1739,7 @@ class GUI:
     def _create_gui(self):
         dpg.create_context()
 
-        # ── Unified Config Dialog (Device / Sensors / Spectrum tabs) ───
+        # ── Unified Config Dialog (Device / Sensors / Acquisition tabs) ───
         with dpg.window(
             label="Configuration",
             modal=True,
@@ -1798,43 +1813,55 @@ class GUI:
                                     )
                                     dpg.add_input_text(label="Notes", tag=ui.SREG_FIELD_NOTES, width=_SREG_FIELD_W)
 
-                    # ── Spectrum tab ───────────────────────────────────────
-                    with dpg.tab(label="Spectrum", tag=ui.CONFIG_TAB_SPECTRUM):
+                    # ── Acquisition tab ────────────────────────────────────
+                    with dpg.tab(label="Acquisition", tag=ui.CONFIG_TAB_ACQUISITION):
                         with dpg.child_window(autosize_x=True, height=-1):
                             _w = 160
                             # Control: Freq. Range
                             dpg.add_combo(
                                 label="Freq. Range",
-                                tag=ui.SPEC_DLG_MAXFREQ,
+                                tag=ui.ACQ_DLG_MAXFREQ,
                                 items=_MAXFREQ_LABELS,
                                 width=_w,
-                                callback=self._on_spectrum_preview,
+                                callback=self._on_acq_preview,
                             )
                             # Derived: Sample Rate
-                            dpg.add_input_text(label="Sample Rate", tag=ui.SPEC_DLG_SAMPLERATE, readonly=True, width=_w)
+                            dpg.add_input_text(label="Sample Rate", tag=ui.ACQ_DLG_SAMPLERATE, readonly=True, width=_w)
                             dpg.add_separator()
                             # Control: Freq. Resolution
                             dpg.add_combo(
                                 label="Freq. Resolution",
-                                tag=ui.SPEC_DLG_BINSIZE,
+                                tag=ui.ACQ_DLG_BINSIZE,
                                 items=_BINSIZE_LABELS,
                                 width=_w,
-                                callback=self._on_spectrum_preview,
+                                callback=self._on_acq_preview,
                             )
                             # Derived: # spectral lines
                             dpg.add_input_text(
-                                label="Spectral Lines", tag=ui.SPEC_DLG_NFFT_BINS, readonly=True, width=_w
+                                label="Spectral Lines", tag=ui.ACQ_DLG_NFFT_BINS, readonly=True, width=_w
                             )
                             # Derived: Acquisition Time
-                            dpg.add_input_text(label="Acq. Time", tag=ui.SPEC_DLG_ACQ_TIME, readonly=True, width=_w)
-                            # Derived: Memory usage
-                            dpg.add_input_text(label="Memory/ch", tag=ui.SPEC_DLG_MEMORY, readonly=True, width=_w)
+                            dpg.add_input_text(label="Acq. Time", tag=ui.ACQ_DLG_ACQ_TIME, readonly=True, width=_w)
+                            # Control: Frame cache depth
+                            dpg.add_input_int(
+                                label="Cache Frames",
+                                tag=ui.ACQ_DLG_CACHE_FRAMES,
+                                default_value=32,
+                                min_value=1,
+                                max_value=512,
+                                callback=self._on_acq_preview,
+                                width=_w,
+                            )
+                            # Derived: Recording window (acq_time × cache_frames)
+                            dpg.add_input_text(label="Rec. Window", tag=ui.ACQ_DLG_REC_WINDOW, readonly=True, width=_w)
+                            # Derived: Total memory (mem_per_ch × n_enabled × cache_frames)
+                            dpg.add_input_text(label="Memory", tag=ui.ACQ_DLG_MEMORY, readonly=True, width=_w)
                             dpg.add_separator()
                             dpg.add_text("FFT Controls")
                             # Control: Welch % Overlap
                             dpg.add_input_float(
                                 label="Welch Overlap %",
-                                tag=ui.SPEC_DLG_OVERLAP,
+                                tag=ui.ACQ_DLG_OVERLAP,
                                 default_value=50.0,
                                 min_value=0.0,
                                 max_value=95.0,
@@ -1843,7 +1870,7 @@ class GUI:
                             # Control: FFT Window
                             dpg.add_combo(
                                 label="FFT Window",
-                                tag=ui.SPEC_DLG_WINDOW,
+                                tag=ui.ACQ_DLG_WINDOW,
                                 items=_FFT_WINDOWS,
                                 default_value="hann",
                                 width=_w,
@@ -1851,29 +1878,29 @@ class GUI:
                             dpg.add_separator()
                             # Control: Highpass filter
                             with dpg.group(horizontal=True):
-                                dpg.add_checkbox(label="Highpass", tag=ui.SPEC_DLG_HP_ENABLED, default_value=True)
+                                dpg.add_checkbox(label="Highpass", tag=ui.ACQ_DLG_HP_ENABLED, default_value=True)
                                 dpg.add_input_float(
-                                    label="Hz", tag=ui.SPEC_DLG_HP_FC, default_value=10.0, min_value=0.1, width=100
+                                    label="Hz", tag=ui.ACQ_DLG_HP_FC, default_value=10.0, min_value=0.1, width=100
                                 )
                             # Control: Lowpass filter
                             with dpg.group(horizontal=True):
-                                dpg.add_checkbox(label="Lowpass", tag=ui.SPEC_DLG_LP_ENABLED, default_value=False)
+                                dpg.add_checkbox(label="Lowpass", tag=ui.ACQ_DLG_LP_ENABLED, default_value=False)
                                 dpg.add_input_float(
-                                    label="Hz", tag=ui.SPEC_DLG_LP_FC, default_value=1000.0, min_value=1.0, width=100
+                                    label="Hz", tag=ui.ACQ_DLG_LP_FC, default_value=1000.0, min_value=1.0, width=100
                                 )
                             dpg.add_separator()
                             dpg.add_text("Trend Frequency Window")
                             with dpg.group(horizontal=True):
                                 dpg.add_input_float(
                                     label="Hz min",
-                                    tag=ui.SPEC_DLG_TREND_FMIN,
+                                    tag=ui.ACQ_DLG_TREND_FMIN,
                                     default_value=0.0,
                                     min_value=0.0,
                                     width=100,
                                 )
                                 dpg.add_input_float(
                                     label="Hz max",
-                                    tag=ui.SPEC_DLG_TREND_FMAX,
+                                    tag=ui.ACQ_DLG_TREND_FMAX,
                                     default_value=0.0,
                                     min_value=0.0,
                                     width=100,
@@ -1976,7 +2003,7 @@ class GUI:
                     dpg.add_button(
                         label="Acquisition Setup",
                         tag=ui.BTN_SPECTRUM_SETUP,
-                        callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_SPECTRUM),
+                        callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_ACQUISITION),
                         width=-1,
                     )
                     dpg.add_button(

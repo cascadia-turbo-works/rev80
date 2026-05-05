@@ -256,6 +256,13 @@ v4 with per-channel orders matrix; v3 files loaded in best-effort degraded mode.
 | Date | Commit | Description |
 |------|--------|-------------|
 | 2026-05-XX | TBD | refactor/mv-domain-trend — mV pipeline, 5-order trend, HDF5 v4 |
+| 2026-05-XX | TBD | feat/cache-depth — configurable frame cache with recording-window and total-memory display; Acquisition tab rename |
+
+### Requirements added in Phase 4
+
+| # | Source | Requirement |
+|---|--------|-------------|
+| R28 | May 2026 | Configurable frame cache depth (integer selector in Acquisition config tab) with live recording-window and total-memory derived displays |
 
 ---
 
