@@ -325,11 +325,6 @@ class GUI:
         """Return amplitude mode: channel config → default '0-P'."""
         return self.collector.config.amplitude_mode_for(ch) or "0-P"
 
-    def _compute_channel_result(self, ch: int, sample: vibechecker.VibeSample) -> vibechecker.ChannelResult | None:
-        """Delegate all computation to VibeSample.process()."""
-        target_unit = self.collector.get_active_eu(ch)
-        amp_mode = self._get_amplitude_mode(ch)
-        return sample.process(ch, target_unit, self.collector.config, amp_mode)
 
     def _update_time_plot(self, result: vibechecker.ChannelResult, ch: int):
         if not dpg.does_item_exist(ui.plt_time_series(ch)):
@@ -363,18 +358,15 @@ class GUI:
             dpg.set_value(ui.plt_freq_peaks(ch), [[], []])
 
     def _update_trend_plot(self):
-        """Refresh the trend plot from DataCollector's trend store."""
-        all_times: list[float] = []
+        """Refresh the trend plot; collector handles unit/sensitivity conversion."""
+        trend_data = self.collector.get_trend_for_display()
         for ch in self.collector.config.enabled_channels:
             tag = ui.plt_trend_series(ch)
             if not dpg.does_item_exist(tag):
                 continue
-            td = self.collector.data["trend"].get(ch, {})
-            times = td.get("rel_times", [])
-            overall = td.get("overall", [])
-            if times:
-                dpg.set_value(tag, [times, overall])
-                all_times.extend(times)
+            times, values = trend_data.get(ch, ([], []))
+            if times and values:
+                dpg.set_value(tag, [times, values])
             else:
                 dpg.set_value(tag, [[0.0], [0.0]])
         # NOTE: trend X range is NOT updated here; use the Autoscale button to
@@ -440,38 +432,31 @@ class GUI:
             if dpg.does_item_exist(tag):
                 dpg.configure_item(tag, show=(ch in enabled))
 
-    def _display_frame(self, samples: dict):
-        """Compute ChannelResults from raw samples and update all GUI plots."""
+    def _display_frame(self):
+        """Process the current frame via collector and update all GUI plots."""
         if self.collector.is_streaming:
             self._set_stream_status("active")
             self._schedule_status_timeout()
 
-        overflow_mask = samples.get("overflow", 0)
+        results = self.collector.process_samples()
+
         n_overflow = 0
-        for ch in range(_MAX_CHANNELS):
+        for result in results:
+            ch = result.channel
             tag = ui.ch_overflow_warning(ch)
             if dpg.does_item_exist(tag):
-                overflowed = bool(overflow_mask & (1 << ch))
-                dpg.configure_item(tag, show=overflowed)
-                if overflowed:
+                dpg.configure_item(tag, show=result.overflow)
+                if result.overflow:
                     n_overflow += 1
-        if dpg.does_item_exist(ui.CH_WARNINGS_SECTION):
-            dpg.configure_item(
-                ui.CH_WARNINGS_SECTION, show=bool(n_overflow), height=_CARD_BASE_H + n_overflow * _CARD_LINE_H
-            )
-
-        for ch, sample in samples.items():
-            if not isinstance(ch, int):  # skip metadata keys like 'overflow'
-                continue
-            if sample.blocksize <= 1:
-                continue
-            result = self._compute_channel_result(ch, sample)
-            if result is None:
-                continue
             self._update_time_plot(result, ch)
             self._update_freq_plot(result, ch)
-            if self.collector.is_streaming:
-                self.collector.update_trend(ch, result.rel_time, result.overall)
+
+        if dpg.does_item_exist(ui.CH_WARNINGS_SECTION):
+            dpg.configure_item(
+                ui.CH_WARNINGS_SECTION, show=bool(n_overflow),
+                height=_CARD_BASE_H + n_overflow * _CARD_LINE_H,
+            )
+
         self._update_trend_plot()
         self._update_browse_label()
         self._ensure_legends()
@@ -492,26 +477,16 @@ class GUI:
                 dpg.add_plot_legend(location=dpg.mvPlot_Location_East, tag=legend_tag, parent=plot_tag)
 
     def _poll_new_frames(self):
-        """Check for new data from the collector and display the latest frame.
+        """Check for new data from the collector and display the current frame.
 
         Called once per DPG render tick from the manual render loop.
         If multiple frames arrived since the last tick, only the most
-        recent is displayed — earlier frames remain in frame_cache for
-        browsing.
+        recent is displayed — earlier frames remain in frame_cache for browsing.
         """
         if not self.collector.new_frame_event.is_set():
             return
         self.collector.new_frame_event.clear()
-
-        cache = self.collector.data["frame_cache"]
-        if not cache:
-            return
-        try:
-            idx = min(self.collector._cache_cursor, len(cache) - 1)
-            frame = cache[-(idx + 1)]
-        except IndexError:
-            return  # rare race: cache shifted between len() and index
-        self._display_frame(frame)
+        self._display_frame()
 
     def _redraw(self, sender=None, data=None):
         if not self.collector.is_streaming:
@@ -805,7 +780,10 @@ class GUI:
         # Trend X: fit to current data extent
         all_times: list[float] = []
         for ch in self.collector.config.enabled_channels:
-            all_times.extend(self.collector.data["trend"].get(ch, {}).get("rel_times", []))
+            td = self.collector.trend.get(ch, {})
+            rt = td.get("rel_times")
+            if rt is not None and len(rt) > 0:
+                all_times.extend(rt.tolist())
         if all_times and dpg.does_item_exist(ui.PLT_TREND_AX_TIME):
             dpg.set_axis_limits(ui.PLT_TREND_AX_TIME, 0.0, max(all_times) * 1.5)
         elif dpg.does_item_exist(ui.PLT_TREND_AX_TIME):
@@ -814,13 +792,14 @@ class GUI:
         # Trend Y: scale each axis independently by its own channels
         groups = self._get_unit_groups()
         trend_axes = [ui.PLT_TREND_AX_OVERALL, ui.PLT_TREND_AX_OVERALL_2]
+        trend_display = self.collector.get_trend_for_display()
         for i, (_, chs) in enumerate(groups[:2]):
             ax = trend_axes[i]
             if not dpg.does_item_exist(ax):
                 continue
             peak = 0.0
             for ch in chs:
-                vals = self.collector.data["trend"].get(ch, {}).get("overall", [])
+                _, vals = trend_display.get(ch, ([], []))
                 if vals:
                     peak = max(peak, max(vals))
             if peak > 0.0:
@@ -1336,7 +1315,6 @@ class GUI:
         self._update_axis_assignment()
         self._update_results_section_visibility()
         self.collector.init_trend_channels()
-        self.collector.clear_trend()
 
         # Single reconnect to apply all hardware changes at once
         if self.collector.sensor is not None:
@@ -1430,7 +1408,6 @@ class GUI:
         if was_streaming:
             self._start_stream()
         else:
-            self.collector.clear_trend()
             self.collector.reprocess_last_block()
         self._update_spectrum_info()
 
