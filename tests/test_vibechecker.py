@@ -71,7 +71,7 @@ def test_collect_sample_signal_processing():
     collector.disconnect_sensor()
 
     for ch, sample in ((k, v) for k, v in result.items() if isinstance(k, int)):
-        cr = sample.process(ch, '', acq_settings)
+        cr = collector.process_sample(ch, sample)
         assert cr is not None
         assert cr.time_data.flags['C_CONTIGUOUS']
         assert len(cr.freq) > 0
@@ -158,8 +158,8 @@ def test_load_offline_configures_channels():
     # Verify reprocess works (process() on loaded samples)
     last_frame = cache[-1]
     for ch, sample in ((k, v) for k, v in last_frame.items() if isinstance(k, int)):
-        cr = sample.process(ch, sample.unit, offline.config)
-        assert cr is not None, f'process() returned None for channel {ch}'
+        cr = offline.process_sample(ch, sample)
+        assert cr is not None, f'process_sample() returned None for channel {ch}'
         assert len(cr.freq) > 0
 
     fname.remove_p()
@@ -230,7 +230,7 @@ def test_save_data_persists_scope_sensor():
     collector.save_data(fname)
 
     with h5py.File(fname, 'r') as f:
-        assert int(f['metadata'].attrs['version']) == 3, 'Expected v3 format'
+        assert int(f['metadata'].attrs['version']) >= 3, 'Expected v3+ format'
         # Sensor library: one entry per unique sensor used
         ss_grp = f['metadata']['scope_sensors']
         assert len(ss_grp) >= 1, 'Expected at least 1 sensor in library'

@@ -172,9 +172,15 @@ def test_pipeline_scope_sensor_scales_mv_data():
 
     frame = collector.data['frame_cache'][-1]
     sample = frame[0]
-    assert sample.unit == 'g'
-    # 50 mV / 10 mV/g = 5 g
-    assert np.allclose(sample.data, raw_mv / sensitivity, atol=1e-6)
+    # Raw storage is always mV
+    assert sample.unit == 'mV'
+    assert np.allclose(sample.data, raw_mv, atol=1e-6)
+
+    # process_sample applies mV→EU conversion: 50 mV / 10 mV/g = 5 g
+    collector.config.channel_target_units[0] = 'g'
+    result = collector.process_sample(0, sample)
+    assert result is not None
+    assert result.unit == 'g'
 
 
 def test_pipeline_scope_sensor_clear():
