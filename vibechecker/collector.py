@@ -16,9 +16,6 @@ from vibechecker.scope_sensor import ScopeSensor
 
 log = vibechecker.get_logger("collector")
 
-_FRAME_CACHE_SIZE = 32
-
-
 class DataCollector:
     """Collect, filter, cache, and persist multi-channel vibration data.
 
@@ -107,13 +104,18 @@ class DataCollector:
 
     def reset_data_store(self):
         self.data = {
-            "frame_cache": deque(maxlen=_FRAME_CACHE_SIZE),  # dict[int, VibeSample]
+            "frame_cache": deque(maxlen=self.config.cache_frames),  # dict[int, VibeSample]
             "frame_count": 0,
         }
         self.trend: dict[int, dict[str, np.ndarray]] = {}
         self._cache_cursor = 0
         self.init_trend_channels()
         log.info("Reset data store.")
+
+    def resize_frame_cache(self, n: int) -> None:
+        """Rebuild frame_cache with a new maxlen, preserving the most recent frames."""
+        existing = list(self.data["frame_cache"])
+        self.data["frame_cache"] = deque(existing[-n:], maxlen=n)
 
     def reset_channel_config(self, num_channels: int) -> None:
         """Prune all per-channel state to match a new device's channel count.
