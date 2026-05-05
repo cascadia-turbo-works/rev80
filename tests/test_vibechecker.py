@@ -9,7 +9,7 @@ import yaml
 import h5py
 import numpy as np
 import pytest
-from path import Path
+from pathlib import Path
 
 from vibechecker import (
     AcquisitionSettings,
