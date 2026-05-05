@@ -43,8 +43,6 @@ _BUILTIN_DEFAULTS: dict[str, Any] = {
         'lowpass_enabled':  False,
         'lowpass_fc':       1000.0,
         'trend_max_points': 500,
-        'trend_fmin':       0.0,
-        'trend_fmax':       None,
         'cache_frames':     DEFAULT_CACHE_FRAMES,
     },
 }

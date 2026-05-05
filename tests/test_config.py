@@ -231,7 +231,7 @@ class TestAcquisitionSettingsSerialisation:
         d = config.to_dict()
         for key in ('maxfreq', 'binsize', 'fft_window', 'welch_overlap',
                     'highpass_enabled', 'highpass_fc', 'lowpass_enabled', 'lowpass_fc',
-                    'trend_max_points', 'trend_fmin', 'trend_fmax'):
+                    'trend_max_points'):
             assert key in d, f'Missing key: {key}'
 
     def test_roundtrip_preserves_values(self):
@@ -245,8 +245,6 @@ class TestAcquisitionSettingsSerialisation:
         original.lowpass_enabled = True
         original.lowpass_fc = 2000.0
         original.trend_max_points = 200
-        original.trend_fmin = 10.0
-        original.trend_fmax = 1000.0
 
         restored = AcquisitionSettings.from_dict(original.to_dict())
 
@@ -259,8 +257,6 @@ class TestAcquisitionSettingsSerialisation:
         assert restored.lowpass_enabled is True
         assert restored.lowpass_fc == 2000.0
         assert restored.trend_max_points == 200
-        assert restored.trend_fmin == 10.0
-        assert restored.trend_fmax == 1000.0
 
     def test_from_dict_with_partial_dict_uses_defaults(self):
         restored = AcquisitionSettings.from_dict({'maxfreq': 8000.0})
@@ -268,9 +264,3 @@ class TestAcquisitionSettingsSerialisation:
         # All other fields should be the dataclass defaults
         assert isinstance(restored.fft_window, str)
         assert isinstance(restored.welch_overlap, float)
-
-    def test_trend_fmax_none_roundtrip(self):
-        config = AcquisitionSettings()
-        config.trend_fmax = None
-        restored = AcquisitionSettings.from_dict(config.to_dict())
-        assert restored.trend_fmax is None
