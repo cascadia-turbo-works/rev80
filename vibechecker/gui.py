@@ -1364,10 +1364,6 @@ class GUI:
             dpg.set_value(ui.ACQ_DLG_LP_ENABLED, cfg.lowpass_enabled)
         if dpg.does_item_exist(ui.ACQ_DLG_LP_FC):
             dpg.set_value(ui.ACQ_DLG_LP_FC, cfg.lowpass_fc)
-        if dpg.does_item_exist(ui.ACQ_DLG_TREND_FMIN):
-            dpg.set_value(ui.ACQ_DLG_TREND_FMIN, cfg.trend_fmin)
-        if dpg.does_item_exist(ui.ACQ_DLG_TREND_FMAX):
-            dpg.set_value(ui.ACQ_DLG_TREND_FMAX, cfg.trend_fmax if cfg.trend_fmax is not None else 0.0)
         if dpg.does_item_exist(ui.ACQ_DLG_CACHE_FRAMES):
             dpg.set_value(ui.ACQ_DLG_CACHE_FRAMES, cfg.cache_frames)
         self._update_acq_derived()
@@ -1389,10 +1385,6 @@ class GUI:
             cfg.binsize = vibechecker.BINSIZE_PRESETS[_BINSIZE_LABELS.index(bs_str)]
         except (ValueError, IndexError):
             pass
-        trend_fmin = float(dpg.get_value(ui.ACQ_DLG_TREND_FMIN) or 0.0)
-        trend_fmax = float(dpg.get_value(ui.ACQ_DLG_TREND_FMAX) or 0.0)
-        cfg.trend_fmin = trend_fmin
-        cfg.trend_fmax = trend_fmax if trend_fmax > 0 else None
         if dpg.does_item_exist(ui.ACQ_DLG_WINDOW):
             win = dpg.get_value(ui.ACQ_DLG_WINDOW)
             if win in _FFT_WINDOWS:
@@ -1827,8 +1819,8 @@ class GUI:
                             )
                             # Derived: Sample Rate
                             dpg.add_input_text(label="Sample Rate", tag=ui.ACQ_DLG_SAMPLERATE, readonly=True, width=_w)
-                            dpg.add_separator()
                             # Control: Freq. Resolution
+                            dpg.add_separator()
                             dpg.add_combo(
                                 label="Freq. Resolution",
                                 tag=ui.ACQ_DLG_BINSIZE,
@@ -1843,6 +1835,7 @@ class GUI:
                             # Derived: Acquisition Time
                             dpg.add_input_text(label="Acq. Time", tag=ui.ACQ_DLG_ACQ_TIME, readonly=True, width=_w)
                             # Control: Frame cache depth
+                            dpg.add_separator()
                             dpg.add_input_int(
                                 label="Cache Frames",
                                 tag=ui.ACQ_DLG_CACHE_FRAMES,
@@ -1888,24 +1881,6 @@ class GUI:
                                 dpg.add_input_float(
                                     label="Hz", tag=ui.ACQ_DLG_LP_FC, default_value=1000.0, min_value=1.0, width=100
                                 )
-                            dpg.add_separator()
-                            dpg.add_text("Trend Frequency Window")
-                            with dpg.group(horizontal=True):
-                                dpg.add_input_float(
-                                    label="Hz min",
-                                    tag=ui.ACQ_DLG_TREND_FMIN,
-                                    default_value=0.0,
-                                    min_value=0.0,
-                                    width=100,
-                                )
-                                dpg.add_input_float(
-                                    label="Hz max",
-                                    tag=ui.ACQ_DLG_TREND_FMAX,
-                                    default_value=0.0,
-                                    min_value=0.0,
-                                    width=100,
-                                )
-                            dpg.add_text("(0 max = use spectrum max freq)", indent=4)
 
                     # ── Signal Generator tab ────────────────────────────────
                     with dpg.tab(label="Generate", tag=ui.CONFIG_TAB_SIGGEN):

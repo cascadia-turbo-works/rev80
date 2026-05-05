@@ -32,8 +32,6 @@ class AcquisitionSettings:
     channel_amplitude_modes: dict = field(default_factory=dict) # {ch: str}  'RMS'|'0-P'|'P-P'
     # Trend history
     trend_max_points: int = 500
-    trend_fmin: float = 0.0
-    trend_fmax: float | None = None
     # FFT / Welch
     fft_window: str = 'hann'
     welch_overlap: float = 0.5     # 0.0–0.95 fraction of nperseg
@@ -84,8 +82,6 @@ class AcquisitionSettings:
             'lowpass_enabled':      self.lowpass_enabled,
             'lowpass_fc':           self.lowpass_fc,
             'trend_max_points':     self.trend_max_points,
-            'trend_fmin':           self.trend_fmin,
-            'trend_fmax':           self.trend_fmax,
             'cache_frames':            self.cache_frames,
             'channel_names':           dict(self.channel_names),
             'channel_target_units':    dict(self.channel_target_units),
@@ -108,9 +104,6 @@ class AcquisitionSettings:
         if 'lowpass_enabled'  in d: obj.lowpass_enabled  = bool(d['lowpass_enabled'])  # noqa: E701
         if 'lowpass_fc'       in d: obj.lowpass_fc       = float(d['lowpass_fc'])      # noqa: E701
         if 'trend_max_points' in d: obj.trend_max_points = int(d['trend_max_points'])  # noqa: E701
-        if 'trend_fmin'       in d: obj.trend_fmin       = float(d['trend_fmin'])      # noqa: E701
-        if 'trend_fmax'       in d:
-            obj.trend_fmax = float(d['trend_fmax']) if d['trend_fmax'] is not None else None
         if 'cache_frames'     in d: obj.cache_frames     = int(d['cache_frames'])           # noqa: E701
         if 'channel_names'           in d: obj.channel_names           = {int(k): str(v) for k, v in d['channel_names'].items()}
         if 'channel_target_units'    in d: obj.channel_target_units    = {int(k): str(v) for k, v in d['channel_target_units'].items()}

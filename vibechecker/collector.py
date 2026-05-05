@@ -453,10 +453,6 @@ class DataCollector:
             sample._psd_config_key = psd_key
 
             # ── 3. 5-order mV RMS overalls, orders −2…+2 ─────────────
-            fmin = config.trend_fmin
-            fmax = (min(config.trend_fmax, config.maxfreq)
-                    if config.trend_fmax is not None else config.maxfreq)
-            band_mask = (freq_hz >= fmin) & (freq_hz <= fmax)
             pos = freq_hz > 0   # DC bin excluded from integration factors
             for i, n_ord in enumerate(range(-2, 3)):   # i=0 → ord=-2, i=2 → ord=0
                 if n_ord != 0:
@@ -465,9 +461,7 @@ class DataCollector:
                     psd_ord      = psd_mv * omega
                 else:
                     psd_ord = psd_mv
-                band = np.sqrt(np.maximum(
-                    psd_ord[band_mask] if band_mask.any() else psd_ord, 0.0
-                ))
+                band = np.sqrt(np.maximum(psd_ord, 0.0))
                 sample.overall_ampl_by_integration_order[i] = float(np.sqrt(np.sum(np.square(band))))
         else:
             freq_hz = sample.freq_hz
@@ -497,11 +491,7 @@ class DataCollector:
         peaks     = np.array(peaks[np.argsort(-spectrum_amp[peaks])])
 
         # ── 7. Overall amplitude in target unit ───────────────────────
-        fmin = config.trend_fmin
-        fmax = (min(config.trend_fmax, config.maxfreq)
-                if config.trend_fmax is not None else config.maxfreq)
-        mask     = (freq_hz >= fmin) & (freq_hz <= fmax)
-        band     = spectrum_amp[mask] if mask.any() else spectrum_amp
+        band     = spectrum_amp
         band_rms = band / amp_factor
         overall  = float(np.sqrt(np.sum(np.square(band_rms)))) * amp_factor
 
@@ -578,7 +568,7 @@ class DataCollector:
             /metadata/acquisition.attrs             maxfreq, binsize, fft_window,
                                                     welch_overlap, highpass_enabled,
                                                     highpass_fc, lowpass_enabled, lowpass_fc,
-                                                    trend_max_points, trend_fmin, trend_fmax
+                                                    trend_max_points
             /metadata/scope_sensors/{id}            group (one per unique sensor used)
             /metadata/scope_sensors/{id}.attrs      name, id, sensitivity, engineering_units,
                                                     target_unit, notes
