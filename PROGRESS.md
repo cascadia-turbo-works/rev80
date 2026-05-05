@@ -241,6 +241,24 @@ left-panel redesign; siggen config persistence.
 
 ---
 
+### Phase 4 — mV-domain pipeline + trend unit reflow (May 2026)
+
+VibeSample refactored to store raw mV throughout; sensitivity conversion and
+Butterworth filtering moved to DataCollector.process_sample. Welch PSD cached
+per sample (keyed to filter/welch config); five broadband RMS overalls
+(integration orders −2…+2, in mV RMS) cached per sample and stored per trend
+timestep as a (M,5) ndarray. Unit/sensitivity/amplitude-mode changes reflow
+the trend at display time via DataCollector.get_trend_for_display() — no
+clearing required. DataCollector.process_samples() introduced as the single
+entry point for frame processing. GUI display loop simplified. HDF5 bumped to
+v4 with per-channel orders matrix; v3 files loaded in best-effort degraded mode.
+
+| Date | Commit | Description |
+|------|--------|-------------|
+| 2026-05-XX | TBD | refactor/mv-domain-trend — mV pipeline, 5-order trend, HDF5 v4 |
+
+---
+
 ## Open Requirements / Backlog
 
 Items captured from meetings or todo lists that have not yet been implemented:
@@ -274,3 +292,4 @@ Items captured from meetings or todo lists that have not yet been implemented:
 | Phase 2 (Mar 2026) | **PicoScope 4000A** | + picoscope, scope_sensor, scope_sensor_registry | HDF5 multi-channel |
 | Phase 2a (Mar 2026) | PicoScope | + ChannelResult, multi-channel pipeline, trend | HDF5 multi-channel |
 | Phase 2b (Mar 2026) | PicoScope + AWG | + signal generator, Welch controls, derived AcquisitionSettings | HDF5 + YAML config |
+| Phase 4 (May 2026) | PicoScope | mV-domain VibeSample, (M,5) trend, process_samples() | HDF5 v4 |

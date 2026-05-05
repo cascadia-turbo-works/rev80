@@ -3,17 +3,6 @@
 # Provides:
 #   FindPicoScope()      — enumerate connected PS4000A devices
 #   PicoScopeStream      — streaming thread that replaces sounddevice.InputStream
-#
-# Data contract with DataCollector.receive_data:
-#   callback(dict) where dict keys are:
-#     status    : str  — 'OKAY' | 'OVERFLOW'
-#     rel_time  : float — seconds since stream started
-#     timestamp : datetime
-#     unit      : list[str] — ['mV']
-#     data      : np.ndarray shape (blocksize, 1), dtype float64, values in mV
-#
-# Phase 1: raw voltage only. Engineering-unit conversion (sensitivity, modality)
-# is deferred to Phase 2 via SensorConfig.
 
 import ctypes
 import threading
@@ -40,7 +29,7 @@ _PICO_BATCH_AND_SERIAL  = 4   # batch + serial string e.g. "CMY12/345"
 _DRIVER_BUFFER_SAMPLES = 1000
 
 # Device open / reconnect tuning
-_MAX_OPEN_ATTEMPTS      = 5     # retries for ps4000aOpenUnit at detection / start
+_MAX_OPEN_ATTEMPTS      = 2     # retries for ps4000aOpenUnit at detection / start
 _OPEN_RETRY_DELAY_S     = 1.0   # seconds between open attempts
 _NOT_RESPONDING_DELAY_S = 2.0   # longer pause after PICO_NOT_RESPONDING (device resetting)
 
@@ -235,6 +224,7 @@ class PicoScopeStream:
 
         self._open_device()
         self._configure_channel()
+        self._setup_siggen()
         self._start_streaming()
 
         # Reset accumulator and watchdog state
@@ -420,8 +410,6 @@ class PicoScopeStream:
                   f'{cfg["pktopk_uv"]} µV pk-pk')
 
     def _start_streaming(self):
-        # Configure signal generator if requested (before streaming starts)
-        self._setup_siggen()
 
         # Register a rolling buffer for each enabled channel.
         # Use ch directly as the channel enum value (A=0, B=1, …, H=7);
@@ -483,6 +471,8 @@ class PicoScopeStream:
                         f'PicoScopeStream: ADC overflow on Channel {chr(65 + ch)}'
                     )
                     self._overflow_warned.add(ch)
+                elif ch in self._overflow_warned:
+                    self._overflow_warned.remove(ch)
 
         # Convert ADC counts → mV for each enabled channel.
         # The driver treats the registered buffer as a circular ring, so
@@ -498,6 +488,7 @@ class PicoScopeStream:
                 first  = self._driver_buffers[ch][startIndex:buf_size]
                 second = self._driver_buffers[ch][0:end_idx - buf_size]
                 chunk_adc = np.concatenate([first, second])
+
             chunks_mv.append(np.array(
                 adc2mV(chunk_adc, self.config.voltage_range_for(ch), self._maxADC),
                 dtype=np.float64,
@@ -525,7 +516,7 @@ class PicoScopeStream:
             self._accumulator[:remainder] = self._accumulator[bs:self._acc_ptr]
             self._acc_ptr = remainder
 
-            rel_time = time.monotonic() - self._stream_start
+            rel_time = self._last_data_time - self._stream_start
             status   = 'OVERFLOW' if overflow else 'OKAY'
 
             samp = {
@@ -568,6 +559,7 @@ class PicoScopeStream:
             try:
                 self._open_device()   # calls _set_max_resolution internally
                 self._configure_channel()
+                self._setup_siggen()
                 self._start_streaming()
                 # Reset accumulator so stale partial data isn't carried forward
                 N = len(self._enabled_channels)
