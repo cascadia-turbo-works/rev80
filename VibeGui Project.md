@@ -263,3 +263,23 @@ Current setup: bare git repo at `git@192.168.0.43:repo/vibegui.git`
 - Learning value: high — GitHub Actions YAML syntax is industry standard
 - Maintenance: minimal (single binary, SQLite DB)
 - Benefit: push to branch → installer ready to download, no manual steps
+
+
+## Long term monitoring
+
+
+1. Establish baseline operation spectrum
+
+2. Snapshot vibe every long period (ex 12 hr, 1 day)
+
+3. Maintain buffer of data for BufferTime (ex 5 min)
+
+4. Define trigger for anomaly event
+    - Overall threshold
+    - Record for anomally lifetime AnomalyTime (ex 10min)
+    - Stop
+
+5. This solves 80% of cases so we can catch system startups, coastdowns. We don't need to camptures small changes in overall.:
+
+!# Record only top x peaks, or (freq,amp) over amplitude threshold to reduce data load.
+
