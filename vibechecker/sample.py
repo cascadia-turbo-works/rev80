@@ -5,6 +5,7 @@ import numpy as np
 
 import vibechecker
 from vibechecker import nextpow2
+from vibechecker.config import DEFAULT_CACHE_FRAMES
 
 log = vibechecker.get_logger(__name__)
 
@@ -42,7 +43,7 @@ class AcquisitionSettings:
     lowpass_enabled: bool = False
     lowpass_fc: float = 1000.0     # Hz
     # Frame cache
-    cache_frames: int = 32         # depth of the ring cache in DataCollector
+    cache_frames: int = DEFAULT_CACHE_FRAMES  # depth of the ring cache in DataCollector
 
     _BUTTER_ORDER: int = field(default=4, repr=False)  # clamped, not user-exposed
 
