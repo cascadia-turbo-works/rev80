@@ -93,9 +93,9 @@ def test_save_load_roundtrip():
     assert isinstance(first_sample, VibeSample)
 
     # Save via DataCollector (new multi-channel format)
-    DATADIR.makedirs_p()
+    DATADIR.mkdir(parents=True, exist_ok=True)
     fname = DATADIR / 'pytest_roundtrip.h5'
-    fname.remove_p()
+    fname.unlink(missing_ok=True)
     collector.save_data(fname)
     assert fname.exists(), 'save_data did not create file'
 
@@ -128,9 +128,9 @@ def test_load_offline_configures_channels():
     collector.disconnect_sensor()
     assert result
 
-    DATADIR.makedirs_p()
+    DATADIR.mkdir(parents=True, exist_ok=True)
     fname = DATADIR / 'pytest_offline.h5'
-    fname.remove_p()
+    fname.unlink(missing_ok=True)
     collector.save_data(fname)
 
     # Load into a fresh collector with NO sensor
@@ -162,7 +162,7 @@ def test_load_offline_configures_channels():
         assert cr is not None, f'process_sample() returned None for channel {ch}'
         assert len(cr.freq) > 0
 
-    fname.remove_p()
+    fname.unlink(missing_ok=True)
 
 
 def test_load_offline_adjusts_maxfreq():
@@ -174,9 +174,9 @@ def test_load_offline_adjusts_maxfreq():
     result = collector.collect_sample()
     collector.disconnect_sensor()
 
-    DATADIR.makedirs_p()
+    DATADIR.mkdir(parents=True, exist_ok=True)
     fname = DATADIR / 'pytest_offline_hf.h5'
-    fname.remove_p()
+    fname.unlink(missing_ok=True)
     collector.save_data(fname)
 
     # Load with a low-freq default config
@@ -193,7 +193,7 @@ def test_load_offline_adjusts_maxfreq():
         f'{high_freq_config.samplerate} after loading high-freq file'
     )
 
-    fname.remove_p()
+    fname.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -224,9 +224,9 @@ def test_save_data_persists_scope_sensor():
     collector.collect_sample()
     collector.disconnect_sensor()
 
-    DATADIR.makedirs_p()
+    DATADIR.mkdir(parents=True, exist_ok=True)
     fname = DATADIR / 'pytest_sensor_save.h5'
-    fname.remove_p()
+    fname.unlink(missing_ok=True)
     collector.save_data(fname)
 
     with h5py.File(fname, 'r') as f:
@@ -243,7 +243,7 @@ def test_save_data_persists_scope_sensor():
         ch_meta = f['metadata']['channels']['0']
         assert ch_meta.attrs['scope_sensor_id'] == sensor.id
 
-    fname.remove_p()
+    fname.unlink(missing_ok=True)
 
 
 def test_load_data_restores_scope_sensor_configs():
@@ -255,9 +255,9 @@ def test_load_data_restores_scope_sensor_configs():
     collector.collect_sample()
     collector.disconnect_sensor()
 
-    DATADIR.makedirs_p()
+    DATADIR.mkdir(parents=True, exist_ok=True)
     fname = DATADIR / 'pytest_sensor_load.h5'
-    fname.remove_p()
+    fname.unlink(missing_ok=True)
     collector.save_data(fname)
 
     fresh = DataCollector(config=acq_settings)
@@ -275,7 +275,7 @@ def test_load_data_restores_scope_sensor_configs():
     assert sensor.id in lib, 'Sensor id missing from _loaded_scope_sensors'
     assert lib[sensor.id]['name'] == 'Load Test'
 
-    fname.remove_p()
+    fname.unlink(missing_ok=True)
 
 
 def test_notes_roundtrip():
@@ -285,16 +285,16 @@ def test_notes_roundtrip():
     collector.collect_sample()
     collector.disconnect_sensor()
 
-    DATADIR.makedirs_p()
+    DATADIR.mkdir(parents=True, exist_ok=True)
     fname = DATADIR / 'pytest_notes.h5'
-    fname.remove_p()
+    fname.unlink(missing_ok=True)
     collector.save_data(fname)
 
     fresh = DataCollector(config=acq_settings)
     fresh.load_data(fname)
     assert fresh.notes == 'Motor bearing — drive end'
 
-    fname.remove_p()
+    fname.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
