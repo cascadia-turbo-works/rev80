@@ -120,12 +120,14 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     console=False,                   # no console window
     icon=str(ICON_FILE),
 )
 
 # ── One-dir bundle ───────────────────────────────────────────────────────────
+# UPX disabled: compressing python3XX.dll causes "LoadLibrary failed" on
+# launch; PyInstaller already compresses .pyc into PYZ so UPX saves little.
 
 coll = COLLECT(
     exe,
@@ -133,7 +135,7 @@ coll = COLLECT(
     a.zipfiles,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     name='vibechecker',
 )
