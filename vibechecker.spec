@@ -7,6 +7,7 @@
 #   pip install pyinstaller
 #   python build/collect_pico_dlls.py   (copies DLLs to drivers/)
 
+import re
 import sys
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files, collect_all
@@ -17,6 +18,16 @@ ROOT = Path(SPECPATH)
 DRIVERS_DIR = ROOT / 'drivers'
 LOGGING_YAML = ROOT / 'vibechecker' / 'logging.yaml'
 ICON_FILE = ROOT / 'assets' / 'icons' / 'vibechecker.ico'
+
+# ── Version ──────────────────────────────────────────────────────────────────
+
+_ver_text = (ROOT / 'vibechecker' / '_version.py').read_text()
+APP_VERSION = re.search(r'__version__ = "([^"]+)"', _ver_text).group(1)
+
+# Write installer/version.iss so iscc picks it up without extra arguments
+(ROOT / 'installer' / 'version.iss').write_text(f'#define AppVersion "{APP_VERSION}"\n')
+
+print(f'Building version {APP_VERSION}')
 
 # ── Hidden imports ───────────────────────────────────────────────────────────
 
