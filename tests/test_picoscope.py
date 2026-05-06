@@ -338,11 +338,9 @@ class TestPicoScopeStreamInterface:
 class TestMvPassthrough:
 
     def _collect(self, collector, samp):
-        result = {}
-        collector.callbacks['_test'] = lambda s: result.update(s)
         collector.receive_data(samp)
-        collector.callbacks.pop('_test', None)
-        return result
+        cache = collector.data['frame_cache']
+        return dict(cache[-1]) if cache else {}
 
     def test_receive_data_single_channel_returns_dict(self):
         """receive_data returns a dict keyed by channel index."""
@@ -394,7 +392,7 @@ class TestMvPassthrough:
         assert np.all(result[0].data == 42.0)
 
     def test_process_mv_passthrough(self):
-        """VibeSample.process() passes through raw data when unit='mV'."""
+        """process_sample passes through raw mV data when no sensor is assigned."""
         n = 512
         data = np.random.randn(n)
         sample = vc.VibeSample(
@@ -402,9 +400,13 @@ class TestMvPassthrough:
             _timestamp=datetime.now(),
             samplerate=1000,
             unit='mV',
+            overflow=False,
             data=data,
         )
-        result = sample.process(0, 'mV', vc.AcquisitionSettings())
+        collector = vc.DataCollector()
+        collector.config.highpass_enabled = False
+        collector.config.lowpass_enabled = False
+        result = collector.process_sample(0, sample)
         assert result is not None
         assert len(result.time_data) == n
         assert np.allclose(result.time_data, data)

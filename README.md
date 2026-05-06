@@ -36,7 +36,7 @@ A Python desktop application for capturing, analyzing, and recording vibration d
 - Configurable IEPE sensor library: sensitivity (mV/EU), modality, engineering units
 - PicoScope 4000A built-in signal generator for excitation testing
 - HDF5 file save/load for post-processing and archiving
-- 32-frame acquisition cache with backward browse
+- Configurable frame cache depth (default 32 frames) with backward browse
 - Trend plot: overall vibration amplitude over time per channel
 - Simulated sensor (bearing-defect signal generator) for offline development and CI testing
 - Configurable amplitude modes: RMS, 0-P, P-P
@@ -198,56 +198,45 @@ build.bat           # cmd.exe / PowerShell
 
 ## Architecture
 
-The app is a linear pipeline with no message bus. Each layer hands data directly to the next via registered callbacks.
+The app is a linear pipeline. The hardware thread and the GUI render loop are decoupled via a `threading.Event` — the collector never calls into DPG directly.
 
 ```text
-┌──────────────────────────────────────────────────────────┐
-│  PicoScopeStream  (picoscope.py)                         │
-│  OR  SimulatedSensor  (simulation.py)                    │
-│                                                          │
-│  → polls hardware at blocksize intervals                 │
-│  → ADC counts → mV via adc2mV()                         │
-│  → fires callback(dict) with all channels                │
-└───────────────────────────┬──────────────────────────────┘
-                            │  dict: {status, rel_time,
-                            │         timestamp, unit,
-                            │         channels, data,
-                            │         overflow_mask}
-                            ▼
-┌──────────────────────────────────────────────────────────┐
-│  DataCollector  (collector.py)                           │
-│  → per-channel mV → EU via ScopeSensor.sensitivity      │
-│  → per-channel Butterworth highpass + lowpass filter     │
-│  → wraps each channel in VibeSample                      │
-│  → appends frame dict to 32-frame ring cache             │
-│  → fans out to GUI callbacks                             │
-│  → accumulates trend (overall amplitude per channel)     │
-└───────────────────────────┬──────────────────────────────┘
-                            │  frame dict: {ch: VibeSample, …}
-                            ▼
-┌──────────────────────────────────────────────────────────┐
-│  VibeSample.process(config)  (sample.py)                 │
-│  → Welch FFT with configurable window and overlap        │
-│  → frequency-domain integration (accel → vel → disp)    │
-│  → peak detection                                        │
-│  → returns ChannelResult (frozen dataclass)              │
-└───────────────────────────┬──────────────────────────────┘
-                            │  ChannelResult
-                            ▼
-┌──────────────────────────────────────────────────────────┐
-│  GUI  (gui.py)  — dearpygui                              │
-│  → updates time-domain and spectrum line series          │
-│  → updates peak table, trend plot, overall amplitude     │
-│  → no axis auto-fit; Autoscale button fits on demand     │
-└──────────────────────────────────────────────────────────┘
-                            │
-                            ▼ (on save)
-┌──────────────────────────────────────────────────────────┐
-│  HDF5 files  in  DEVDATA/                                │
-│  DataCollector.save_data() / load_data()                 │
-│  multi-channel layout: /frames/{i}/channels/{ch}/…       │
-└──────────────────────────────────────────────────────────┘
+  Hardware thread                           Main thread
+  ─────────────────                         ───────────────────
+
+┌────────────────────────────┐
+│  PicoScopeStream           │
+│  OR  SimulatedSensor       │
+│  → polls hardware          │
+│  → ADC → mV → callback     │
+└─────────────┬──────────────┘
+              │ dict: {status, rel_time,
+              │  timestamp, unit, channels,
+              │  data, overflow_mask}
+              ▼
+┌────────────────────────────┐
+│  DataCollector             │
+│  → mV → EU (ScopeSensor)  │
+│  → Butterworth HP + LP    │
+│  → VibeSample per channel  │
+│  → frame_cache.append()   │
+│  → new_frame_event.set()  │─ ─ ─ ─ ─ ─ ─▶┌────────────────────────────┐
+└────────────────────────────┘               │  GUI render loop            │
+                                             │  _poll_new_frames():         │
+                                             │    if event set:            │
+                                             │      grab frame_cache[-1]  │
+                                             │      process_samples()      │
+                                             │      _display_frame()       │
+                                             └─────────────┬──────────────┘
+                                                           │ (on save)
+                                                           ▼
+                                             ┌────────────────────────────┐
+                                             │  HDF5 files in DEVDATA/    │
+                                             │  save_data() / load_data() │
+                                             └────────────────────────────┘
 ```
+
+When the GUI is slower than the hardware data rate, it skips to the latest frame — all earlier frames remain in the ring cache (configurable depth, default 32 frames) for browsing. The hardware thread is never blocked by GUI rendering.
 
 ---
 
@@ -262,10 +251,11 @@ The app is a linear pipeline with no message bus. Each layer hands data directly
 | `picoscope.py` | `FindPicoScope()` — enumerates PS4000A units; `PicoScopeStream` — polling thread, ADC→mV, overflow detection, watchdog recovery, signal generator setup |
 | `scope_sensor.py` | `ScopeSensor` dataclass — IEPE sensor metadata: name, sensitivity (mV/EU), engineering units, amplitude mode, UUID |
 | `scope_sensor_registry.py` | `ScopeSensorRegistry` — YAML-backed CRUD for user sensor library and per-channel assignments; persists signal generator config |
-| `sample.py` | `AcquisitionSettings` — spectrum and filter config with derived properties; `VibeSample` — single-channel time-domain block with HDF5 I/O and `process()` → `ChannelResult`; `ChannelResult` — frozen display-ready result |
-| `collector.py` | `DataCollector` — multi-channel acquisition state machine: stream lifecycle, per-channel filter application, 32-frame ring cache, trend accumulation, HDF5 save/load |
+| `sample.py` | `AcquisitionSettings` — spectrum, filter, and cache config with derived properties; `VibeSample` — single-channel time-domain block with cached PSD; `ChannelResult` — frozen display-ready result |
+| `config.py` | OS-aware config directory; per-device YAML persistence (channels, signal generator, acquisition settings); atomic writes; fallback to built-in defaults |
+| `collector.py` | `DataCollector` — multi-channel acquisition state machine: stream lifecycle, per-channel filter application, configurable frame cache (default 32 frames), `new_frame_event` signal for GUI, trend accumulation, HDF5 save/load |
 | `simulation.py` | `SimulatedSensor` (daemon thread) + signal generators: `GenerateTone`, `GenerateNoise`, `GenerateBearingVibration_SpectralMethod`, `GenerateBearingVibration_TemporalMethod` |
-| `gui.py` | `GUI` class — dearpygui three-column layout, channel config panel, sensor library, spectrum and time-domain plots, trend plots, file I/O |
+| `gui.py` | `GUI` class — dearpygui three-column layout with manual render loop (`_poll_new_frames`), channel config panel, sensor library, spectrum and time-domain plots, trend plots, file I/O |
 
 ---
 
@@ -305,25 +295,26 @@ A watchdog thread monitors for >5 s silence and attempts up to 3 reconnect cycle
 3. Optionally applies a **4th-order Butterworth highpass** filter (default 10 Hz cutoff) using SOS coefficients for numerical stability
 4. Optionally applies a **4th-order Butterworth lowpass** filter
 5. Wraps each channel's data in a `VibeSample`
-6. Assembles a frame dict `{ch: VibeSample, 'overflow': mask}` and appends it to a 32-frame ring cache
-7. Fires registered GUI callbacks with the frame dict
+6. Assembles a frame dict `{ch: VibeSample, 'overflow': mask}` and appends it to the frame ring cache (configurable depth via `AcquisitionSettings.cache_frames`, default 32)
+7. Sets `new_frame_event` to signal the GUI render loop
 
-### 3. Spectral Analysis — `VibeSample.process()` (`sample.py`)
+### 3. Spectral Analysis — `DataCollector.process_sample()` (`collector.py`)
 
-`VibeSample.process(config)` returns a `ChannelResult`:
+`DataCollector.process_sample(ch, sample)` computes and returns a `ChannelResult`:
 
 - **Welch PSD** — `scipy.signal.welch` with configurable window function, 50% overlap, and bin size controlled by `AcquisitionSettings.binsize`
 - **Frequency-domain integration** — when the assigned `ScopeSensor.engineering_units` modality differs from the target display unit, integration is applied by multiplying the spectrum by `(1j·2πf)^n` where `n` is the number of integration steps (negative = integrate, positive = differentiate)
 - **Peak detection** — `scipy.signal.find_peaks` sorted descending by amplitude
 - **Overall amplitude** — broadband RMS/0-P/P-P computed from time-domain data
 
-### 4. Visualisation — `GUI.display_frame()` (`gui.py`)
+### 4. Visualisation — `GUI._poll_new_frames()` / `_display_frame()` (`gui.py`)
 
-On every streaming block, for each active channel:
+The GUI uses a manual render loop (`while dpg.is_dearpygui_running()`). Each tick, `_poll_new_frames()` checks `DataCollector.new_frame_event`. If set, it grabs the latest frame from `frame_cache` and calls `_display_frame()`:
 
-- Calls `sample.process(config)` → `ChannelResult`
+- Calls `DataCollector.process_samples()` → list of `ChannelResult` for each enabled channel
 - Updates time-domain and spectrum line series via `dpg.set_value()`
 - Updates peak table and trend plot
+- If multiple frames arrived since the last tick, only the newest is rendered — earlier frames remain in cache for browsing
 - Axis limits are **not** automatically adjusted; press **Autoscale** to fit all axes on demand
 
 ---
@@ -362,7 +353,13 @@ On every streaming block, for each active channel:
 | `channel_voltage_ranges` | Dict `{ch: range_index}` — PS4000A voltage range per channel |
 | `channel_couplings` | Dict `{ch: 'AC'|'DC'}` — input coupling per channel |
 
-Helper methods: `voltage_range_for(ch)`, `coupling_for(ch)`, `copy()`.
+### Cache settings
+
+| Property | Description |
+| --- | --- |
+| `cache_frames` | Ring buffer depth in frames (default 32); configurable via GUI Acquisition tab |
+
+Helper methods: `voltage_range_for(ch)`, `coupling_for(ch)`, `name_for(ch)`, `target_unit_for(ch)`, `amplitude_mode_for(ch)`, `copy()`.
 
 ---
 
@@ -373,22 +370,24 @@ Helper methods: `voltage_range_for(ch)`, `coupling_for(ch)`, `copy()`.
 `VibeSample` (`sample.py`) holds one block of time-domain samples for a single channel.
 
 ```python
-sample.data          # numpy.ndarray float64, shape (N,)
-sample.samplerate    # int — Hz
-sample.unit          # str — engineering unit string
-sample.modality      # str — 'acceleration', 'velocity', 'displacement', 'raw'
-sample.timestamp     # datetime
-sample.rel_time      # float — seconds since stream start
-sample.status        # str — 'OKAY', 'OVERFLOW', etc.
+sample.data                          # numpy.ndarray float64, shape (N,), raw mV samples
+sample.samplerate                    # int — Hz
+sample.unit                          # str — 'mV' (raw hardware unit)
+sample.timestamp                     # str — ISO format timestamp
+sample.rel_time                      # float — seconds since stream start
+sample.status                        # str — 'OKAY', 'OVERFLOW', etc.
+sample.overall_ampl_by_integration_order  # ndarray (5,) — broadband RMS for orders -2..+2
 
-sample.process(config)   # → ChannelResult
-sample.save(path)        # → HDF5 file
-sample.load(path)        # → VibeSample (class method)
+# Cached on first call; re-computed when Welch config changes:
+sample.psd_mv                        # numpy.ndarray — Welch PSD (mV RMS)
+sample.freq_hz                       # numpy.ndarray — frequency axis (Hz)
 ```
+
+HDF5 save/load is handled by `DataCollector.save_data()` and `DataCollector.load_data()`, not by VibeSample directly.
 
 ### ChannelResult
 
-`ChannelResult` is a frozen dataclass returned by `VibeSample.process()`. It is the canonical display-ready result for one channel at one instant.
+`ChannelResult` is a frozen dataclass returned by `DataCollector.process_sample(ch, sample)`. It is the canonical display-ready result for one channel at one instant.
 
 ```python
 result.channel      # int
@@ -489,24 +488,33 @@ collector.load_data("DEVDATA/my_run_2024-01-15T14-32-00.h5")
 
 ## Configuration and Persistence
 
-### Sensor library
+Config is persisted in the OS-specific config directory:
+- **Linux/macOS:** `$XDG_CONFIG_HOME/vibechecker/` (default: `~/.config/vibechecker/`)
+- **Windows:** `%APPDATA%\vibechecker\`
 
-User-defined IEPE sensors are stored in `~/.config/vibechecker/scope_sensors.yaml` as a list of `ScopeSensor` dicts. Managed via `ScopeSensorRegistry`.
+### Per-device configuration
 
-### Channel assignments
-
-Per-channel sensor assignments and input settings are stored in `~/.config/vibechecker/channel_assignments.yaml`:
+Device-specific settings are stored in `devices/{sanitized_serial}.yaml` when the device is disconnected or via explicit GUI action:
 
 ```yaml
-"0":
-  enabled: true
-  sensor_id: <uuid>
-  voltage_range: 10
-  coupling: AC
-"1":
-  enabled: false
-  sensor_id: null
-siggen:
+channels:
+  0:
+    enabled: true
+    sensor_id: <uuid>           # reference to global sensor library
+    voltage_range: 7            # PS4000A range index
+    coupling: AC
+acquisition:
+  maxfreq: 2000.0               # Hz
+  binsize: 2.0                  # Hz
+  cache_frames: 32              # configurable ring buffer depth
+  fft_window: hann
+  welch_overlap: 0.5
+  highpass_enabled: true
+  highpass_fc: 10.0             # Hz
+  lowpass_enabled: false
+  lowpass_fc: 1000.0            # Hz
+  trend_max_points: 500
+siggen:                          # optional signal generator config
   enabled: true
   wave_type: PS4000A_SINE
   freq_hz: 100.0
@@ -514,7 +522,21 @@ siggen:
   offset_uv: 0
 ```
 
-Assignments are restored automatically when the device reconnects. `save_channel_assignments()` reads before writing to preserve non-channel keys (e.g. `siggen`). Writes are atomic (tempfile + `os.replace`) to prevent corruption.
+Unknown device? Falls back to `devices/default.yaml` template, then built-in defaults. When reconnecting, the device's saved config is restored.
+
+### Global sensor library
+
+User-defined IEPE sensors are stored in `scope_sensors.yaml` as a list of `ScopeSensor` dicts:
+
+```yaml
+- id: <uuid>
+  name: PCB 352C33 Ch1
+  sensitivity_mv_per_eu: 10.2   # mV/g, mV/(mm/s), etc.
+  engineering_units: g          # acceleration modality
+  target_unit: in/s             # display unit override (optional)
+```
+
+Managed via `ScopeSensorRegistry` — provides CRUD operations and per-channel assignment persistence.
 
 ### Logging
 

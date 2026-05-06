@@ -18,7 +18,7 @@
 #define AppPublisher "Rev Engineering"
 #define AppCopyright "Copyright (c) 2026 Rev Engineering. Author: Henry Gotjen."
 #define AppExeName   "vibechecker.exe"
-#define AppIcon      "..\assets\vibechecker.ico"
+#define AppIcon      "..\assets\icons\vibechecker.ico"
 ; Directory produced by PyInstaller COLLECT step
 #define BuildDir     "..\dist\vibechecker"
 

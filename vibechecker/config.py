@@ -26,6 +26,8 @@ log = vibechecker.get_logger(__name__)
 # Built-in defaults — used when no YAML exists at all
 # ---------------------------------------------------------------------------
 
+DEFAULT_CACHE_FRAMES: int = 32
+
 _BUILTIN_DEFAULTS: dict[str, Any] = {
     'channels': {
         0: {'enabled': True,  'sensor_id': None, 'voltage_range': 7, 'coupling': 'AC'},
@@ -41,8 +43,7 @@ _BUILTIN_DEFAULTS: dict[str, Any] = {
         'lowpass_enabled':  False,
         'lowpass_fc':       1000.0,
         'trend_max_points': 500,
-        'trend_fmin':       0.0,
-        'trend_fmax':       None,
+        'cache_frames':     DEFAULT_CACHE_FRAMES,
     },
 }
 

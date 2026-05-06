@@ -1,35 +1,61 @@
 # Vibechecker frontend
 
 import threading
-import dearpygui.dearpygui as dpg
-
 from pathlib import Path
 
+import dearpygui.dearpygui as dpg
 import numpy as np
 import pandas as pd
 
 import vibechecker
-from vibechecker.scope_sensor import ScopeSensor
-from vibechecker.scope_sensor_registry import ScopeSensorRegistry
 import vibechecker.config as _cfg
 from vibechecker.sample import AcquisitionSettings
+from vibechecker.scope_sensor import ScopeSensor
+from vibechecker.scope_sensor_registry import ScopeSensorRegistry
+from vibechecker.util import UNIT_TO_SI
 
-log = vibechecker.get_logger('gui')
+log = vibechecker.get_logger("gui")
 ui = vibechecker.UI_Elements()
 
 # Layout constants
-WINDOW_WIDTH    = 1500
-WINDOW_HEIGHT   = 1000
-CONTROLS_WIDTH  = 300
-RESULTS_WIDTH   = 300
+# TODO: make left/right panel widths and plot heights resizable by mouse drag.
+#   DPG supports this via dpg.add_drag_line or manual splitter groups; defer
+#   until the panel layout is otherwise stable.
+WINDOW_WIDTH = 1500
+WINDOW_HEIGHT = 1000
+CONTROLS_WIDTH = 300
+RESULTS_WIDTH = 300
 TIME_PLOT_HEIGHT = 300
 
-_MAX_CHANNELS         = 8
+# Config dialog dimensions — referenced wherever the dialog is built or positioned
+_DLG_CFG_W = 720
+_DLG_CFG_H = 560
+# Field widths inside the config dialog (golden-ratio of dialog width)
+_DLG_FIELD_W = int(_DLG_CFG_W * 0.618)  # ~444 px  — full-width text/combo
+_SREG_LIST_W = 200  # sensor registry list pane
+_SREG_FIELD_W = int((_DLG_CFG_W - _SREG_LIST_W - 40) * 0.618)  # ~297 px
+
+# Channel-row widget widths (inside the Channels tab collapsing headers)
+_CH_COUPLING_W = 80
+_CH_RANGE_W = 100
+_CH_INDENT = 16
+_CH_HALF_FIELD_W = _DLG_FIELD_W // 2  # half-width for paired combos on one row
+
+# Height reserved at the bottom of the config dialog for the close-button row
+_DLG_CLOSE_H = 36
+# Sensor registry button width (Add / Delete)
+_SREG_BTN_W = 88
+# Signal generator control widget width
+_DLG_SIGGEN_W = 160
+# Spacer pushing the Device-tab "Refresh" button to the right edge
+_DLG_DEVICE_TAB_SPACER = _DLG_CFG_W - 434
+
+_MAX_CHANNELS = 8
 _DEFAULT_NUM_CHANNELS = 4
 # Height of each per-channel result card so 4 cards fit the default window height
-_RESULTS_CARD_HEIGHT  = (WINDOW_HEIGHT - 70) // 4   # ≈ 232 px
+_RESULTS_CARD_HEIGHT = (WINDOW_HEIGHT - 70) // 4  # ≈ 232 px
 # Width of paired buttons side-by-side in the left control panel
-_BTN_HALF = (CONTROLS_WIDTH - 22) // 2              # ≈ 139 px
+_BTN_HALF = (CONTROLS_WIDTH - 30) // 2
 
 # Left-panel card heights.  DPG child_window has no shrink-to-content mode:
 # autosize_y=True fills the parent rather than the content.  Heights must be
@@ -37,49 +63,63 @@ _BTN_HALF = (CONTROLS_WIDTH - 22) // 2              # ≈ 139 px
 #   text line ≈ 17 px (13 px font + 4 px ItemSpacing.y)
 #   button    ≈ 25 px (21 px frame + 4 px spacing)
 #   card base ≈ 40 px (top/bottom WindowPadding + title + separator)
-_CARD_LINE_H  = 18   # per text-line height estimate (font + spacing)
-_CARD_BASE_H  = 100   # card overhead: padding + title + separator + bottom pad
-_CARD_BTN_H   = 26   # single button row height
-_CARD_H_DEVICE = _CARD_BASE_H + _CARD_LINE_H + 2 + _CARD_BTN_H + 8     # disconnected baseline
-_CARD_H_ACQ    = 400   # Acquisition: fixed — toggle+controls+spectrum info box
-_CARD_H_FILE   = _CARD_BASE_H + _CARD_BTN_H + 6                          # ≈ 72
+_CARD_LINE_H = 17  # per text-line height estimate (font + spacing)
+_CARD_BASE_H = 60  # card overhead: padding + title + separator + bottom pad
+_CARD_BTN_H = 25  # single button row height
+_CARD_H_DEVICE = _CARD_BASE_H + _CARD_LINE_H * 5  # disconnected baseline
+_CARD_H_CHANNELS = _CARD_BASE_H + _CARD_LINE_H
+_CARD_H_ACQ = (
+    _CARD_BASE_H + _CARD_BTN_H * 6 + _CARD_LINE_H * 10
+)  # Acquisition: 400 fixed — toggle+controls+spectrum info box
+_CARD_H_FILE = _CARD_BASE_H + _CARD_BTN_H + 125  # ≈ 252 (notes field)
+
 
 def _c(key: str, alpha: int = 255) -> tuple:
     """Shorthand: THEME_COLORS[key] → DPG RGBA tuple."""
     return vibechecker.hex_to_rgba(vibechecker.THEME_COLORS[key], alpha)
 
+
 _CH_COLORS = [
-    _c('WHITE'),  # Ch A
-    _c('ORANGE'),  # Ch B
-    _c('LIME'),    # Ch C
-    _c('CORAL'),   # Ch D
-    _c('CYAN'),    # Ch E
-    _c('VIOLET'),  # Ch F
-    _c('GOLD'),    # Ch G
-    _c('SILVER'),  # Ch H
+    _c("WHITE"),  # Ch A
+    _c("ORANGE"),  # Ch B
+    _c("LIME"),  # Ch C
+    _c("CORAL"),  # Ch D
+    _c("CYAN"),  # Ch E
+    _c("VIOLET"),  # Ch F
+    _c("GOLD"),  # Ch G
+    _c("SILVER"),  # Ch H
 ]
 
 # Spectrum dialog display labels — index-aligned with preset lists
-_MAXFREQ_LABELS = [f'{int(f)} Hz' for f in vibechecker.MAXFREQ_PRESETS]
-_BINSIZE_LABELS  = [f'{b} Hz/bin' for b in vibechecker.BINSIZE_PRESETS]
+_MAXFREQ_LABELS = [f"{int(f)} Hz" for f in vibechecker.MAXFREQ_PRESETS]
+_BINSIZE_LABELS = [f"{b} Hz/bin" for b in vibechecker.BINSIZE_PRESETS]
 
 # Welch FFT window options (scipy.signal.welch 'window' argument strings)
-_FFT_WINDOWS = ['hann', 'blackmanharris', 'flattop', 'hamming', 'boxcar', 'bartlett']
+_FFT_WINDOWS = ["hann", "blackmanharris", "flattop", "hamming", "boxcar", "bartlett"]
 
 # Signal generator waveform names → PS4000A wave type string
 _SIGGEN_WAVE_TYPES: dict[str, str] = {
-    'Sine':     'PS4000A_SINE',
-    'Square':   'PS4000A_SQUARE',
-    'Triangle': 'PS4000A_TRIANGLE',
-    'Ramp Up':  'PS4000A_RAMP_UP',
-    'Ramp Down':'PS4000A_RAMP_DOWN',
-    'DC':       'PS4000A_DC_VOLTAGE',
+    "Sine": "PS4000A_SINE",
+    "Square": "PS4000A_SQUARE",
+    "Triangle": "PS4000A_TRIANGLE",
+    "Ramp Up": "PS4000A_RAMP_UP",
+    "Ramp Down": "PS4000A_RAMP_DOWN",
+    "DC": "PS4000A_DC_VOLTAGE",
 }
 
 # PS4000A voltage range labels — index matches PS4000A_RANGE enum (0=±10mV … 10=±20V)
 _VOLTAGE_RANGE_LABELS = [
-    '±10mV', '±20mV', '±50mV', '±100mV', '±200mV', '±500mV',
-    '±1V', '±2V', '±5V', '±10V', '±20V',
+    "±10mV",
+    "±20mV",
+    "±50mV",
+    "±100mV",
+    "±200mV",
+    "±500mV",
+    "±1V",
+    "±2V",
+    "±5V",
+    "±10V",
+    "±20V",
 ]
 
 
@@ -90,17 +130,16 @@ class GUI:
     def __init__(self):
         self.context = None
         self.collector = vibechecker.DataCollector()
-        self.collector.callbacks['plots'] = self.display_frame
         self.registry = ScopeSensorRegistry()
         self._editing_scope_sensor_id: str | None = None
         self._num_channels: int = _DEFAULT_NUM_CHANNELS
         self._channel_themes: list = []
         self._peak_themes: list = []
         self._sect_theme = None
-        self._toggle_themes: dict = {}   # 'active'|'waiting'|'idle' → dpg theme
+        self._toggle_themes: dict = {}  # 'active'|'waiting'|'idle' → dpg theme
         self._status_timer: threading.Timer | None = None
         self.found_sensors: list = []
-        self._autoscale_pending: bool = False       # True → autoscale on next frame
+        self._autoscale_pending: bool = False  # True → autoscale on next frame
         self._was_streaming_before_config: bool = False  # stream state when config opened
 
     # ------------------------------------------------------------------
@@ -108,19 +147,27 @@ class GUI:
     # ------------------------------------------------------------------
 
     def _set_device_status(self, state: str):
-        """Update the device connection indicator: 'connected' | 'disconnected'."""
+        """Update the device connection indicator: 'connected'|'file_loaded'|'disconnected'."""
         if dpg.does_item_exist(ui.DEVICE_STATUS_RECT):
-            color = _c('GREEN') if state == 'connected' else _c('RED')
-            dpg.configure_item(ui.DEVICE_STATUS_RECT, fill=color)
+            colors = {
+                "connected": _c("GREEN"),
+                "file_loaded": _c("YELLOW"),
+                "disconnected": _c("RED"),
+            }
+            dpg.configure_item(ui.DEVICE_STATUS_RECT, fill=colors.get(state, _c("RED")))
         if dpg.does_item_exist(ui.CONN_STATUS_TEXT):
-            dpg.set_value(ui.CONN_STATUS_TEXT,
-                          'Connected' if state == 'connected' else 'Not Connected')
+            labels = {
+                "connected": "Connected",
+                "file_loaded": "File Loaded",
+                "disconnected": "Not Connected",
+            }
+            dpg.set_value(ui.CONN_STATUS_TEXT, labels.get(state, "Not Connected"))
 
     def _set_stream_status(self, state: str):
         """Update the toggle button color and label: 'active'|'waiting'|'idle'."""
         if dpg.does_item_exist(ui.ACQ_TOGGLE):
-            label_map = {'active': 'Running', 'waiting': 'Waiting', 'idle': 'Stopped'}
-            dpg.set_item_label(ui.ACQ_TOGGLE, label_map.get(state, 'Stopped'))
+            label_map = {"active": "Running", "waiting": "Waiting", "idle": "Stopped"}
+            dpg.set_item_label(ui.ACQ_TOGGLE, label_map.get(state, "Stopped"))
             theme = self._toggle_themes.get(state)
             if theme:
                 dpg.bind_item_theme(ui.ACQ_TOGGLE, theme)
@@ -136,7 +183,7 @@ class GUI:
 
     def _on_status_timeout(self):
         if self.collector.is_streaming:
-            self._set_stream_status('waiting')
+            self._set_stream_status("waiting")
 
     # ------------------------------------------------------------------
     # Plot axis helpers
@@ -168,67 +215,90 @@ class GUI:
 
     def _freq_axis_label(self, unit: str, channels: list[int] | None = None) -> str:
         """Build a frequency-plot Y-axis label like 'Amplitude, mils P-P'."""
-        mode = self._get_amplitude_mode(channels[0]) if channels else '0-P'
-        return f'Amplitude, {unit} {mode}'
+        mode = self._get_amplitude_mode(channels[0]) if channels else "0-P"
+        return f"Amplitude, {unit} {mode}"
 
     def _update_axis_assignment(self):
         """Show/hide secondary axes and reassign series based on unit groups."""
         groups = self._get_unit_groups()
+
+        if len(groups) > 2:
+            log.warning(
+                "More than 2 unique output units configured %s; "
+                "only the first 2 will have dedicated axes.",
+                [g[0] for g in groups],
+            )
+            # Absorb excess channels into group 1
+            overflow = [ch for _, chs in groups[2:] for ch in chs]
+            groups = [groups[0], (groups[1][0], groups[1][1] + overflow)]
+
         if len(groups) <= 1:
+            # ── Single unit: hide all secondary axes ─────────────────────
             dpg.hide_item(ui.PLT_FREQ_AX_2)
             dpg.hide_item(ui.PLT_SAMPLE_AX_ACCEL_2)
+            dpg.hide_item(ui.PLT_TREND_AX_OVERALL_2)
             for ch in self.collector.config.enabled_channels:
-                self._reassign_series_to_axis(ch, ui.PLT_FREQ_AX_ACCEL,
-                                              ui.PLT_SAMPLE_AX_ACCEL)
-            unit = groups[0][0] if groups else 'mV'
-            chs  = groups[0][1] if groups else []
-            mode = self._get_amplitude_mode(chs[0]) if chs else '0-P'
-            dpg.set_item_label(ui.PLT_FREQ_AX_ACCEL,   self._freq_axis_label(unit, chs))
-            dpg.set_item_label(ui.PLT_SAMPLE_AX_ACCEL, f'Amplitude, {unit}')
-            if dpg.does_item_exist(ui.PLT_TREND_AX_OVERALL):
-                dpg.set_item_label(ui.PLT_TREND_AX_OVERALL,
-                                   f'Overall Vibration, {unit} {mode}')
+                self._reassign_series_to_axis(
+                    ch, ui.PLT_FREQ_AX_ACCEL, ui.PLT_SAMPLE_AX_ACCEL, ui.PLT_TREND_AX_OVERALL
+                )
+            unit = groups[0][0] if groups else "mV"
+            chs = groups[0][1] if groups else []
+            mode = self._get_amplitude_mode(chs[0]) if chs else "0-P"
+            dpg.set_item_label(ui.PLT_FREQ_AX_ACCEL, self._freq_axis_label(unit, chs))
+            dpg.set_item_label(ui.PLT_SAMPLE_AX_ACCEL, f"Amplitude, {unit}")
+            dpg.set_item_label(ui.PLT_TREND_AX_OVERALL, f"Overall Vibration, {unit} {mode}")
             for ch in chs:
                 tag = ui.ch_overall_value(ch)
                 if dpg.does_item_exist(tag):
-                    dpg.configure_item(tag, label=f'Overall, {unit} {mode}')
+                    dpg.configure_item(tag, label=f"Overall, {unit} {mode}")
         else:
+            # ── Two units: show secondary axes and split channels ─────────
             dpg.show_item(ui.PLT_FREQ_AX_2)
             dpg.show_item(ui.PLT_SAMPLE_AX_ACCEL_2)
+            dpg.show_item(ui.PLT_TREND_AX_OVERALL_2)
             for ch in groups[0][1]:
-                self._reassign_series_to_axis(ch, ui.PLT_FREQ_AX_ACCEL,
-                                              ui.PLT_SAMPLE_AX_ACCEL)
+                self._reassign_series_to_axis(
+                    ch, ui.PLT_FREQ_AX_ACCEL, ui.PLT_SAMPLE_AX_ACCEL, ui.PLT_TREND_AX_OVERALL
+                )
             for ch in groups[1][1]:
-                self._reassign_series_to_axis(ch, ui.PLT_FREQ_AX_2,
-                                              ui.PLT_SAMPLE_AX_ACCEL_2)
-            dpg.set_item_label(ui.PLT_FREQ_AX_ACCEL,     self._freq_axis_label(groups[0][0], groups[0][1]))
-            dpg.set_item_label(ui.PLT_SAMPLE_AX_ACCEL,   f'Amplitude, {groups[0][0]}')
-            dpg.set_item_label(ui.PLT_FREQ_AX_2,         self._freq_axis_label(groups[1][0], groups[1][1]))
-            dpg.set_item_label(ui.PLT_SAMPLE_AX_ACCEL_2, f'Amplitude, {groups[1][0]}')
-            # Trend Y: mixed units — omit unit from label
-            if dpg.does_item_exist(ui.PLT_TREND_AX_OVERALL):
-                dpg.set_item_label(ui.PLT_TREND_AX_OVERALL, 'Overall Vibration')
+                self._reassign_series_to_axis(
+                    ch, ui.PLT_FREQ_AX_2, ui.PLT_SAMPLE_AX_ACCEL_2, ui.PLT_TREND_AX_OVERALL_2
+                )
+            dpg.set_item_label(ui.PLT_FREQ_AX_ACCEL, self._freq_axis_label(groups[0][0], groups[0][1]))
+            dpg.set_item_label(ui.PLT_SAMPLE_AX_ACCEL, f"Amplitude, {groups[0][0]}")
+            dpg.set_item_label(ui.PLT_FREQ_AX_2, self._freq_axis_label(groups[1][0], groups[1][1]))
+            dpg.set_item_label(ui.PLT_SAMPLE_AX_ACCEL_2, f"Amplitude, {groups[1][0]}")
+            mode0 = self._get_amplitude_mode(groups[0][1][0]) if groups[0][1] else "0-P"
+            mode1 = self._get_amplitude_mode(groups[1][1][0]) if groups[1][1] else "0-P"
+            dpg.set_item_label(ui.PLT_TREND_AX_OVERALL, f"Overall, {groups[0][0]} {mode0}")
+            dpg.set_item_label(ui.PLT_TREND_AX_OVERALL_2, f"Overall, {groups[1][0]} {mode1}")
             for unit, chs in groups:
-                mode = self._get_amplitude_mode(chs[0]) if chs else '0-P'
+                mode = self._get_amplitude_mode(chs[0]) if chs else "0-P"
                 for ch in chs:
                     tag = ui.ch_overall_value(ch)
                     if dpg.does_item_exist(tag):
-                        dpg.configure_item(tag, label=f'Overall, {unit} {mode}')
+                        dpg.configure_item(tag, label=f"Overall, {unit} {mode}")
 
-    def _reassign_series_to_axis(self, ch: int, freq_axis: str, time_axis: str):
+    def _reassign_series_to_axis(
+        self,
+        ch: int,
+        freq_axis: str,
+        time_axis: str,
+        trend_axis: str = ui.PLT_TREND_AX_OVERALL,
+    ):
         """If a channel's series are on wrong axes, delete and recreate them."""
-        freq_tag = ui.plt_freq_series(ch)
-        time_tag = ui.plt_time_series(ch)
         wrong = False
-        if dpg.does_item_exist(freq_tag):
-            if dpg.get_item_parent(freq_tag) != dpg.get_alias_id(freq_axis):
+        for tag, axis in [
+            (ui.plt_freq_series(ch), freq_axis),
+            (ui.plt_time_series(ch), time_axis),
+            (ui.plt_trend_series(ch), trend_axis),
+        ]:
+            if dpg.does_item_exist(tag) and dpg.get_item_parent(tag) != dpg.get_alias_id(axis):
                 wrong = True
-        if dpg.does_item_exist(time_tag):
-            if dpg.get_item_parent(time_tag) != dpg.get_alias_id(time_axis):
-                wrong = True
+                break
         if wrong:
             self._remove_channel_series(ch)
-            self._add_channel_series(ch, freq_axis=freq_axis, time_axis=time_axis)
+            self._add_channel_series(ch, freq_axis=freq_axis, time_axis=time_axis, trend_axis=trend_axis)
 
     # ------------------------------------------------------------------
     # Plot update helpers
@@ -249,84 +319,110 @@ class GUI:
         for i in range(df.shape[0]):
             with dpg.table_row(parent=table_tag):
                 for j in range(df.shape[1]):
-                    dpg.add_text(f'{df.iloc[i, j]}')
+                    dpg.add_text(f"{df.iloc[i, j]}")
 
     def _get_amplitude_mode(self, ch: int) -> str:
-        """Return the amplitude mode for a channel from its scope sensor."""
-        scope_sensor = self.collector.scope_sensors.get(ch)
-        if scope_sensor is not None:
-            return scope_sensor.amplitude_mode
-        return '0-P'
+        """Return amplitude mode: channel config → default '0-P'."""
+        return self.collector.config.amplitude_mode_for(ch) or "0-P"
 
-    def _compute_channel_result(self, ch: int,
-                                 sample: vibechecker.VibeSample
-                                 ) -> vibechecker.ChannelResult | None:
-        """Delegate all computation to VibeSample.process()."""
-        target_unit = self.collector.get_active_eu(ch)
-        amp_mode = self._get_amplitude_mode(ch)
-        return sample.process(ch, target_unit, self.collector.config, amp_mode)
 
     def _update_time_plot(self, result: vibechecker.ChannelResult, ch: int):
         if not dpg.does_item_exist(ui.plt_time_series(ch)):
             return
-        time   = result.time_vec * 1000.0   # convert s → ms (axis label is "Time, ms")
+        time = result.time_vec * 1000.0  # convert s → ms (axis label is "Time, ms")
         signal = result.time_data
         dpg.set_value(ui.plt_time_series(ch), [time.tolist(), signal.tolist()])
 
     def _update_freq_plot(self, result: vibechecker.ChannelResult, ch: int):
         if not dpg.does_item_exist(ui.plt_freq_series(ch)):
             return
-        freq     = result.freq
+        freq = result.freq
         spectrum = result.spectrum
         dpg.set_value(ui.plt_freq_series(ch), [freq.tolist(), spectrum.tolist()])
         if dpg.does_item_exist(ui.ch_overall_value(ch)):
-            dpg.set_value(ui.ch_overall_value(ch), f'{result.overall:.4f}')
+            dpg.set_value(ui.ch_overall_value(ch), f"{result.overall:.4f}")
         peak_limit = dpg.get_value(ui.FFT_PEAKS_DISPLAY_COUNT)
         peaks = result.peaks
         if len(peaks) > 0:
             top_peaks = peaks[:peak_limit]
-            dpg.set_value(ui.plt_freq_peaks(ch),
-                          [freq[top_peaks].tolist(), spectrum[top_peaks].tolist()])
+            dpg.set_value(ui.plt_freq_peaks(ch), [freq[top_peaks].tolist(), spectrum[top_peaks].tolist()])
             amp_mode = self._get_amplitude_mode(ch)
-            peak_df = pd.DataFrame({
-                'Frequency (Hz)':              np.round(freq[top_peaks], 2),
-                f'Amp., {result.unit} {amp_mode}': np.round(spectrum[top_peaks], 6),
-            })
+            peak_df = pd.DataFrame(
+                {
+                    "Frequency (Hz)": np.round(freq[top_peaks], 2),
+                    f"Amp., {result.unit} {amp_mode}": np.round(spectrum[top_peaks], 6),
+                }
+            )
             self._update_fft_peaks_table(peak_df, ch)
         else:
             dpg.set_value(ui.plt_freq_peaks(ch), [[], []])
 
     def _update_trend_plot(self):
-        """Refresh the trend plot from DataCollector's trend store."""
-        all_times: list[float] = []
+        """Refresh the trend plot; collector handles unit/sensitivity conversion."""
+        trend_data = self.collector.get_trend_for_display()
         for ch in self.collector.config.enabled_channels:
             tag = ui.plt_trend_series(ch)
             if not dpg.does_item_exist(tag):
                 continue
-            td = self.collector.data['trend'].get(ch, {})
-            times   = td.get('rel_times', [])
-            overall = td.get('overall', [])
-            if times:
-                dpg.set_value(tag, [times, overall])
-                all_times.extend(times)
+            times, values = trend_data.get(ch, ([], []))
+            if times and values:
+                dpg.set_value(tag, [times, values])
             else:
-                dpg.set_value(tag, [[0.], [0.]])
+                dpg.set_value(tag, [[0.0], [0.0]])
         # NOTE: trend X range is NOT updated here; use the Autoscale button to
         # fit [0, max_t * 1.1].  Updating it every frame would lock out user pan/zoom.
 
     def _update_browse_label(self):
-        """Refresh the frame-browser label and enable/disable nav buttons."""
+        """Refresh the frame-browser label, nav buttons, and trend cursor line."""
         if not dpg.does_item_exist(ui.ACQ_BROWSE_LABEL):
             return
-        cache  = self.collector.data['frame_cache']
-        n      = len(cache)
+        cache = self.collector.data["frame_cache"]
+        n = len(cache)
         cursor = self.collector._cache_cursor
-        label  = f'Frame {n - cursor} / {n}' if n else 'No frames'
+        label = f"Frame {n - cursor} / {n}" if n else "No frames"
         dpg.set_value(ui.ACQ_BROWSE_LABEL, label)
         can_browse = (not self.collector.is_streaming) and n > 1
-        for tag in [ui.ACQ_BROWSE_PREV, ui.ACQ_BROWSE_NEXT]:
+        for tag in [ui.ACQ_BROWSE_FIRST, ui.ACQ_BROWSE_PREV, ui.ACQ_BROWSE_NEXT, ui.ACQ_BROWSE_LAST]:
             if dpg.does_item_exist(tag):
                 dpg.configure_item(tag, enabled=can_browse)
+
+        # Vertical cursor on trend plot showing current browse position
+        self._update_trend_cursor()
+
+    def _update_trend_cursor(self):
+        """Show/hide a vertical line on the trend plot at the browsed frame's rel_time."""
+        cache = self.collector.data["frame_cache"]
+        cursor = self.collector._cache_cursor
+        show = (not self.collector.is_streaming) and len(cache) > 0
+
+        if show:
+            idx = min(cursor, len(cache) - 1)
+            frame = cache[-(idx + 1)]
+            # Get rel_time from the first channel sample in the frame
+            rel_time = None
+            for k, v in frame.items():
+                if isinstance(k, int):
+                    rel_time = v.rel_time
+                    break
+
+            if rel_time is not None and dpg.does_item_exist(ui.PLT_TREND_AX_OVERALL):
+                if not dpg.does_item_exist(ui.PLT_TREND_CURSOR):
+                    dpg.add_inf_line_series(
+                        [rel_time], tag=ui.PLT_TREND_CURSOR, parent=ui.PLT_TREND_AX_OVERALL, label="##cursor"
+                    )
+                    with dpg.theme() as cursor_theme:
+                        with dpg.theme_component(dpg.mvAll):
+                            dpg.add_theme_color(dpg.mvPlotCol_Line, _c("ON_SURFACE", 180))
+                            dpg.add_theme_style(dpg.mvPlotStyleVar_LineWeight, 1.0)
+                    dpg.bind_item_theme(ui.PLT_TREND_CURSOR, cursor_theme)
+                else:
+                    dpg.set_value(ui.PLT_TREND_CURSOR, [[rel_time]])
+                dpg.configure_item(ui.PLT_TREND_CURSOR, show=True)
+                return
+
+        # Hide cursor when streaming or no data
+        if dpg.does_item_exist(ui.PLT_TREND_CURSOR):
+            dpg.configure_item(ui.PLT_TREND_CURSOR, show=False)
 
     def _update_results_section_visibility(self):
         """Show per-channel result sections only for enabled channels."""
@@ -336,39 +432,32 @@ class GUI:
             if dpg.does_item_exist(tag):
                 dpg.configure_item(tag, show=(ch in enabled))
 
-    def display_frame(self, samples: dict):
-        """Compute ChannelResults from raw samples and update all GUI plots."""
+    def _display_frame(self):
+        """Process the current frame via collector and update all GUI plots."""
         if self.collector.is_streaming:
-            self._set_stream_status('active')
+            self._set_stream_status("active")
             self._schedule_status_timeout()
 
-        overflow_mask = samples.get('overflow', 0)
+        results = self.collector.process_samples()
+
         n_overflow = 0
-        for ch in range(_MAX_CHANNELS):
+        for result in results:
+            ch = result.channel
             tag = ui.ch_overflow_warning(ch)
             if dpg.does_item_exist(tag):
-                overflowed = bool(overflow_mask & (1 << ch))
-                dpg.configure_item(tag, show=overflowed)
-                if overflowed:
+                dpg.configure_item(tag, show=result.overflow)
+                if result.overflow:
                     n_overflow += 1
-        if dpg.does_item_exist(ui.CH_WARNINGS_SECTION):
-            dpg.configure_item(ui.CH_WARNINGS_SECTION, show=bool(n_overflow),
-                               height=_CARD_BASE_H + n_overflow * _CARD_LINE_H)
-
-        for ch, sample in samples.items():
-            if not isinstance(ch, int):   # skip metadata keys like 'overflow'
-                continue
-            if sample.blocksize <= 1:
-                continue
-            result = self._compute_channel_result(ch, sample)
-            if result is None:
-                continue
             self._update_time_plot(result, ch)
             self._update_freq_plot(result, ch)
-            if self.collector.is_streaming:
-                self.collector.update_trend(ch, result.rel_time, result.overall)
-        if self.collector.is_streaming:
-            self._update_trend_plot()
+
+        if dpg.does_item_exist(ui.CH_WARNINGS_SECTION):
+            dpg.configure_item(
+                ui.CH_WARNINGS_SECTION, show=bool(n_overflow),
+                height=_CARD_BASE_H + n_overflow * _CARD_LINE_H,
+            )
+
+        self._update_trend_plot()
         self._update_browse_label()
         self._ensure_legends()
         if self._autoscale_pending:
@@ -377,17 +466,27 @@ class GUI:
 
     def _ensure_legends(self):
         """Re-create any plot legend that has been lost (DPG can drop them on
-        dynamic series add/remove).  Called every display_frame so recovery is
+        dynamic series add/remove).  Called every _display_frame so recovery is
         immediate."""
         for plot_tag, legend_tag in [
-            (ui.PLT_FREQ,   ui.PLT_FREQ_LEGEND),
-            (ui.PLT_TREND,  ui.PLT_TREND_LEGEND),
+            (ui.PLT_FREQ, ui.PLT_FREQ_LEGEND),
+            (ui.PLT_TREND, ui.PLT_TREND_LEGEND),
             (ui.PLT_SAMPLE, ui.PLT_SAMPLE_LEGEND),
         ]:
-            if (dpg.does_item_exist(plot_tag)
-                    and not dpg.does_item_exist(legend_tag)):
-                dpg.add_plot_legend(location=dpg.mvPlot_Location_East,
-                                    tag=legend_tag, parent=plot_tag)
+            if dpg.does_item_exist(plot_tag) and not dpg.does_item_exist(legend_tag):
+                dpg.add_plot_legend(location=dpg.mvPlot_Location_East, tag=legend_tag, parent=plot_tag)
+
+    def _poll_new_frames(self):
+        """Check for new data from the collector and display the current frame.
+
+        Called once per DPG render tick from the manual render loop.
+        If multiple frames arrived since the last tick, only the most
+        recent is displayed — earlier frames remain in frame_cache for browsing.
+        """
+        if not self.collector.new_frame_event.is_set():
+            return
+        self.collector.new_frame_event.clear()
+        self._display_frame()
 
     def _redraw(self, sender=None, data=None):
         if not self.collector.is_streaming:
@@ -397,31 +496,31 @@ class GUI:
     # Channel series management
     # ------------------------------------------------------------------
 
-    def _add_channel_series(self, ch: int,
-                             freq_axis: str = ui.PLT_FREQ_AX_ACCEL,
-                             time_axis: str = ui.PLT_SAMPLE_AX_ACCEL):
-        ch_label = f'Ch {chr(65 + ch)}'
+    def _add_channel_series(
+        self,
+        ch: int,
+        freq_axis: str = ui.PLT_FREQ_AX_ACCEL,
+        time_axis: str = ui.PLT_SAMPLE_AX_ACCEL,
+        trend_axis: str = ui.PLT_TREND_AX_OVERALL,
+    ):
+        ch_label = self.collector.config.name_for(ch)
         theme = self._channel_themes[ch % len(self._channel_themes)]
         for tag, axis in [
-            (ui.plt_time_series(ch),  time_axis),
-            (ui.plt_freq_series(ch),  freq_axis),
-            (ui.plt_trend_series(ch), ui.PLT_TREND_AX_OVERALL),
+            (ui.plt_time_series(ch), time_axis),
+            (ui.plt_freq_series(ch), freq_axis),
+            (ui.plt_trend_series(ch), trend_axis),
         ]:
             if not dpg.does_item_exist(tag):
-                dpg.add_line_series([0.], [0.], label=ch_label,
-                                    tag=tag, parent=axis)
+                dpg.add_line_series([0.0], [0.0], label=ch_label, tag=tag, parent=axis)
                 dpg.bind_item_theme(tag, theme)
         peaks_tag = ui.plt_freq_peaks(ch)
         if not dpg.does_item_exist(peaks_tag):
-            dpg.add_scatter_series([0.], [0.], label=f'##peaks_{ch}',
-                                   tag=peaks_tag, parent=freq_axis)
+            dpg.add_scatter_series([0.0], [0.0], label=f"##peaks_{ch}", tag=peaks_tag, parent=freq_axis)
             if self._peak_themes:
-                dpg.bind_item_theme(peaks_tag,
-                                    self._peak_themes[ch % len(self._peak_themes)])
+                dpg.bind_item_theme(peaks_tag, self._peak_themes[ch % len(self._peak_themes)])
 
     def _remove_channel_series(self, ch: int):
-        for tag in [ui.plt_time_series(ch), ui.plt_freq_series(ch),
-                    ui.plt_trend_series(ch), ui.plt_freq_peaks(ch)]:
+        for tag in [ui.plt_time_series(ch), ui.plt_freq_series(ch), ui.plt_trend_series(ch), ui.plt_freq_peaks(ch)]:
             if dpg.does_item_exist(tag):
                 dpg.delete_item(tag)
 
@@ -429,71 +528,95 @@ class GUI:
     # Connection summary (left panel display)
     # ------------------------------------------------------------------
 
+    @property
+    def _has_loaded_data(self) -> bool:
+        """True when frame_cache has data but no device is connected."""
+        return self.collector.sensor is None and len(self.collector.data["frame_cache"]) > 0
+
     def _update_connection_summary(self):
         """Refresh device info and per-channel lines in the left panel."""
         sensor = self.collector.sensor
+        has_data = self._has_loaded_data
+
         if sensor is not None:
-            self._set_device_status('connected')
+            self._set_device_status("connected")
+        elif has_data:
+            self._set_device_status("file_loaded")
         else:
-            self._set_device_status('disconnected')
+            self._set_device_status("disconnected")
 
         # Rebuild Device card info group
         if dpg.does_item_exist(ui.DEVICE_INFO_GROUP):
             dpg.delete_item(ui.DEVICE_INFO_GROUP, children_only=True)
+            dim = _c("ON_SURFACE")
             if sensor is not None:
-                dim = _c('ON_SURFACE')
                 for line in [
                     sensor.model_name,
-                    f'  S/N: {sensor.serial_number}',
-                    f'  ID:  {sensor.device_id}',
-                    f'  Ch:  {sensor.num_channels}',
+                    f"  S/N: {sensor.serial_number}",
+                    f"  ID:  {sensor.device_id}",
+                    f"  Ch:  {sensor.num_channels}",
                 ]:
                     dpg.add_text(line, parent=ui.DEVICE_INFO_GROUP, color=dim)
-            # Resize Device card: base + (4 lines when connected, 0 when not) + btn
-            n_info = 4 if sensor is not None else 0
+            elif has_data:
+                n_frames = len(self.collector.data["frame_cache"])
+                n_ch = len(self.collector.config.enabled_channels)
+                dpg.add_text("File loaded", parent=ui.DEVICE_INFO_GROUP, color=dim)
+                dpg.add_text(f"  {n_frames} frames, {n_ch} channels", parent=ui.DEVICE_INFO_GROUP, color=dim)
+            # Resize Device card
+            if sensor is not None:
+                n_info = 4
+            elif has_data:
+                n_info = 2
+            else:
+                n_info = 0
             device_h = _CARD_BASE_H + n_info * _CARD_LINE_H + 2 + _CARD_BTN_H + 8
-            # Find the Device card by scanning its known child (DEVICE_INFO_GROUP parent)
             dev_card = dpg.get_item_parent(ui.DEVICE_INFO_GROUP)
             if dev_card:
                 dpg.configure_item(dev_card, height=device_h)
 
+        show_channels = (sensor is not None) or has_data
         if dpg.does_item_exist(ui.CONN_CHANNEL_SUMMARY):
             dpg.delete_item(ui.CONN_CHANNEL_SUMMARY, children_only=True)
-            if self.collector.sensor is not None:
+            if show_channels:
                 for ch in sorted(self.collector.config.enabled_channels):
                     scope_s = self.collector.scope_sensors.get(ch)
-                    sname   = scope_s.name if scope_s else '(none)'
-                    tunit   = self.collector.get_active_eu(ch)
-                    dpg.add_text(
-                        f'Ch {chr(65+ch)} : {sname} : {tunit}',
-                        parent=ui.CONN_CHANNEL_SUMMARY,
-                    )
-                # Signal generator summary line
-                sigcfg = self.collector.siggen_config
-                if sigcfg:
-                    wave = next(
-                        (k for k, v in _SIGGEN_WAVE_TYPES.items()
-                         if v == sigcfg.get('wave_type')), 'Sine')
-                    freq_hz   = float(sigcfg.get('freq_hz', 0))
-                    pktopk_mv = float(sigcfg.get('pktopk_uv', 0)) / 1000.0
-                    freq_str = (f'{freq_hz/1000:.3g} kHz' if freq_hz >= 1000
-                                else f'{freq_hz:.0f} Hz')
-                    amp_str  = (f'{pktopk_mv/1000:.3g} V' if pktopk_mv >= 1000
-                                else f'{pktopk_mv:.0f} mV')
-                    gen_text = f'Gen : {wave} : {freq_str} x {amp_str}'
-                else:
-                    gen_text = 'Gen : Off'
-                dpg.add_text(gen_text, parent=ui.CONN_CHANNEL_SUMMARY,
-                             color=_c('ON_SURFACE'))
+                    sname = scope_s.name if scope_s else "(none)"
+                    tunit = self.collector.get_active_eu(ch)
+                    ch_color = _CH_COLORS[ch % len(_CH_COLORS)]
+                    with dpg.group(horizontal=True, parent=ui.CONN_CHANNEL_SUMMARY):
+                        with dpg.drawlist(width=12, height=12):
+                            dpg.draw_rectangle(
+                                pmin=(1, 1), pmax=(11, 11), fill=ch_color, color=(0, 0, 0, 0), rounding=2
+                            )
+                        dpg.add_text(
+                            f" {self.collector.config.name_for(ch)} : {sname} : {tunit}",
+                        )
+                # Signal generator summary line (only when device connected)
+                if sensor is not None:
+                    sigcfg = self.collector.siggen_config
+                    if sigcfg:
+                        wave = next((k for k, v in _SIGGEN_WAVE_TYPES.items() if v == sigcfg.get("wave_type")), "Sine")
+                        freq_hz = float(sigcfg.get("freq_hz", 0))
+                        pktopk_mv = float(sigcfg.get("pktopk_uv", 0)) / 1000.0
+                        freq_str = f"{freq_hz / 1000:.3g} kHz" if freq_hz >= 1000 else f"{freq_hz:.0f} Hz"
+                        amp_str = f"{pktopk_mv / 1000:.3g} V" if pktopk_mv >= 1000 else f"{pktopk_mv:.0f} mV"
+                        gen_text = f"Gen : {wave} : {freq_str} x {amp_str}"
+                    else:
+                        gen_text = "Gen : Off"
+                    dpg.add_text(gen_text, parent=ui.CONN_CHANNEL_SUMMARY, color=_c("ON_SURFACE"))
 
         # Resize Channels card to match actual line count
         if dpg.does_item_exist(ui.CHANNELS_CARD):
-            if self.collector.sensor is not None:
-                n_lines = len(self.collector.config.enabled_channels) + 1  # +gen
+            if show_channels:
+                n_lines = len(self.collector.config.enabled_channels) + 1
+                if sensor is not None:
+                    n_lines += 1  # +gen line
             else:
                 n_lines = 0
-            h = _CARD_BASE_H + n_lines * _CARD_LINE_H + 2 + 3*_CARD_BTN_H + 8
+            h = _CARD_H_CHANNELS + n_lines * _CARD_LINE_H
             dpg.configure_item(ui.CHANNELS_CARD, height=h)
+
+        self._update_acq_button_state()
 
     # ------------------------------------------------------------------
     # Spectrum info display
@@ -502,23 +625,23 @@ class GUI:
     def _update_spectrum_info(self):
         """Refresh the read-only spectrum parameter block in the left panel."""
         cfg = self.collector.config
-        fs_ks  = cfg.samplerate / 1000
-        t_col  = cfg.acquisition_period
-        hp = f'HP {cfg.highpass_fc:.0f} Hz' if cfg.highpass_enabled else 'HP off'
-        lp = f'LP {cfg.lowpass_fc:.0f} Hz' if cfg.lowpass_enabled else 'LP off'
+        fs_ks = cfg.samplerate / 1000
+        t_col = cfg.acquisition_period
+        hp = f"HP {cfg.highpass_fc:.0f} Hz" if cfg.highpass_enabled else "HP off"
+        lp = f"LP {cfg.lowpass_fc:.0f} Hz" if cfg.lowpass_enabled else "LP off"
         info = (
-            f'{cfg.maxfreq:.0f} Hz max  |  {cfg.binsize:.2f} Hz/bin\n'
-            f'{cfg.n_fft_bins} lines  |  {fs_ks:.1f} kS/s\n'
-            f'Acq: {t_col:.3f} s  |  {cfg.fft_window}\n'
-            f'{hp}  |  {lp}'
+            f"{cfg.maxfreq:.0f} Hz max  |  {cfg.binsize:.2f} Hz/bin\n"
+            f"{cfg.n_fft_bins} lines  |  {fs_ks:.1f} kS/s\n"
+            f"Acq: {t_col:.3f} s  |  {cfg.fft_window}\n"
+            f"{hp}  |  {lp}"
         )
         if dpg.does_item_exist(ui.SPECTRUM_INFO_TEXT):
             dpg.set_value(ui.SPECTRUM_INFO_TEXT, info)
 
-    def _update_spectrum_derived(self):
-        """Refresh derived display fields in the spectrum dialog based on current combo values."""
-        mf_str = dpg.get_value(ui.SPEC_DLG_MAXFREQ) if dpg.does_item_exist(ui.SPEC_DLG_MAXFREQ) else ''
-        bs_str = dpg.get_value(ui.SPEC_DLG_BINSIZE) if dpg.does_item_exist(ui.SPEC_DLG_BINSIZE) else ''
+    def _update_acq_derived(self):
+        """Refresh derived display fields in the acquisition dialog based on current widget values."""
+        mf_str = dpg.get_value(ui.ACQ_DLG_MAXFREQ) if dpg.does_item_exist(ui.ACQ_DLG_MAXFREQ) else ""
+        bs_str = dpg.get_value(ui.ACQ_DLG_BINSIZE) if dpg.does_item_exist(ui.ACQ_DLG_BINSIZE) else ""
         try:
             maxfreq = vibechecker.MAXFREQ_PRESETS[_MAXFREQ_LABELS.index(mf_str)]
         except (ValueError, IndexError):
@@ -532,28 +655,44 @@ class GUI:
         n_fft_bins = blocksize // 2 + 1
         acq_time = blocksize / samplerate
         mem_bytes = blocksize * 8
-        if mem_bytes >= 1024 * 1024:
-            mem_str = f'{mem_bytes / (1024*1024):.1f} MB'
-        elif mem_bytes >= 1024:
-            mem_str = f'{mem_bytes / 1024:.1f} KB'
-        else:
-            mem_str = f'{mem_bytes} B'
-        if dpg.does_item_exist(ui.SPEC_DLG_SAMPLERATE):
-            dpg.set_value(ui.SPEC_DLG_SAMPLERATE, f'{samplerate/1000:.1f} kS/s')
-        if dpg.does_item_exist(ui.SPEC_DLG_NFFT_BINS):
-            dpg.set_value(ui.SPEC_DLG_NFFT_BINS, str(n_fft_bins))
-        if dpg.does_item_exist(ui.SPEC_DLG_ACQ_TIME):
-            dpg.set_value(ui.SPEC_DLG_ACQ_TIME, f'{acq_time:.3f} s')
-        if dpg.does_item_exist(ui.SPEC_DLG_MEMORY):
-            dpg.set_value(ui.SPEC_DLG_MEMORY, mem_str)
 
-    def _on_spectrum_preview(self, sender=None, data=None):
-        """Update derived fields live as the user changes freq range / resolution combos."""
-        self._update_spectrum_derived()
+        cache_frames = int(dpg.get_value(ui.ACQ_DLG_CACHE_FRAMES)) if dpg.does_item_exist(ui.ACQ_DLG_CACHE_FRAMES) else self.collector.config.cache_frames
+        n_enabled = max(1, len(self.collector.config.enabled_channels))
+        rec_window = acq_time * cache_frames
+        total_mem = mem_bytes * n_enabled * cache_frames
+
+        if total_mem >= 1024 * 1024:
+            mem_str = f"{total_mem / (1024 * 1024):.1f} MB"
+        elif total_mem >= 1024:
+            mem_str = f"{total_mem / 1024:.1f} KB"
+        else:
+            mem_str = f"{total_mem} B"
+
+        if dpg.does_item_exist(ui.ACQ_DLG_SAMPLERATE):
+            dpg.set_value(ui.ACQ_DLG_SAMPLERATE, f"{samplerate / 1000:.1f} kS/s")
+        if dpg.does_item_exist(ui.ACQ_DLG_NFFT_BINS):
+            dpg.set_value(ui.ACQ_DLG_NFFT_BINS, str(n_fft_bins))
+        if dpg.does_item_exist(ui.ACQ_DLG_ACQ_TIME):
+            dpg.set_value(ui.ACQ_DLG_ACQ_TIME, f"{acq_time:.3f} s")
+        if dpg.does_item_exist(ui.ACQ_DLG_REC_WINDOW):
+            dpg.set_value(ui.ACQ_DLG_REC_WINDOW, f"{rec_window:.1f} s")
+        if dpg.does_item_exist(ui.ACQ_DLG_MEMORY):
+            dpg.set_value(ui.ACQ_DLG_MEMORY, mem_str)
+
+    def _on_acq_preview(self, sender=None, data=None):
+        """Update derived fields live as the user changes acquisition combo / int widgets."""
+        self._update_acq_derived()
 
     # ------------------------------------------------------------------
     # Acquisition toggle
     # ------------------------------------------------------------------
+
+    def _update_acq_button_state(self):
+        """Enable/disable acquisition buttons based on device connection."""
+        has_device = self.collector.stream is not None
+        for tag in [ui.ACQ_TOGGLE, ui.ACQ_SINGLE]:
+            if dpg.does_item_exist(tag):
+                dpg.configure_item(tag, enabled=has_device)
 
     def _toggle_acquisition(self, sender=None, data=None):
         if self.collector.is_streaming:
@@ -563,11 +702,11 @@ class GUI:
 
     def _start_stream(self):
         if self.collector.stream is None:
-            log.warning('Connect a device before starting acquisition')
+            log.warning("Connect a device before starting acquisition")
             return
-        self._set_stream_status('waiting')
+        self._set_stream_status("waiting")
         self._autoscale_pending = True
-        self.collector.clear_trend()   # reset rel_time so trend starts at t=0
+        self.collector.clear_trend()  # reset rel_time so trend starts at t=0
         self.collector.start_stream()
         self._update_browse_label()
 
@@ -579,33 +718,43 @@ class GUI:
         if self._status_timer is not None:
             self._status_timer.cancel()
             self._status_timer = None
-        self._set_stream_status('idle')
+        self._set_stream_status("idle")
 
     def _collect_sample(self, sender=None, data=None):
         if self.collector.stream is None:
-            log.warning('Connect a device before collecting')
+            log.warning("Connect a device before collecting")
             return
-        self._set_stream_status('waiting')
-        samples = self.collector.collect_sample()
-        self._set_stream_status('idle')
-        if samples:
-            self.display_frame(samples)
+        self._set_stream_status("waiting")
+        self.collector.collect_sample()
+        self._set_stream_status("idle")
+        # Frame is now in cache and new_frame_event is set;
+        # _poll_new_frames will display it on the next render tick.
 
     # ------------------------------------------------------------------
     # File handling
     # ------------------------------------------------------------------
 
-    def _on_browse_prev(self, sender=None, data=None):
-        """Browse to an older cached frame."""
-        self.collector.browse_frame(+1)
-
-    def _on_browse_next(self, sender=None, data=None):
-        """Browse to a newer cached frame."""
-        self.collector.browse_frame(-1)
+    def _on_browse(self, sender=None, data=None):
+        """Navigate the frame cache based on which browse button was clicked."""
+        cache = self.collector.data["frame_cache"]
+        if not cache:
+            return
+        tag = dpg.get_item_alias(sender) if sender else None
+        if tag == ui.ACQ_BROWSE_FIRST:
+            self.collector._cache_cursor = len(cache) - 1
+            self.collector.reprocess_last_block()
+        elif tag == ui.ACQ_BROWSE_PREV:
+            self.collector.browse_frame(+1)
+        elif tag == ui.ACQ_BROWSE_NEXT:
+            self.collector.browse_frame(-1)
+        elif tag == ui.ACQ_BROWSE_LAST:
+            self.collector._cache_cursor = 0
+            self.collector.reprocess_last_block()
 
     # Default time-series window: ~10 cycles at 60 Hz ≈ 167 ms, rounded to 300 ms
     # so a typical 60 Hz fundamental fills the trace legibly on autoscale.
-    _TIME_WINDOW_MS: float = 300.0
+    _TIME_WINDOW_RANGE_MS: float = 300.0
+    _TIME_WINDOW_OFFSET_MS: float = 200.0
 
     def _autoscale_plots(self, sender=None, data=None):
         """Scale all plot axes to sensible initial bounds.
@@ -616,37 +765,56 @@ class GUI:
         don't need unlocking.
         """
         # Time Series X: fixed window for legibility (not fit-to-data)
-        if dpg.does_item_exist(ui.PLT_SAMPLE_AX_TIME):
-            dpg.set_axis_limits(ui.PLT_SAMPLE_AX_TIME, 0.0, self._TIME_WINDOW_MS)
+        if self.collector.config.acquisition_period > 0.5 and dpg.does_item_exist(ui.PLT_SAMPLE_AX_TIME):
+            dpg.set_axis_limits(
+                ui.PLT_SAMPLE_AX_TIME,
+                self._TIME_WINDOW_OFFSET_MS,
+                self._TIME_WINDOW_OFFSET_MS + self._TIME_WINDOW_RANGE_MS,
+            )
+        else:
+            # Acq period too small. Fit whole axis
+            dpg.fit_axis_data(ui.PLT_SAMPLE_AX_TIME)
 
         # Amplitude / frequency axes: fit to current data (one-shot, no lock)
-        for ax in [ui.PLT_SAMPLE_AX_ACCEL, ui.PLT_SAMPLE_AX_ACCEL_2,
-                   ui.PLT_FREQ_AX_FREQ, ui.PLT_FREQ_AX_ACCEL, ui.PLT_FREQ_AX_2]:
+        for ax in [
+            ui.PLT_SAMPLE_AX_ACCEL,
+            ui.PLT_SAMPLE_AX_ACCEL_2,
+            ui.PLT_FREQ_AX_FREQ,
+            ui.PLT_FREQ_AX_ACCEL,
+            ui.PLT_FREQ_AX_2,
+        ]:
             if dpg.does_item_exist(ax):
                 dpg.fit_axis_data(ax)
 
         # Trend X: fit to current data extent
         all_times: list[float] = []
         for ch in self.collector.config.enabled_channels:
-            all_times.extend(
-                self.collector.data['trend'].get(ch, {}).get('rel_times', [])
-            )
+            td = self.collector.trend.get(ch, {})
+            rt = td.get("rel_times")
+            if rt is not None and len(rt) > 0:
+                all_times.extend(rt.tolist())
         if all_times and dpg.does_item_exist(ui.PLT_TREND_AX_TIME):
-            dpg.set_axis_limits(ui.PLT_TREND_AX_TIME, 0.0, max(all_times) * 1.1)
+            dpg.set_axis_limits(ui.PLT_TREND_AX_TIME, 0.0, max(all_times) * 1.5)
         elif dpg.does_item_exist(ui.PLT_TREND_AX_TIME):
             dpg.fit_axis_data(ui.PLT_TREND_AX_TIME)
 
-        # Trend Y: [0, peak_overall * 1.05]
-        if dpg.does_item_exist(ui.PLT_TREND_AX_OVERALL):
+        # Trend Y: scale each axis independently by its own channels
+        groups = self._get_unit_groups()
+        trend_axes = [ui.PLT_TREND_AX_OVERALL, ui.PLT_TREND_AX_OVERALL_2]
+        trend_display = self.collector.get_trend_for_display()
+        for i, (_, chs) in enumerate(groups[:2]):
+            ax = trend_axes[i]
+            if not dpg.does_item_exist(ax):
+                continue
             peak = 0.0
-            for ch in self.collector.config.enabled_channels:
-                vals = self.collector.data['trend'].get(ch, {}).get('overall', [])
+            for ch in chs:
+                _, vals = trend_display.get(ch, ([], []))
                 if vals:
                     peak = max(peak, max(vals))
             if peak > 0.0:
-                dpg.set_axis_limits(ui.PLT_TREND_AX_OVERALL, 0.0, peak * 1.05)
+                dpg.set_axis_limits(ax, 0.0, peak * 1.1)
             else:
-                dpg.fit_axis_data(ui.PLT_TREND_AX_OVERALL)
+                dpg.fit_axis_data(ax)
 
         # Unlock all explicitly-set axes one frame later so user can pan/zoom freely.
         # dpg.set_axis_limits locks the axis until set_axis_limits_auto is called;
@@ -658,8 +826,7 @@ class GUI:
 
     def _unlock_autoscaled_axes(self):
         """Release axis locks set by _autoscale_plots (called one frame later)."""
-        for ax in [ui.PLT_SAMPLE_AX_TIME,
-                   ui.PLT_TREND_AX_TIME, ui.PLT_TREND_AX_OVERALL]:
+        for ax in [ui.PLT_SAMPLE_AX_TIME, ui.PLT_TREND_AX_TIME, ui.PLT_TREND_AX_OVERALL, ui.PLT_TREND_AX_OVERALL_2]:
             if dpg.does_item_exist(ax):
                 dpg.set_axis_limits_auto(ax)
 
@@ -669,30 +836,102 @@ class GUI:
         self._update_browse_label()
         # Push flat (0,0) traces to every series so the plots visually clear
         for ch in range(_MAX_CHANNELS):
-            for tag in [ui.plt_time_series(ch), ui.plt_freq_series(ch),
-                        ui.plt_trend_series(ch), ui.plt_freq_peaks(ch)]:
+            for tag in [ui.plt_time_series(ch), ui.plt_freq_series(ch), ui.plt_trend_series(ch), ui.plt_freq_peaks(ch)]:
                 if dpg.does_item_exist(tag):
-                    dpg.set_value(tag, [[0.], [0.]])
+                    dpg.set_value(tag, [[0.0], [0.0]])
         if dpg.does_item_exist(ui.PLT_TREND_AX_TIME):
             dpg.set_axis_limits(ui.PLT_TREND_AX_TIME, 0.0, 1.0)
 
-    def _on_save_click(self, sender=None, data=None):
-        dpg.show_item(ui.DLG_SAVE_FILE)
+    @staticmethod
+    def _native_file_dialog(save: bool = False) -> str:
+        """Open the platform-native file dialog; returns path string or ''."""
+        from plyer import filechooser
 
-    def _on_save_dialog(self, sender, data):
-        path_str = data.get('file_path_name', '')
+        filters = [f"*{vibechecker.EXT}"]
+        path = str(Path(vibechecker.SAVEDIR).resolve())
+        if save:
+            result = filechooser.save_file(title="Save Vibration Data", path=path, filters=filters)
+        else:
+            result = filechooser.open_file(title="Load Vibration Data", path=path, filters=filters)
+        if result:
+            return result[0]
+        return ""
+
+    def _on_save_click(self, sender=None, data=None):
+        path_str = self._native_file_dialog(save=True)
         if not path_str:
             return
         p = Path(path_str)
         if not p.suffix:
             p = p.with_suffix(vibechecker.EXT)
+        if dpg.does_item_exist(ui.ACQ_NOTES):
+            self.collector.notes = dpg.get_value(ui.ACQ_NOTES)
         self.collector.save_data(p)
 
-    def _on_load_dialog(self, sender, data):
-        path_str = data.get('file_path_name', '')
+    def _on_load_click(self, sender=None, data=None):
+        path_str = self._native_file_dialog(save=False)
         if not path_str:
             return
-        self.collector.load_data(Path(path_str))
+        self._on_load_file(Path(path_str))
+
+    def _on_load_file(self, path: Path):
+        """Load an h5 file and sync all GUI state to the loaded data."""
+        if self.collector.is_streaming:
+            self._stop_stream()
+
+        # Disconnect any attached hardware so file channels are unambiguously active
+        if self.collector.sensor is not None:
+            self.collector.disconnect_sensor()
+            self._set_device_status("disconnected")
+
+        self.collector.load_data(path)
+
+        cache = self.collector.data["frame_cache"]
+        if not cache:
+            return
+
+        # Determine channels present in the loaded data
+        loaded_channels: set[int] = set()
+        for frame in cache:
+            loaded_channels.update(k for k in frame if isinstance(k, int))
+
+        # Update _num_channels from file data (mirrors what device connect does from hardware)
+        if loaded_channels:
+            self._num_channels = max(loaded_channels) + 1
+
+        # Remove stale series and trend cursor, then create series for loaded channels
+        for ch in range(_MAX_CHANNELS):
+            self._remove_channel_series(ch)
+        if dpg.does_item_exist(ui.PLT_TREND_CURSOR):
+            dpg.delete_item(ui.PLT_TREND_CURSOR)
+        for ch in sorted(loaded_channels):
+            self._add_channel_series(ch)
+
+        # Auto-add any sensors from the file that aren't in the local registry,
+        # then assign them to channels so scope_sensors is populated for the config dialog.
+        for sid, sensor_dict in self.collector._loaded_scope_sensors.items():
+            if self.registry.find_by_id(sid) is None:
+                try:
+                    sensor = ScopeSensor.from_dict(sensor_dict)
+                    self.registry.add(sensor)
+                    log.info(f"Added sensor from file to registry: {sensor.name!r} ({sid})")
+                except Exception as exc:
+                    log.warning(f"Could not restore sensor {sid!r} from file: {exc}")
+
+        # Wire scope sensors to channels from the loaded channel configs
+        for ch, sensor_cfg in self.collector._loaded_channel_sensor_configs.items():
+            sid = sensor_cfg.get("id")
+            sensor = self.registry.find_by_id(sid) if sid else None
+            self.collector.set_scope_sensor(ch, sensor)
+
+        self._update_axis_assignment()
+        self._update_results_section_visibility()
+        self._update_connection_summary()
+        self._update_spectrum_info()
+        if dpg.does_item_exist(ui.ACQ_NOTES):
+            dpg.set_value(ui.ACQ_NOTES, self.collector.notes)
+        self._autoscale_pending = True
+        self.collector.reprocess_last_block()
 
     # ------------------------------------------------------------------
     # Device Setup Dialog
@@ -713,7 +952,7 @@ class GUI:
         dpg.set_value(ui.CONFIG_TAB_BAR, tab_tag)
         # Always sync spectrum widgets so they reflect current config
         # regardless of which tab was used to open the dialog.
-        self._populate_spectrum_tab()
+        self._populate_acq_tab()
         if tab_tag == ui.CONFIG_TAB_DEVICE:
             self._start_device_discovery()
         elif tab_tag == ui.CONFIG_TAB_CHANNELS:
@@ -725,10 +964,9 @@ class GUI:
 
     def _start_device_discovery(self, sender=None, data=None):
         """Clear device list, show placeholder, then discover in a background thread."""
-        if dpg.does_item_exist('DEVSETUP_DEVICE_LIST_GROUP'):
-            dpg.delete_item('DEVSETUP_DEVICE_LIST_GROUP', children_only=True)
-            dpg.add_text('... Populating sensor list ...',
-                         parent='DEVSETUP_DEVICE_LIST_GROUP')
+        if dpg.does_item_exist(ui.DEVSETUP_DEVICE_LIST_GROUP):
+            dpg.delete_item(ui.DEVSETUP_DEVICE_LIST_GROUP, children_only=True)
+            dpg.add_text("... Populating sensor list ...", parent=ui.DEVSETUP_DEVICE_LIST_GROUP)
         threading.Thread(target=self._discover_devices, daemon=True).start()
 
     def _discover_devices(self):
@@ -752,110 +990,216 @@ class GUI:
             self.found_sensors = vibechecker.VibeSensor.find()
         self._repopulate_device_list()
 
+    def _autoconnect(self):
+        """Background startup thread: scan for PicoScopes and connect to the first found.
+
+        Runs once after the viewport is shown. Mirrors the manual connect path in
+        _on_device_connect_toggle so the user lands in a ready state without opening
+        the Device Setup dialog. Does not start the stream — the user controls that.
+
+        Safe to run concurrently with the render loop: the slow operations
+        (VibeSensor.find, connect_sensor, config load) are thread-safe; DPG updates
+        follow the same background-thread pattern as _discover_devices.
+        """
+        if vibechecker.PICOSCOPE_DRIVER_MISSING:
+            log.debug("Autoconnect: PicoScope driver not available")
+            return
+
+        sensors = vibechecker.VibeSensor.find()
+        self.found_sensors = sensors
+
+        if not sensors:
+            log.info("Autoconnect: no PicoScope found")
+            self._update_connection_summary()
+            return
+
+        sensor = sensors[0]
+        log.info(f"Autoconnect: found {sensor.model_name} (S/N {sensor.serial_number})")
+
+        try:
+            self.collector.connect_sensor(sensor)
+            self._num_channels = sensor.num_channels
+            for ch in range(_MAX_CHANNELS):
+                self._remove_channel_series(ch)
+            self.collector.reset_channel_config(sensor.num_channels)
+            device_cfg = _cfg.load_device_config(sensor.serial_number)
+            self._restore_channel_assignments(device_cfg)
+            self.collector.reconnect_stream()
+            self._set_device_status("connected")
+            log.info(f"Autoconnect: connected to {sensor.model_name}")
+        except Exception as e:
+            log.warning(f"Autoconnect failed: {e}")
+            self.collector.disconnect_sensor()
+            self._set_device_status("disconnected")
+            return
+
+        self._repopulate_device_list()
+        self._rebuild_device_channel_rows()
+        self._update_connection_summary()
+        self._update_axis_assignment()
+        self._update_results_section_visibility()
+        self._update_spectrum_info()
+
     def _repopulate_device_list(self):
         """Rebuild the detected-device rows inside the Device Setup dialog."""
-        if not dpg.does_item_exist('DEVSETUP_DEVICE_LIST_GROUP'):
+        if not dpg.does_item_exist(ui.DEVSETUP_DEVICE_LIST_GROUP):
             return
-        dpg.delete_item('DEVSETUP_DEVICE_LIST_GROUP', children_only=True)
+        dpg.delete_item(ui.DEVSETUP_DEVICE_LIST_GROUP, children_only=True)
         if not self.found_sensors:
             if vibechecker.PICOSCOPE_DRIVER_MISSING:
                 dpg.add_text(
-                    'PicoScope driver not found.\nInstall PicoSDK to connect a device.',
-                    parent='DEVSETUP_DEVICE_LIST_GROUP',
-                    color=_c('YELLOW'),
+                    "PicoScope driver not found.\nInstall PicoSDK to connect a device.",
+                    parent=ui.DEVSETUP_DEVICE_LIST_GROUP,
+                    color=_c("YELLOW"),
                 )
             else:
-                dpg.add_text('No devices found.',
-                             parent='DEVSETUP_DEVICE_LIST_GROUP')
+                dpg.add_text("No devices found.", parent=ui.DEVSETUP_DEVICE_LIST_GROUP)
             return
         for sensor in self.found_sensors:
-            is_connected = (
-                self.collector.sensor is not None
-                and self.collector.sensor.device_id == sensor.device_id
-            )
-            btn_label = 'Disconnect' if is_connected else 'Connect'
-            conn_color = _c('GREEN_LIGHT') if is_connected else _c('ON_SURFACE')
-            with dpg.group(parent='DEVSETUP_DEVICE_LIST_GROUP'):
+            is_connected = self.collector.sensor is not None and self.collector.sensor.device_id == sensor.device_id
+            btn_label = "Disconnect" if is_connected else "Connect"
+            conn_color = _c("GREEN_LIGHT") if is_connected else _c("ON_SURFACE")
+            with dpg.group(parent=ui.DEVSETUP_DEVICE_LIST_GROUP):
                 with dpg.group(horizontal=True):
-                    dpg.add_button(label=btn_label, user_data=sensor,
-                                   callback=self._on_device_connect_toggle,
-                                   width=90)
+                    dpg.add_button(label=btn_label, user_data=sensor, callback=self._on_device_connect_toggle, width=90)
                     dpg.add_text(sensor.model_name, color=conn_color)
-                dpg.add_text(f'  Serial:    {sensor.serial_number}',
-                             color=_c('ON_SURFACE'), indent=10)
-                dpg.add_text(f'  Device ID: {sensor.device_id}',
-                             color=_c('ON_SURFACE'), indent=10)
-                dpg.add_text(f'  Channels:  {sensor.num_channels}',
-                             color=_c('ON_SURFACE'), indent=10)
+                dpg.add_text(f"  Serial:    {sensor.serial_number}", color=_c("ON_SURFACE"), indent=10)
+                dpg.add_text(f"  Device ID: {sensor.device_id}", color=_c("ON_SURFACE"), indent=10)
+                dpg.add_text(f"  Channels:  {sensor.num_channels}", color=_c("ON_SURFACE"), indent=10)
                 dpg.add_spacer(height=4)
 
     def _rebuild_device_channel_rows(self):
         """Rebuild per-channel rows inside the Device Setup dialog."""
-        if not dpg.does_item_exist('DEVSETUP_CHANNEL_GROUP'):
+        if not dpg.does_item_exist(ui.DEVSETUP_CHANNEL_GROUP):
             return
         for ch in range(_MAX_CHANNELS):
-            for tag in [ui.scope_ch_enabled(ch), ui.scope_ch_sensor(ch),
-                        ui.scope_ch_range(ch), ui.scope_ch_coupling(ch)]:
+            for tag in [
+                ui.scope_ch_header(ch),
+                ui.scope_ch_enabled(ch),
+                ui.scope_ch_sensor(ch),
+                ui.scope_ch_range(ch),
+                ui.scope_ch_coupling(ch),
+                ui.scope_ch_name(ch),
+                ui.scope_ch_target_unit(ch),
+                ui.scope_ch_amplitude_mode(ch),
+                ui.scope_ch_name_text(ch),
+            ]:
                 if dpg.does_alias_exist(tag):
                     dpg.remove_alias(tag)
-        dpg.delete_item('DEVSETUP_CHANNEL_GROUP', children_only=True)
-        if self.collector.sensor is None:
-            dpg.add_text('No device connected.',
-                         parent='DEVSETUP_CHANNEL_GROUP')
+            for theme_tag in [ui.scope_ch_hdr_theme(ch, True), ui.scope_ch_hdr_theme(ch, False)]:
+                if dpg.does_item_exist(theme_tag):
+                    dpg.delete_item(theme_tag)
+        dpg.delete_item(ui.DEVSETUP_CHANNEL_GROUP, children_only=True)
+        if self.collector.sensor is None and not self.collector.data["frame_cache"]:
+            dpg.add_text("No device connected.", parent=ui.DEVSETUP_CHANNEL_GROUP)
             return
-        sensor_items = ['(none)'] + self.registry.names()
-        enabled_set  = set(self.collector.config.enabled_channels)
-        for ch in range(self._num_channels):
-            ch_letter   = chr(65 + ch)
-            is_enabled  = ch in enabled_set
-            scope_s     = self.collector.scope_sensors.get(ch)
-            default_s   = scope_s.name if scope_s else '(none)'
-            range_idx   = self.collector.config.voltage_range_for(ch)
-            default_r   = (_VOLTAGE_RANGE_LABELS[range_idx]
-                           if range_idx < len(_VOLTAGE_RANGE_LABELS)
-                           else _VOLTAGE_RANGE_LABELS[7])
-            default_c   = self.collector.config.coupling_for(ch)
-            with dpg.group(horizontal=True,
-                           parent='DEVSETUP_CHANNEL_GROUP'):
+        sensor_items = ["(none)"] + self.registry.names()
+        tu_items = ["(use sensor)"] + sorted(UNIT_TO_SI.keys())
+        enabled_set = set(self.collector.config.enabled_channels)
+        # In file mode, show all channels present in the cache (regardless of enabled state).
+        # In hardware mode, show all channels the device exposes.
+        if self.collector.sensor is not None:
+            channel_list = list(range(self._num_channels))
+        else:
+            file_channels: set[int] = set()
+            for frame in self.collector.data.get("frame_cache", []):
+                file_channels.update(k for k in frame if isinstance(k, int))
+            channel_list = sorted(file_channels)
+        for ch in channel_list:
+            is_enabled = ch in enabled_set
+            scope_s = self.collector.scope_sensors.get(ch)
+            default_s = scope_s.name if scope_s else "(none)"
+            range_idx = self.collector.config.voltage_range_for(ch)
+            default_r = (
+                _VOLTAGE_RANGE_LABELS[range_idx] if range_idx < len(_VOLTAGE_RANGE_LABELS) else _VOLTAGE_RANGE_LABELS[7]
+            )
+            default_c = self.collector.config.coupling_for(ch)
+            ch_tu = self.collector.config.target_unit_for(ch) or "(use sensor)"
+            ch_amp = self.collector.config.amplitude_mode_for(ch) or "0-P"
+            ch_name = self.collector.config.name_for(ch)
+            summary = f"{default_c}  {default_r}  {default_s} -> {ch_tu} {ch_amp}"
+            ch_color = _CH_COLORS[ch % len(_CH_COLORS)]
+            grey_color = _c("ON_SURFACE")
+            # Per-channel header themes: enabled = channel color, disabled = grey
+            with dpg.theme(tag=ui.scope_ch_hdr_theme(ch, True)):
+                with dpg.theme_component(dpg.mvCollapsingHeader):
+                    dpg.add_theme_color(dpg.mvThemeCol_Text, ch_color, category=dpg.mvThemeCat_Core)
+            with dpg.theme(tag=ui.scope_ch_hdr_theme(ch, False)):
+                with dpg.theme_component(dpg.mvCollapsingHeader):
+                    dpg.add_theme_color(dpg.mvThemeCol_Text, grey_color, category=dpg.mvThemeCat_Core)
+            # Line 1: color swatch + channel name
+            with dpg.group(horizontal=True, parent=ui.DEVSETUP_CHANNEL_GROUP):
                 dpg.add_checkbox(
-                    label=f'Ch {ch_letter}',
+                    label="Enable",
                     tag=ui.scope_ch_enabled(ch),
                     default_value=is_enabled,
                     callback=lambda s, d, c=ch: self._on_channel_enable_change(c),
                 )
-                dpg.add_combo(
-                    label='',
-                    tag=ui.scope_ch_coupling(ch),
-                    items=['AC', 'DC'],
-                    default_value=default_c,
-                    width=50,
-                    callback=lambda s, d, c=ch: self._on_coupling_combo_change(c, d),
+                with dpg.drawlist(width=16, height=16):
+                    dpg.draw_rectangle(pmin=(2, 2), pmax=(14, 14), fill=ch_color, color=(0, 0, 0, 0), rounding=2)
+                dpg.add_text(ch_name, tag=ui.scope_ch_name_text(ch))
+            # Line 2: collapsing header with settings summary
+            with dpg.collapsing_header(
+                label=summary, tag=ui.scope_ch_header(ch), parent=ui.DEVSETUP_CHANNEL_GROUP
+            ) as _hdr:
+                # dpg.bind_item_theme(_hdr, ui.scope_ch_hdr_theme(ch, is_enabled))
+                dpg.add_input_text(
+                    label="Name",
+                    tag=ui.scope_ch_name(ch),
+                    default_value=ch_name,
+                    indent=_CH_INDENT,
+                    width=_DLG_FIELD_W,
+                    callback=lambda s, d, c=ch: self._refresh_channel_header(c),
                 )
+                with dpg.group(horizontal=True, indent=_CH_INDENT):
+                    dpg.add_combo(
+                        label="Coupling",
+                        tag=ui.scope_ch_coupling(ch),
+                        items=["AC", "DC"],
+                        default_value=default_c,
+                        width=_CH_COUPLING_W,
+                        callback=lambda s, d, c=ch: self._on_coupling_combo_change(c, d),
+                    )
+                    dpg.add_combo(
+                        label="Range",
+                        tag=ui.scope_ch_range(ch),
+                        items=_VOLTAGE_RANGE_LABELS,
+                        default_value=default_r,
+                        width=_CH_RANGE_W,
+                        callback=lambda s, d, c=ch: self._on_range_combo_change(c, d),
+                    )
                 dpg.add_combo(
-                    label='',
-                    tag=ui.scope_ch_range(ch),
-                    items=_VOLTAGE_RANGE_LABELS,
-                    default_value=default_r,
-                    width=80,
-                    callback=lambda s, d, c=ch: self._on_range_combo_change(c, d),
-                )
-                dpg.add_combo(
-                    label='',
+                    label="Sensor",
                     tag=ui.scope_ch_sensor(ch),
                     items=sensor_items,
                     default_value=default_s,
-                    width=-1,
+                    indent=_CH_INDENT,
+                    width=_DLG_FIELD_W,
                     callback=lambda s, d, c=ch: self._on_sensor_combo_change(c, d),
                 )
+                with dpg.group(horizontal=True, indent=_CH_INDENT):
+                    dpg.add_combo(
+                        label="Unit",
+                        tag=ui.scope_ch_target_unit(ch),
+                        items=tu_items,
+                        default_value=ch_tu,
+                        width=_CH_HALF_FIELD_W,
+                    )
+                    dpg.add_combo(
+                        label="Amplitude",
+                        tag=ui.scope_ch_amplitude_mode(ch),
+                        items=list(vibechecker.AMPLITUDE_MODES),
+                        default_value=ch_amp,
+                        width=_CH_HALF_FIELD_W,
+                    )
 
     def _on_device_connect_toggle(self, sender, data, user_data):
         """Connect or disconnect a device row in the Device Setup dialog."""
         sensor = user_data
-        if (self.collector.sensor is not None
-                and self.collector.sensor.device_id == sensor.device_id):
+        if self.collector.sensor is not None and self.collector.sensor.device_id == sensor.device_id:
             self.collector.disconnect_sensor()
-            self._set_device_status('disconnected')
-            self._set_stream_status('idle')
+            self._set_device_status("disconnected")
+            self._set_stream_status("idle")
         else:
             if self.collector.sensor is not None:
                 self.collector.disconnect_sensor()
@@ -869,9 +1213,9 @@ class GUI:
                 device_cfg = _cfg.load_device_config(sensor.serial_number)
                 self._restore_channel_assignments(device_cfg)
                 self.collector.reconnect_stream()
-                self._set_device_status('connected')
+                self._set_device_status("connected")
             except Exception as e:
-                log.warning(f'Device connect failed: {e}')
+                log.warning(f"Device connect failed: {e}")
                 self.collector.disconnect_sensor()
         self._repopulate_device_list()
         self._rebuild_device_channel_rows()
@@ -880,7 +1224,7 @@ class GUI:
         """Read Device-tab widget values and push them into the collector."""
         for ch in range(self._num_channels):
             enabled_tag = ui.scope_ch_enabled(ch)
-            sensor_tag  = ui.scope_ch_sensor(ch)
+            sensor_tag = ui.scope_ch_sensor(ch)
             if dpg.does_item_exist(enabled_tag):
                 enabled = dpg.get_value(enabled_tag)
                 if enabled and ch not in self.collector.config.enabled_channels:
@@ -889,29 +1233,63 @@ class GUI:
                     self.collector.config.enabled_channels.remove(ch)
             if dpg.does_item_exist(sensor_tag):
                 sensor_name = dpg.get_value(sensor_tag)
-                sensor = (None if (not sensor_name or sensor_name == '(none)')
-                          else self.registry.find_by_name(sensor_name))
+                sensor = (
+                    None if (not sensor_name or sensor_name == "(none)") else self.registry.find_by_name(sensor_name)
+                )
                 self.collector.set_scope_sensor(ch, sensor)
             range_tag = ui.scope_ch_range(ch)
             if dpg.does_item_exist(range_tag):
                 label = dpg.get_value(range_tag)
                 if label in _VOLTAGE_RANGE_LABELS:
-                    self.collector.config.channel_voltage_ranges[ch] = (
-                        _VOLTAGE_RANGE_LABELS.index(label))
+                    self.collector.config.channel_voltage_ranges[ch] = _VOLTAGE_RANGE_LABELS.index(label)
             coupling_tag = ui.scope_ch_coupling(ch)
             if dpg.does_item_exist(coupling_tag):
                 val = dpg.get_value(coupling_tag)
-                if val in ('AC', 'DC'):
+                if val in ("AC", "DC"):
                     self.collector.config.channel_couplings[ch] = val
+            name_tag = ui.scope_ch_name(ch)
+            if dpg.does_item_exist(name_tag):
+                name = dpg.get_value(name_tag).strip()
+                if name:
+                    self.collector.config.channel_names[ch] = name
+                else:
+                    self.collector.config.channel_names.pop(ch, None)
+            tu_tag = ui.scope_ch_target_unit(ch)
+            if dpg.does_item_exist(tu_tag):
+                tu = dpg.get_value(tu_tag)
+                if tu and tu != "(use sensor)":
+                    self.collector.config.channel_target_units[ch] = tu
+                else:
+                    self.collector.config.channel_target_units.pop(ch, None)
+            amp_tag = ui.scope_ch_amplitude_mode(ch)
+            if dpg.does_item_exist(amp_tag):
+                amp = dpg.get_value(amp_tag)
+                if amp in vibechecker.AMPLITUDE_MODES:
+                    self.collector.config.channel_amplitude_modes[ch] = amp
+                else:
+                    self.collector.config.channel_amplitude_modes.pop(ch, None)
         self.collector.config.enabled_channels.sort()
-        # Sync plot series visibility with final widget state
+        # Sync plot series visibility with final widget state (hide/show, preserve data)
         for ch in range(self._num_channels):
             enabled_tag = ui.scope_ch_enabled(ch)
             if dpg.does_item_exist(enabled_tag):
+                series_tags = [
+                    ui.plt_time_series(ch),
+                    ui.plt_freq_series(ch),
+                    ui.plt_trend_series(ch),
+                    ui.plt_freq_peaks(ch),
+                ]
                 if dpg.get_value(enabled_tag):
-                    self._add_channel_series(ch)
+                    if any(dpg.does_item_exist(t) for t in series_tags):
+                        for t in series_tags:
+                            if dpg.does_item_exist(t):
+                                dpg.show_item(t)
+                    else:
+                        self._add_channel_series(ch)
                 else:
-                    self._remove_channel_series(ch)
+                    for t in series_tags:
+                        if dpg.does_item_exist(t):
+                            dpg.hide_item(t)
 
     def _on_config_close(self, sender=None, data=None):
         """Apply all tab settings, do a single reconnect, then hide the dialog.
@@ -922,21 +1300,22 @@ class GUI:
         open, so this is the one and only reconnect point.
         """
         # Apply all settings from every tab into collector.config
-        self._apply_spectrum_settings_from_widgets()
+        self._apply_acq_settings_from_widgets()
 
         if dpg.does_item_exist(ui.SIGGEN_ENABLED):
             if dpg.get_value(ui.SIGGEN_ENABLED):
                 wave_name = dpg.get_value(ui.SIGGEN_WAVE_TYPE)
                 self.collector.siggen_config = {
-                    'wave_type':  _SIGGEN_WAVE_TYPES.get(wave_name, 'PS4000A_SINE'),
-                    'freq_hz':    float(dpg.get_value(ui.SIGGEN_FREQ_HZ) or 1000.0),
-                    'pktopk_uv':  int(float(dpg.get_value(ui.SIGGEN_PKTOPK_MV) or 0.0) * 1000),
-                    'offset_uv':  int(float(dpg.get_value(ui.SIGGEN_OFFSET_MV) or 0.0) * 1000),
+                    "wave_type": _SIGGEN_WAVE_TYPES.get(wave_name, "PS4000A_SINE"),
+                    "freq_hz": float(dpg.get_value(ui.SIGGEN_FREQ_HZ) or 1000.0),
+                    "pktopk_uv": int(float(dpg.get_value(ui.SIGGEN_PKTOPK_MV) or 0.0) * 1000),
+                    "offset_uv": int(float(dpg.get_value(ui.SIGGEN_OFFSET_MV) or 0.0) * 1000),
                 }
             else:
                 self.collector.siggen_config = None
 
         self._apply_channel_assignments_from_widgets()
+        self._refresh_channel_names()
         self._save_channel_assignments()
         self._save_registry_sensor_fields()
         self._refresh_assigned_sensors()
@@ -945,7 +1324,6 @@ class GUI:
         self._update_axis_assignment()
         self._update_results_section_visibility()
         self.collector.init_trend_channels()
-        self.collector.clear_trend()
 
         # Single reconnect to apply all hardware changes at once
         if self.collector.sensor is not None:
@@ -960,48 +1338,45 @@ class GUI:
         dpg.hide_item(ui.DLG_CONFIG)
 
     # ------------------------------------------------------------------
-    # Spectrum Setup Tab
+    # Acquisition Setup Tab
     # ------------------------------------------------------------------
 
-    def _populate_spectrum_tab(self):
-        """Sync spectrum tab widgets with current config values."""
+    def _populate_acq_tab(self):
+        """Sync acquisition tab widgets with current config values."""
         cfg = self.collector.config
-        curr_mf = f'{int(cfg.maxfreq)} Hz'
-        curr_bs = f'{cfg.binsize} Hz/bin'
-        if dpg.does_item_exist(ui.SPEC_DLG_MAXFREQ):
+        curr_mf = f"{int(cfg.maxfreq)} Hz"
+        curr_bs = f"{cfg.binsize} Hz/bin"
+        if dpg.does_item_exist(ui.ACQ_DLG_MAXFREQ):
             if curr_mf in _MAXFREQ_LABELS:
-                dpg.set_value(ui.SPEC_DLG_MAXFREQ, curr_mf)
-        if dpg.does_item_exist(ui.SPEC_DLG_BINSIZE):
+                dpg.set_value(ui.ACQ_DLG_MAXFREQ, curr_mf)
+        if dpg.does_item_exist(ui.ACQ_DLG_BINSIZE):
             if curr_bs in _BINSIZE_LABELS:
-                dpg.set_value(ui.SPEC_DLG_BINSIZE, curr_bs)
-        if dpg.does_item_exist(ui.SPEC_DLG_WINDOW):
-            dpg.set_value(ui.SPEC_DLG_WINDOW, cfg.fft_window)
-        if dpg.does_item_exist(ui.SPEC_DLG_OVERLAP):
-            dpg.set_value(ui.SPEC_DLG_OVERLAP, cfg.welch_overlap * 100.0)
-        if dpg.does_item_exist(ui.SPEC_DLG_HP_ENABLED):
-            dpg.set_value(ui.SPEC_DLG_HP_ENABLED, cfg.highpass_enabled)
-        if dpg.does_item_exist(ui.SPEC_DLG_HP_FC):
-            dpg.set_value(ui.SPEC_DLG_HP_FC, cfg.highpass_fc)
-        if dpg.does_item_exist(ui.SPEC_DLG_LP_ENABLED):
-            dpg.set_value(ui.SPEC_DLG_LP_ENABLED, cfg.lowpass_enabled)
-        if dpg.does_item_exist(ui.SPEC_DLG_LP_FC):
-            dpg.set_value(ui.SPEC_DLG_LP_FC, cfg.lowpass_fc)
-        if dpg.does_item_exist(ui.SPEC_DLG_TREND_FMIN):
-            dpg.set_value(ui.SPEC_DLG_TREND_FMIN, cfg.trend_fmin)
-        if dpg.does_item_exist(ui.SPEC_DLG_TREND_FMAX):
-            dpg.set_value(ui.SPEC_DLG_TREND_FMAX,
-                          cfg.trend_fmax if cfg.trend_fmax is not None else 0.0)
-        self._update_spectrum_derived()
+                dpg.set_value(ui.ACQ_DLG_BINSIZE, curr_bs)
+        if dpg.does_item_exist(ui.ACQ_DLG_WINDOW):
+            dpg.set_value(ui.ACQ_DLG_WINDOW, cfg.fft_window)
+        if dpg.does_item_exist(ui.ACQ_DLG_OVERLAP):
+            dpg.set_value(ui.ACQ_DLG_OVERLAP, cfg.welch_overlap * 100.0)
+        if dpg.does_item_exist(ui.ACQ_DLG_HP_ENABLED):
+            dpg.set_value(ui.ACQ_DLG_HP_ENABLED, cfg.highpass_enabled)
+        if dpg.does_item_exist(ui.ACQ_DLG_HP_FC):
+            dpg.set_value(ui.ACQ_DLG_HP_FC, cfg.highpass_fc)
+        if dpg.does_item_exist(ui.ACQ_DLG_LP_ENABLED):
+            dpg.set_value(ui.ACQ_DLG_LP_ENABLED, cfg.lowpass_enabled)
+        if dpg.does_item_exist(ui.ACQ_DLG_LP_FC):
+            dpg.set_value(ui.ACQ_DLG_LP_FC, cfg.lowpass_fc)
+        if dpg.does_item_exist(ui.ACQ_DLG_CACHE_FRAMES):
+            dpg.set_value(ui.ACQ_DLG_CACHE_FRAMES, cfg.cache_frames)
+        self._update_acq_derived()
 
-    def _apply_spectrum_settings_from_widgets(self):
-        """Read spectrum tab widgets and write values into collector.config.
+    def _apply_acq_settings_from_widgets(self):
+        """Read acquisition tab widgets and write values into collector.config.
 
         Pure settings application — no stream stop/start side effects.
         Stream lifecycle is the caller's responsibility.
         """
         cfg = self.collector.config
-        mf_str = dpg.get_value(ui.SPEC_DLG_MAXFREQ)
-        bs_str = dpg.get_value(ui.SPEC_DLG_BINSIZE)
+        mf_str = dpg.get_value(ui.ACQ_DLG_MAXFREQ)
+        bs_str = dpg.get_value(ui.ACQ_DLG_BINSIZE)
         try:
             cfg.maxfreq = vibechecker.MAXFREQ_PRESETS[_MAXFREQ_LABELS.index(mf_str)]
         except (ValueError, IndexError):
@@ -1010,37 +1385,36 @@ class GUI:
             cfg.binsize = vibechecker.BINSIZE_PRESETS[_BINSIZE_LABELS.index(bs_str)]
         except (ValueError, IndexError):
             pass
-        trend_fmin = float(dpg.get_value(ui.SPEC_DLG_TREND_FMIN) or 0.0)
-        trend_fmax = float(dpg.get_value(ui.SPEC_DLG_TREND_FMAX) or 0.0)
-        cfg.trend_fmin = trend_fmin
-        cfg.trend_fmax = trend_fmax if trend_fmax > 0 else None
-        if dpg.does_item_exist(ui.SPEC_DLG_WINDOW):
-            win = dpg.get_value(ui.SPEC_DLG_WINDOW)
+        if dpg.does_item_exist(ui.ACQ_DLG_WINDOW):
+            win = dpg.get_value(ui.ACQ_DLG_WINDOW)
             if win in _FFT_WINDOWS:
                 cfg.fft_window = win
-        if dpg.does_item_exist(ui.SPEC_DLG_OVERLAP):
-            cfg.welch_overlap = float(dpg.get_value(ui.SPEC_DLG_OVERLAP)) / 100.0
-        if dpg.does_item_exist(ui.SPEC_DLG_HP_ENABLED):
-            cfg.highpass_enabled = dpg.get_value(ui.SPEC_DLG_HP_ENABLED)
-        if dpg.does_item_exist(ui.SPEC_DLG_HP_FC):
-            cfg.highpass_fc = float(dpg.get_value(ui.SPEC_DLG_HP_FC))
-        if dpg.does_item_exist(ui.SPEC_DLG_LP_ENABLED):
-            cfg.lowpass_enabled = dpg.get_value(ui.SPEC_DLG_LP_ENABLED)
-        if dpg.does_item_exist(ui.SPEC_DLG_LP_FC):
-            cfg.lowpass_fc = float(dpg.get_value(ui.SPEC_DLG_LP_FC))
+        if dpg.does_item_exist(ui.ACQ_DLG_OVERLAP):
+            cfg.welch_overlap = float(dpg.get_value(ui.ACQ_DLG_OVERLAP)) / 100.0
+        if dpg.does_item_exist(ui.ACQ_DLG_HP_ENABLED):
+            cfg.highpass_enabled = dpg.get_value(ui.ACQ_DLG_HP_ENABLED)
+        if dpg.does_item_exist(ui.ACQ_DLG_HP_FC):
+            cfg.highpass_fc = float(dpg.get_value(ui.ACQ_DLG_HP_FC))
+        if dpg.does_item_exist(ui.ACQ_DLG_LP_ENABLED):
+            cfg.lowpass_enabled = dpg.get_value(ui.ACQ_DLG_LP_ENABLED)
+        if dpg.does_item_exist(ui.ACQ_DLG_LP_FC):
+            cfg.lowpass_fc = float(dpg.get_value(ui.ACQ_DLG_LP_FC))
+        if dpg.does_item_exist(ui.ACQ_DLG_CACHE_FRAMES):
+            n = max(1, int(dpg.get_value(ui.ACQ_DLG_CACHE_FRAMES)))
+            cfg.cache_frames = n
+            self.collector.resize_frame_cache(n)
 
-    def _on_spectrum_apply(self, sender=None, data=None):
+    def _on_acq_apply(self, sender=None, data=None):
         was_streaming = self.collector.is_streaming
         if was_streaming:
             self._stop_stream()
-        self._apply_spectrum_settings_from_widgets()
-        self._save_channel_assignments()   # persist acquisition settings to device YAML
+        self._apply_acq_settings_from_widgets()
+        self._save_channel_assignments()  # persist acquisition settings to device YAML
         if self.collector.sensor is not None:
             self.collector.reconnect_stream()
         if was_streaming:
             self._start_stream()
         else:
-            self.collector.clear_trend()
             self.collector.reprocess_last_block()
         self._update_spectrum_info()
 
@@ -1058,13 +1432,13 @@ class GUI:
         else:
             dpg.set_value(ui.SIGGEN_ENABLED, True)
             wave_name = next(
-                (k for k, v in _SIGGEN_WAVE_TYPES.items() if v == cfg.get('wave_type')),
-                'Sine',
+                (k for k, v in _SIGGEN_WAVE_TYPES.items() if v == cfg.get("wave_type")),
+                "Sine",
             )
             dpg.set_value(ui.SIGGEN_WAVE_TYPE, wave_name)
-            dpg.set_value(ui.SIGGEN_FREQ_HZ,   float(cfg.get('freq_hz', 1000.0)))
-            dpg.set_value(ui.SIGGEN_PKTOPK_MV, float(cfg.get('pktopk_uv', 0)) / 1000.0)
-            dpg.set_value(ui.SIGGEN_OFFSET_MV,  float(cfg.get('offset_uv', 0)) / 1000.0)
+            dpg.set_value(ui.SIGGEN_FREQ_HZ, float(cfg.get("freq_hz", 1000.0)))
+            dpg.set_value(ui.SIGGEN_PKTOPK_MV, float(cfg.get("pktopk_uv", 0)) / 1000.0)
+            dpg.set_value(ui.SIGGEN_OFFSET_MV, float(cfg.get("offset_uv", 0)) / 1000.0)
 
     # ------------------------------------------------------------------
     # Sensor Registry Dialog
@@ -1089,47 +1463,43 @@ class GUI:
         names = self.registry.names()
         if dpg.does_item_exist(ui.SCOPE_REGISTRY_LIST):
             dpg.configure_item(ui.SCOPE_REGISTRY_LIST, items=names)
-        sensor_items = ['(none)'] + names
+        sensor_items = ["(none)"] + names
         for ch in range(self._num_channels):
             tag = ui.scope_ch_sensor(ch)
             if dpg.does_item_exist(tag):
                 dpg.configure_item(tag, items=sensor_items)
 
     def _load_registry_sensor_fields(self, sensor: ScopeSensor | None):
-        if not dpg.does_item_exist('SREG_FIELD_NAME'):
+        if not dpg.does_item_exist(ui.SREG_FIELD_NAME):
             return
         if sensor is None:
-            dpg.set_value('SREG_FIELD_NAME', '')
-            dpg.set_value('SREG_FIELD_UNITS', 'g')
-            dpg.set_value('SREG_FIELD_TARGET', '')
-            dpg.set_value('SREG_FIELD_SENS', 0.0)
-            dpg.set_value('SREG_FIELD_AMP_MODE', '0-P')
-            dpg.set_value('SREG_FIELD_NOTES', '')
+            dpg.set_value(ui.SREG_FIELD_NAME, "")
+            dpg.set_value(ui.SREG_FIELD_UNITS, "g")
+            dpg.set_value(ui.SREG_FIELD_SENS, 0.0)
+            dpg.set_value(ui.SREG_FIELD_NOTES, "")
         else:
-            dpg.set_value('SREG_FIELD_NAME', sensor.name)
-            dpg.set_value('SREG_FIELD_UNITS', sensor.engineering_units)
-            dpg.set_value('SREG_FIELD_TARGET', sensor.target_unit or '')
-            dpg.set_value('SREG_FIELD_SENS', float(sensor.sensitivity))
-            dpg.set_value('SREG_FIELD_AMP_MODE', sensor.amplitude_mode)
-            dpg.set_value('SREG_FIELD_NOTES', sensor.notes or '')
+            dpg.set_value(ui.SREG_FIELD_NAME, sensor.name)
+            dpg.set_value(ui.SREG_FIELD_UNITS, sensor.engineering_units)
+            dpg.set_value(ui.SREG_FIELD_SENS, float(sensor.sensitivity))
+            dpg.set_value(ui.SREG_FIELD_NOTES, sensor.notes or "")
 
     def _save_registry_sensor_fields(self):
         """Persist the right-pane fields to the registry if a sensor is selected."""
         if self._editing_scope_sensor_id is None:
             return
-        if not dpg.does_item_exist('SREG_FIELD_NAME'):
+        if not dpg.does_item_exist(ui.SREG_FIELD_NAME):
             return
-        name = dpg.get_value('SREG_FIELD_NAME').strip()
+        name = dpg.get_value(ui.SREG_FIELD_NAME).strip()
         if not name:
             return
+        existing = self.registry.find_by_id(self._editing_scope_sensor_id)
         sensor = ScopeSensor(
             name=name,
-            engineering_units=dpg.get_value('SREG_FIELD_UNITS'),
-            sensitivity=float(dpg.get_value('SREG_FIELD_SENS')),
-            target_unit=dpg.get_value('SREG_FIELD_TARGET'),
-            amplitude_mode=dpg.get_value('SREG_FIELD_AMP_MODE'),
+            engineering_units=dpg.get_value(ui.SREG_FIELD_UNITS),
+            sensitivity=float(dpg.get_value(ui.SREG_FIELD_SENS)),
+            target_unit=existing.target_unit if existing else "",
             id=self._editing_scope_sensor_id,
-            notes=dpg.get_value('SREG_FIELD_NOTES').strip(),
+            notes=dpg.get_value(ui.SREG_FIELD_NOTES).strip(),
         )
         try:
             self.registry.update(sensor)
@@ -1139,15 +1509,14 @@ class GUI:
 
     def _on_registry_sensor_select(self, sender, data):
         self._save_registry_sensor_fields()
-        name   = dpg.get_value(ui.SCOPE_REGISTRY_LIST)
+        name = dpg.get_value(ui.SCOPE_REGISTRY_LIST)
         sensor = self.registry.find_by_name(name) if name else None
         self._editing_scope_sensor_id = sensor.id if sensor else None
         self._load_registry_sensor_fields(sensor)
 
     def _on_registry_add(self, sender=None, data=None):
         self._save_registry_sensor_fields()
-        new_sensor = ScopeSensor(name='New Sensor', engineering_units='g',
-                                 sensitivity=100.0, target_unit='g')
+        new_sensor = ScopeSensor(name="New Sensor", engineering_units="g", sensitivity=100.0, target_unit="g")
         self.registry.add(new_sensor)
         self._refresh_registry_dialog_list()
         self._editing_scope_sensor_id = new_sensor.id
@@ -1179,18 +1548,20 @@ class GUI:
             return
         channels = {
             c: {
-                'enabled':       c in self.collector.config.enabled_channels,
-                'sensor_id':     self.collector.scope_sensors[c].id
-                                 if c in self.collector.scope_sensors else None,
-                'voltage_range': self.collector.config.voltage_range_for(c),
-                'coupling':      self.collector.config.coupling_for(c),
+                "enabled": c in self.collector.config.enabled_channels,
+                "sensor_id": self.collector.scope_sensors[c].id if c in self.collector.scope_sensors else None,
+                "voltage_range": self.collector.config.voltage_range_for(c),
+                "coupling": self.collector.config.coupling_for(c),
+                "channel_name": self.collector.config.channel_names.get(c, ""),
+                "target_unit": self.collector.config.channel_target_units.get(c, ""),
+                "amplitude_mode": self.collector.config.channel_amplitude_modes.get(c, ""),
             }
             for c in range(self._num_channels)
         }
         device_cfg = {
-            'channels':    channels,
-            'siggen':      self.collector.siggen_config,
-            'acquisition': self.collector.config.to_dict(),
+            "channels": channels,
+            "siggen": self.collector.siggen_config,
+            "acquisition": self.collector.config.to_dict(),
         }
         _cfg.save_device_config(self.collector.sensor.serial_number, device_cfg)
 
@@ -1198,17 +1569,29 @@ class GUI:
         if not dpg.does_item_exist(ui.scope_ch_enabled(ch)):
             return
         enabled = dpg.get_value(ui.scope_ch_enabled(ch))
+        series_tags = [ui.plt_time_series(ch), ui.plt_freq_series(ch), ui.plt_trend_series(ch), ui.plt_freq_peaks(ch)]
         if enabled:
             if ch not in self.collector.config.enabled_channels:
                 self.collector.config.enabled_channels.append(ch)
                 self.collector.config.enabled_channels.sort()
-            self._add_channel_series(ch)
+            # Show if series already exists (file or prior capture); create if not
+            if any(dpg.does_item_exist(t) for t in series_tags):
+                for t in series_tags:
+                    if dpg.does_item_exist(t):
+                        dpg.show_item(t)
+            else:
+                self._add_channel_series(ch)
         else:
-            self.collector.config.enabled_channels = [
-                c for c in self.collector.config.enabled_channels if c != ch
-            ]
-            self._remove_channel_series(ch)
+            self.collector.config.enabled_channels = [c for c in self.collector.config.enabled_channels if c != ch]
+            for t in series_tags:
+                if dpg.does_item_exist(t):
+                    dpg.hide_item(t)
         self._save_channel_assignments()
+        # Reflect enabled/disabled state in the header text color
+        header_tag = ui.scope_ch_header(ch)
+        theme_tag = ui.scope_ch_hdr_theme(ch, enabled)
+        if dpg.does_item_exist(header_tag) and dpg.does_item_exist(theme_tag):
+            dpg.bind_item_theme(header_tag, theme_tag)
         self._update_connection_summary()
         self._update_axis_assignment()
         self._update_results_section_visibility()
@@ -1217,36 +1600,65 @@ class GUI:
         if not dpg.is_item_visible(ui.DLG_CONFIG):
             self.collector.reconnect_stream()
 
+    def _refresh_channel_names(self):
+        """Sync channel name labels in plot series and results panel headers."""
+        for ch in range(_MAX_CHANNELS):
+            name = self.collector.config.name_for(ch)
+            for series_tag in [ui.plt_time_series(ch), ui.plt_freq_series(ch), ui.plt_trend_series(ch)]:
+                if dpg.does_item_exist(series_tag):
+                    dpg.set_item_label(series_tag, name)
+            header_tag = ui.ch_header_text(ch)
+            if dpg.does_item_exist(header_tag):
+                dpg.set_value(header_tag, name)
+
     def _redraw_all_channels(self):
         """Re-display the current cached frame for all enabled channels."""
         if not self.collector.is_streaming:
             self.collector.reprocess_last_block()
 
+    def _refresh_channel_header(self, ch: int):
+        """Update the name display text and collapsing-header summary label."""
+        header_tag = ui.scope_ch_header(ch)
+        name_tag = ui.scope_ch_name_text(ch)
+        if not dpg.does_item_exist(header_tag):
+            return
+        name = dpg.get_value(ui.scope_ch_name(ch)).strip() or self.collector.config.name_for(ch)
+        coup = (
+            dpg.get_value(ui.scope_ch_coupling(ch))
+            if dpg.does_item_exist(ui.scope_ch_coupling(ch))
+            else self.collector.config.coupling_for(ch)
+        )
+        rng = dpg.get_value(ui.scope_ch_range(ch)) if dpg.does_item_exist(ui.scope_ch_range(ch)) else ""
+        sensor = dpg.get_value(ui.scope_ch_sensor(ch)) if dpg.does_item_exist(ui.scope_ch_sensor(ch)) else "(none)"
+        if dpg.does_item_exist(name_tag):
+            dpg.set_value(name_tag, name)
+        dpg.configure_item(header_tag, label=f"{coup}  {rng}  {sensor}")
+
     def _on_coupling_combo_change(self, ch: int, value: str):
-        if value in ('AC', 'DC'):
+        if value in ("AC", "DC"):
             self.collector.config.channel_couplings[ch] = value
-            if (self.collector.sensor is not None
-                    and not dpg.is_item_visible(ui.DLG_CONFIG)):
+            if self.collector.sensor is not None and not dpg.is_item_visible(ui.DLG_CONFIG):
                 self.collector.reconnect_stream()
+        self._refresh_channel_header(ch)
 
     def _on_range_combo_change(self, ch: int, label: str):
         if label not in _VOLTAGE_RANGE_LABELS:
             return
         self.collector.config.channel_voltage_ranges[ch] = _VOLTAGE_RANGE_LABELS.index(label)
-        if (self.collector.sensor is not None
-                and not dpg.is_item_visible(ui.DLG_CONFIG)):
+        if self.collector.sensor is not None and not dpg.is_item_visible(ui.DLG_CONFIG):
             self.collector.reconnect_stream()
+        self._refresh_channel_header(ch)
 
     def _on_sensor_combo_change(self, ch: int, sensor_name: str):
         if not dpg.does_item_exist(ui.scope_ch_sensor(ch)):
             return
-        sensor = (None if (not sensor_name or sensor_name == '(none)')
-                  else self.registry.find_by_name(sensor_name))
+        sensor = None if (not sensor_name or sensor_name == "(none)") else self.registry.find_by_name(sensor_name)
         self.collector.set_scope_sensor(ch, sensor)
         self._save_channel_assignments()
         self._update_connection_summary()
         self._update_axis_assignment()
         self._redraw_all_channels()
+        self._refresh_channel_header(ch)
 
     def _restore_channel_assignments(self, device_cfg: dict | None = None):
         """Apply saved channel assignments, siggen, and acquisition config to the collector."""
@@ -1254,41 +1666,39 @@ class GUI:
             if self.collector.sensor is not None:
                 device_cfg = _cfg.load_device_config(self.collector.sensor.serial_number)
             else:
-                device_cfg = _cfg.load_device_config('__default__')
+                device_cfg = _cfg.load_device_config("__default__")
 
-        # Restore acquisition settings
-        acq_dict = device_cfg.get('acquisition', {})
+        # Restore acquisition settings wholesale; channel-specific dicts applied below
+        acq_dict = device_cfg.get("acquisition", {})
         if acq_dict:
-            restored = AcquisitionSettings.from_dict(acq_dict)
-            self.collector.config.maxfreq          = restored.maxfreq
-            self.collector.config.binsize          = restored.binsize
-            self.collector.config.fft_window       = restored.fft_window
-            self.collector.config.welch_overlap    = restored.welch_overlap
-            self.collector.config.highpass_enabled = restored.highpass_enabled
-            self.collector.config.highpass_fc      = restored.highpass_fc
-            self.collector.config.lowpass_enabled  = restored.lowpass_enabled
-            self.collector.config.lowpass_fc       = restored.lowpass_fc
-            self.collector.config.trend_max_points = restored.trend_max_points
-            self.collector.config.trend_fmin       = restored.trend_fmin
-            self.collector.config.trend_fmax       = restored.trend_fmax
+            self.collector.config = AcquisitionSettings.from_dict(acq_dict)
 
         # Restore siggen
-        siggen = device_cfg.get('siggen')
+        siggen = device_cfg.get("siggen")
         self.collector.siggen_config = siggen
         self._populate_siggen_tab()
 
-        assignments = device_cfg.get('channels', {})
+        assignments = device_cfg.get("channels", {})
         for ch, info in assignments.items():
             if ch >= self._num_channels:
                 continue
-            sensor_id     = info.get('sensor_id')
-            enabled       = info.get('enabled', True)
-            voltage_range = info.get('voltage_range', 7)
-            coupling      = info.get('coupling', 'AC')
-            sensor        = self.registry.find_by_id(sensor_id) if sensor_id else None
+            sensor_id = info.get("sensor_id")
+            enabled = info.get("enabled", True)
+            voltage_range = info.get("voltage_range", 7)
+            coupling = info.get("coupling", "AC")
+            channel_name = info.get("channel_name", "")
+            target_unit = info.get("target_unit", "")
+            amplitude_mode = info.get("amplitude_mode", "")
+            sensor = self.registry.find_by_id(sensor_id) if sensor_id else None
             self.collector.set_scope_sensor(ch, sensor)
             self.collector.config.channel_voltage_ranges[ch] = voltage_range
             self.collector.config.channel_couplings[ch] = coupling
+            if channel_name:
+                self.collector.config.channel_names[ch] = channel_name
+            if target_unit:
+                self.collector.config.channel_target_units[ch] = target_unit
+            if amplitude_mode:
+                self.collector.config.channel_amplitude_modes[ch] = amplitude_mode
             if enabled and ch not in self.collector.config.enabled_channels:
                 self.collector.config.enabled_channels.append(ch)
             elif not enabled and ch in self.collector.config.enabled_channels:
@@ -1318,463 +1728,554 @@ class GUI:
     # GUI construction
     # ------------------------------------------------------------------
 
-    def create_gui(self):
+    def _create_gui(self):
         dpg.create_context()
 
-        # File dialogs
-        with dpg.file_dialog(
-                show=False,
-                default_path=str(vibechecker.SAVEDIR),
-                callback=self._on_save_dialog,
-                tag=ui.DLG_SAVE_FILE,
-                width=700, height=400):
-            dpg.add_file_extension(
-                f'Vibe Samples (*{vibechecker.EXT}){{{vibechecker.EXT}}}',
-                color=(150, 255, 150, 255))
-            dpg.add_file_extension('.*', color=(0, 150, 150, 150))
-
-        with dpg.file_dialog(
-                show=False,
-                default_path=str(vibechecker.SAVEDIR),
-                callback=self._on_load_dialog,
-                tag=ui.DLG_LOAD_FILE,
-                width=700, height=400):
-            dpg.add_file_extension(
-                f'Vibe Samples (*{vibechecker.EXT}){{{vibechecker.EXT}}}',
-                color=(150, 255, 150, 255))
-            dpg.add_file_extension('.*', color=(0, 150, 150, 150))
-
-        # ── Unified Config Dialog (Device / Sensors / Spectrum tabs) ───
-        _dlg_cfg_w, _dlg_cfg_h = 720, 560
-        _sreg_field_w = int((_dlg_cfg_w - 200 - 40) * 0.618)  # ~297px
-        with dpg.window(label='Configuration', modal=True, show=False,
-                        tag=ui.DLG_CONFIG, width=_dlg_cfg_w, height=_dlg_cfg_h,
-                        pos=((WINDOW_WIDTH - _dlg_cfg_w) // 2,
-                             (WINDOW_HEIGHT - _dlg_cfg_h) // 2)):
-            with dpg.tab_bar(tag=ui.CONFIG_TAB_BAR):
-
-                # ── Device tab ─────────────────────────────────────────
-                with dpg.tab(label='Device', tag=ui.CONFIG_TAB_DEVICE):
-                    with dpg.group(horizontal=True):
-                        dpg.add_text('Detected Devices')
-                        dpg.add_spacer(width=286)
-                        dpg.add_button(label='Refresh', small=True,
-                                       callback=self._start_device_discovery)
-                    with dpg.group(tag='DEVSETUP_DEVICE_LIST_GROUP'):
-                        pass
-
-                # ── Channels tab ────────────────────────────────────────
-                with dpg.tab(label='Channels', tag=ui.CONFIG_TAB_CHANNELS):
-                    dpg.add_text('Channel Configuration')
-                    dpg.add_separator()
-                    with dpg.group(tag='DEVSETUP_CHANNEL_GROUP'):
-                        dpg.add_text('No device connected.')
-
-                # ── Sensors tab ────────────────────────────────────────
-                with dpg.tab(label='Sensors', tag=ui.CONFIG_TAB_SENSORS):
-                    with dpg.group(horizontal=True):
-                        with dpg.child_window(width=200, autosize_y=True):
-                            dpg.add_listbox(items=self.registry.names(),
-                                            tag=ui.SCOPE_REGISTRY_LIST,
-                                            num_items=15, width=-1,
-                                            callback=self._on_registry_sensor_select)
-                            dpg.add_separator()
+        # ── Unified Config Dialog (Device / Sensors / Acquisition tabs) ───
+        with dpg.window(
+            label="Configuration",
+            modal=True,
+            show=False,
+            tag=ui.DLG_CONFIG,
+            width=_DLG_CFG_W,
+            height=_DLG_CFG_H,
+            pos=((WINDOW_WIDTH - _DLG_CFG_W) // 2, (WINDOW_HEIGHT - _DLG_CFG_H) // 2),
+            no_scrollbar=True,
+            no_scroll_with_mouse=True,
+        ):
+            with dpg.child_window(height=-_DLG_CLOSE_H, no_scrollbar=True, border=False):
+                with dpg.tab_bar(tag=ui.CONFIG_TAB_BAR):
+                    # ── Device tab ─────────────────────────────────────────
+                    with dpg.tab(label="Device", tag=ui.CONFIG_TAB_DEVICE):
+                        with dpg.child_window(autosize_x=True, height=-1):
                             with dpg.group(horizontal=True):
-                                dpg.add_button(label='Add',
-                                               tag=ui.SCOPE_REGISTRY_ADD,
-                                               callback=self._on_registry_add,
-                                               width=88)
-                                dpg.add_button(label='Delete',
-                                               tag=ui.SCOPE_REGISTRY_DELETE,
-                                               callback=self._on_registry_delete,
-                                               width=-1)
-                        with dpg.child_window(autosize_x=True, autosize_y=True):
-                            dpg.add_input_text(label='Name',
-                                               tag='SREG_FIELD_NAME',
-                                               width=_sreg_field_w)
-                            dpg.add_combo(label='Source EU',
-                                          tag='SREG_FIELD_UNITS',
-                                          items=vibechecker.EU_OPTIONS,
-                                          width=_sreg_field_w)
-                            dpg.add_combo(label='Target Unit',
-                                          tag='SREG_FIELD_TARGET',
-                                          items=[''] + vibechecker.EU_OPTIONS,
-                                          width=_sreg_field_w)
-                            dpg.add_input_float(label='Sensitivity (mV/eu)',
-                                                tag='SREG_FIELD_SENS',
-                                                format='%.6f', width=_sreg_field_w)
-                            dpg.add_combo(label='Amplitude',
-                                          tag='SREG_FIELD_AMP_MODE',
-                                          items=vibechecker.AMPLITUDE_MODES,
-                                          default_value='0-P',
-                                          width=_sreg_field_w)
-                            dpg.add_input_text(label='Notes',
-                                               tag='SREG_FIELD_NOTES',
-                                               width=_sreg_field_w)
+                                dpg.add_text("Detected Devices")
+                                dpg.add_spacer(width=_DLG_DEVICE_TAB_SPACER)
+                                dpg.add_button(label="Refresh", small=True, callback=self._start_device_discovery)
+                            with dpg.group(tag=ui.DEVSETUP_DEVICE_LIST_GROUP):
+                                pass
 
-                # ── Spectrum tab ───────────────────────────────────────
-                with dpg.tab(label='Spectrum', tag=ui.CONFIG_TAB_SPECTRUM):
-                    _w = 160
-                    # Control: Freq. Range
-                    dpg.add_combo(label='Freq. Range', tag=ui.SPEC_DLG_MAXFREQ,
-                                  items=_MAXFREQ_LABELS, width=_w,
-                                  callback=self._on_spectrum_preview)
-                    # Derived: Sample Rate
-                    dpg.add_input_text(label='Sample Rate', tag=ui.SPEC_DLG_SAMPLERATE,
-                                       readonly=True, width=_w)
-                    dpg.add_separator()
-                    # Control: Freq. Resolution
-                    dpg.add_combo(label='Freq. Resolution', tag=ui.SPEC_DLG_BINSIZE,
-                                  items=_BINSIZE_LABELS, width=_w,
-                                  callback=self._on_spectrum_preview)
-                    # Derived: # spectral lines
-                    dpg.add_input_text(label='Spectral Lines', tag=ui.SPEC_DLG_NFFT_BINS,
-                                       readonly=True, width=_w)
-                    # Derived: Acquisition Time
-                    dpg.add_input_text(label='Acq. Time', tag=ui.SPEC_DLG_ACQ_TIME,
-                                       readonly=True, width=_w)
-                    # Derived: Memory usage
-                    dpg.add_input_text(label='Memory/ch', tag=ui.SPEC_DLG_MEMORY,
-                                       readonly=True, width=_w)
-                    dpg.add_separator()
-                    dpg.add_text('FFT Controls')
-                    # Control: Welch % Overlap
-                    dpg.add_input_float(label='Welch Overlap %', tag=ui.SPEC_DLG_OVERLAP,
-                                        default_value=50.0, min_value=0.0,
-                                        max_value=95.0, width=_w)
-                    # Control: FFT Window
-                    dpg.add_combo(label='FFT Window', tag=ui.SPEC_DLG_WINDOW,
-                                  items=_FFT_WINDOWS, default_value='hann', width=_w)
-                    dpg.add_separator()
-                    # Control: Highpass filter
-                    with dpg.group(horizontal=True):
-                        dpg.add_checkbox(label='Highpass', tag=ui.SPEC_DLG_HP_ENABLED,
-                                         default_value=True)
-                        dpg.add_input_float(label='Hz', tag=ui.SPEC_DLG_HP_FC,
-                                            default_value=10.0, min_value=0.1, width=100)
-                    # Control: Lowpass filter
-                    with dpg.group(horizontal=True):
-                        dpg.add_checkbox(label='Lowpass', tag=ui.SPEC_DLG_LP_ENABLED,
-                                         default_value=False)
-                        dpg.add_input_float(label='Hz', tag=ui.SPEC_DLG_LP_FC,
-                                            default_value=1000.0, min_value=1.0, width=100)
-                    dpg.add_separator()
-                    dpg.add_text('Trend Frequency Window')
-                    with dpg.group(horizontal=True):
-                        dpg.add_input_float(label='Hz min', tag=ui.SPEC_DLG_TREND_FMIN,
-                                            default_value=0.0, min_value=0.0, width=100)
-                        dpg.add_input_float(label='Hz max', tag=ui.SPEC_DLG_TREND_FMAX,
-                                            default_value=0.0, min_value=0.0, width=100)
-                    dpg.add_text('(0 max = use spectrum max freq)', indent=4)
+                    # ── Channels tab ────────────────────────────────────────
+                    with dpg.tab(label="Channels", tag=ui.CONFIG_TAB_CHANNELS):
+                        with dpg.child_window(autosize_x=True, height=-1):
+                            dpg.add_text("Channel Configuration")
+                            dpg.add_separator()
+                            with dpg.group(tag=ui.DEVSETUP_CHANNEL_GROUP):
+                                dpg.add_text("No device connected.")
 
-                # ── Signal Generator tab ────────────────────────────────
-                with dpg.tab(label='Generate', tag=ui.CONFIG_TAB_SIGGEN):
-                    dpg.add_text('PicoScope Signal Generator')
-                    dpg.add_separator()
-                    dpg.add_checkbox(label='Enable signal generator',
-                                     tag=ui.SIGGEN_ENABLED, default_value=False)
-                    dpg.add_spacer(height=6)
-                    dpg.add_combo(label='Waveform',
-                                  tag=ui.SIGGEN_WAVE_TYPE,
-                                  items=list(_SIGGEN_WAVE_TYPES.keys()),
-                                  default_value='Sine', width=160)
-                    dpg.add_input_float(label='Frequency (Hz)',
-                                        tag=ui.SIGGEN_FREQ_HZ,
-                                        default_value=1000.0,
-                                        min_value=0.0, max_value=20_000_000.0,
-                                        width=160)
-                    dpg.add_input_float(label='Amplitude pk-pk (mV)',
-                                        tag=ui.SIGGEN_PKTOPK_MV,
-                                        default_value=1000.0,
-                                        min_value=0.0, max_value=4000.0,
-                                        width=160)
-                    dpg.add_input_float(label='Offset (mV)',
-                                        tag=ui.SIGGEN_OFFSET_MV,
-                                        default_value=0.0,
-                                        min_value=-2000.0, max_value=2000.0,
-                                        width=160)
-                    dpg.add_spacer(height=6)
-                    dpg.add_text('Note: Only active on PicoScope hardware.',
-                                 color=_c('ON_SURFACE'))
+                    # ── Sensors tab ────────────────────────────────────────
+                    with dpg.tab(label="Sensors", tag=ui.CONFIG_TAB_SENSORS):
+                        with dpg.child_window(height=-1, no_scrollbar=True, border=False):
+                            with dpg.group(horizontal=True):
+                                with dpg.child_window(width=_SREG_LIST_W, height=-1):
+                                    dpg.add_text("Sensor Library")
+                                    dpg.add_listbox(
+                                        items=self.registry.names(),
+                                        tag=ui.SCOPE_REGISTRY_LIST,
+                                        num_items=15,
+                                        width=-1,
+                                        callback=self._on_registry_sensor_select,
+                                    )
+                                    dpg.add_separator()
+                                    with dpg.group(horizontal=True):
+                                        dpg.add_button(
+                                            label="Add",
+                                            tag=ui.SCOPE_REGISTRY_ADD,
+                                            callback=self._on_registry_add,
+                                            width=_SREG_BTN_W,
+                                        )
+                                        dpg.add_button(
+                                            label="Delete",
+                                            tag=ui.SCOPE_REGISTRY_DELETE,
+                                            callback=self._on_registry_delete,
+                                            width=-1,
+                                        )
+                                with dpg.child_window(autosize_x=True, height=-1):
+                                    dpg.add_text("Sensor Configuration")
+                                    dpg.add_input_text(label="Name", tag=ui.SREG_FIELD_NAME, width=_SREG_FIELD_W)
+                                    dpg.add_combo(
+                                        label="Source EU",
+                                        tag=ui.SREG_FIELD_UNITS,
+                                        items=vibechecker.EU_OPTIONS,
+                                        width=_SREG_FIELD_W,
+                                    )
+                                    dpg.add_input_float(
+                                        label="Sensitivity (mV/eu)",
+                                        tag=ui.SREG_FIELD_SENS,
+                                        format="%.6f",
+                                        width=_SREG_FIELD_W,
+                                    )
+                                    dpg.add_input_text(label="Notes", tag=ui.SREG_FIELD_NOTES, width=_SREG_FIELD_W)
+
+                    # ── Acquisition tab ────────────────────────────────────
+                    with dpg.tab(label="Acquisition", tag=ui.CONFIG_TAB_ACQUISITION):
+                        with dpg.child_window(autosize_x=True, height=-1):
+                            _w = 160
+                            # Control: Freq. Range
+                            dpg.add_text("Acquisition Sample Rate")
+                            dpg.add_combo(
+                                label="Freq. Range",
+                                tag=ui.ACQ_DLG_MAXFREQ,
+                                items=_MAXFREQ_LABELS,
+                                width=_w,
+                                callback=self._on_acq_preview,
+                            )
+                            # Derived: Sample Rate
+                            dpg.add_input_text(label="Sample Rate", tag=ui.ACQ_DLG_SAMPLERATE, readonly=True, width=_w)
+
+                            # Control: Freq. Resolution
+                            dpg.add_separator()
+                            dpg.add_text("Acqusition Sample Count")
+                            dpg.add_combo(
+                                label="Freq. Resolution",
+                                tag=ui.ACQ_DLG_BINSIZE,
+                                items=_BINSIZE_LABELS,
+                                width=_w,
+                                callback=self._on_acq_preview,
+                            )
+                            # Derived: # spectral lines
+                            dpg.add_input_text(
+                                label="Spectral Lines", tag=ui.ACQ_DLG_NFFT_BINS, readonly=True, width=_w
+                            )
+                            # Derived: Acquisition Time
+                            dpg.add_input_text(label="Acq. Time", tag=ui.ACQ_DLG_ACQ_TIME, readonly=True, width=_w)
+                            
+                            dpg.add_separator()
+                            dpg.add_text("Signal Conditioning")
+                            # Control: Highpass filter
+                            with dpg.group(horizontal=True):
+                                dpg.add_checkbox(label="Highpass", tag=ui.ACQ_DLG_HP_ENABLED, default_value=True)
+                                dpg.add_input_float(
+                                    label="Hz", tag=ui.ACQ_DLG_HP_FC, default_value=10.0, min_value=0.1, width=100
+                                )
+                            # Control: Lowpass filter
+                            with dpg.group(horizontal=True):
+                                dpg.add_checkbox(label="Lowpass", tag=ui.ACQ_DLG_LP_ENABLED, default_value=False)
+                                dpg.add_input_float(
+                                    label="Hz", tag=ui.ACQ_DLG_LP_FC, default_value=1000.0, min_value=1.0, width=100
+                                )
+
+                            # Control: Frame cache depth
+                            dpg.add_separator()
+                            dpg.add_text("Recording Length")
+                            dpg.add_input_int(
+                                label="Cache Frames",
+                                tag=ui.ACQ_DLG_CACHE_FRAMES,
+                                default_value=32,
+                                min_value=1,
+                                max_value=512,
+                                callback=self._on_acq_preview,
+                                width=_w,
+                            )
+                            # Derived: Recording window (acq_time × cache_frames)
+                            dpg.add_input_text(label="Rec. Window", tag=ui.ACQ_DLG_REC_WINDOW, readonly=True, width=_w)
+                            # Derived: Total memory (mem_per_ch × n_enabled × cache_frames)
+                            dpg.add_input_text(label="Memory", tag=ui.ACQ_DLG_MEMORY, readonly=True, width=_w)
+
+                            dpg.add_separator()
+                            dpg.add_text("FFT Conditioning")
+                            # Control: Welch % Overlap
+                            dpg.add_input_float(
+                                label="Welch Overlap %",
+                                tag=ui.ACQ_DLG_OVERLAP,
+                                default_value=50.0,
+                                min_value=0.0,
+                                max_value=95.0,
+                                width=_w,
+                            )
+                            # Control: FFT Window
+                            dpg.add_combo(
+                                label="FFT Window",
+                                tag=ui.ACQ_DLG_WINDOW,
+                                items=_FFT_WINDOWS,
+                                default_value="hann",
+                                width=_w,
+                            )
+
+                    # ── Signal Generator tab ────────────────────────────────
+                    with dpg.tab(label="Generate", tag=ui.CONFIG_TAB_SIGGEN):
+                        with dpg.child_window(autosize_x=True, height=-1):
+                            dpg.add_text("PicoScope Signal Generator")
+                            dpg.add_separator()
+                            dpg.add_checkbox(
+                                label="Enable signal generator", tag=ui.SIGGEN_ENABLED, default_value=False
+                            )
+                            dpg.add_spacer(height=6)
+                            dpg.add_combo(
+                                label="Waveform",
+                                tag=ui.SIGGEN_WAVE_TYPE,
+                                items=list(_SIGGEN_WAVE_TYPES.keys()),
+                                default_value="Sine",
+                                width=_DLG_SIGGEN_W,
+                            )
+                            dpg.add_input_float(
+                                label="Frequency (Hz)",
+                                tag=ui.SIGGEN_FREQ_HZ,
+                                default_value=1000.0,
+                                min_value=0.0,
+                                max_value=20_000_000.0,
+                                width=_DLG_SIGGEN_W,
+                            )
+                            dpg.add_input_float(
+                                label="Amplitude pk-pk (mV)",
+                                tag=ui.SIGGEN_PKTOPK_MV,
+                                default_value=1000.0,
+                                min_value=0.0,
+                                max_value=4000.0,
+                                width=_DLG_SIGGEN_W,
+                            )
+                            dpg.add_input_float(
+                                label="Offset (mV)",
+                                tag=ui.SIGGEN_OFFSET_MV,
+                                default_value=0.0,
+                                min_value=-2000.0,
+                                max_value=2000.0,
+                                width=_DLG_SIGGEN_W,
+                            )
+                            dpg.add_spacer(height=6)
+                            dpg.add_text("Note: Only active on PicoScope hardware.", color=_c("ON_SURFACE"))
 
             dpg.add_separator()
-            dpg.add_button(label='Close', callback=self._on_config_close, width=-1)
+            dpg.add_button(label="Close", callback=self._on_config_close, width=-1)
 
         # ── Section container theme (slightly lighter than window background) ──
-        _sect_bg = vibechecker.hex_to_rgba(vibechecker.THEME_COLORS['SURFACE'])
+        _sect_bg = vibechecker.hex_to_rgba(vibechecker.THEME_COLORS["SURFACE"])
         with dpg.theme() as self._sect_theme:
             with dpg.theme_component(dpg.mvChildWindow):
-                dpg.add_theme_color(dpg.mvThemeCol_ChildBg, _sect_bg,
-                                    category=dpg.mvThemeCat_Core)
-                dpg.add_theme_style(dpg.mvStyleVar_ChildRounding, 6,
-                                    category=dpg.mvThemeCat_Core)
-                dpg.add_theme_style(dpg.mvStyleVar_WindowPadding, 8, 6,
-                                    category=dpg.mvThemeCat_Core)
+                dpg.add_theme_color(dpg.mvThemeCol_ChildBg, _sect_bg, category=dpg.mvThemeCat_Core)
+                dpg.add_theme_style(dpg.mvStyleVar_ChildRounding, 6, category=dpg.mvThemeCat_Core)
+                dpg.add_theme_style(dpg.mvStyleVar_WindowPadding, 8, 6, category=dpg.mvThemeCat_Core)
 
         # ── Toggle button state themes (idle=red, waiting=yellow, active=green) ──
         for state, bg_key, fg_key in [
-            ('idle',    'RED_DARK',    'RED_LIGHT'),
-            ('waiting', 'YELLOW_DARK', 'YELLOW_LIGHT'),
-            ('active',  'GREEN_DARK',  'GREEN_LIGHT'),
+            ("idle", "RED_DARK", "RED_LIGHT"),
+            ("waiting", "YELLOW_DARK", "YELLOW_LIGHT"),
+            ("active", "GREEN_DARK", "GREEN_LIGHT"),
         ]:
             bg = _c(bg_key)
             fg = _c(fg_key)
             with dpg.theme() as _t:
                 with dpg.theme_component(dpg.mvButton):
-                    dpg.add_theme_color(dpg.mvThemeCol_Button,        bg,
-                                        category=dpg.mvThemeCat_Core)
-                    dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered,  bg,
-                                        category=dpg.mvThemeCat_Core)
-                    dpg.add_theme_color(dpg.mvThemeCol_ButtonActive,   bg,
-                                        category=dpg.mvThemeCat_Core)
-                    dpg.add_theme_color(dpg.mvThemeCol_Text,           fg,
-                                        category=dpg.mvThemeCat_Core)
+                    dpg.add_theme_color(dpg.mvThemeCol_Button, bg, category=dpg.mvThemeCat_Core)
+                    dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, bg, category=dpg.mvThemeCat_Core)
+                    dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, bg, category=dpg.mvThemeCat_Core)
+                    dpg.add_theme_color(dpg.mvThemeCol_Text, fg, category=dpg.mvThemeCat_Core)
             self._toggle_themes[state] = _t
 
         # ── Main window ────────────────────────────────────────────────
-        with dpg.window(label='Vibe Checkup', tag='primary_window'):
+        with dpg.window(label="Vibe Checkup", tag=ui.PRIMARY_WINDOW):
             with dpg.group(horizontal=True):
-
                 # ── Controls column (left) ────────────────────────────
                 with dpg.child_window(width=CONTROLS_WIDTH, autosize_y=True):
-
+                    dpg.add_button(
+                        label="Device Setup",
+                        tag=ui.BTN_DEVICE_SETUP,
+                        callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_DEVICE),
+                        width=-1,
+                    )
+                    dpg.add_button(
+                        label="Channel Setup",
+                        tag=ui.BTN_CHANNELS_SETUP,
+                        callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_CHANNELS),
+                        width=-1,
+                    )
+                    dpg.add_button(
+                        label="Sensor Setup",
+                        tag=ui.BTN_SENSOR_SETUP,
+                        callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_SENSORS),
+                        width=-1,
+                    )
+                    dpg.add_button(
+                        label="Acquisition Setup",
+                        tag=ui.BTN_SPECTRUM_SETUP,
+                        callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_ACQUISITION),
+                        width=-1,
+                    )
+                    dpg.add_button(
+                        label="Signal Generator",
+                        tag=ui.BTN_SIGGEN_SETUP,
+                        callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_SIGGEN),
+                        width=-1,
+                    )
                     # ── Device ───────────────────────────────────────
-                    with dpg.child_window(border=True, autosize_x=True,
-                                          height=_CARD_H_DEVICE,
-                                          no_scrollbar=True) as _s1:
+                    with dpg.child_window(
+                        border=True, autosize_x=True, height=_CARD_H_DEVICE, no_scrollbar=True
+                    ) as _s1:
                         dpg.bind_item_theme(_s1, self._sect_theme)
-                        dpg.add_text('Device')
+                        dpg.add_text("Device")
                         dpg.add_separator()
                         with dpg.group(horizontal=True):
-                            with dpg.drawlist(width=16, height=16,
-                                              tag=ui.DEVICE_STATUS):
+                            with dpg.drawlist(width=16, height=16, tag=ui.DEVICE_STATUS):
                                 dpg.draw_rectangle(
-                                    pmin=(1, 1), pmax=(15, 15),
-                                    fill=_c('RED'), color=(0, 0, 0, 0),
-                                    rounding=3, tag=ui.DEVICE_STATUS_RECT,
+                                    pmin=(1, 1),
+                                    pmax=(15, 15),
+                                    fill=_c("RED"),
+                                    color=(0, 0, 0, 0),
+                                    rounding=3,
+                                    tag=ui.DEVICE_STATUS_RECT,
                                 )
-                            dpg.add_text('Not Connected', tag=ui.CONN_STATUS_TEXT)
+                            dpg.add_text("Not Connected", tag=ui.CONN_STATUS_TEXT)
                         with dpg.group(tag=ui.DEVICE_INFO_GROUP):
                             pass
                         dpg.add_spacer(height=2)
-                        dpg.add_button(label='Device Setup',
-                                       tag=ui.BTN_DEVICE_SETUP,
-                                       callback=lambda: self._open_config_dialog(
-                                           ui.CONFIG_TAB_DEVICE),
-                                       width=-1)
 
                     dpg.add_spacer(height=6)
 
                     # ── Channels ─────────────────────────────────────
-                    with dpg.child_window(border=True, autosize_x=True,
-                                          height=_CARD_BASE_H + 3*_CARD_BTN_H + 8,
-                                          no_scrollbar=True,
-                                          tag=ui.CHANNELS_CARD) as _s_ch:
+                    with dpg.child_window(
+                        border=True,
+                        autosize_x=True,
+                        height=_CARD_H_CHANNELS,
+                        no_scrollbar=True,
+                        tag=ui.CHANNELS_CARD,
+                    ) as _s_ch:
                         dpg.bind_item_theme(_s_ch, self._sect_theme)
-                        dpg.add_text('Channels')
+                        dpg.add_text("Channels")
                         dpg.add_separator()
                         with dpg.group(tag=ui.CONN_CHANNEL_SUMMARY):
                             pass
                         dpg.add_spacer(height=2)
-                        dpg.add_button(label='Channel Setup',
-                                       tag=ui.BTN_CHANNELS_SETUP,
-                                       callback=lambda: self._open_config_dialog(
-                                           ui.CONFIG_TAB_CHANNELS),
-                                       width=-1)
-                        dpg.add_button(label='Sensor Setup',
-                                       tag=ui.BTN_SENSOR_SETUP,
-                                       callback=lambda: self._open_config_dialog(
-                                           ui.CONFIG_TAB_SENSORS),
-                                       width=-1)
-                        dpg.add_button(label='Signal Generator',
-                                       tag=ui.BTN_SIGGEN_SETUP,
-                                       callback=lambda: self._open_config_dialog(
-                                           ui.CONFIG_TAB_SIGGEN),
-                                       width=-1)
 
                     dpg.add_spacer(height=6)
 
                     # ── Acquisition (stream control + spectrum info) ──
-                    with dpg.child_window(border=True, autosize_x=True,
-                                          height=_CARD_H_ACQ,
-                                          no_scrollbar=True) as _s2:
+                    with dpg.child_window(border=True, autosize_x=True, height=_CARD_H_ACQ, no_scrollbar=True) as _s2:
                         dpg.bind_item_theme(_s2, self._sect_theme)
-                        dpg.add_text('Acquisition')
+                        dpg.add_text("Acquisition")
                         dpg.add_separator()
-                        dpg.add_button(label='Stopped',
-                                       tag=ui.ACQ_TOGGLE,
-                                       callback=self._toggle_acquisition,
-                                       width=-1, height=40)
+                        dpg.add_button(
+                            label="Stopped", tag=ui.ACQ_TOGGLE, callback=self._toggle_acquisition, width=-1, height=40
+                        )
                         dpg.add_spacer(height=2)
-                        dpg.add_button(label='Single',
-                                        tag=ui.ACQ_SINGLE,
-                                        callback=self._collect_sample,
-                                        width=-1)
-                        dpg.add_button(label='Autoscale',
-                                        tag=ui.ACQ_AUTOSCALE,
-                                        callback=self._autoscale_plots,
-                                        width=-1)
+                        dpg.add_button(label="Single", tag=ui.ACQ_SINGLE, callback=self._collect_sample, width=-1)
+                        dpg.add_button(
+                            label="Autoscale", tag=ui.ACQ_AUTOSCALE, callback=self._autoscale_plots, width=-1
+                        )
                         with dpg.group(horizontal=True):
-                            dpg.add_button(label='Clear Cache',
-                                           tag=ui.ACQ_CLEAR_CACHE,
-                                           callback=self._clear_cache,
-                                           width=-1)
-                        dpg.add_spacer(height=2)
+                            dpg.add_button(
+                                label="Clear Cache", tag=ui.ACQ_CLEAR_CACHE, callback=self._clear_cache, width=-1
+                            )
+                        dpg.add_spacer(height=4)
+                        dpg.add_separator()
+                        dpg.add_text("Browse Waveforms", color=_c("ON_SURFACE"))
                         with dpg.group(horizontal=True):
-                            dpg.add_button(label='<', tag=ui.ACQ_BROWSE_PREV,
-                                           callback=self._on_browse_prev,
-                                           width=28, enabled=False)
-                            dpg.add_text('No frames', tag=ui.ACQ_BROWSE_LABEL)
-                            dpg.add_button(label='>', tag=ui.ACQ_BROWSE_NEXT,
-                                           callback=self._on_browse_next,
-                                           width=28, enabled=False)
+                            dpg.add_button(
+                                label="<<", tag=ui.ACQ_BROWSE_FIRST, callback=self._on_browse, width=28, enabled=False
+                            )
+                            dpg.add_button(
+                                label="<", tag=ui.ACQ_BROWSE_PREV, callback=self._on_browse, width=28, enabled=False
+                            )
+                            dpg.add_text("No frames", tag=ui.ACQ_BROWSE_LABEL)
+                            dpg.add_button(
+                                label=">", tag=ui.ACQ_BROWSE_NEXT, callback=self._on_browse, width=28, enabled=False
+                            )
+                            dpg.add_button(
+                                label=">>", tag=ui.ACQ_BROWSE_LAST, callback=self._on_browse, width=28, enabled=False
+                            )
                         dpg.add_spacer(height=6)
                         dpg.add_separator()
-                        dpg.add_text('Spectrum Setup', color=_c('ON_SURFACE'))
-                        dpg.add_input_text(tag=ui.SPECTRUM_INFO_TEXT,
-                                           multiline=True, readonly=True,
-                                           default_value='', width=-1, height=120)
-                        dpg.add_button(label='Acquisition Setup',
-                                       tag=ui.BTN_SPECTRUM_SETUP,
-                                       callback=lambda: self._open_config_dialog(
-                                           ui.CONFIG_TAB_SPECTRUM),
-                                       width=-1)
+                        dpg.add_text("Spectrum Setup", color=_c("ON_SURFACE"))
+                        dpg.add_input_text(
+                            tag=ui.SPECTRUM_INFO_TEXT,
+                            multiline=True,
+                            readonly=True,
+                            default_value="",
+                            width=-1,
+                            height=120,
+                        )
 
                     dpg.add_spacer(height=6)
 
                     # ── File Handling ─────────────────────────────────
-                    with dpg.child_window(border=True, autosize_x=True,
-                                          height=_CARD_H_FILE,
-                                          no_scrollbar=True) as _s4:
+                    with dpg.child_window(border=True, autosize_x=True, height=_CARD_H_FILE, no_scrollbar=True) as _s4:
                         dpg.bind_item_theme(_s4, self._sect_theme)
-                        dpg.add_text('File Handling')
+                        dpg.add_text("File Handling")
+                        dpg.add_separator()
+                        dpg.add_text("Measurement Notes", color=_c("ON_SURFACE"))
+                        dpg.add_input_text(
+                            tag=ui.ACQ_NOTES,
+                            multiline=True,
+                            width=-1,
+                            height=90,
+                            hint="Worksite, machine, sensor location…",
+                        )
+                        dpg.add_spacer(height=4)
                         dpg.add_separator()
                         with dpg.group(horizontal=True):
-                            dpg.add_button(label='Save', tag=ui.FILE_SAVE,
-                                           callback=self._on_save_click,
-                                           width=_BTN_HALF)
-                            dpg.add_button(label='Load', tag=ui.FILE_LOAD,
-                                           callback=lambda: dpg.show_item(
-                                               ui.DLG_LOAD_FILE),
-                                           width=_BTN_HALF)
+                            dpg.add_button(
+                                label="Save", tag=ui.FILE_SAVE, callback=self._on_save_click, width=_BTN_HALF
+                            )
+                            dpg.add_button(
+                                label="Load", tag=ui.FILE_LOAD, callback=self._on_load_click, width=_BTN_HALF
+                            )
 
                 # ── Main column (center — plots) ──────────────────────
-                with dpg.child_window(width=-RESULTS_WIDTH, autosize_y=True,
-                                      no_scrollbar=True):
+                with dpg.child_window(width=-RESULTS_WIDTH, autosize_y=True, no_scrollbar=True):
                     self._channel_themes = []
                     self._peak_themes = []
                     for color in _CH_COLORS:
                         with dpg.theme() as t:
                             with dpg.theme_component(dpg.mvLineSeries):
-                                dpg.add_theme_color(dpg.mvPlotCol_Line, color,
-                                                    category=dpg.mvThemeCat_Plots)
+                                dpg.add_theme_color(dpg.mvPlotCol_Line, color, category=dpg.mvThemeCat_Plots)
                         self._channel_themes.append(t)
                         with dpg.theme() as pt:
                             with dpg.theme_component(dpg.mvScatterSeries):
-                                dpg.add_theme_style(dpg.mvPlotStyleVar_Marker,
-                                                    dpg.mvPlotMarker_Square,
-                                                    category=dpg.mvThemeCat_Plots)
-                                dpg.add_theme_color(dpg.mvPlotCol_MarkerFill, color,
-                                                    category=dpg.mvThemeCat_Plots)
-                                dpg.add_theme_color(dpg.mvPlotCol_MarkerOutline, color,
-                                                    category=dpg.mvThemeCat_Plots)
+                                dpg.add_theme_style(
+                                    dpg.mvPlotStyleVar_Marker, dpg.mvPlotMarker_Square, category=dpg.mvThemeCat_Plots
+                                )
+                                dpg.add_theme_color(dpg.mvPlotCol_MarkerFill, color, category=dpg.mvThemeCat_Plots)
+                                dpg.add_theme_color(dpg.mvPlotCol_MarkerOutline, color, category=dpg.mvThemeCat_Plots)
                         self._peak_themes.append(pt)
 
                     with dpg.tab_bar():
-                        with dpg.tab(label='Spectrum'):
-                            with dpg.plot(label='Frequency Series',
-                                          width=-1, height=-TIME_PLOT_HEIGHT,
-                                          tag=ui.PLT_FREQ, crosshairs=True):
-                                dpg.add_plot_legend(location=dpg.mvPlot_Location_East,
-                                                    tag=ui.PLT_FREQ_LEGEND)
-                                dpg.add_plot_axis(dpg.mvXAxis,
-                                                  label='Frequency, hz',
-                                                  tag=ui.PLT_FREQ_AX_FREQ)
-                                dpg.add_plot_axis(dpg.mvYAxis, label='',
-                                                  tag=ui.PLT_FREQ_AX_ACCEL)
-                                dpg.add_plot_axis(dpg.mvYAxis, label='',
-                                                  tag=ui.PLT_FREQ_AX_2)
+                        with dpg.tab(label="Spectrum"):
+                            with dpg.plot(
+                                label="Frequency Series",
+                                width=-1,
+                                height=-TIME_PLOT_HEIGHT,
+                                tag=ui.PLT_FREQ,
+                                crosshairs=True,
+                            ):
+                                dpg.add_plot_legend(location=dpg.mvPlot_Location_East, tag=ui.PLT_FREQ_LEGEND)
+                                dpg.add_plot_axis(dpg.mvXAxis, label="Frequency, hz", tag=ui.PLT_FREQ_AX_FREQ)
+                                dpg.add_plot_axis(dpg.mvYAxis, label="", tag=ui.PLT_FREQ_AX_ACCEL)
+                                dpg.add_plot_axis(dpg.mvYAxis2, label="", tag=ui.PLT_FREQ_AX_2)
                                 dpg.hide_item(ui.PLT_FREQ_AX_2)
-                        with dpg.tab(label='Trend'):
-                            with dpg.plot(label='Trend Series',
-                                          width=-1, height=-TIME_PLOT_HEIGHT,
-                                          tag=ui.PLT_TREND, crosshairs=True):
-                                dpg.add_plot_legend(location=dpg.mvPlot_Location_East,
-                                                    tag=ui.PLT_TREND_LEGEND)
-                                dpg.add_plot_axis(dpg.mvXAxis, label='Time, s',
-                                                  tag=ui.PLT_TREND_AX_TIME)
-                                dpg.add_plot_axis(dpg.mvYAxis,
-                                                  label='Overall Vibration',
-                                                  tag=ui.PLT_TREND_AX_OVERALL)
-                    with dpg.plot(label='Time Series', width=-1,
-                                  height=TIME_PLOT_HEIGHT, tag=ui.PLT_SAMPLE,
-                                  crosshairs=True):
-                        dpg.add_plot_legend(location=dpg.mvPlot_Location_East,
-                                            tag=ui.PLT_SAMPLE_LEGEND)
-                        dpg.add_plot_axis(dpg.mvXAxis, label='Time, ms',
-                                          tag=ui.PLT_SAMPLE_AX_TIME)
-                        dpg.add_plot_axis(dpg.mvYAxis, label='',
-                                          tag=ui.PLT_SAMPLE_AX_ACCEL)
-                        dpg.add_plot_axis(dpg.mvYAxis, label='',
-                                          tag=ui.PLT_SAMPLE_AX_ACCEL_2)
+                        with dpg.tab(label="Trend"):
+                            with dpg.plot(
+                                label="Trend Series",
+                                width=-1,
+                                height=-TIME_PLOT_HEIGHT,
+                                tag=ui.PLT_TREND,
+                                crosshairs=True,
+                            ):
+                                dpg.add_plot_legend(location=dpg.mvPlot_Location_East, tag=ui.PLT_TREND_LEGEND)
+                                dpg.add_plot_axis(dpg.mvXAxis, label="Time, s", tag=ui.PLT_TREND_AX_TIME)
+                                dpg.add_plot_axis(dpg.mvYAxis, label="Overall Vibration", tag=ui.PLT_TREND_AX_OVERALL)
+                                dpg.add_plot_axis(dpg.mvYAxis2, label="", tag=ui.PLT_TREND_AX_OVERALL_2)
+                                dpg.hide_item(ui.PLT_TREND_AX_OVERALL_2)
+                    with dpg.plot(
+                        label="Time Series", width=-1, height=TIME_PLOT_HEIGHT, tag=ui.PLT_SAMPLE, crosshairs=True
+                    ):
+                        dpg.add_plot_legend(location=dpg.mvPlot_Location_East, tag=ui.PLT_SAMPLE_LEGEND)
+                        dpg.add_plot_axis(dpg.mvXAxis, label="Time, ms", tag=ui.PLT_SAMPLE_AX_TIME)
+                        dpg.add_plot_axis(dpg.mvYAxis, label="", tag=ui.PLT_SAMPLE_AX_ACCEL)
+                        dpg.add_plot_axis(dpg.mvYAxis2, label="", tag=ui.PLT_SAMPLE_AX_ACCEL_2)
                         dpg.hide_item(ui.PLT_SAMPLE_AX_ACCEL_2)
 
                 # ── Results column (right) ────────────────────────────
                 with dpg.child_window(width=RESULTS_WIDTH, autosize_y=True):
                     # Channel warnings — hidden until an overflow occurs
-                    with dpg.child_window(border=True, autosize_x=True,
-                                          height=_CARD_BASE_H,
-                                          no_scrollbar=True,
-                                          tag=ui.CH_WARNINGS_SECTION,
-                                          show=False) as _sw:
+                    with dpg.child_window(
+                        border=True,
+                        autosize_x=True,
+                        height=_CARD_BASE_H,
+                        no_scrollbar=True,
+                        tag=ui.CH_WARNINGS_SECTION,
+                        show=False,
+                    ) as _sw:
                         dpg.bind_item_theme(_sw, self._sect_theme)
-                        dpg.add_text('Channel Warnings', color=_c('RED_LIGHT'))
+                        dpg.add_text("Channel Warnings", color=_c("RED_LIGHT"))
                         dpg.add_separator()
                         for _ch in range(_MAX_CHANNELS):
                             dpg.add_text(
-                                f'Overvoltage Ch {chr(65 + _ch)}',
+                                f"Overvoltage Ch {chr(65 + _ch)}",
                                 tag=ui.ch_overflow_warning(_ch),
-                                color=_c('RED_LIGHT'),
+                                color=_c("RED_LIGHT"),
                                 show=False,
                             )
 
                     dpg.add_spacer(height=4)
-                    dpg.add_input_int(label='# Peaks',
-                                      tag=ui.FFT_PEAKS_DISPLAY_COUNT,
-                                      default_value=3, callback=self._redraw,
-                                      width=60)
+                    dpg.add_input_int(
+                        label="Peak Display",
+                        tag=ui.FFT_PEAKS_DISPLAY_COUNT,
+                        default_value=6,
+                        callback=self._redraw,
+                        width=100,
+                    )
                     dpg.add_spacer(height=4)
 
                     # Per-channel result sections (all hidden by default;
                     # _update_results_section_visibility shows enabled ones)
                     for _ch in range(_MAX_CHANNELS):
-                        with dpg.child_window(border=True, autosize_x=True,
-                                              height=_RESULTS_CARD_HEIGHT,
-                                              no_scrollbar=True,
-                                              tag=ui.ch_result_section(_ch),
-                                              show=False) as _sr:
+                        with dpg.child_window(
+                            border=True,
+                            autosize_x=True,
+                            height=_RESULTS_CARD_HEIGHT,
+                            no_scrollbar=True,
+                            tag=ui.ch_result_section(_ch),
+                            show=False,
+                        ) as _sr:
                             dpg.bind_item_theme(_sr, self._sect_theme)
-                            dpg.add_text(f'Channel {chr(65 + _ch)}')
+                            with dpg.group(horizontal=True):
+                                with dpg.drawlist(width=14, height=14):
+                                    dpg.draw_rectangle(
+                                        pmin=(2, 2),
+                                        pmax=(12, 12),
+                                        fill=_CH_COLORS[_ch % len(_CH_COLORS)],
+                                        color=(0, 0, 0, 0),
+                                        rounding=2,
+                                    )
+                                dpg.add_text(self.collector.config.name_for(_ch), tag=ui.ch_header_text(_ch))
                             dpg.add_separator()
-                            dpg.add_input_text(label='Overall',
-                                               tag=ui.ch_overall_value(_ch),
-                                               readonly=True, default_value='0.0',
-                                               width=RESULTS_WIDTH // 2)
-                            dpg.add_table(header_row=True, row_background=True,
-                                          borders_innerV=True,
-                                          no_host_extendX=True,
-                                          tag=ui.ch_peaks_table(_ch))
+                            dpg.add_input_text(
+                                label="Overall",
+                                tag=ui.ch_overall_value(_ch),
+                                readonly=True,
+                                default_value="0.0",
+                                width=RESULTS_WIDTH // 2,
+                            )
+                            dpg.add_table(
+                                header_row=True,
+                                row_background=True,
+                                borders_innerV=True,
+                                no_host_extendX=True,
+                                tag=ui.ch_peaks_table(_ch),
+                            )
                         dpg.add_spacer(height=2)
+
+    # ------------------------------------------------------------------
+    # Keyboard shortcuts
+    # ------------------------------------------------------------------
+
+    def _setup_keyboard_handlers(self) -> None:
+        """Register global key bindings via DPG handler registry.
+
+        Ctrl+A  autoscale plots
+        Ctrl+K  start / stop acquisition
+        Ctrl+S  save recording
+        Ctrl+O  open / load recording
+        Ctrl+Q  quit
+        Left    previous frame  (browse mode only)
+        Right   next frame      (browse mode only)
+        """
+        with dpg.handler_registry():
+            dpg.add_key_press_handler(callback=self._on_key_press)
+
+    def _on_key_press(self, sender, app_data) -> None:
+        key  = app_data
+        ctrl = dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)
+
+        if ctrl:
+            if   key == dpg.mvKey_A: self._autoscale_plots()
+            elif key == dpg.mvKey_K: self._toggle_acquisition()
+            elif key == dpg.mvKey_S: self._on_save_click()
+            elif key == dpg.mvKey_O: self._on_load_click()
+            elif key == dpg.mvKey_Q: dpg.stop_dearpygui()
+        elif not self.collector.is_streaming:
+            if   key == dpg.mvKey_Left:  self.collector.browse_frame(+1)
+            elif key == dpg.mvKey_Right: self.collector.browse_frame(-1)
 
     def initialize(self):
         _cfg.ensure_default_config()
-        self.create_gui()
+        self._create_gui()
+        self._setup_keyboard_handlers()
         self._update_spectrum_info()
         self._update_connection_summary()
         self._update_axis_assignment()
         self._refresh_registry_dialog_list()
-        self._set_stream_status('idle')   # apply initial toggle button theme
-        log.info('Setup GUI')
+        self._set_stream_status("idle")  # apply initial toggle button theme
+        log.info("Setup GUI")
         dpg.setup_dearpygui()
         # TODO: open device connection window automatically at startup so the user
         #       is prompted to connect a device without needing to find the menu.
@@ -1783,19 +2284,21 @@ class GUI:
         # self._open_config_dialog(ui.CONFIG_TAB_DEVICE)
 
     def run(self):
-        log.info('Launch app window')
-        dpg.create_viewport(title='Vibe Logger',
-                            width=WINDOW_WIDTH, height=WINDOW_HEIGHT)
+        log.info("Launch app window")
+        dpg.create_viewport(title="Vibe Logger", width=WINDOW_WIDTH, height=WINDOW_HEIGHT)
         dpg.show_viewport()
-        dpg.set_primary_window('primary_window', True)
-        log.info('Start DPG backend')
-        dpg.start_dearpygui()
+        dpg.set_primary_window(ui.PRIMARY_WINDOW, True)
+        threading.Thread(target=self._autoconnect, daemon=True).start()
+        log.info("Start DPG backend")
+        while dpg.is_dearpygui_running():
+            self._poll_new_frames()
+            dpg.render_dearpygui_frame()
 
     def cleanup(self):
-        log.info('Cleanup app assets')
+        log.info("Cleanup app assets")
         self.collector.disconnect_sensor()
         dpg.destroy_context()
-        log.info('App Exit')
+        log.info("App Exit")
 
     def serve(self):
         self.initialize()

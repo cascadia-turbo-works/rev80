@@ -63,17 +63,6 @@ def test_trend_max_points_is_positive_int():
     assert config.trend_max_points > 0
 
 
-def test_trend_fmin_is_non_negative():
-    config = AcquisitionSettings()
-    assert config.trend_fmin >= 0.0
-
-
-def test_trend_fmax_is_none_or_positive():
-    """trend_fmax=None means 'clamp to maxfreq at compute time'."""
-    config = AcquisitionSettings()
-    assert config.trend_fmax is None or config.trend_fmax > 0
-
-
 def test_samplerate_is_power_of_two():
     config = AcquisitionSettings()
     for fm in [200, 500, 1000, 5000, 10000, 50000]:
