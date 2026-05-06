@@ -51,7 +51,8 @@ class VibeSensor:
             return vibechecker.SimulatedSensor(config, sensor=self, callback=self._callback)
 
         from vibechecker.picoscope import PicoScopeStream
-        return PicoScopeStream(config, callback=callback, siggen_config=siggen_config)
+        return PicoScopeStream(config, callback=callback,
+                               serial=self.serial_number, siggen_config=siggen_config)
 
     def _callback(self, raw_data: np.ndarray, frames: int, cb_time, cb_status):
         """SimulatedSensor callback — packages raw data into a dict and forwards
