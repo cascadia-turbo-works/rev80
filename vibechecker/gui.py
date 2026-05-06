@@ -5,7 +5,6 @@ from pathlib import Path
 
 import dearpygui.dearpygui as dpg
 import numpy as np
-import pandas as pd
 
 import vibechecker
 import vibechecker.config as _cfg
@@ -304,7 +303,7 @@ class GUI:
     # Plot update helpers
     # ------------------------------------------------------------------
 
-    def _update_fft_peaks_table(self, df: pd.DataFrame, ch: int):
+    def _update_fft_peaks_table(self, columns: list[str], rows: list[tuple], ch: int):
         table_tag = ui.ch_peaks_table(ch)
         if not dpg.does_item_exist(table_tag):
             return
@@ -313,13 +312,13 @@ class GUI:
             for sub in children.values():
                 for tag in sub:
                     dpg.delete_item(tag)
-        df = df.head(n=dpg.get_value(ui.FFT_PEAKS_DISPLAY_COUNT))
-        for i in range(df.shape[1]):
-            dpg.add_table_column(label=df.columns[i], parent=table_tag)
-        for i in range(df.shape[0]):
+        limit = dpg.get_value(ui.FFT_PEAKS_DISPLAY_COUNT)
+        for col in columns:
+            dpg.add_table_column(label=col, parent=table_tag)
+        for row in rows[:limit]:
             with dpg.table_row(parent=table_tag):
-                for j in range(df.shape[1]):
-                    dpg.add_text(f"{df.iloc[i, j]}")
+                for val in row:
+                    dpg.add_text(f"{val}")
 
     def _get_amplitude_mode(self, ch: int) -> str:
         """Return amplitude mode: channel config → default '0-P'."""
@@ -347,13 +346,12 @@ class GUI:
             top_peaks = peaks[:peak_limit]
             dpg.set_value(ui.plt_freq_peaks(ch), [freq[top_peaks].tolist(), spectrum[top_peaks].tolist()])
             amp_mode = self._get_amplitude_mode(ch)
-            peak_df = pd.DataFrame(
-                {
-                    "Frequency (Hz)": np.round(freq[top_peaks], 2),
-                    f"Amp., {result.unit} {amp_mode}": np.round(spectrum[top_peaks], 6),
-                }
-            )
-            self._update_fft_peaks_table(peak_df, ch)
+            cols = ["Frequency (Hz)", f"Amp., {result.unit} {amp_mode}"]
+            rows = list(zip(
+                np.round(freq[top_peaks], 2).tolist(),
+                np.round(spectrum[top_peaks], 6).tolist(),
+            ))
+            self._update_fft_peaks_table(cols, rows, ch)
         else:
             dpg.set_value(ui.plt_freq_peaks(ch), [[], []])
 

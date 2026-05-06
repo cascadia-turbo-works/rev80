@@ -9,7 +9,7 @@
 
 import sys
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_submodules, collect_data_files
+from PyInstaller.utils.hooks import collect_submodules, collect_data_files, collect_all
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 
@@ -24,7 +24,6 @@ ICON_FILE = ROOT / 'assets' / 'vibechecker.ico'
 hidden_imports = [
     'vibechecker._paths',
     'vibechecker._pico_loader',
-    'vibechecker._pico_loader',
     'scipy.signal',
     'scipy.signal.windows',
     'scipy.fft',
@@ -34,9 +33,15 @@ hidden_imports = [
     'h5py.utils',
     'h5py._conv',
     'h5py._proxy',
-    'pandas',
     'numpy',
     'dearpygui.dearpygui',
+    # plyer platform detection is dynamic; bundle all backends explicitly
+    *collect_submodules('plyer'),
+    # win32com is loaded dynamically by plyer's Windows filechooser backend
+    'win32com',
+    'win32com.shell',
+    'win32com.shell.shell',
+    'pywintypes',
 ]
 
 # ── Bundled data files ───────────────────────────────────────────────────────
