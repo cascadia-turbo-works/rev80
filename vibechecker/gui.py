@@ -2234,9 +2234,42 @@ class GUI:
                             )
                         dpg.add_spacer(height=2)
 
+    # ------------------------------------------------------------------
+    # Keyboard shortcuts
+    # ------------------------------------------------------------------
+
+    def _setup_keyboard_handlers(self) -> None:
+        """Register global key bindings via DPG handler registry.
+
+        Ctrl+A  autoscale plots
+        Ctrl+K  start / stop acquisition
+        Ctrl+S  save recording
+        Ctrl+O  open / load recording
+        Ctrl+Q  quit
+        Left    previous frame  (browse mode only)
+        Right   next frame      (browse mode only)
+        """
+        with dpg.handler_registry():
+            dpg.add_key_press_handler(callback=self._on_key_press)
+
+    def _on_key_press(self, sender, app_data) -> None:
+        key  = app_data
+        ctrl = dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)
+
+        if ctrl:
+            if   key == dpg.mvKey_A: self._autoscale_plots()
+            elif key == dpg.mvKey_K: self._toggle_acquisition()
+            elif key == dpg.mvKey_S: self._on_save_click()
+            elif key == dpg.mvKey_O: self._on_load_click()
+            elif key == dpg.mvKey_Q: dpg.stop_dearpygui()
+        elif not self.collector.is_streaming:
+            if   key == dpg.mvKey_Left:  self.collector.browse_frame(+1)
+            elif key == dpg.mvKey_Right: self.collector.browse_frame(-1)
+
     def initialize(self):
         _cfg.ensure_default_config()
         self._create_gui()
+        self._setup_keyboard_handlers()
         self._update_spectrum_info()
         self._update_connection_summary()
         self._update_axis_assignment()
