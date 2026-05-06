@@ -16,7 +16,7 @@ from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 ROOT = Path(SPECPATH)
 DRIVERS_DIR = ROOT / 'drivers'
 LOGGING_YAML = ROOT / 'vibechecker' / 'logging.yaml'
-ICON_FILE = ROOT / 'assets' / 'vibechecker.ico'
+ICON_FILE = ROOT / 'assets' / 'icons' / 'vibechecker.ico'
 
 # ── Hidden imports ───────────────────────────────────────────────────────────
 
@@ -35,8 +35,13 @@ hidden_imports = [
     'h5py._conv',
     'h5py._proxy',
     'pandas',
+    'plyer',
     'numpy',
     'dearpygui.dearpygui',
+    "pandas",
+    "matplotlib",
+    "pyyaml",
+    "plyer",
 ]
 
 # ── Bundled data files ───────────────────────────────────────────────────────
