@@ -16,7 +16,7 @@ from PyInstaller.utils.hooks import collect_submodules, collect_data_files, coll
 ROOT = Path(SPECPATH)
 DRIVERS_DIR = ROOT / 'drivers'
 LOGGING_YAML = ROOT / 'vibechecker' / 'logging.yaml'
-ICON_FILE = ROOT / 'assets' / 'vibechecker.ico'
+ICON_FILE = ROOT / 'assets' / 'icons' / 'vibechecker.ico'
 
 # ── Hidden imports ───────────────────────────────────────────────────────────
 
@@ -35,6 +35,7 @@ hidden_imports = [
     'h5py._proxy',
     'numpy',
     'dearpygui.dearpygui',
+    'pyyaml',
     # plyer platform detection is dynamic; bundle all backends explicitly
     *collect_submodules('plyer'),
     # win32com is loaded dynamically by plyer's Windows filechooser backend
