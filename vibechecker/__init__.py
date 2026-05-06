@@ -1,3 +1,8 @@
+try:
+    from vibechecker._version import __version__  # noqa: F401
+except ImportError:
+    __version__ = "0.0.0+unknown"
+
 from vibechecker.logger import exception_handler, get_logger, log_system_info, setup_logging  # noqa: F401
 from vibechecker.util import *  # noqa: F401, F403
 
