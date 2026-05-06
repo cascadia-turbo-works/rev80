@@ -5,9 +5,11 @@ FFT peak validation via siggen loopback) live in test_picoscope_hw.py.
 """
 
 import time
+import yaml
+import h5py
 import numpy as np
 import pytest
-from path import Path
+from pathlib import Path
 
 from vibechecker import (
     AcquisitionSettings,
@@ -17,6 +19,7 @@ from vibechecker import (
     GUI,
     get_logger,
 )
+from vibechecker.scope_sensor import ScopeSensor
 
 DATADIR = Path('DEVDATA')
 log = get_logger('test')
@@ -32,8 +35,6 @@ sim_sensor   = VibeSensor.simulated()
 def test_stream_cycle():
     """start_stream / stop_stream cycle works and leaves stream in clean state."""
     collector = DataCollector(sim_sensor)
-    received = []
-    collector.callbacks['test'] = lambda samples: received.extend(samples.values())
 
     for _ in range(2):
         collector.start_stream()
@@ -70,7 +71,7 @@ def test_collect_sample_signal_processing():
     collector.disconnect_sensor()
 
     for ch, sample in ((k, v) for k, v in result.items() if isinstance(k, int)):
-        cr = sample.process(ch, '', acq_settings)
+        cr = collector.process_sample(ch, sample)
         assert cr is not None
         assert cr.time_data.flags['C_CONTIGUOUS']
         assert len(cr.freq) > 0
@@ -92,9 +93,9 @@ def test_save_load_roundtrip():
     assert isinstance(first_sample, VibeSample)
 
     # Save via DataCollector (new multi-channel format)
-    DATADIR.makedirs_p()
+    DATADIR.mkdir(parents=True, exist_ok=True)
     fname = DATADIR / 'pytest_roundtrip.h5'
-    fname.remove_p()
+    fname.unlink(missing_ok=True)
     collector.save_data(fname)
     assert fname.exists(), 'save_data did not create file'
 
@@ -112,7 +113,221 @@ def test_save_load_roundtrip():
     assert loaded_sample.unit == first_sample.unit,             'unit differs after load'
     assert np.allclose(loaded_sample.data, first_sample.data),  'data differs after load'
 
-    fname.remove_p()
+    #fname.remove_p()
+
+
+# ---------------------------------------------------------------------------
+# Offline file loading — no device connected
+# ---------------------------------------------------------------------------
+
+def test_load_offline_configures_channels():
+    """Loading an h5 with no sensor sets enabled_channels from file contents."""
+    # First, create a file with known channel data
+    collector = DataCollector(sim_sensor, acq_settings)
+    result = collector.collect_sample()
+    collector.disconnect_sensor()
+    assert result
+
+    DATADIR.mkdir(parents=True, exist_ok=True)
+    fname = DATADIR / 'pytest_offline.h5'
+    fname.unlink(missing_ok=True)
+    collector.save_data(fname)
+
+    # Load into a fresh collector with NO sensor
+    offline = DataCollector(config=acq_settings)
+    assert offline.sensor is None, 'Should have no sensor'
+    assert offline.stream is None, 'Should have no stream'
+
+    offline.load_data(fname)
+
+    # Verify channels were auto-configured
+    cache = offline.data['frame_cache']
+    assert len(cache) >= 1, 'frame_cache empty after offline load'
+
+    # Collect all channel keys from loaded frames
+    loaded_channels = set()
+    for frame in cache:
+        loaded_channels.update(k for k in frame if isinstance(k, int))
+
+    assert loaded_channels, 'No channel data in loaded file'
+    assert set(offline.config.enabled_channels) == loaded_channels, (
+        f'enabled_channels {offline.config.enabled_channels} != '
+        f'file channels {sorted(loaded_channels)}'
+    )
+
+    # Verify reprocess works (process() on loaded samples)
+    last_frame = cache[-1]
+    for ch, sample in ((k, v) for k, v in last_frame.items() if isinstance(k, int)):
+        cr = offline.process_sample(ch, sample)
+        assert cr is not None, f'process_sample() returned None for channel {ch}'
+        assert len(cr.freq) > 0
+
+    fname.unlink(missing_ok=True)
+
+
+def test_load_offline_adjusts_maxfreq():
+    """Loading a file whose samplerate > current config adjusts maxfreq."""
+    # Create a file with high samplerate
+    high_freq_config = AcquisitionSettings()
+    high_freq_config.maxfreq = 50000.0  # → samplerate = 131072
+    collector = DataCollector(sim_sensor, high_freq_config)
+    result = collector.collect_sample()
+    collector.disconnect_sensor()
+
+    DATADIR.mkdir(parents=True, exist_ok=True)
+    fname = DATADIR / 'pytest_offline_hf.h5'
+    fname.unlink(missing_ok=True)
+    collector.save_data(fname)
+
+    # Load with a low-freq default config
+    low_config = AcquisitionSettings()
+    low_config.maxfreq = 500.0  # → samplerate = 1024
+    offline = DataCollector(config=low_config)
+    old_sr = offline.config.samplerate
+
+    offline.load_data(fname)
+
+    # Config should have been adjusted upward
+    assert offline.config.samplerate >= high_freq_config.samplerate, (
+        f'samplerate {offline.config.samplerate} should be >= '
+        f'{high_freq_config.samplerate} after loading high-freq file'
+    )
+
+    fname.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Channel naming — AcquisitionSettings helpers
+# ---------------------------------------------------------------------------
+
+def test_channel_name_defaults_and_override():
+    """name_for() returns default 'Ch A' and respects explicit override."""
+    cfg = AcquisitionSettings()
+    assert cfg.name_for(0) == 'Ch A'
+    assert cfg.name_for(1) == 'Ch B'
+    assert cfg.name_for(7) == 'Ch H'
+    cfg.channel_names[0] = 'Drive End'
+    assert cfg.name_for(0) == 'Drive End'
+    assert cfg.name_for(1) == 'Ch B'   # unset channels keep default
+
+
+# ---------------------------------------------------------------------------
+# Scope sensor config persisted in h5
+# ---------------------------------------------------------------------------
+
+def test_save_data_persists_scope_sensor():
+    """save_data writes scope sensor into the /metadata sensor library (v3 format)."""
+    sensor = ScopeSensor(name='Test Sensor', engineering_units='g',
+                         sensitivity=10.0)
+    collector = DataCollector(sim_sensor, acq_settings)
+    collector.set_scope_sensor(0, sensor)
+    collector.collect_sample()
+    collector.disconnect_sensor()
+
+    DATADIR.mkdir(parents=True, exist_ok=True)
+    fname = DATADIR / 'pytest_sensor_save.h5'
+    fname.unlink(missing_ok=True)
+    collector.save_data(fname)
+
+    with h5py.File(fname, 'r') as f:
+        assert int(f['metadata'].attrs['version']) >= 3, 'Expected v3+ format'
+        # Sensor library: one entry per unique sensor used
+        ss_grp = f['metadata']['scope_sensors']
+        assert len(ss_grp) >= 1, 'Expected at least 1 sensor in library'
+        assert sensor.id in ss_grp, f'Sensor id {sensor.id!r} not found in library'
+        sg = ss_grp[sensor.id]
+        assert float(sg.attrs['sensitivity']) == pytest.approx(10.0)
+        assert sg.attrs['engineering_units'] == 'g'
+        assert sg.attrs['name'] == 'Test Sensor'
+        # Channel metadata references the sensor by id
+        ch_meta = f['metadata']['channels']['0']
+        assert ch_meta.attrs['scope_sensor_id'] == sensor.id
+
+    fname.unlink(missing_ok=True)
+
+
+def test_load_data_restores_scope_sensor_configs():
+    """load_data populates _loaded_channel_sensor_configs and _loaded_scope_sensors (v3)."""
+    sensor = ScopeSensor(name='Load Test', engineering_units='in/s',
+                         sensitivity=50.0)
+    collector = DataCollector(sim_sensor, acq_settings)
+    collector.set_scope_sensor(0, sensor)
+    collector.collect_sample()
+    collector.disconnect_sensor()
+
+    DATADIR.mkdir(parents=True, exist_ok=True)
+    fname = DATADIR / 'pytest_sensor_load.h5'
+    fname.unlink(missing_ok=True)
+    collector.save_data(fname)
+
+    fresh = DataCollector(config=acq_settings)
+    fresh.load_data(fname)
+
+    # Per-channel sensor config (keyed to registry id)
+    cfg = fresh._loaded_channel_sensor_configs
+    assert 0 in cfg, 'Channel 0 missing from _loaded_channel_sensor_configs'
+    assert cfg[0]['sensitivity'] == pytest.approx(50.0)
+    assert cfg[0]['id'] == sensor.id
+    assert cfg[0]['engineering_units'] == 'in/s'
+
+    # Sensor library (for auto-adding to registry on GUI load)
+    lib = fresh._loaded_scope_sensors
+    assert sensor.id in lib, 'Sensor id missing from _loaded_scope_sensors'
+    assert lib[sensor.id]['name'] == 'Load Test'
+
+    fname.unlink(missing_ok=True)
+
+
+def test_notes_roundtrip():
+    """Measurement notes survive save/load."""
+    collector = DataCollector(sim_sensor, acq_settings)
+    collector.notes = 'Motor bearing — drive end'
+    collector.collect_sample()
+    collector.disconnect_sensor()
+
+    DATADIR.mkdir(parents=True, exist_ok=True)
+    fname = DATADIR / 'pytest_notes.h5'
+    fname.unlink(missing_ok=True)
+    collector.save_data(fname)
+
+    fresh = DataCollector(config=acq_settings)
+    fresh.load_data(fname)
+    assert fresh.notes == 'Motor bearing — drive end'
+
+    fname.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Event-based frame delivery (no GUI callback registered)
+# ---------------------------------------------------------------------------
+
+def test_new_frame_event_set_on_stream():
+    """Streaming sets new_frame_event without any GUI callback registered."""
+    collector = DataCollector(sim_sensor, acq_settings)
+    assert not collector.new_frame_event.is_set()
+
+    collector.start_stream()
+    # Wait for at least one frame
+    got_frame = collector.new_frame_event.wait(timeout=acq_settings.acquisition_period * 3)
+    collector.stop_stream()
+    collector.disconnect_sensor()
+
+    assert got_frame, 'new_frame_event was never set during streaming'
+    assert len(collector.data['frame_cache']) >= 1, 'frame_cache empty after streaming'
+
+
+def test_new_frame_event_set_on_reprocess():
+    """reprocess_last_block sets new_frame_event for the GUI poll loop."""
+    collector = DataCollector(sim_sensor, acq_settings)
+    collector.collect_sample()
+    collector.disconnect_sensor()
+
+    assert len(collector.data['frame_cache']) >= 1
+    collector.new_frame_event.clear()
+
+    collector.reprocess_last_block()
+    assert collector.new_frame_event.is_set(), \
+        'reprocess_last_block should set new_frame_event'
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +339,72 @@ def test_gui_build():
     app.initialize()
     time.sleep(1)
     app.cleanup()
+
+
+# ---------------------------------------------------------------------------
+# Configurable frame cache — AcquisitionSettings and DataCollector
+# ---------------------------------------------------------------------------
+
+def test_cache_frames_default():
+    """AcquisitionSettings defaults cache_frames to 32."""
+    assert AcquisitionSettings().cache_frames == 32
+
+
+def test_cache_frames_roundtrip():
+    """cache_frames survives to_dict / from_dict serialisation."""
+    cfg = AcquisitionSettings()
+    cfg.cache_frames = 16
+    d = cfg.to_dict()
+    assert d['cache_frames'] == 16
+    restored = AcquisitionSettings.from_dict(d)
+    assert restored.cache_frames == 16
+
+
+def test_cache_frames_from_dict_missing_key():
+    """from_dict with no cache_frames key falls back to 32."""
+    cfg = AcquisitionSettings.from_dict({})
+    assert cfg.cache_frames == 32
+
+
+def test_reset_data_store_uses_cache_frames():
+    """DataCollector.reset_data_store() honours config.cache_frames as deque maxlen."""
+    cfg = AcquisitionSettings()
+    cfg.cache_frames = 8
+    collector = DataCollector(sim_sensor, cfg)
+    collector.disconnect_sensor()
+    assert collector.data['frame_cache'].maxlen == 8
+
+
+def test_resize_frame_cache_preserves_last_n_frames():
+    """resize_frame_cache(n) keeps the most recent n frames when shrinking."""
+    collector = DataCollector(sim_sensor, acq_settings)
+    # Collect multiple frames
+    for _ in range(4):
+        frame = collector.collect_sample()
+    collector.disconnect_sensor()
+
+    cache_before = list(collector.data['frame_cache'])
+    assert len(cache_before) >= 2, 'need at least 2 frames for this test'
+
+    collector.resize_frame_cache(1)
+    cache_after = list(collector.data['frame_cache'])
+
+    assert collector.data['frame_cache'].maxlen == 1
+    assert len(cache_after) == 1
+    assert cache_after[-1] is cache_before[-1]
+
+
+def test_resize_frame_cache_expands():
+    """resize_frame_cache(n) with n > current size preserves all existing frames."""
+    collector = DataCollector(sim_sensor, acq_settings)
+    collector.collect_sample()
+    collector.disconnect_sensor()
+
+    n_before = len(collector.data['frame_cache'])
+    collector.resize_frame_cache(128)
+
+    assert collector.data['frame_cache'].maxlen == 128
+    assert len(collector.data['frame_cache']) == n_before
 
 
 if __name__ == '__main__':

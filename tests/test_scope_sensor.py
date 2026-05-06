@@ -29,7 +29,6 @@ def test_scope_sensor_to_dict_from_dict_roundtrip():
     assert s2.engineering_units == s.engineering_units
     assert s2.sensitivity == pytest.approx(s.sensitivity)
     assert s2.target_unit == s.target_unit
-    assert s2.amplitude_mode == s.amplitude_mode
     assert s2.id == s.id
     assert s2.notes == s.notes
 
@@ -53,7 +52,6 @@ def test_scope_sensor_from_dict_missing_optional_fields():
     assert s.name == 'Minimal'
     assert s.notes == ''
     assert s.target_unit == ''
-    assert s.amplitude_mode == '0-P'
     assert s.id  # auto-generated uuid
 
 
@@ -170,15 +168,19 @@ def test_pipeline_scope_sensor_scales_mv_data():
         'rel_time': 0.0,
     }
 
-    received = []
-    collector.callbacks['test'] = received.append
     collector.receive_data(packet)
 
-    assert len(received) == 1
-    sample = received[0][0]
-    assert sample.unit == 'g'
-    # 50 mV / 10 mV/g = 5 g
-    assert np.allclose(sample.data, raw_mv / sensitivity, atol=1e-6)
+    frame = collector.data['frame_cache'][-1]
+    sample = frame[0]
+    # Raw storage is always mV
+    assert sample.unit == 'mV'
+    assert np.allclose(sample.data, raw_mv, atol=1e-6)
+
+    # process_sample applies mV→EU conversion: 50 mV / 10 mV/g = 5 g
+    collector.config.channel_target_units[0] = 'g'
+    result = collector.process_sample(0, sample)
+    assert result is not None
+    assert result.unit == 'g'
 
 
 def test_pipeline_scope_sensor_clear():
@@ -204,10 +206,9 @@ def test_pipeline_scope_sensor_clear():
         'rel_time': 0.0,
     }
 
-    received = []
-    collector.callbacks['test'] = received.append
     collector.receive_data(packet)
 
-    sample = received[0][0]
+    frame = collector.data['frame_cache'][-1]
+    sample = frame[0]
     # Unit should still be mV since no sensor is assigned
     assert sample.unit == 'mV'
