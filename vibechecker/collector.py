@@ -670,20 +670,111 @@ class DataCollector:
 
         with h5py.File(target, "r") as f:
             version = int(f["metadata"].attrs.get("version", 3))
-            if version >= 4:
-                self._load_v4(f, decode)
-            else:
-                self._load_v3(f, decode)
-                # Promote v3 single-overall trend to v4 orders array (order-0 column only)
-                for ch, td_old in self.data.pop("_trend_v3", {}).items():
-                    if td_old.get("overall"):
-                        M      = len(td_old["overall"])
-                        orders = np.zeros((M, 5))
-                        orders[:, 2] = np.array(td_old["overall"])  # col 2 = order 0
+            meta_grp = f["metadata"]
+            self.notes = decode(meta_grp.attrs.get("notes", ""))
+
+            # Acquisition settings
+            if "acquisition" in meta_grp:
+                acq_dict = {k: (None if v == "" else v) for k, v in meta_grp["acquisition"].attrs.items()}
+                self.config = vibechecker.AcquisitionSettings.from_dict(acq_dict)
+
+            # Scope sensor library — {sensor_id: dict}
+            if "scope_sensors" in meta_grp:
+                for sid, sg in meta_grp["scope_sensors"].items():
+                    d: dict = {}
+                    for k, v in sg.attrs.items():
+                        if isinstance(v, (bytes, np.bytes_)):
+                            d[k] = v.decode()
+                        elif isinstance(v, (np.integer,)):
+                            d[k] = int(v)
+                        elif isinstance(v, (np.floating,)):
+                            d[k] = float(v)
+                        else:
+                            d[k] = v
+                    d["id"] = sid
+                    self._loaded_scope_sensors[sid] = d
+
+            # Channel metadata — restore names, target units, and sensor configs
+            ch_units: dict[int, str] = {}
+            if "channels" in meta_grp:
+                for ch_str, cg in meta_grp["channels"].items():
+                    ch = int(ch_str)
+                    name           = decode(cg.attrs.get("name", ""))
+                    unit           = decode(cg.attrs.get("unit", "mV"))
+                    target_unit    = decode(cg.attrs.get("target_unit", ""))
+                    sensor_id      = decode(cg.attrs.get("scope_sensor_id", ""))
+                    coupling       = decode(cg.attrs.get("coupling", "AC"))
+                    voltage_range  = int(cg.attrs.get("voltage_range", 7))
+                    amplitude_mode = decode(cg.attrs.get("amplitude_mode", ""))
+                    if name:
+                        self.config.channel_names[ch] = name
+                    if target_unit:
+                        self.config.channel_target_units[ch] = target_unit
+                    if amplitude_mode:
+                        self.config.channel_amplitude_modes[ch] = amplitude_mode
+                    self.config.channel_couplings[ch] = coupling
+                    self.config.channel_voltage_ranges[ch] = voltage_range
+                    ch_units[ch] = unit
+                    if sensor_id and sensor_id in self._loaded_scope_sensors:
+                        self._loaded_channel_sensor_configs[ch] = dict(self._loaded_scope_sensors[sensor_id])
+                    else:
+                        self._loaded_channel_sensor_configs[ch] = {}
+
+            # Frames — v4+ always mV; v3 used the recorded unit
+            if "frames" in f:
+                for idx in sorted(f["frames"].keys(), key=int):
+                    fg = f["frames"][idx]
+                    ts_str     = decode(fg.attrs["timestamp"])
+                    rel_time   = float(fg.attrs["rel_time"])
+                    samplerate = int(fg.attrs["samplerate"])
+                    status     = decode(fg.attrs["status"])
+                    try:
+                        timestamp = datetime.fromisoformat(ts_str)
+                    except (ValueError, TypeError):
+                        timestamp = datetime.now()
+                    frame_samples: dict[int, vibechecker.VibeSample] = {}
+                    for ch_str, cg in fg.items():
+                        if not ch_str.isdigit():
+                            continue
+                        ch   = int(ch_str)
+                        data = np.ascontiguousarray(cg["data"][()], dtype=np.float64)
+                        unit = "mV" if version >= 4 else ch_units.get(ch, "mV")
+                        frame_samples[ch] = vibechecker.VibeSample(
+                            status=status, _timestamp=timestamp, samplerate=samplerate,
+                            unit=unit, overflow=False, data=data, rel_time=rel_time,
+                        )
+                    self.data["frame_cache"].append(frame_samples)
+
+            # Trend
+            if "trend" in f:
+                trend_grp = f["trend"]
+                if version >= 4:
+                    # Per-channel (M,5) orders matrix
+                    for ch_str, cg in trend_grp.items():
+                        if not ch_str.isdigit():
+                            continue
+                        ch = int(ch_str)
                         self.trend[ch] = {
-                            "rel_times": np.array(td_old["rel_times"]),
-                            "orders":    orders,
+                            "rel_times": np.array(cg["rel_times"][()], dtype=np.float64),
+                            "orders":    np.array(cg["orders"][()],    dtype=np.float64),
                         }
+                else:
+                    # Shared time axis + per-channel scalar overalls; promote to (M,5)
+                    shared_rel_times: list = []
+                    if "rel_times" in trend_grp:
+                        shared_rel_times = list(np.array(trend_grp["rel_times"][()]))
+                    for ch_str, tg in trend_grp.items():
+                        if not ch_str.isdigit():
+                            continue
+                        overall = list(np.array(tg["data"][()]))
+                        if overall:
+                            M      = len(overall)
+                            orders = np.zeros((M, 5))
+                            orders[:, 2] = np.array(overall)  # col 2 = order 0
+                            self.trend[int(ch_str)] = {
+                                "rel_times": np.array(shared_rel_times),
+                                "orders":    orders,
+                            }
 
         n = len(self.data["frame_cache"])
         log.debug(f"Loaded {n} frames from {target}")
@@ -709,147 +800,3 @@ class DataCollector:
 
         self.init_trend_channels()
         self.reprocess_last_block()
-
-    # ------------------------------------------------------------------
-    # Private HDF5 format readers
-    # ------------------------------------------------------------------
-
-    def _load_v3(self, f: "h5py.File", decode) -> None:
-        """Read v3 format: structured /metadata group, sensor library, shared trend axis."""
-        meta_grp = f["metadata"]
-        self.notes = decode(meta_grp.attrs.get("notes", ""))
-
-        # Acquisition settings — replace config wholesale; channel dicts populated below
-        if "acquisition" in meta_grp:
-            acq_dict = {k: (None if v == "" else v) for k, v in meta_grp["acquisition"].attrs.items()}
-            self.config = vibechecker.AcquisitionSettings.from_dict(acq_dict)
-
-        # Scope sensor library — {sensor_id: dict}
-        if "scope_sensors" in meta_grp:
-            for sid, sg in meta_grp["scope_sensors"].items():
-                d: dict = {}
-                for k, v in sg.attrs.items():
-                    if isinstance(v, (bytes, np.bytes_)):
-                        d[k] = v.decode()
-                    elif isinstance(v, (np.integer,)):
-                        d[k] = int(v)
-                    elif isinstance(v, (np.floating,)):
-                        d[k] = float(v)
-                    else:
-                        d[k] = v
-                d["id"] = sid  # ensure id matches group name
-                self._loaded_scope_sensors[sid] = d
-
-        # Channel metadata — restore names, target units, and sensor configs
-        ch_units: dict[int, str] = {}
-        if "channels" in meta_grp:
-            for ch_str, cg in meta_grp["channels"].items():
-                ch = int(ch_str)
-                name = decode(cg.attrs.get("name", ""))
-                unit = decode(cg.attrs.get("unit", "mV"))
-                target_unit = decode(cg.attrs.get("target_unit", ""))
-                sensor_id = decode(cg.attrs.get("scope_sensor_id", ""))
-                coupling = decode(cg.attrs.get("coupling", "AC"))
-                voltage_range = int(cg.attrs.get("voltage_range", 7))
-                amplitude_mode = decode(cg.attrs.get("amplitude_mode", ""))
-                if name:
-                    self.config.channel_names[ch] = name
-                if target_unit:
-                    self.config.channel_target_units[ch] = target_unit
-                if amplitude_mode:
-                    self.config.channel_amplitude_modes[ch] = amplitude_mode
-                self.config.channel_couplings[ch] = coupling
-                self.config.channel_voltage_ranges[ch] = voltage_range
-                ch_units[ch] = unit
-                if sensor_id and sensor_id in self._loaded_scope_sensors:
-                    self._loaded_channel_sensor_configs[ch] = dict(self._loaded_scope_sensors[sensor_id])
-                else:
-                    self._loaded_channel_sensor_configs[ch] = {}
-
-        # Frames
-        if "frames" not in f:
-            return
-        for idx in sorted(f["frames"].keys(), key=int):
-            fg = f["frames"][idx]
-            ts_str = decode(fg.attrs["timestamp"])
-            rel_time = float(fg.attrs["rel_time"])
-            samplerate = int(fg.attrs["samplerate"])
-            status = decode(fg.attrs["status"])
-            try:
-                timestamp = datetime.fromisoformat(ts_str)
-            except (ValueError, TypeError):
-                timestamp = datetime.now()
-
-            frame_samples: dict[int, vibechecker.VibeSample] = {}
-            for ch_str, cg in fg.items():
-                if not ch_str.isdigit():
-                    continue
-                ch = int(ch_str)
-                data = np.ascontiguousarray(cg["data"][()], dtype=np.float64)
-                # v3 files stored EU-converted data; load as-is with recorded unit
-                unit = ch_units.get(ch, "mV")
-                frame_samples[ch] = vibechecker.VibeSample(
-                    status=status, _timestamp=timestamp, samplerate=samplerate,
-                    unit=unit, overflow=False, data=data, rel_time=rel_time,
-                )
-            self.data["frame_cache"].append(frame_samples)
-
-        # Trend — store in temporary key; load_data() promotes to self.trend
-        if "trend" in f:
-            trend_grp = f["trend"]
-            shared_rel_times: list = []
-            if "rel_times" in trend_grp:
-                shared_rel_times = list(np.array(trend_grp["rel_times"][()]))
-            v3_trend: dict = {}
-            for ch_str, tg in trend_grp.items():
-                if not ch_str.isdigit():
-                    continue
-                v3_trend[int(ch_str)] = {
-                    "rel_times": shared_rel_times,
-                    "overall":   list(np.array(tg["data"][()])),
-                }
-            self.data["_trend_v3"] = v3_trend
-
-    def _load_v4(self, f: "h5py.File", decode) -> None:
-        """Read v4 format: raw mV frames, per-channel (M,5) trend matrix."""
-        # Metadata loading is identical to v3
-        self._load_v3(f, decode)
-        # _load_v3 stored trend in data["_trend_v3"] — discard it for v4 files
-        self.data.pop("_trend_v3", None)
-
-        # Overwrite frames with unit='mV' (v3 loader used ch_units which may be EU)
-        # Re-load frames directly
-        self.data["frame_cache"].clear()
-        if "frames" in f:
-            for idx in sorted(f["frames"].keys(), key=int):
-                fg = f["frames"][idx]
-                ts_str    = decode(fg.attrs["timestamp"])
-                rel_time  = float(fg.attrs["rel_time"])
-                samplerate = int(fg.attrs["samplerate"])
-                status    = decode(fg.attrs["status"])
-                try:
-                    timestamp = datetime.fromisoformat(ts_str)
-                except (ValueError, TypeError):
-                    timestamp = datetime.now()
-                frame_samples: dict[int, vibechecker.VibeSample] = {}
-                for ch_str, cg in fg.items():
-                    if not ch_str.isdigit():
-                        continue
-                    ch   = int(ch_str)
-                    data = np.ascontiguousarray(cg["data"][()], dtype=np.float64)
-                    frame_samples[ch] = vibechecker.VibeSample(
-                        status=status, _timestamp=timestamp, samplerate=samplerate,
-                        unit='mV', overflow=False, data=data, rel_time=rel_time,
-                    )
-                self.data["frame_cache"].append(frame_samples)
-
-        # Trend — per-channel (M,5) orders matrix + rel_times
-        if "trend" in f:
-            for ch_str, cg in f["trend"].items():
-                if not ch_str.isdigit():
-                    continue
-                ch = int(ch_str)
-                self.trend[ch] = {
-                    "rel_times": np.array(cg["rel_times"][()], dtype=np.float64),
-                    "orders":    np.array(cg["orders"][()],    dtype=np.float64),
-                }
