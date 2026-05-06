@@ -1768,6 +1768,7 @@ class GUI:
                         with dpg.child_window(height=-1, no_scrollbar=True, border=False):
                             with dpg.group(horizontal=True):
                                 with dpg.child_window(width=_SREG_LIST_W, height=-1):
+                                    dpg.add_text("Sensor Library")
                                     dpg.add_listbox(
                                         items=self.registry.names(),
                                         tag=ui.SCOPE_REGISTRY_LIST,
@@ -1790,6 +1791,7 @@ class GUI:
                                             width=-1,
                                         )
                                 with dpg.child_window(autosize_x=True, height=-1):
+                                    dpg.add_text("Sensor Configuration")
                                     dpg.add_input_text(label="Name", tag=ui.SREG_FIELD_NAME, width=_SREG_FIELD_W)
                                     dpg.add_combo(
                                         label="Source EU",
@@ -1810,6 +1812,7 @@ class GUI:
                         with dpg.child_window(autosize_x=True, height=-1):
                             _w = 160
                             # Control: Freq. Range
+                            dpg.add_text("Acquisition Sample Rate")
                             dpg.add_combo(
                                 label="Freq. Range",
                                 tag=ui.ACQ_DLG_MAXFREQ,
@@ -1819,8 +1822,10 @@ class GUI:
                             )
                             # Derived: Sample Rate
                             dpg.add_input_text(label="Sample Rate", tag=ui.ACQ_DLG_SAMPLERATE, readonly=True, width=_w)
+
                             # Control: Freq. Resolution
                             dpg.add_separator()
+                            dpg.add_text("Acqusition Sample Count")
                             dpg.add_combo(
                                 label="Freq. Resolution",
                                 tag=ui.ACQ_DLG_BINSIZE,
@@ -1834,8 +1839,25 @@ class GUI:
                             )
                             # Derived: Acquisition Time
                             dpg.add_input_text(label="Acq. Time", tag=ui.ACQ_DLG_ACQ_TIME, readonly=True, width=_w)
+                            
+                            dpg.add_separator()
+                            dpg.add_text("Signal Conditioning")
+                            # Control: Highpass filter
+                            with dpg.group(horizontal=True):
+                                dpg.add_checkbox(label="Highpass", tag=ui.ACQ_DLG_HP_ENABLED, default_value=True)
+                                dpg.add_input_float(
+                                    label="Hz", tag=ui.ACQ_DLG_HP_FC, default_value=10.0, min_value=0.1, width=100
+                                )
+                            # Control: Lowpass filter
+                            with dpg.group(horizontal=True):
+                                dpg.add_checkbox(label="Lowpass", tag=ui.ACQ_DLG_LP_ENABLED, default_value=False)
+                                dpg.add_input_float(
+                                    label="Hz", tag=ui.ACQ_DLG_LP_FC, default_value=1000.0, min_value=1.0, width=100
+                                )
+
                             # Control: Frame cache depth
                             dpg.add_separator()
+                            dpg.add_text("Recording Length")
                             dpg.add_input_int(
                                 label="Cache Frames",
                                 tag=ui.ACQ_DLG_CACHE_FRAMES,
@@ -1849,8 +1871,9 @@ class GUI:
                             dpg.add_input_text(label="Rec. Window", tag=ui.ACQ_DLG_REC_WINDOW, readonly=True, width=_w)
                             # Derived: Total memory (mem_per_ch × n_enabled × cache_frames)
                             dpg.add_input_text(label="Memory", tag=ui.ACQ_DLG_MEMORY, readonly=True, width=_w)
+
                             dpg.add_separator()
-                            dpg.add_text("FFT Controls")
+                            dpg.add_text("FFT Conditioning")
                             # Control: Welch % Overlap
                             dpg.add_input_float(
                                 label="Welch Overlap %",
@@ -1868,19 +1891,6 @@ class GUI:
                                 default_value="hann",
                                 width=_w,
                             )
-                            dpg.add_separator()
-                            # Control: Highpass filter
-                            with dpg.group(horizontal=True):
-                                dpg.add_checkbox(label="Highpass", tag=ui.ACQ_DLG_HP_ENABLED, default_value=True)
-                                dpg.add_input_float(
-                                    label="Hz", tag=ui.ACQ_DLG_HP_FC, default_value=10.0, min_value=0.1, width=100
-                                )
-                            # Control: Lowpass filter
-                            with dpg.group(horizontal=True):
-                                dpg.add_checkbox(label="Lowpass", tag=ui.ACQ_DLG_LP_ENABLED, default_value=False)
-                                dpg.add_input_float(
-                                    label="Hz", tag=ui.ACQ_DLG_LP_FC, default_value=1000.0, min_value=1.0, width=100
-                                )
 
                     # ── Signal Generator tab ────────────────────────────────
                     with dpg.tab(label="Generate", tag=ui.CONFIG_TAB_SIGGEN):
