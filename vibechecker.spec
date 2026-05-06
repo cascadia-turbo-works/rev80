@@ -35,7 +35,7 @@ hidden_imports = [
     'h5py._proxy',
     'numpy',
     'dearpygui.dearpygui',
-    'pyyaml',
+    'yaml',
     # plyer platform detection is dynamic; bundle all backends explicitly
     *collect_submodules('plyer'),
     # win32com is loaded dynamically by plyer's Windows filechooser backend
