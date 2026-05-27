@@ -255,8 +255,11 @@ v4 with per-channel orders matrix; v3 files loaded in best-effort degraded mode.
 
 | Date | Commit | Description |
 |------|--------|-------------|
-| 2026-05-XX | TBD | refactor/mv-domain-trend — mV pipeline, 5-order trend, HDF5 v4 |
-| 2026-05-XX | TBD | feat/cache-depth — configurable frame cache with recording-window and total-memory display; Acquisition tab rename |
+| 2026-05-05 | `0c76c9a` | refactor: mV-domain VibeSample + 5-order trend reflow |
+| 2026-05-05 | `5fcf09a` | refactor(gui): simplify display loop via process_samples() |
+| 2026-05-05 | `3717286` | test: update for mV-domain pipeline |
+| 2026-05-05 | `0a1b38c` | feat(gui): configurable frame cache depth with recording-window display |
+| 2026-05-27 | `90a97c6` | feat(picoscope): enumerate all connected scopes; hardware channel count probe |
 
 ### Requirements added in Phase 4
 
