@@ -16,6 +16,21 @@ from vibechecker.scope_sensor import ScopeSensor
 
 log = vibechecker.get_logger("collector")
 
+
+def _write_channel_group(h5_grp, ch: int, sample: 'vibechecker.VibeSample') -> None:
+    """Write one VibeSample's mV data into an h5py group.
+
+    Used by both DataCollector.save_data() and MonitorWriterThread.
+    """
+    cg = h5_grp.create_group(str(ch))
+    cg.create_dataset('data', data=np.asarray(sample.data, dtype=np.float64))
+    cg.attrs['timestamp']  = sample.timestamp
+    cg.attrs['rel_time']   = float(sample.rel_time)
+    cg.attrs['samplerate'] = int(sample.samplerate)
+    cg.attrs['status']     = str(sample.status)
+    cg.attrs['overflow']   = bool(sample.overflow)
+
+
 class DataCollector:
     """Collect, filter, cache, and persist multi-channel vibration data.
 
@@ -640,7 +655,7 @@ class DataCollector:
                 fg.attrs["samplerate"] = first.samplerate
                 fg.attrs["status"] = first.status
                 for ch, sample in ch_only.items():
-                    fg.create_group(str(ch)).create_dataset("data", data=sample.data)
+                    _write_channel_group(fg, ch, sample)
 
             # ── /trend ─────────────────────────────────────────────────
             # Each channel has its own rel_times axis + (M,5) orders matrix.

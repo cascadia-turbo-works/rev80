@@ -213,6 +213,21 @@ class UI_Elements:
     CONFIG_TAB_SENSORS   = 'CONFIG_TAB_SENSORS'
     CONFIG_TAB_ACQUISITION = 'CONFIG_TAB_ACQUISITION'
     CONFIG_TAB_SIGGEN    = 'CONFIG_TAB_SIGGEN'
+    CONFIG_TAB_MONITOR   = 'CONFIG_TAB_MONITOR'
+
+    # Monitor Mode card (left panel)
+    MONITOR_CARD         = 'MONITOR_CARD'
+    MONITOR_ARM_BTN      = 'MONITOR_ARM_BTN'
+    MONITOR_STATUS_TEXT  = 'MONITOR_STATUS_TEXT'
+    MONITOR_SUMMARY_BTN  = 'MONITOR_SUMMARY_BTN'
+
+    # Monitor config dialog inputs
+    MON_DLG_INTERVAL     = 'MON_DLG_INTERVAL'
+    MON_DLG_PRE_BUFFER   = 'MON_DLG_PRE_BUFFER'
+    MON_DLG_BURST_DUR    = 'MON_DLG_BURST_DUR'
+    MON_DLG_OUTPUT_DIR   = 'MON_DLG_OUTPUT_DIR'
+    MON_DLG_COMPRESS     = 'MON_DLG_COMPRESS'
+    MON_DLG_ESTIMATE     = 'MON_DLG_ESTIMATE'
 
     # Signal generator dialog inputs
     SIGGEN_ENABLED       = 'SIGGEN_ENABLED'
@@ -357,3 +372,17 @@ class UI_Elements:
     @staticmethod
     def plt_trend_series(ch: int) -> str:
         return f'PLT_TREND_CH{ch}'
+
+
+# Monitor Mode capture interval presets (seconds → display label)
+MONITOR_INTERVAL_PRESETS: dict[int, str] = {
+    5:      '5 s',
+    30:     '30 s',
+    60:     '1 min',
+    300:    '5 min',
+    900:    '15 min',
+    3600:   '1 h',
+    21600:  '6 h',
+    86400:  '1 day',
+    172800: '2 days',
+}
