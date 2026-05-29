@@ -215,7 +215,8 @@ class UI_Elements:
     CONFIG_TAB_SIGGEN    = 'CONFIG_TAB_SIGGEN'
     CONFIG_TAB_MONITOR   = 'CONFIG_TAB_MONITOR'
 
-    # Monitor Mode card (left panel)
+    # Monitor Mode setup button + card (left panel)
+    BTN_MONITOR_SETUP    = 'BTN_MONITOR_SETUP'
     MONITOR_CARD         = 'MONITOR_CARD'
     MONITOR_ARM_BTN      = 'MONITOR_ARM_BTN'
     MONITOR_STATUS_TEXT  = 'MONITOR_STATUS_TEXT'

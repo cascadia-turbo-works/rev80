@@ -71,6 +71,7 @@ _CARD_H_ACQ = (
     _CARD_BASE_H + _CARD_BTN_H * 6 + _CARD_LINE_H * 10
 )  # Acquisition: 400 fixed — toggle+controls+spectrum info box
 _CARD_H_FILE = _CARD_BASE_H + _CARD_BTN_H + 125  # ≈ 252 (notes field)
+_CARD_H_MONITOR = _CARD_BASE_H + _CARD_BTN_H * 2 + _CARD_LINE_H * 4  # Arm btn + status lines
 
 
 def _c(key: str, alpha: int = 255) -> tuple:
@@ -140,6 +141,7 @@ class GUI:
         self.found_sensors: list = []
         self._autoscale_pending: bool = False  # True → autoscale on next frame
         self._was_streaming_before_config: bool = False  # stream state when config opened
+        self._monitor: vibechecker.MonitorController | None = None
 
     # ------------------------------------------------------------------
     # Status indicator helpers
@@ -455,6 +457,9 @@ class GUI:
                 height=_CARD_BASE_H + n_overflow * _CARD_LINE_H,
             )
 
+        if self._monitor is not None and self._monitor.is_armed:
+            self._monitor.on_results(results, self.collector.data["frame_cache"])
+
         self._update_trend_plot()
         self._update_browse_label()
         self._ensure_legends()
@@ -485,6 +490,8 @@ class GUI:
             return
         self.collector.new_frame_event.clear()
         self._display_frame()
+        if self._monitor is not None and self._monitor.is_armed:
+            self._update_monitor_card()
 
     def _redraw(self, sender=None, data=None):
         if not self.collector.is_streaming:
@@ -959,6 +966,8 @@ class GUI:
             self._init_sensor_registry_tab()
         elif tab_tag == ui.CONFIG_TAB_SIGGEN:
             self._populate_siggen_tab()
+        elif tab_tag == ui.CONFIG_TAB_MONITOR:
+            self._populate_monitor_tab()
 
     def _start_device_discovery(self, sender=None, data=None):
         """Clear device list, show placeholder, then discover in a background thread."""
@@ -1437,6 +1446,179 @@ class GUI:
             dpg.set_value(ui.SIGGEN_FREQ_HZ, float(cfg.get("freq_hz", 1000.0)))
             dpg.set_value(ui.SIGGEN_PKTOPK_MV, float(cfg.get("pktopk_uv", 0)) / 1000.0)
             dpg.set_value(ui.SIGGEN_OFFSET_MV, float(cfg.get("offset_uv", 0)) / 1000.0)
+
+    # ------------------------------------------------------------------
+    # Monitor Mode
+    # ------------------------------------------------------------------
+
+    def _populate_monitor_tab(self):
+        """Sync Monitor config tab widgets from current device config."""
+        if not dpg.does_item_exist(ui.MON_DLG_INTERVAL):
+            return
+        serial = self.collector.sensor.serial_number if self.collector.sensor else '__default__'
+        device_cfg = _cfg.load_device_config(serial)
+        mon = device_cfg.get('monitor', {})
+        interval_s  = float(mon.get('interval_s',      3600))
+        pre_buf_s   = float(mon.get('pre_buffer_s',      60))
+        burst_dur_s = float(mon.get('burst_duration_s',  60))
+        out_dir     = mon.get('output_dir') or ''
+        compress    = mon.get('compression', 'gzip') == 'gzip'
+
+        interval_label = vibechecker.MONITOR_INTERVAL_PRESETS.get(
+            int(interval_s),
+            vibechecker.MONITOR_INTERVAL_PRESETS[3600],
+        )
+        dpg.set_value(ui.MON_DLG_INTERVAL, interval_label)
+        dpg.set_value(ui.MON_DLG_PRE_BUFFER, pre_buf_s)
+        dpg.set_value(ui.MON_DLG_BURST_DUR, burst_dur_s)
+        dpg.set_value(ui.MON_DLG_OUTPUT_DIR, str(out_dir))
+        dpg.set_value(ui.MON_DLG_COMPRESS, compress)
+        self._on_monitor_config_change()
+
+    def _on_monitor_config_change(self, sender=None, data=None):
+        """Update the storage estimate label when Monitor config widgets change."""
+        if not dpg.does_item_exist(ui.MON_DLG_ESTIMATE):
+            return
+        interval_label = dpg.get_value(ui.MON_DLG_INTERVAL) if dpg.does_item_exist(ui.MON_DLG_INTERVAL) else '1 h'
+        interval_s = next(
+            (k for k, v in vibechecker.MONITOR_INTERVAL_PRESETS.items() if v == interval_label),
+            3600,
+        )
+        cfg         = self.collector.config
+        block_bytes = cfg.blocksize * cfg.n_channels * 8  # float64
+        compressed  = block_bytes * 0.5  # gzip ~50% compression
+        per_year    = (365 * 24 * 3600 / interval_s) * compressed
+        if per_year >= 1e9:
+            estimate = f"≈ {per_year/1e9:.1f} GiB/year"
+        else:
+            estimate = f"≈ {per_year/1e6:.0f} MiB/year"
+        if per_year > 50e9:
+            estimate += "  ⚠ exceeds 50 GiB"
+        dpg.set_value(ui.MON_DLG_ESTIMATE, estimate)
+
+    def _on_arm_toggle(self, sender=None, data=None):
+        if self._monitor is not None and self._monitor.is_armed:
+            self._disarm_monitor()
+        else:
+            self._arm_monitor()
+
+    def _arm_monitor(self):
+        """Create MonitorSession from dialog config and start the controller."""
+        from datetime import datetime, timezone
+        import re
+
+        if not self.collector.is_streaming:
+            return
+
+        # Read dialog config (fall back to defaults when dialog hasn't been opened)
+        interval_label = (
+            dpg.get_value(ui.MON_DLG_INTERVAL)
+            if dpg.does_item_exist(ui.MON_DLG_INTERVAL) else '1 h'
+        )
+        interval_s = next(
+            (k for k, v in vibechecker.MONITOR_INTERVAL_PRESETS.items()
+             if v == interval_label),
+            3600,
+        )
+        pre_buf_s  = float(dpg.get_value(ui.MON_DLG_PRE_BUFFER))  if dpg.does_item_exist(ui.MON_DLG_PRE_BUFFER)  else 60.0
+        burst_dur  = float(dpg.get_value(ui.MON_DLG_BURST_DUR))   if dpg.does_item_exist(ui.MON_DLG_BURST_DUR)   else 60.0
+        out_dir_s  = dpg.get_value(ui.MON_DLG_OUTPUT_DIR).strip()  if dpg.does_item_exist(ui.MON_DLG_OUTPUT_DIR)  else ''
+        compress   = dpg.get_value(ui.MON_DLG_COMPRESS)            if dpg.does_item_exist(ui.MON_DLG_COMPRESS)    else True
+
+        cfg          = self.collector.config
+        block_s      = cfg.blocksize / cfg.samplerate
+        pre_buffer_n = max(1, int(pre_buf_s / block_s)) if block_s > 0 else 1
+
+        now_utc   = datetime.now(timezone.utc)
+        serial    = (self.collector.sensor.serial_number if self.collector.sensor else 'sim')
+        safe_ser  = re.sub(r'[^a-zA-Z0-9_-]', '_', serial)
+        session_id = f"{now_utc.strftime('%Y-%m-%d-%H%M%S')}_{safe_ser}"
+
+        if out_dir_s:
+            output_dir = Path(out_dir_s) / session_id
+        else:
+            output_dir = vibechecker.data_dir() / 'monitor' / session_id
+
+        session = vibechecker.MonitorSession(
+            session_id        = session_id,
+            start_time        = now_utc,
+            interval_s        = float(interval_s),
+            pre_buffer_frames = pre_buffer_n,
+            burst_duration_s  = burst_dur,
+            max_burst_s       = 600.0,
+            output_dir        = output_dir,
+            compression       = 'gzip' if compress else 'none',
+            compression_level = 4,
+        )
+
+        # Enlarge frame cache to hold pre-trigger frames
+        needed = max(self.collector.config.cache_frames, pre_buffer_n)
+        self.collector.resize_frame_cache(needed)
+
+        if self._monitor is None:
+            self._monitor = vibechecker.MonitorController()
+        self._monitor.start(session)
+
+        self._update_monitor_card()
+        # Grey out config tabs while armed
+        for tab in (ui.CONFIG_TAB_DEVICE, ui.CONFIG_TAB_CHANNELS,
+                    ui.CONFIG_TAB_ACQUISITION, ui.CONFIG_TAB_SENSORS):
+            if dpg.does_item_exist(tab):
+                dpg.configure_item(tab, enabled=False)
+
+    def _disarm_monitor(self):
+        if self._monitor is not None:
+            self._monitor.stop()
+        # Restore frame cache to default depth
+        self.collector.resize_frame_cache(self.collector.config.cache_frames)
+        self._update_monitor_card()
+        for tab in (ui.CONFIG_TAB_DEVICE, ui.CONFIG_TAB_CHANNELS,
+                    ui.CONFIG_TAB_ACQUISITION, ui.CONFIG_TAB_SENSORS):
+            if dpg.does_item_exist(tab):
+                dpg.configure_item(tab, enabled=True)
+
+    def _update_monitor_card(self):
+        """Refresh the Monitor card label and status text from controller state."""
+        if not dpg.does_item_exist(ui.MONITOR_ARM_BTN):
+            return
+        if self._monitor is not None and self._monitor.is_armed:
+            snap   = self._monitor.status_snapshot()
+            elapsed = snap['elapsed_s']
+            h, rem = divmod(int(elapsed), 3600)
+            m, s   = divmod(rem, 60)
+            count  = snap['capture_count']
+            nxt    = snap['next_capture_s']
+            err    = snap['error']
+            status = (
+                f"● REC  {h:02d}:{m:02d}:{s:02d}\n"
+                f"Captures: {count}  Next: {nxt:.0f}s"
+            )
+            if err:
+                status += f"\n⚠ {err[:40]}"
+            dpg.set_item_label(ui.MONITOR_ARM_BTN, "Disarm")
+            dpg.set_value(ui.MONITOR_STATUS_TEXT, status)
+            if dpg.does_item_exist(ui.MONITOR_SUMMARY_BTN):
+                dpg.configure_item(ui.MONITOR_SUMMARY_BTN, enabled=True)
+        else:
+            dpg.set_item_label(ui.MONITOR_ARM_BTN, "Arm")
+            dpg.set_value(ui.MONITOR_STATUS_TEXT, "Disarmed")
+            if dpg.does_item_exist(ui.MONITOR_SUMMARY_BTN):
+                dpg.configure_item(ui.MONITOR_SUMMARY_BTN, enabled=False)
+
+    def _on_monitor_summary(self, sender=None, data=None):
+        """Open the session output directory in the system file manager."""
+        if self._monitor is None or self._monitor._session is None:
+            return
+        out = self._monitor._session.output_dir
+        import subprocess
+        import sys
+        try:
+            if sys.platform == 'win32':
+                subprocess.Popen(['explorer', str(out)])
+            else:
+                subprocess.Popen(['xdg-open', str(out)])
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Sensor Registry Dialog
@@ -1933,6 +2115,59 @@ class GUI:
                             dpg.add_spacer(height=6)
                             dpg.add_text("Note: Only active on PicoScope hardware.", color=_c("ON_SURFACE"))
 
+                    # ── Monitor tab ─────────────────────────────────────────
+                    with dpg.tab(label="Monitor", tag=ui.CONFIG_TAB_MONITOR):
+                        with dpg.child_window(autosize_x=True, height=-1):
+                            _mon_w = 220
+                            dpg.add_text("Monitor Mode — Interval Datalogger")
+                            dpg.add_separator()
+                            dpg.add_combo(
+                                label="Capture interval",
+                                tag=ui.MON_DLG_INTERVAL,
+                                items=list(vibechecker.MONITOR_INTERVAL_PRESETS.values()),
+                                default_value="1 h",
+                                width=_mon_w,
+                                callback=self._on_monitor_config_change,
+                            )
+                            dpg.add_input_float(
+                                label="Pre-trigger buffer (s)",
+                                tag=ui.MON_DLG_PRE_BUFFER,
+                                default_value=60.0,
+                                min_value=0.0,
+                                max_value=3600.0,
+                                width=_mon_w,
+                                callback=self._on_monitor_config_change,
+                            )
+                            dpg.add_input_float(
+                                label="Burst duration (s)",
+                                tag=ui.MON_DLG_BURST_DUR,
+                                default_value=60.0,
+                                min_value=1.0,
+                                max_value=600.0,
+                                width=_mon_w,
+                                callback=self._on_monitor_config_change,
+                            )
+                            dpg.add_spacer(height=6)
+                            dpg.add_separator()
+                            dpg.add_text("Output directory", color=_c("ON_SURFACE"))
+                            dpg.add_input_text(
+                                tag=ui.MON_DLG_OUTPUT_DIR,
+                                default_value="",
+                                hint="Default: DEVDATA/monitor/",
+                                width=-1,
+                                callback=self._on_monitor_config_change,
+                            )
+                            dpg.add_spacer(height=4)
+                            dpg.add_checkbox(
+                                label="gzip compression",
+                                tag=ui.MON_DLG_COMPRESS,
+                                default_value=True,
+                                callback=self._on_monitor_config_change,
+                            )
+                            dpg.add_spacer(height=6)
+                            dpg.add_separator()
+                            dpg.add_text("", tag=ui.MON_DLG_ESTIMATE, color=_c("ON_SURFACE"))
+
             dpg.add_separator()
             dpg.add_button(label="Close", callback=self._on_config_close, width=-1)
 
@@ -1993,6 +2228,12 @@ class GUI:
                         label="Signal Generator",
                         tag=ui.BTN_SIGGEN_SETUP,
                         callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_SIGGEN),
+                        width=-1,
+                    )
+                    dpg.add_button(
+                        label="Monitor Setup",
+                        tag=ui.BTN_MONITOR_SETUP,
+                        callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_MONITOR),
                         width=-1,
                     )
                     # ── Device ───────────────────────────────────────
@@ -2106,6 +2347,29 @@ class GUI:
                             dpg.add_button(
                                 label="Load", tag=ui.FILE_LOAD, callback=self._on_load_click, width=_BTN_HALF
                             )
+
+                    dpg.add_spacer(height=6)
+
+                    # ── Monitor Mode ──────────────────────────────────
+                    with dpg.child_window(
+                        border=True, autosize_x=True, height=_CARD_H_MONITOR,
+                        no_scrollbar=True, tag=ui.MONITOR_CARD,
+                    ) as _s_mon:
+                        dpg.bind_item_theme(_s_mon, self._sect_theme)
+                        dpg.add_text("Monitor Mode")
+                        dpg.add_separator()
+                        dpg.add_button(
+                            label="Arm", tag=ui.MONITOR_ARM_BTN,
+                            callback=self._on_arm_toggle, width=-1, height=32,
+                        )
+                        dpg.add_spacer(height=2)
+                        dpg.add_text("Disarmed", tag=ui.MONITOR_STATUS_TEXT,
+                                     color=_c("ON_SURFACE"))
+                        dpg.add_spacer(height=4)
+                        dpg.add_button(
+                            label="Save Summary", tag=ui.MONITOR_SUMMARY_BTN,
+                            callback=self._on_monitor_summary, width=-1, enabled=False,
+                        )
 
                 # ── Main column (center — plots) ──────────────────────
                 with dpg.child_window(width=-RESULTS_WIDTH, autosize_y=True, no_scrollbar=True):
