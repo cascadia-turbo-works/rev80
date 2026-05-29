@@ -45,6 +45,15 @@ _BUILTIN_DEFAULTS: dict[str, Any] = {
         'trend_max_points': 500,
         'cache_frames':     DEFAULT_CACHE_FRAMES,
     },
+    'monitor': {
+        'interval_s':       3600,
+        'pre_buffer_s':     60,
+        'burst_duration_s': 60,
+        'max_burst_s':      600,
+        'output_dir':       None,     # None → DEVDATA/monitor/
+        'compression':      'gzip',
+        'compression_level': 4,
+    },
 }
 
 
@@ -173,5 +182,11 @@ def _merge_with_defaults(data: dict[str, Any]) -> dict[str, Any]:
         acq = copy.deepcopy(_BUILTIN_DEFAULTS['acquisition'])
         acq.update(data['acquisition'])
         result['acquisition'] = acq
+
+    # monitor: fill missing keys from built-in defaults
+    if 'monitor' in data and isinstance(data['monitor'], dict):
+        mon = copy.deepcopy(_BUILTIN_DEFAULTS['monitor'])
+        mon.update(data['monitor'])
+        result['monitor'] = mon
 
     return result

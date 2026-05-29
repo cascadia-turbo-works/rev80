@@ -25,3 +25,4 @@ from vibechecker.sensor import VibeSensor  # noqa: F401
 from vibechecker.simulation import GenerateTone, SimulatedSensor  # noqa: F401
 from vibechecker.collector import DataCollector  # noqa: F401
 from vibechecker.gui import GUI  # noqa: F401
+from vibechecker.monitor import MonitorController, MonitorSession  # noqa: F401
