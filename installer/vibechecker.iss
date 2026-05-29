@@ -14,7 +14,7 @@
 ;   installer\Output\VibecheckerSetup-x.y.z.exe
 
 #define AppName      "Vibechecker"
-#define AppVersion   "0.1.0"
+#include "version.iss"
 #define AppPublisher "Rev Engineering"
 #define AppCopyright "Copyright (c) 2026 Rev Engineering. Author: Henry Gotjen."
 #define AppExeName   "vibechecker.exe"

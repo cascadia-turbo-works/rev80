@@ -3,17 +3,6 @@
 # Provides:
 #   FindPicoScope()      — enumerate connected PS4000A devices
 #   PicoScopeStream      — streaming thread that replaces sounddevice.InputStream
-#
-# Data contract with DataCollector.receive_data:
-#   callback(dict) where dict keys are:
-#     status    : str  — 'OKAY' | 'OVERFLOW'
-#     rel_time  : float — seconds since stream started
-#     timestamp : datetime
-#     unit      : list[str] — ['mV']
-#     data      : np.ndarray shape (blocksize, 1), dtype float64, values in mV
-#
-# Phase 1: raw voltage only. Engineering-unit conversion (sensitivity, modality)
-# is deferred to Phase 2 via SensorConfig.
 
 import ctypes
 import threading
@@ -40,7 +29,7 @@ _PICO_BATCH_AND_SERIAL  = 4   # batch + serial string e.g. "CMY12/345"
 _DRIVER_BUFFER_SAMPLES = 1000
 
 # Device open / reconnect tuning
-_MAX_OPEN_ATTEMPTS      = 5     # retries for ps4000aOpenUnit at detection / start
+_MAX_OPEN_ATTEMPTS      = 2     # retries for ps4000aOpenUnit at detection / start
 _OPEN_RETRY_DELAY_S     = 1.0   # seconds between open attempts
 _NOT_RESPONDING_DELAY_S = 2.0   # longer pause after PICO_NOT_RESPONDING (device resetting)
 
@@ -101,16 +90,81 @@ def _open_unit(chandle) -> bool:
     return False
 
 
-def _channels_for_model(model: str) -> int:
-    """Return the number of input channels for a PS4000A model string."""
-    m = model.upper().replace(' ', '')
-    if any(m.startswith(p) for p in ('4824',)):
-        return 8
-    if any(m.startswith(p) for p in ('4444', '4461', '4462', '4463', '4464')):
-        return 4
-    if any(m.startswith(p) for p in ('4225', '4226', '4227', '4262', '4264')):
-        return 2
-    return 2   # safe default for unrecognised variants
+def _probe_channel_count(chandle) -> int:
+    """Probe the open device to count available input channels.
+
+    Calls ps4000aSetChannel for channels A–H and counts how many succeed.
+    An invalid channel returns a non-zero status without raising; the device
+    is left with all channels disabled (caller re-configures on stream start).
+    Falls back to 2 if every probe call fails unexpectedly.
+    """
+    # PS4000A channel enum: A=0, B=1, … H=7
+    # Disable the channel (enabled=0) with a nominal range — we just need to
+    # know whether the channel exists, not to capture data from it.
+    _RANGE_2V = 7    # PS4000A_2V — a safe mid-range value present on all variants
+    count = 0
+    for ch in range(8):
+        status = ps.ps4000aSetChannel(
+            chandle,
+            ctypes.c_int32(ch),    # channel enum
+            ctypes.c_int16(0),     # enabled = False
+            ctypes.c_int32(1),     # coupling: AC = 1
+            ctypes.c_int32(_RANGE_2V),
+            ctypes.c_float(0.0),   # analogue offset
+        )
+        if status == 0:            # PICO_OK → channel exists
+            count += 1
+        else:
+            break                  # channels are contiguous; first failure ends the range
+    return max(count, 2)           # at least 2 for unrecognised responses
+
+
+def _enumerate_serials() -> list[str]:
+    """Return serial numbers for all connected PS4000A devices."""
+    count      = ctypes.c_int16(0)
+    serial_buf = ctypes.create_string_buffer(256)
+    serial_len = ctypes.c_int16(256)
+    status = ps.ps4000aEnumerateUnits(
+        ctypes.byref(count), serial_buf, ctypes.byref(serial_len)
+    )
+    if status != 0 or count.value == 0:
+        return []
+    raw = serial_buf.value.decode('utf-8', errors='replace').strip()
+    return [s.strip() for s in raw.split(',') if s.strip()]
+
+
+def _open_unit_by_serial(chandle, serial: str) -> bool:
+    """Open a specific PS4000A by serial number with USB-power handling."""
+    _PICO_NOT_RESPONDING = 14
+    serial_bytes = serial.encode('utf-8')
+
+    for attempt in range(1, _MAX_OPEN_ATTEMPTS + 1):
+        raw_status = ps.ps4000aOpenUnit(ctypes.byref(chandle), serial_bytes)
+
+        if raw_status in (282, 286):
+            chg = ps.ps4000aChangePowerSource(chandle, raw_status)
+            try:
+                assert_pico_ok(chg)
+                return True
+            except Exception as e:
+                log.warning(f'PicoScope {serial}: power-source change failed (attempt {attempt}): {e}')
+                try:
+                    ps.ps4000aCloseUnit(chandle)
+                except Exception:
+                    pass
+                delay = _NOT_RESPONDING_DELAY_S if chg == _PICO_NOT_RESPONDING else _OPEN_RETRY_DELAY_S
+        else:
+            try:
+                assert_pico_ok(raw_status)
+                return True
+            except Exception as e:
+                log.info(f'PicoScope {serial}: open failed (attempt {attempt}, status={raw_status}): {e}')
+            delay = _OPEN_RETRY_DELAY_S
+
+        if attempt < _MAX_OPEN_ATTEMPTS:
+            time.sleep(delay)
+
+    return False
 
 
 def FindPicoScope() -> list:
@@ -120,36 +174,52 @@ def FindPicoScope() -> list:
     Returns a list of dicts compatible with VibeSensor(**dev), one entry per
     detected unit.  Returns an empty list if no scope is found (does not raise).
     """
-    chandle = ctypes.c_int16()
-    if not _open_unit(chandle):
-        log.info('FindPicoScope: no scope detected after retries')
-        return []
-
-    def _query_info(info_id: int) -> str:
+    serials = _enumerate_serials()
+    if not serials:
+        # Fall back to open-any if enumeration yields nothing (driver quirk on first plug-in)
+        chandle = ctypes.c_int16()
+        if not _open_unit(chandle):
+            log.info('FindPicoScope: no scope detected')
+            return []
         buf      = ctypes.create_string_buffer(32)
         req_size = ctypes.c_int16(0)
         ps.ps4000aGetUnitInfo(chandle, buf, ctypes.c_int16(32),
-                              ctypes.byref(req_size), ctypes.c_uint32(info_id))
-        return buf.value.decode('utf-8', errors='replace').strip()
+                              ctypes.byref(req_size), ctypes.c_uint32(_PICO_BATCH_AND_SERIAL))
+        serials = [buf.value.decode('utf-8', errors='replace').strip()]
+        ps.ps4000aCloseUnit(chandle)
 
-    model  = _query_info(_PICO_VARIANT_INFO)
-    serial = _query_info(_PICO_BATCH_AND_SERIAL)
-    num_ch = _channels_for_model(model)
+    devices = []
+    for serial in serials:
+        chandle = ctypes.c_int16()
+        if not _open_unit_by_serial(chandle, serial):
+            log.warning(f'FindPicoScope: could not open {serial}, skipping')
+            continue
 
-    ps.ps4000aCloseUnit(chandle)   # PicoScopeStream re-opens on .start()
-    log.info(f'FindPicoScope: found PicoScope {model} s/n {serial} ({num_ch} ch)')
+        def _query_info(info_id: int) -> str:
+            buf      = ctypes.create_string_buffer(32)
+            req_size = ctypes.c_int16(0)
+            ps.ps4000aGetUnitInfo(chandle, buf, ctypes.c_int16(32),
+                                  ctypes.byref(req_size), ctypes.c_uint32(info_id))
+            return buf.value.decode('utf-8', errors='replace').strip()
 
-    return [{
-        'device_id':     'ps4000a',
-        'model_name':    f'PicoScope {model}',
-        'serial_number': serial,
-        'build_date':    datetime.now(),
-        'format_id':     0,
-        'num_channels':  num_ch,
-        'sensitivity':   [1.0] * num_ch,   # raw voltage pass-through
-        'scale':         [1.0] * num_ch,   # ADC→mV handled inside PicoScopeStream
-        'unit':          ['mV'] * num_ch,
-    }]
+        model  = _query_info(_PICO_VARIANT_INFO)
+        num_ch = _probe_channel_count(chandle)
+        ps.ps4000aCloseUnit(chandle)
+        log.info(f'FindPicoScope: found PicoScope {model} s/n {serial} ({num_ch} ch)')
+
+        devices.append({
+            'device_id':     'ps4000a',
+            'model_name':    f'PicoScope {model}',
+            'serial_number': serial,
+            'build_date':    datetime.now(),
+            'format_id':     0,
+            'num_channels':  num_ch,
+            'sensitivity':   [1.0] * num_ch,   # raw voltage pass-through
+            'scale':         [1.0] * num_ch,   # ADC→mV handled inside PicoScopeStream
+            'unit':          ['mV'] * num_ch,
+        })
+
+    return devices
 
 
 class PicoScopeStream:
@@ -174,7 +244,7 @@ class PicoScopeStream:
       channel per stream start; inhibit resets when settings change.
     """
 
-    def __init__(self, config, callback, siggen_config: dict | None = None):
+    def __init__(self, config, callback, serial: str = '', siggen_config: dict | None = None):
         """
         Parameters
         ----------
@@ -182,6 +252,9 @@ class PicoScopeStream:
             Provides samplerate, blocksize, voltage_range, coupling.
         callback : callable
             DataCollector.receive_data — called with sample dict on each block.
+        serial : str
+            Serial number used to open the correct device when multiple scopes
+            are connected.  Empty string falls back to open-any behaviour.
         siggen_config : dict | None
             Optional signal generator parameters applied on every start().
             Keys: freq_hz (float), pktopk_uv (int), offset_uv (int),
@@ -189,6 +262,7 @@ class PicoScopeStream:
             Intended for hardware testing (siggen loopback) and calibration.
         """
         self.config        = config
+        self._serial       = serial
         self._app_callback = callback
         self._siggen_config = siggen_config
 
@@ -235,6 +309,7 @@ class PicoScopeStream:
 
         self._open_device()
         self._configure_channel()
+        self._setup_siggen()
         self._start_streaming()
 
         # Reset accumulator and watchdog state
@@ -297,7 +372,9 @@ class PicoScopeStream:
     def _open_device(self):
         if self._device_open:
             return
-        if not _open_unit(self._chandle):
+        ok = (_open_unit_by_serial(self._chandle, self._serial) if self._serial
+              else _open_unit(self._chandle))
+        if not ok:
             raise RuntimeError(
                 f'PicoScope: could not open device after {_MAX_OPEN_ATTEMPTS} attempts'
             )
@@ -420,8 +497,6 @@ class PicoScopeStream:
                   f'{cfg["pktopk_uv"]} µV pk-pk')
 
     def _start_streaming(self):
-        # Configure signal generator if requested (before streaming starts)
-        self._setup_siggen()
 
         # Register a rolling buffer for each enabled channel.
         # Use ch directly as the channel enum value (A=0, B=1, …, H=7);
@@ -483,6 +558,8 @@ class PicoScopeStream:
                         f'PicoScopeStream: ADC overflow on Channel {chr(65 + ch)}'
                     )
                     self._overflow_warned.add(ch)
+                elif ch in self._overflow_warned:
+                    self._overflow_warned.remove(ch)
 
         # Convert ADC counts → mV for each enabled channel.
         # The driver treats the registered buffer as a circular ring, so
@@ -498,6 +575,7 @@ class PicoScopeStream:
                 first  = self._driver_buffers[ch][startIndex:buf_size]
                 second = self._driver_buffers[ch][0:end_idx - buf_size]
                 chunk_adc = np.concatenate([first, second])
+
             chunks_mv.append(np.array(
                 adc2mV(chunk_adc, self.config.voltage_range_for(ch), self._maxADC),
                 dtype=np.float64,
@@ -525,7 +603,7 @@ class PicoScopeStream:
             self._accumulator[:remainder] = self._accumulator[bs:self._acc_ptr]
             self._acc_ptr = remainder
 
-            rel_time = time.monotonic() - self._stream_start
+            rel_time = self._last_data_time - self._stream_start
             status   = 'OVERFLOW' if overflow else 'OKAY'
 
             samp = {
@@ -568,6 +646,7 @@ class PicoScopeStream:
             try:
                 self._open_device()   # calls _set_max_resolution internally
                 self._configure_channel()
+                self._setup_siggen()
                 self._start_streaming()
                 # Reset accumulator so stale partial data isn't carried forward
                 N = len(self._enabled_channels)

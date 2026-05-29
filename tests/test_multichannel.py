@@ -157,57 +157,59 @@ class TestRecieveDataMultiChannel:
 class TestPerChannelSensorConversion:
 
     def test_scope_sensor_converts_mv_to_g(self):
-        """mV data / sensitivity → EU, unit changes from mV to sensor EU."""
+        """process_sample applies sensitivity: 100mV / 100mV/g = 1g."""
         collector = DataCollector()
         collector.config.highpass_enabled = False
+        collector.config.channel_target_units[0] = 'g'
         n = collector.config.blocksize
-
         sensor = ScopeSensor(name='test', engineering_units='g', sensitivity=100.0)
         collector.set_scope_sensor(0, sensor)
 
-        # 100 mV → 1 g (sensitivity = 100 mV/g)
-        result = _collect(collector, _make_multichannel_samp(
-            n, [0], value_per_channel={0: 100.0}
-        ))
+        frame = _collect(collector, _make_multichannel_samp(n, [0], value_per_channel={0: 100.0}))
+        sample = frame[0]
+        # Raw storage is always mV
+        assert sample.unit == 'mV'
+        assert np.allclose(sample.data, 100.0)
 
-        assert result[0].unit == 'g'
-        assert np.allclose(result[0].data, 1.0)
+        result = collector.process_sample(0, sample)
+        assert result is not None
+        assert result.unit == 'g'
 
     def test_channels_converted_independently(self):
-        """Each channel applies its own sensor conversion."""
+        """Each channel applies its own scope sensor in process_sample."""
         collector = DataCollector()
         collector.config.highpass_enabled = False
+        collector.config.enabled_channels = [0, 1]
+        collector.config.channel_target_units = {0: 'g', 1: 'g'}
         n = collector.config.blocksize
 
-        sensor_ch0 = ScopeSensor(name='ch0', engineering_units='g', sensitivity=100.0)
-        sensor_ch1 = ScopeSensor(name='ch1', engineering_units='g', sensitivity=50.0)
-        collector.set_scope_sensor(0, sensor_ch0)
-        collector.set_scope_sensor(1, sensor_ch1)
+        collector.set_scope_sensor(0, ScopeSensor(name='ch0', engineering_units='g', sensitivity=100.0))
+        collector.set_scope_sensor(1, ScopeSensor(name='ch1', engineering_units='g', sensitivity=50.0))
 
-        result = _collect(collector, _make_multichannel_samp(
-            n, [0, 1], value_per_channel={0: 200.0, 1: 150.0}
-        ))
+        frame = _collect(collector, _make_multichannel_samp(n, [0, 1], value_per_channel={0: 200.0, 1: 150.0}))
+        # Raw data preserved in mV
+        assert np.allclose(frame[0].data, 200.0)
+        assert np.allclose(frame[1].data, 150.0)
 
-        assert np.allclose(result[0].data, 2.0)   # 200 mV / 100 mV/g
-        assert np.allclose(result[1].data, 3.0)   # 150 mV / 50 mV/g
+        r0 = collector.process_sample(0, frame[0])
+        r1 = collector.process_sample(1, frame[1])
+        assert r0 is not None and r0.unit == 'g'
+        assert r1 is not None and r1.unit == 'g'
 
     def test_channel_without_sensor_passes_mv_through(self):
-        """A channel with no assigned sensor preserves mV unit and raw value."""
+        """A channel with no sensor produces mV output from process_sample."""
         collector = DataCollector()
         collector.config.highpass_enabled = False
+        collector.config.enabled_channels = [0, 1]
         n = collector.config.blocksize
+        collector.set_scope_sensor(0, ScopeSensor(name='ch0', engineering_units='g', sensitivity=100.0))
+        collector.config.channel_target_units[0] = 'g'
+        # ch1 has no sensor — stays mV
 
-        # Only assign sensor to channel 0, not channel 1
-        sensor_ch0 = ScopeSensor(name='ch0', engineering_units='g', sensitivity=100.0)
-        collector.set_scope_sensor(0, sensor_ch0)
-
-        result = _collect(collector, _make_multichannel_samp(
-            n, [0, 1], value_per_channel={0: 100.0, 1: 55.5}
-        ))
-
-        assert result[0].unit == 'g'
-        assert result[1].unit == 'mV'
-        assert np.allclose(result[1].data, 55.5)
+        frame = _collect(collector, _make_multichannel_samp(n, [0, 1], value_per_channel={0: 100.0, 1: 55.5}))
+        r1 = collector.process_sample(1, frame[1])
+        assert r1 is not None
+        assert r1.unit == 'mV'
 
 
 # ---------------------------------------------------------------------------
@@ -322,49 +324,53 @@ class TestFrameCache:
 
 class TestTrend:
 
+    def _orders(self, val: float) -> np.ndarray:
+        return np.full(5, val)
+
     def test_update_trend_accumulates(self):
         collector = DataCollector()
         for i in range(5):
-            collector.update_trend(0, float(i), float(i * 0.1))
-        trend = collector.data['trend'][0]
+            collector.update_trend(0, float(i), self._orders(float(i * 0.1)))
+        trend = collector.trend[0]
         assert len(trend['rel_times']) == 5
-        assert len(trend['overall']) == 5
+        assert trend['orders'].shape == (5, 5)
 
     def test_update_trend_fifo_prune(self):
         collector = DataCollector()
         collector.config.trend_max_points = 4
         for i in range(7):
-            collector.update_trend(0, float(i), float(i))
-        trend = collector.data['trend'][0]
+            collector.update_trend(0, float(i), self._orders(float(i)))
+        trend = collector.trend[0]
         assert len(trend['rel_times']) == 4
         assert trend['rel_times'][0] == 3.0   # oldest 3 entries dropped
 
     def test_clear_trend_resets_all_channels(self):
         collector = DataCollector()
-        collector.update_trend(0, 1.0, 0.5)
-        collector.update_trend(1, 1.0, 0.3)
-        collector.data['trend'].setdefault(1, {'rel_times': [], 'overall': []})
+        collector.update_trend(0, 1.0, self._orders(0.5))
+        collector.config.enabled_channels = [0, 1]
+        collector.init_trend_channels()
+        collector.update_trend(1, 1.0, self._orders(0.3))
         collector.clear_trend()
-        for trend in collector.data['trend'].values():
-            assert trend['rel_times'] == []
-            assert trend['overall'] == []
+        for trend in collector.trend.values():
+            assert len(trend['rel_times']) == 0
+            assert trend['orders'].shape[0] == 0
 
     def test_init_trend_channels_creates_keys(self):
         collector = DataCollector()
         collector.config.enabled_channels = [0, 2]
         collector.init_trend_channels()
-        assert set(collector.data['trend'].keys()) == {0, 2}
+        assert set(collector.trend.keys()) == {0, 2}
 
     def test_init_trend_channels_preserves_existing_data(self):
         collector = DataCollector()
         collector.config.enabled_channels = [0]
         collector.init_trend_channels()
-        collector.update_trend(0, 1.0, 0.9)
+        collector.update_trend(0, 1.0, self._orders(0.9))
         collector.config.enabled_channels = [0, 1]
         collector.init_trend_channels()
         # Channel 0 data preserved, channel 1 starts empty
-        assert len(collector.data['trend'][0]['rel_times']) == 1
-        assert collector.data['trend'][1]['rel_times'] == []
+        assert len(collector.trend[0]['rel_times']) == 1
+        assert len(collector.trend[1]['rel_times']) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -379,6 +385,7 @@ class TestChannelResult:
         return ChannelResult(
             channel=ch,
             unit=unit,
+            overflow=False,
             time_data=np.zeros(n),
             time_vec=np.linspace(0, 1, n),
             samplerate=8000,

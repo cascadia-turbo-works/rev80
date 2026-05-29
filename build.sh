@@ -69,7 +69,17 @@ fi
 # ── Step 2: PyInstaller ──────────────────────────────────────────────────────
 if [[ "$STEP" == "all" || "$STEP" == "pyinstaller" ]]; then
     echo "[2/3] Building executable with PyInstaller..."
-    pyinstaller vibechecker.spec --noconfirm
+
+    # Kill any running instance so Windows releases file locks on output DLLs
+    taskkill /f /im vibechecker.exe >/dev/null 2>&1 || true
+
+    # Wipe previous output cleanly — pyinstaller --noconfirm skips locked files
+    if [[ -d dist/vibechecker ]]; then
+        echo "Cleaning previous build output..."
+        rm -rf dist/vibechecker
+    fi
+
+    pyinstaller vibechecker.spec --noconfirm --clean
     echo
 fi
 

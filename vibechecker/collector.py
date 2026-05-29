@@ -16,9 +16,6 @@ from vibechecker.scope_sensor import ScopeSensor
 
 log = vibechecker.get_logger("collector")
 
-_FRAME_CACHE_SIZE = 32
-
-
 class DataCollector:
     """Collect, filter, cache, and persist multi-channel vibration data.
 
@@ -77,21 +74,17 @@ class DataCollector:
     def get_active_eu(self, ch: int = 0) -> str:
         """Return the display/target unit for a channel.
 
-        Priority: channel_target_units > scope_sensor.effective_target_unit() > VibeSensor unit > 'mV'.
+        Returns 'mV' when no ScopeSensor is assigned — without a sensitivity
+        value any unit conversion would be nonsensical.
+        Priority when a sensor is present: channel_target_units > sensor.effective_target_unit().
         """
+        scope_sensor = self.scope_sensors.get(ch)
+        if scope_sensor is None:
+            return "mV"
         ch_tu = self.config.channel_target_units.get(ch, "")
         if ch_tu:
             return ch_tu
-        scope_sensor = self.scope_sensors.get(ch)
-        if scope_sensor is not None:
-            return scope_sensor.effective_target_unit()
-        if self.sensor is not None:
-            unit = getattr(self.sensor, "unit", None)
-            if isinstance(unit, list):
-                return unit[min(ch, len(unit) - 1)]
-            if unit is not None:
-                return unit
-        return "mV"
+        return scope_sensor.effective_target_unit()
 
     # ------------------------------------------------------------------
     # Stream state
@@ -111,13 +104,18 @@ class DataCollector:
 
     def reset_data_store(self):
         self.data = {
-            "frame_cache": deque(maxlen=_FRAME_CACHE_SIZE),  # dict[int, VibeSample]
+            "frame_cache": deque(maxlen=self.config.cache_frames),  # dict[int, VibeSample]
             "frame_count": 0,
-            "trend": {},  # dict[int, {'rel_times': list, 'overall': list}]
         }
+        self.trend: dict[int, dict[str, np.ndarray]] = {}
         self._cache_cursor = 0
         self.init_trend_channels()
         log.info("Reset data store.")
+
+    def resize_frame_cache(self, n: int) -> None:
+        """Rebuild frame_cache with a new maxlen, preserving the most recent frames."""
+        existing = list(self.data["frame_cache"])
+        self.data["frame_cache"] = deque(existing[-n:], maxlen=n)
 
     def reset_channel_config(self, num_channels: int) -> None:
         """Prune all per-channel state to match a new device's channel count.
@@ -155,30 +153,66 @@ class DataCollector:
         """(Re-)initialise trend store keyed by current enabled_channels.
 
         Channels already in the store are preserved; new channels get empty
-        lists; channels no longer enabled are dropped.
+        arrays; channels no longer enabled are dropped.
         """
         enabled = set(self.config.enabled_channels)
-        self.data["trend"] = {
-            ch: self.data["trend"].get(ch, {"rel_times": [], "overall": []}) for ch in sorted(enabled)
+        self.trend = {
+            ch: self.trend.get(ch, {
+                "rel_times": np.empty(0),
+                "orders":    np.empty((0, 5)),
+            }) for ch in sorted(enabled)
         }
 
-    def update_trend(self, ch: int, rel_time: float, overall: float) -> None:
-        """Append one (rel_time, overall) point for a channel; prune to cap."""
-        if ch not in self.data["trend"]:
-            self.data["trend"][ch] = {"rel_times": [], "overall": []}
-        td = self.data["trend"][ch]
-        td["rel_times"].append(rel_time)
-        td["overall"].append(overall)
+    def update_trend(self, ch: int, rel_time: float, orders: np.ndarray) -> None:
+        """Append one timestamped 5-order overall vector (mV RMS) for a channel."""
+        if ch not in self.trend:
+            self.trend[ch] = {"rel_times": np.empty(0), "orders": np.empty((0, 5))}
+        td = self.trend[ch]
+        td["rel_times"] = np.append(td["rel_times"], rel_time)
+        td["orders"]    = np.vstack([td["orders"], orders.reshape(1, 5)])
         cap = self.config.trend_max_points
         if len(td["rel_times"]) > cap:
             td["rel_times"] = td["rel_times"][-cap:]
-            td["overall"] = td["overall"][-cap:]
+            td["orders"]    = td["orders"][-cap:]
 
     def clear_trend(self) -> None:
-        """Wipe all accumulated trend data (call after unit/freq-window changes)."""
-        for ch in self.data["trend"]:
-            self.data["trend"][ch] = {"rel_times": [], "overall": []}
+        """Wipe all accumulated trend data."""
+        for ch in self.trend:
+            self.trend[ch] = {"rel_times": np.empty(0), "orders": np.empty((0, 5))}
         log.debug("Trend data cleared.")
+
+    def get_trend_for_display(self) -> dict[int, tuple[list[float], list[float]]]:
+        """Return {ch: (rel_times, displayed_values)} scaled to current display settings.
+
+        All unit/sensitivity/amplitude-mode conversion is handled here so the
+        GUI never needs to import unit-conversion utilities.
+        """
+        from vibechecker.util import UNIT_TO_SI, AMPLITUDE_SCALE, integration_steps
+        out: dict[int, tuple[list[float], list[float]]] = {}
+        for ch in self.config.enabled_channels:
+            td        = self.trend.get(ch, {})
+            rel_times = td.get("rel_times", np.empty(0))
+            orders    = td.get("orders",    np.empty((0, 5)))
+            if len(rel_times) == 0:
+                out[ch] = ([], [])
+                continue
+
+            scope_sensor   = self.scope_sensors.get(ch)
+            sensor_eu      = scope_sensor.engineering_units if scope_sensor else 'mV'
+            sensitivity_mv = scope_sensor.sensitivity       if scope_sensor else 1.0
+            target_unit    = self.get_active_eu(ch)
+            amp_mode       = self.config.amplitude_mode_for(ch) or '0-P'
+
+            n_steps    = integration_steps(sensor_eu, target_unit)
+            amp_factor = AMPLITUDE_SCALE.get(amp_mode, np.sqrt(2))
+            src_si     = UNIT_TO_SI.get(sensor_eu, 1.0)
+            tgt_si     = UNIT_TO_SI.get(target_unit, 1.0)
+            scale      = src_si / tgt_si / sensitivity_mv
+
+            col       = max(0, min(4, n_steps + 2))   # −2→0, −1→1, 0→2, +1→3, +2→4
+            displayed = list(orders[:, col] * scale * amp_factor)
+            out[ch]   = (list(rel_times), displayed)
+        return out
 
     # ------------------------------------------------------------------
     # Frame cache navigation
@@ -322,7 +356,6 @@ class DataCollector:
         Butterworth highpass filter before forwarding to _data_callback().
         """
         data_arr = np.asarray(samp["data"])
-        unit_arr = samp["unit"]
         channels = samp.get("channels", [0])
 
         # Ensure 2-D (blocksize, N_channels)
@@ -332,48 +365,21 @@ class DataCollector:
         overflow_mask: int = samp.get("overflow_mask", 0)
         samples: dict[int, vibechecker.VibeSample] = {}
 
+        samplerate = samp.get("samplerate", self.config.samplerate)
         for i, ch in enumerate(channels):
-            col = min(i, data_arr.shape[1] - 1)
-            data = data_arr[:, col].copy()
-            unit = (
-                unit_arr[ch]
-                if isinstance(unit_arr, list) and ch < len(unit_arr)
-                else unit_arr[i]
-                if isinstance(unit_arr, list) and i < len(unit_arr)
-                else unit_arr
-            )
-
-            # mV → EU via assigned ScopeSensor
-            if unit == "mV":
-                scope_sensor = self.scope_sensors.get(ch)
-                if scope_sensor is not None:
-                    data = np.asarray(data, dtype=np.float64) / scope_sensor.sensitivity
-                    unit = scope_sensor.engineering_units
-
-            # Butterworth filters (SOS for numerical stability)
-            data = np.asarray(data, dtype=np.float64)
-            samplerate = samp.get("samplerate", self.config.samplerate)
-            nyq = float(samplerate) / 2.0
-            order = self.config._BUTTER_ORDER
-
-            if self.config.highpass_enabled and self.config.highpass_fc < nyq:
-                sos = scipy.signal.butter(order, self.config.highpass_fc, btype="highpass", fs=samplerate, output="sos")
-                data = scipy.signal.sosfilt(sos, data)
-
-            if self.config.lowpass_enabled and self.config.lowpass_fc < nyq:
-                sos = scipy.signal.butter(order, self.config.lowpass_fc, btype="lowpass", fs=samplerate, output="sos")
-                data = scipy.signal.sosfilt(sos, data)
-
+            col  = min(i, data_arr.shape[1] - 1)
+            data = np.ascontiguousarray(data_arr[:, col], dtype=np.float64)
             samples[ch] = vibechecker.VibeSample(
-                samp["status"],
-                samp["timestamp"],
-                samplerate,
-                unit,
-                np.ascontiguousarray(data),
-                samp["rel_time"],
+                status=samp["status"],
+                _timestamp=samp["timestamp"],
+                samplerate=samplerate,
+                unit="mV",
+                overflow=bool(overflow_mask & (1 << ch)),
+                data=data,
+                rel_time=samp["rel_time"],
+                label=f"Ch{chr(65 + ch)}",
             )
 
-        samples["overflow"] = overflow_mask  # int bitmask, bit n → Ch n clipped
         self._data_callback(samples)
 
     def _data_callback(self, samples: dict):
@@ -392,6 +398,153 @@ class DataCollector:
         self.new_frame_event.set()
 
     # ------------------------------------------------------------------
+    # Sample processing
+    # ------------------------------------------------------------------
+
+    def process_sample(self, ch: int, sample: 'vibechecker.VibeSample') -> 'vibechecker.ChannelResult | None':
+        """Filter, compute PSD, 5-order mV overalls, and convert to display units.
+
+        Side-effects on sample (cached after first call per config):
+          - psd_mv / freq_hz / _psd_config_key
+          - overall_ampl_by_integration_order — (5,) RMS overalls in mV, orders −2…+2
+        """
+        from vibechecker.util import UNIT_TO_SI, AMPLITUDE_SCALE, integration_steps
+
+        if sample.blocksize <= 1:
+            return None
+
+        scope_sensor   = self.scope_sensors.get(ch)
+        sensor_eu      = scope_sensor.engineering_units if scope_sensor else 'mV'
+        sensitivity_mv = scope_sensor.sensitivity       if scope_sensor else 1.0
+        amp_mode       = self.config.amplitude_mode_for(ch) or '0-P'
+        target_unit    = self.get_active_eu(ch)
+        effective_tgt  = target_unit if target_unit else sensor_eu
+        config         = self.config
+        samplerate     = sample.samplerate
+        nyq            = samplerate / 2.0
+
+        # ── 1. Butterworth filter ─────────────────────────────────────
+        filtered_mv = sample.data.copy()
+        order = config._BUTTER_ORDER
+        if config.highpass_enabled and config.highpass_fc < nyq:
+            sos = scipy.signal.butter(order, config.highpass_fc,
+                                      btype='highpass', fs=samplerate, output='sos')
+            filtered_mv = scipy.signal.sosfilt(sos, filtered_mv)
+        if config.lowpass_enabled and config.lowpass_fc < nyq:
+            sos = scipy.signal.butter(order, config.lowpass_fc,
+                                      btype='lowpass', fs=samplerate, output='sos')
+            filtered_mv = scipy.signal.sosfilt(sos, filtered_mv)
+
+        # ── 2. Welch PSD in mV² — compute once, cache on sample ──────
+        psd_key = (config.fft_window, config.welch_overlap,
+                   config.highpass_enabled, config.highpass_fc,
+                   config.lowpass_enabled, config.lowpass_fc)
+        if sample.psd_mv is None or sample._psd_config_key != psd_key:
+            nfft     = int(samplerate / config.binsize)
+            nperseg  = nfft
+            noverlap = min(sample.blocksize - 1, int(nperseg * config.welch_overlap))
+            freq_hz, psd_mv = scipy.signal.welch(
+                filtered_mv, fs=float(samplerate),
+                window=config.fft_window, nperseg=nperseg, noverlap=noverlap,
+                nfft=nfft, scaling='spectrum', detrend='linear', average='mean',
+            )
+            sample.psd_mv          = psd_mv
+            sample.freq_hz         = freq_hz
+            sample._psd_config_key = psd_key
+
+            # ── 3. 5-order mV RMS overalls, orders −2…+2 ─────────────
+            pos = freq_hz > 0   # DC bin excluded from integration factors
+            for i, n_ord in enumerate(range(-2, 3)):   # i=0 → ord=-2, i=2 → ord=0
+                if n_ord != 0:
+                    omega        = np.zeros_like(psd_mv)
+                    omega[pos]   = (2 * np.pi * freq_hz[pos]) ** (2 * n_ord)
+                    psd_ord      = psd_mv * omega
+                else:
+                    psd_ord = psd_mv
+                band = np.sqrt(np.maximum(psd_ord, 0.0))
+                sample.overall_ampl_by_integration_order[i] = float(np.sqrt(np.sum(np.square(band))))
+        else:
+            freq_hz = sample.freq_hz
+            psd_mv  = sample.psd_mv
+
+        # ── 4. Integrate / scale mV² PSD → target-unit² PSD ─────────
+        n_steps = integration_steps(sensor_eu, effective_tgt)
+        if n_steps != 0:
+            omega_factor       = np.zeros_like(psd_mv)
+            pos                = freq_hz > 0
+            omega_factor[pos]  = (2 * np.pi * freq_hz[pos]) ** (2 * n_steps)
+            integrated_psd     = psd_mv * omega_factor
+        else:
+            integrated_psd = psd_mv.copy()
+
+        # mV² → EU²: /sensitivity²;  EU² → target²: (SI[EU]/SI[target])²
+        src_si = UNIT_TO_SI.get(sensor_eu, 1.0)
+        tgt_si = UNIT_TO_SI.get(effective_tgt, 1.0)
+        calibrated_psd = integrated_psd * (src_si / tgt_si / sensitivity_mv) ** 2
+
+        # ── 5. Amplitude spectrum in target unit + amp mode ───────────
+        amp_factor   = AMPLITUDE_SCALE.get(amp_mode, np.sqrt(2))
+        spectrum_amp = np.sqrt(np.maximum(calibrated_psd, 0.0)) * amp_factor
+
+        # ── 6. Peaks ──────────────────────────────────────────────────
+        peaks, _ = scipy.signal.find_peaks(spectrum_amp, distance=5)
+        peaks     = np.array(peaks[np.argsort(-spectrum_amp[peaks])])
+
+        # ── 7. Overall amplitude in target unit ───────────────────────
+        band     = spectrum_amp
+        band_rms = band / amp_factor
+        overall  = float(np.sqrt(np.sum(np.square(band_rms)))) * amp_factor
+
+        # ── 8. Time-domain signal — inline FFT integration ───────────
+        # Separate rfft of filtered_mv preserves phase; Welch above cannot
+        # be reused because segment-averaging discards phase information.
+        N          = sample.blocksize
+        rfft_mv    = np.fft.rfft(filtered_mv)
+        freq_td    = np.fft.rfftfreq(N, d=1.0 / samplerate)
+        eu_scale   = src_si / tgt_si / sensitivity_mv
+        if n_steps != 0:
+            omega_td    = 2 * np.pi * freq_td
+            omega_td[0] = 1.0
+            transfer       = np.power(1j * omega_td, n_steps)
+            transfer[0]    = 0.0
+            rfft_target    = rfft_mv * transfer * eu_scale
+        else:
+            rfft_target = rfft_mv * eu_scale
+        time_signal = np.fft.irfft(rfft_target, n=N)
+
+        return vibechecker.ChannelResult(
+            channel=ch, unit=effective_tgt, overflow=sample.overflow,
+            time_data=time_signal, time_vec=sample.time_vec, samplerate=samplerate,
+            freq=freq_hz, spectrum=spectrum_amp, peaks=peaks, overall=overall,
+            timestamp=sample._timestamp, rel_time=sample.rel_time, status=sample.status,
+        )
+
+    def process_samples(self) -> list['vibechecker.ChannelResult']:
+        """Process the current frame; return one ChannelResult per enabled channel.
+
+        Uses the latest frame when streaming; uses _cache_cursor when browsing.
+        Appends to trend only during streaming.
+        """
+        cache = self.data["frame_cache"]
+        if not cache:
+            return []
+        idx   = -1 if self.is_streaming else -1 - self._cache_cursor
+        frame = cache[idx]
+        results: list[vibechecker.ChannelResult] = []
+        for ch in sorted(self.config.enabled_channels):
+            sample = frame.get(ch)
+            if sample is None or sample.blocksize <= 1:
+                continue
+            result = self.process_sample(ch, sample)
+            if result is None:
+                continue
+            if self.is_streaming:
+                self.update_trend(ch, result.rel_time,
+                                  sample.overall_ampl_by_integration_order)
+            results.append(result)
+        return results
+
+    # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
 
@@ -402,7 +555,7 @@ class DataCollector:
     #   scope sensor fields as per-frame channel attrs, /acquisition group.
     # v3 (current): structured /metadata group; sensor library; channel config stored once;
     #   shared trend rel_times axis.
-    _FILE_VERSION = 3
+    _FILE_VERSION = 4
 
     def save_data(self, target: Path):
         """Save frame cache and trend history to an HDF5 file (v3 format).
@@ -415,7 +568,7 @@ class DataCollector:
             /metadata/acquisition.attrs             maxfreq, binsize, fft_window,
                                                     welch_overlap, highpass_enabled,
                                                     highpass_fc, lowpass_enabled, lowpass_fc,
-                                                    trend_max_points, trend_fmin, trend_fmax
+                                                    trend_max_points
             /metadata/scope_sensors/{id}            group (one per unique sensor used)
             /metadata/scope_sensors/{id}.attrs      name, id, sensitivity, engineering_units,
                                                     target_unit, notes
@@ -490,23 +643,19 @@ class DataCollector:
                     fg.create_group(str(ch)).create_dataset("data", data=sample.data)
 
             # ── /trend ─────────────────────────────────────────────────
+            # Each channel has its own rel_times axis + (M,5) orders matrix.
+            # Columns of orders = integration orders −2,−1,0,+1,+2 in mV RMS.
             trend_grp = f.create_group("trend")
-            # rel_times is shared across channels (simultaneous capture)
-            shared_rel_times: list = []
-            for td in self.data["trend"].values():
-                if td["rel_times"]:
-                    shared_rel_times = td["rel_times"]
-                    break
-            if shared_rel_times:
-                trend_grp.create_dataset("rel_times", data=np.array(shared_rel_times))
-            for ch, td in self.data["trend"].items():
-                if ch in enabled and td["overall"]:
-                    trend_grp.create_group(str(ch)).create_dataset("data", data=np.array(td["overall"]))
+            for ch, td in self.trend.items():
+                if ch in enabled and len(td["rel_times"]) > 0:
+                    cg = trend_grp.create_group(str(ch))
+                    cg.create_dataset("rel_times", data=td["rel_times"].astype(np.float64))
+                    cg.create_dataset("orders",    data=td["orders"].astype(np.float64))
 
         log.info(f"Saved {len(frames)} frames to {target}")
 
     def load_data(self, target: Path):
-        """Load frame cache and trend from an HDF5 file (v3 format), then reprocess."""
+        """Load frame cache and trend from an HDF5 file, then reprocess."""
         if not target.is_file():
             log.error(f"load_data: file does not exist: {target}")
             return
@@ -515,12 +664,117 @@ class DataCollector:
             return x.decode() if isinstance(x, bytes) else str(x)
 
         self.data["frame_cache"].clear()
-        self.data["trend"] = {}
+        self.trend = {}
         self._loaded_channel_sensor_configs = {}
         self._loaded_scope_sensors = {}
 
         with h5py.File(target, "r") as f:
-            self._load_v3(f, decode)
+            version = int(f["metadata"].attrs.get("version", 3))
+            meta_grp = f["metadata"]
+            self.notes = decode(meta_grp.attrs.get("notes", ""))
+
+            # Acquisition settings
+            if "acquisition" in meta_grp:
+                acq_dict = {k: (None if v == "" else v) for k, v in meta_grp["acquisition"].attrs.items()}
+                self.config = vibechecker.AcquisitionSettings.from_dict(acq_dict)
+
+            # Scope sensor library — {sensor_id: dict}
+            if "scope_sensors" in meta_grp:
+                for sid, sg in meta_grp["scope_sensors"].items():
+                    d: dict = {}
+                    for k, v in sg.attrs.items():
+                        if isinstance(v, (bytes, np.bytes_)):
+                            d[k] = v.decode()
+                        elif isinstance(v, (np.integer,)):
+                            d[k] = int(v)
+                        elif isinstance(v, (np.floating,)):
+                            d[k] = float(v)
+                        else:
+                            d[k] = v
+                    d["id"] = sid
+                    self._loaded_scope_sensors[sid] = d
+
+            # Channel metadata — restore names, target units, and sensor configs
+            ch_units: dict[int, str] = {}
+            if "channels" in meta_grp:
+                for ch_str, cg in meta_grp["channels"].items():
+                    ch = int(ch_str)
+                    name           = decode(cg.attrs.get("name", ""))
+                    unit           = decode(cg.attrs.get("unit", "mV"))
+                    target_unit    = decode(cg.attrs.get("target_unit", ""))
+                    sensor_id      = decode(cg.attrs.get("scope_sensor_id", ""))
+                    coupling       = decode(cg.attrs.get("coupling", "AC"))
+                    voltage_range  = int(cg.attrs.get("voltage_range", 7))
+                    amplitude_mode = decode(cg.attrs.get("amplitude_mode", ""))
+                    if name:
+                        self.config.channel_names[ch] = name
+                    if target_unit:
+                        self.config.channel_target_units[ch] = target_unit
+                    if amplitude_mode:
+                        self.config.channel_amplitude_modes[ch] = amplitude_mode
+                    self.config.channel_couplings[ch] = coupling
+                    self.config.channel_voltage_ranges[ch] = voltage_range
+                    ch_units[ch] = unit
+                    if sensor_id and sensor_id in self._loaded_scope_sensors:
+                        self._loaded_channel_sensor_configs[ch] = dict(self._loaded_scope_sensors[sensor_id])
+                    else:
+                        self._loaded_channel_sensor_configs[ch] = {}
+
+            # Frames — v4+ always mV; v3 used the recorded unit
+            if "frames" in f:
+                for idx in sorted(f["frames"].keys(), key=int):
+                    fg = f["frames"][idx]
+                    ts_str     = decode(fg.attrs["timestamp"])
+                    rel_time   = float(fg.attrs["rel_time"])
+                    samplerate = int(fg.attrs["samplerate"])
+                    status     = decode(fg.attrs["status"])
+                    try:
+                        timestamp = datetime.fromisoformat(ts_str)
+                    except (ValueError, TypeError):
+                        timestamp = datetime.now()
+                    frame_samples: dict[int, vibechecker.VibeSample] = {}
+                    for ch_str, cg in fg.items():
+                        if not ch_str.isdigit():
+                            continue
+                        ch   = int(ch_str)
+                        data = np.ascontiguousarray(cg["data"][()], dtype=np.float64)
+                        unit = "mV" if version >= 4 else ch_units.get(ch, "mV")
+                        frame_samples[ch] = vibechecker.VibeSample(
+                            status=status, _timestamp=timestamp, samplerate=samplerate,
+                            unit=unit, overflow=False, data=data, rel_time=rel_time,
+                        )
+                    self.data["frame_cache"].append(frame_samples)
+
+            # Trend
+            if "trend" in f:
+                trend_grp = f["trend"]
+                if version >= 4:
+                    # Per-channel (M,5) orders matrix
+                    for ch_str, cg in trend_grp.items():
+                        if not ch_str.isdigit():
+                            continue
+                        ch = int(ch_str)
+                        self.trend[ch] = {
+                            "rel_times": np.array(cg["rel_times"][()], dtype=np.float64),
+                            "orders":    np.array(cg["orders"][()],    dtype=np.float64),
+                        }
+                else:
+                    # Shared time axis + per-channel scalar overalls; promote to (M,5)
+                    shared_rel_times: list = []
+                    if "rel_times" in trend_grp:
+                        shared_rel_times = list(np.array(trend_grp["rel_times"][()]))
+                    for ch_str, tg in trend_grp.items():
+                        if not ch_str.isdigit():
+                            continue
+                        overall = list(np.array(tg["data"][()]))
+                        if overall:
+                            M      = len(overall)
+                            orders = np.zeros((M, 5))
+                            orders[:, 2] = np.array(overall)  # col 2 = order 0
+                            self.trend[int(ch_str)] = {
+                                "rel_times": np.array(shared_rel_times),
+                                "orders":    orders,
+                            }
 
         n = len(self.data["frame_cache"])
         log.debug(f"Loaded {n} frames from {target}")
@@ -546,104 +800,3 @@ class DataCollector:
 
         self.init_trend_channels()
         self.reprocess_last_block()
-
-    # ------------------------------------------------------------------
-    # Private HDF5 format readers
-    # ------------------------------------------------------------------
-
-    def _load_v3(self, f: "h5py.File", decode) -> None:
-        """Read v3 format: structured /metadata group, sensor library, shared trend axis."""
-        meta_grp = f["metadata"]
-        self.notes = decode(meta_grp.attrs.get("notes", ""))
-
-        # Acquisition settings — replace config wholesale; channel dicts populated below
-        if "acquisition" in meta_grp:
-            acq_dict = {k: (None if v == "" else v) for k, v in meta_grp["acquisition"].attrs.items()}
-            self.config = vibechecker.AcquisitionSettings.from_dict(acq_dict)
-
-        # Scope sensor library — {sensor_id: dict}
-        if "scope_sensors" in meta_grp:
-            for sid, sg in meta_grp["scope_sensors"].items():
-                d: dict = {}
-                for k, v in sg.attrs.items():
-                    if isinstance(v, (bytes, np.bytes_)):
-                        d[k] = v.decode()
-                    elif isinstance(v, (np.integer,)):
-                        d[k] = int(v)
-                    elif isinstance(v, (np.floating,)):
-                        d[k] = float(v)
-                    else:
-                        d[k] = v
-                d["id"] = sid  # ensure id matches group name
-                self._loaded_scope_sensors[sid] = d
-
-        # Channel metadata — restore names, target units, and sensor configs
-        ch_units: dict[int, str] = {}
-        if "channels" in meta_grp:
-            for ch_str, cg in meta_grp["channels"].items():
-                ch = int(ch_str)
-                name = decode(cg.attrs.get("name", ""))
-                unit = decode(cg.attrs.get("unit", "mV"))
-                target_unit = decode(cg.attrs.get("target_unit", ""))
-                sensor_id = decode(cg.attrs.get("scope_sensor_id", ""))
-                coupling = decode(cg.attrs.get("coupling", "AC"))
-                voltage_range = int(cg.attrs.get("voltage_range", 7))
-                amplitude_mode = decode(cg.attrs.get("amplitude_mode", ""))
-                if name:
-                    self.config.channel_names[ch] = name
-                if target_unit:
-                    self.config.channel_target_units[ch] = target_unit
-                if amplitude_mode:
-                    self.config.channel_amplitude_modes[ch] = amplitude_mode
-                self.config.channel_couplings[ch] = coupling
-                self.config.channel_voltage_ranges[ch] = voltage_range
-                ch_units[ch] = unit
-                if sensor_id and sensor_id in self._loaded_scope_sensors:
-                    self._loaded_channel_sensor_configs[ch] = dict(self._loaded_scope_sensors[sensor_id])
-                else:
-                    self._loaded_channel_sensor_configs[ch] = {}
-
-        # Frames
-        if "frames" not in f:
-            return
-        for idx in sorted(f["frames"].keys(), key=int):
-            fg = f["frames"][idx]
-            ts_str = decode(fg.attrs["timestamp"])
-            rel_time = float(fg.attrs["rel_time"])
-            samplerate = int(fg.attrs["samplerate"])
-            status = decode(fg.attrs["status"])
-            try:
-                timestamp = datetime.fromisoformat(ts_str)
-            except (ValueError, TypeError):
-                timestamp = datetime.now()
-
-            frame_samples: dict[int, vibechecker.VibeSample] = {}
-            for ch_str, cg in fg.items():
-                if not ch_str.isdigit():
-                    continue
-                ch = int(ch_str)
-                data = np.ascontiguousarray(cg["data"][()], dtype=np.float64)
-                unit = ch_units.get(ch, "mV")
-                frame_samples[ch] = vibechecker.VibeSample(
-                    status=status,
-                    _timestamp=timestamp,
-                    samplerate=samplerate,
-                    unit=unit,
-                    data=data,
-                    rel_time=rel_time,
-                )
-            self.data["frame_cache"].append(frame_samples)
-
-        # Trend — shared rel_times axis, per-channel overall amplitude
-        if "trend" in f:
-            trend_grp = f["trend"]
-            shared_rel_times: list = []
-            if "rel_times" in trend_grp:
-                shared_rel_times = list(np.array(trend_grp["rel_times"][()]))
-            for ch_str, tg in trend_grp.items():
-                if not ch_str.isdigit():
-                    continue
-                self.data["trend"][int(ch_str)] = {
-                    "rel_times": shared_rel_times,
-                    "overall": list(np.array(tg["data"][()])),
-                }
