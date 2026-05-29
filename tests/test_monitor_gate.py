@@ -12,13 +12,16 @@ def _gate(interval: float, start: float = 0.0) -> IntervalGate:
 
 
 class TestIntervalCapture:
-    def test_no_capture_before_first_deadline(self):
+    def test_capture_fires_immediately_on_arm(self):
+        """First capture should fire at t=start (deadline == start_monotonic)."""
         g = _gate(10.0, start=100.0)
-        assert not g.should_capture(109.9)
+        assert g.should_capture(100.0)
 
-    def test_capture_at_first_deadline(self):
+    def test_no_capture_before_second_deadline(self):
+        """After the first capture is marked, no capture until start + interval."""
         g = _gate(10.0, start=100.0)
-        assert g.should_capture(110.0)
+        g.mark_captured(100.0)
+        assert not g.should_capture(109.9)
 
     def test_capture_after_deadline(self):
         g = _gate(10.0, start=100.0)
