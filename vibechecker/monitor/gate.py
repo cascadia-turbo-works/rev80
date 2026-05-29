@@ -1,8 +1,8 @@
 class IntervalGate:
     def __init__(self, interval_s: float, start_monotonic: float):
-        # next deadline = start_monotonic + interval_s (first capture fires after one interval)
+        # First deadline = start_monotonic so the first capture fires immediately on arm
         self._interval = interval_s
-        self._next_deadline = start_monotonic + interval_s
+        self._next_deadline = start_monotonic
         self._in_burst = False
         self._burst_end = 0.0
 

@@ -724,6 +724,7 @@ class GUI:
             self._status_timer.cancel()
             self._status_timer = None
         self._set_stream_status("idle")
+        self._update_monitor_card()
 
     def _collect_sample(self, sender=None, data=None):
         if self.collector.stream is None:
@@ -1485,7 +1486,7 @@ class GUI:
             3600,
         )
         cfg         = self.collector.config
-        block_bytes = cfg.blocksize * cfg.n_channels * 8  # float64
+        block_bytes = cfg.blocksize * len(cfg.enabled_channels) * 8  # float64
         compressed  = block_bytes * 0.5  # gzip ~50% compression
         per_year    = (365 * 24 * 3600 / interval_s) * compressed
         if per_year >= 1e9:
@@ -1560,11 +1561,11 @@ class GUI:
         self._monitor.start(session)
 
         self._update_monitor_card()
-        # Grey out config tabs while armed
-        for tab in (ui.CONFIG_TAB_DEVICE, ui.CONFIG_TAB_CHANNELS,
-                    ui.CONFIG_TAB_ACQUISITION, ui.CONFIG_TAB_SENSORS):
-            if dpg.does_item_exist(tab):
-                dpg.configure_item(tab, enabled=False)
+        # Disable config setup buttons while armed (tabs don't support enabled=)
+        for btn in (ui.BTN_DEVICE_SETUP, ui.BTN_CHANNELS_SETUP,
+                    ui.BTN_SPECTRUM_SETUP, ui.BTN_SENSOR_SETUP):
+            if dpg.does_item_exist(btn):
+                dpg.configure_item(btn, enabled=False)
 
     def _disarm_monitor(self):
         if self._monitor is not None:
@@ -1572,24 +1573,24 @@ class GUI:
         # Restore frame cache to default depth
         self.collector.resize_frame_cache(self.collector.config.cache_frames)
         self._update_monitor_card()
-        for tab in (ui.CONFIG_TAB_DEVICE, ui.CONFIG_TAB_CHANNELS,
-                    ui.CONFIG_TAB_ACQUISITION, ui.CONFIG_TAB_SENSORS):
-            if dpg.does_item_exist(tab):
-                dpg.configure_item(tab, enabled=True)
+        for btn in (ui.BTN_DEVICE_SETUP, ui.BTN_CHANNELS_SETUP,
+                    ui.BTN_SPECTRUM_SETUP, ui.BTN_SENSOR_SETUP):
+            if dpg.does_item_exist(btn):
+                dpg.configure_item(btn, enabled=True)
 
     def _update_monitor_card(self):
         """Refresh the Monitor card label and status text from controller state."""
         if not dpg.does_item_exist(ui.MONITOR_ARM_BTN):
             return
         if self._monitor is not None and self._monitor.is_armed:
-            snap   = self._monitor.status_snapshot()
+            snap    = self._monitor.status_snapshot()
             elapsed = snap['elapsed_s']
-            h, rem = divmod(int(elapsed), 3600)
-            m, s   = divmod(rem, 60)
-            count  = snap['capture_count']
-            nxt    = snap['next_capture_s']
-            err    = snap['error']
-            status = (
+            h, rem  = divmod(int(elapsed), 3600)
+            m, s    = divmod(rem, 60)
+            count   = snap['capture_count']
+            nxt     = snap['next_capture_s']
+            err     = snap['error']
+            status  = (
                 f"● REC  {h:02d}:{m:02d}:{s:02d}\n"
                 f"Captures: {count}  Next: {nxt:.0f}s"
             )
@@ -1601,7 +1602,10 @@ class GUI:
                 dpg.configure_item(ui.MONITOR_SUMMARY_BTN, enabled=True)
         else:
             dpg.set_item_label(ui.MONITOR_ARM_BTN, "Arm")
-            dpg.set_value(ui.MONITOR_STATUS_TEXT, "Disarmed")
+            if not self.collector.is_streaming:
+                dpg.set_value(ui.MONITOR_STATUS_TEXT, "Start stream to arm")
+            else:
+                dpg.set_value(ui.MONITOR_STATUS_TEXT, "Disarmed")
             if dpg.does_item_exist(ui.MONITOR_SUMMARY_BTN):
                 dpg.configure_item(ui.MONITOR_SUMMARY_BTN, enabled=False)
 
