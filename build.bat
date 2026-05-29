@@ -45,7 +45,17 @@ REM ── Step 2: PyInstaller ────────────────�
 :pyinstaller
 if /i "%STEP%"=="installer" goto :inno_setup
 echo [2/3] Building executable with PyInstaller...
-pyinstaller vibechecker.spec --noconfirm
+
+REM Kill any running instance so Windows releases file locks on the output DLLs
+taskkill /f /im vibechecker.exe >nul 2>&1
+
+REM Wipe previous output — pyinstaller --noconfirm skips locked files; rmdir does not
+if exist dist\vibechecker (
+    echo Cleaning previous build output...
+    rmdir /s /q dist\vibechecker
+)
+
+pyinstaller vibechecker.spec --noconfirm --clean
 if errorlevel 1 (
     echo ERROR: PyInstaller build failed.
     exit /b 1

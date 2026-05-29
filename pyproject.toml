@@ -13,7 +13,6 @@ dependencies = [
     "pandas",
     "dearpygui==2.0.0",
     "matplotlib",
-    "sounddevice",
     "pyyaml",
     "h5py",
     "plyer",

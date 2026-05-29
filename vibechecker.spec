@@ -7,23 +7,33 @@
 #   pip install pyinstaller
 #   python build/collect_pico_dlls.py   (copies DLLs to drivers/)
 
+import re
 import sys
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_submodules, collect_data_files
+from PyInstaller.utils.hooks import collect_submodules, collect_data_files, collect_all
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 
 ROOT = Path(SPECPATH)
 DRIVERS_DIR = ROOT / 'drivers'
 LOGGING_YAML = ROOT / 'vibechecker' / 'logging.yaml'
-ICON_FILE = ROOT / 'assets' / 'vibechecker.ico'
+ICON_FILE = ROOT / 'assets' / 'icons' / 'vibechecker.ico'
+
+# ── Version ──────────────────────────────────────────────────────────────────
+
+_ver_text = (ROOT / 'vibechecker' / '_version.py').read_text()
+APP_VERSION = re.search(r'__version__ = "([^"]+)"', _ver_text).group(1)
+
+# Write installer/version.iss so iscc picks it up without extra arguments
+(ROOT / 'installer' / 'version.iss').write_text(f'#define AppVersion "{APP_VERSION}"\n')
+
+print(f'Building version {APP_VERSION}')
 
 # ── Hidden imports ───────────────────────────────────────────────────────────
 
 # dearpygui embeds its own renderer; picosdk uses ctypes (no hidden imports).
 hidden_imports = [
     'vibechecker._paths',
-    'vibechecker._pico_loader',
     'vibechecker._pico_loader',
     'scipy.signal',
     'scipy.signal.windows',
@@ -34,9 +44,16 @@ hidden_imports = [
     'h5py.utils',
     'h5py._conv',
     'h5py._proxy',
-    'pandas',
     'numpy',
     'dearpygui.dearpygui',
+    'yaml',
+    # plyer platform detection is dynamic; bundle all backends explicitly
+    *collect_submodules('plyer'),
+    # win32com is loaded dynamically by plyer's Windows filechooser backend
+    'win32com',
+    'win32com.shell',
+    'win32com.shell.shell',
+    'pywintypes',
 ]
 
 # ── Bundled data files ───────────────────────────────────────────────────────
@@ -103,12 +120,14 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     console=False,                   # no console window
     icon=str(ICON_FILE),
 )
 
 # ── One-dir bundle ───────────────────────────────────────────────────────────
+# UPX disabled: compressing python3XX.dll causes "LoadLibrary failed" on
+# launch; PyInstaller already compresses .pyc into PYZ so UPX saves little.
 
 coll = COLLECT(
     exe,
@@ -116,7 +135,7 @@ coll = COLLECT(
     a.zipfiles,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     name='vibechecker',
 )
