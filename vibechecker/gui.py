@@ -8,6 +8,7 @@ import numpy as np
 
 import vibechecker
 import vibechecker.config as _cfg
+import vibechecker.icons as icons
 from vibechecker.sample import AcquisitionSettings
 from vibechecker.scope_sensor import ScopeSensor
 from vibechecker.scope_sensor_registry import ScopeSensorRegistry
@@ -58,20 +59,20 @@ _BTN_HALF = (CONTROLS_WIDTH - 30) // 2
 
 # Left-panel card heights.  DPG child_window has no shrink-to-content mode:
 # autosize_y=True fills the parent rather than the content.  Heights must be
-# fixed or dynamically updated.  Estimates based on DPG default style metrics:
-#   text line ≈ 17 px (13 px font + 4 px ItemSpacing.y)
-#   button    ≈ 25 px (21 px frame + 4 px spacing)
-#   card base ≈ 40 px (top/bottom WindowPadding + title + separator)
-_CARD_LINE_H = 17  # per text-line height estimate (font + spacing)
-_CARD_BASE_H = 60  # card overhead: padding + title + separator + bottom pad
-_CARD_BTN_H = 25  # single button row height
+# fixed or dynamically updated.  Estimates based on DPG style metrics with 16px font:
+#   text line ≈ 20 px (16 px font + 4 px ItemSpacing.y)
+#   button    ≈ 28 px (24 px frame + 4 px spacing)
+#   card base ≈ 68 px (top/bottom WindowPadding + title + separator)
+_CARD_LINE_H = 20  # per text-line height estimate (font + spacing)
+_CARD_BASE_H = 68  # card overhead: padding + title + separator + bottom pad
+_CARD_BTN_H = 28   # single button row height
 _CARD_H_DEVICE = _CARD_BASE_H + _CARD_LINE_H * 5  # disconnected baseline
 _CARD_H_CHANNELS = _CARD_BASE_H + _CARD_LINE_H
 _CARD_H_ACQ = (
     _CARD_BASE_H + _CARD_BTN_H * 6 + _CARD_LINE_H * 10
-)  # Acquisition: 400 fixed — toggle+controls+spectrum info box
-_CARD_H_FILE = _CARD_BASE_H + _CARD_BTN_H + 125  # ≈ 252 (notes field)
-_CARD_H_MONITOR = _CARD_BASE_H + _CARD_BTN_H * 2 + _CARD_LINE_H * 4  # Arm btn + status lines
+)  # Acquisition: toggle+controls+spectrum info box
+_CARD_H_FILE = _CARD_BASE_H + _CARD_LINE_H + 105  # notes field only (Save/Load in header)
+_CARD_H_MONITOR = _CARD_BASE_H + _CARD_BTN_H + _CARD_LINE_H * 4  # Arm btn + status lines
 
 
 def _c(key: str, alpha: int = 255) -> tuple:
@@ -167,8 +168,12 @@ class GUI:
     def _set_stream_status(self, state: str):
         """Update the toggle button color and label: 'active'|'waiting'|'idle'."""
         if dpg.does_item_exist(ui.ACQ_TOGGLE):
-            label_map = {"active": "Running", "waiting": "Waiting", "idle": "Stopped"}
-            dpg.set_item_label(ui.ACQ_TOGGLE, label_map.get(state, "Stopped"))
+            label_map = {
+                "active":  f'{icons.IC["stop"]}  Running',
+                "waiting": f'{icons.IC["stop"]}  Waiting',
+                "idle":    f'{icons.IC["play_arrow"]}  Stopped',
+            }
+            dpg.set_item_label(ui.ACQ_TOGGLE, label_map.get(state, f'{icons.IC["play_arrow"]}  Stopped'))
             theme = self._toggle_themes.get(state)
             if theme:
                 dpg.bind_item_theme(ui.ACQ_TOGGLE, theme)
@@ -225,8 +230,7 @@ class GUI:
 
         if len(groups) > 2:
             log.warning(
-                "More than 2 unique output units configured %s; "
-                "only the first 2 will have dedicated axes.",
+                "More than 2 unique output units configured %s; only the first 2 will have dedicated axes.",
                 [g[0] for g in groups],
             )
             # Absorb excess channels into group 1
@@ -239,9 +243,7 @@ class GUI:
             dpg.hide_item(ui.PLT_SAMPLE_AX_ACCEL_2)
             dpg.hide_item(ui.PLT_TREND_AX_OVERALL_2)
             for ch in self.collector.config.enabled_channels:
-                self._reassign_series_to_axis(
-                    ch, ui.PLT_FREQ_AX_ACCEL, ui.PLT_SAMPLE_AX_ACCEL, ui.PLT_TREND_AX_OVERALL
-                )
+                self._reassign_series_to_axis(ch, ui.PLT_FREQ_AX_ACCEL, ui.PLT_SAMPLE_AX_ACCEL, ui.PLT_TREND_AX_OVERALL)
             unit = groups[0][0] if groups else "mV"
             chs = groups[0][1] if groups else []
             mode = self._get_amplitude_mode(chs[0]) if chs else "0-P"
@@ -258,13 +260,9 @@ class GUI:
             dpg.show_item(ui.PLT_SAMPLE_AX_ACCEL_2)
             dpg.show_item(ui.PLT_TREND_AX_OVERALL_2)
             for ch in groups[0][1]:
-                self._reassign_series_to_axis(
-                    ch, ui.PLT_FREQ_AX_ACCEL, ui.PLT_SAMPLE_AX_ACCEL, ui.PLT_TREND_AX_OVERALL
-                )
+                self._reassign_series_to_axis(ch, ui.PLT_FREQ_AX_ACCEL, ui.PLT_SAMPLE_AX_ACCEL, ui.PLT_TREND_AX_OVERALL)
             for ch in groups[1][1]:
-                self._reassign_series_to_axis(
-                    ch, ui.PLT_FREQ_AX_2, ui.PLT_SAMPLE_AX_ACCEL_2, ui.PLT_TREND_AX_OVERALL_2
-                )
+                self._reassign_series_to_axis(ch, ui.PLT_FREQ_AX_2, ui.PLT_SAMPLE_AX_ACCEL_2, ui.PLT_TREND_AX_OVERALL_2)
             dpg.set_item_label(ui.PLT_FREQ_AX_ACCEL, self._freq_axis_label(groups[0][0], groups[0][1]))
             dpg.set_item_label(ui.PLT_SAMPLE_AX_ACCEL, f"Amplitude, {groups[0][0]}")
             dpg.set_item_label(ui.PLT_FREQ_AX_2, self._freq_axis_label(groups[1][0], groups[1][1]))
@@ -326,7 +324,6 @@ class GUI:
         """Return amplitude mode: channel config → default '0-P'."""
         return self.collector.config.amplitude_mode_for(ch) or "0-P"
 
-
     def _update_time_plot(self, result: vibechecker.ChannelResult, ch: int):
         if not dpg.does_item_exist(ui.plt_time_series(ch)):
             return
@@ -349,10 +346,12 @@ class GUI:
             dpg.set_value(ui.plt_freq_peaks(ch), [freq[top_peaks].tolist(), spectrum[top_peaks].tolist()])
             amp_mode = self._get_amplitude_mode(ch)
             cols = ["Frequency (Hz)", f"Amp., {result.unit} {amp_mode}"]
-            rows = list(zip(
-                np.round(freq[top_peaks], 2).tolist(),
-                np.round(spectrum[top_peaks], 6).tolist(),
-            ))
+            rows = list(
+                zip(
+                    np.round(freq[top_peaks], 2).tolist(),
+                    np.round(spectrum[top_peaks], 6).tolist(),
+                )
+            )
             self._update_fft_peaks_table(cols, rows, ch)
         else:
             dpg.set_value(ui.plt_freq_peaks(ch), [[], []])
@@ -453,7 +452,8 @@ class GUI:
 
         if dpg.does_item_exist(ui.CH_WARNINGS_SECTION):
             dpg.configure_item(
-                ui.CH_WARNINGS_SECTION, show=bool(n_overflow),
+                ui.CH_WARNINGS_SECTION,
+                show=bool(n_overflow),
                 height=_CARD_BASE_H + n_overflow * _CARD_LINE_H,
             )
 
@@ -661,7 +661,11 @@ class GUI:
         acq_time = blocksize / samplerate
         mem_bytes = blocksize * 8
 
-        cache_frames = int(dpg.get_value(ui.ACQ_DLG_CACHE_FRAMES)) if dpg.does_item_exist(ui.ACQ_DLG_CACHE_FRAMES) else self.collector.config.cache_frames
+        cache_frames = (
+            int(dpg.get_value(ui.ACQ_DLG_CACHE_FRAMES))
+            if dpg.does_item_exist(ui.ACQ_DLG_CACHE_FRAMES)
+            else self.collector.config.cache_frames
+        )
         n_enabled = max(1, len(self.collector.config.enabled_channels))
         rec_window = acq_time * cache_frames
         total_mem = mem_bytes * n_enabled * cache_frames
@@ -1456,14 +1460,14 @@ class GUI:
         """Sync Monitor config tab widgets from current device config."""
         if not dpg.does_item_exist(ui.MON_DLG_INTERVAL):
             return
-        serial = self.collector.sensor.serial_number if self.collector.sensor else '__default__'
+        serial = self.collector.sensor.serial_number if self.collector.sensor else "__default__"
         device_cfg = _cfg.load_device_config(serial)
-        mon = device_cfg.get('monitor', {})
-        interval_s  = float(mon.get('interval_s',      3600))
-        pre_buf_s   = float(mon.get('pre_buffer_s',      60))
-        burst_dur_s = float(mon.get('burst_duration_s',  60))
-        out_dir     = mon.get('output_dir') or ''
-        compress    = mon.get('compression', 'gzip') == 'gzip'
+        mon = device_cfg.get("monitor", {})
+        interval_s = float(mon.get("interval_s", 3600))
+        pre_buf_s = float(mon.get("pre_buffer_s", 60))
+        burst_dur_s = float(mon.get("burst_duration_s", 60))
+        out_dir = mon.get("output_dir") or ""
+        compress = mon.get("compression", "gzip") == "gzip"
 
         interval_label = vibechecker.MONITOR_INTERVAL_PRESETS.get(
             int(interval_s),
@@ -1480,19 +1484,19 @@ class GUI:
         """Update the storage estimate label when Monitor config widgets change."""
         if not dpg.does_item_exist(ui.MON_DLG_ESTIMATE):
             return
-        interval_label = dpg.get_value(ui.MON_DLG_INTERVAL) if dpg.does_item_exist(ui.MON_DLG_INTERVAL) else '1 h'
+        interval_label = dpg.get_value(ui.MON_DLG_INTERVAL) if dpg.does_item_exist(ui.MON_DLG_INTERVAL) else "1 h"
         interval_s = next(
             (k for k, v in vibechecker.MONITOR_INTERVAL_PRESETS.items() if v == interval_label),
             3600,
         )
-        cfg         = self.collector.config
+        cfg = self.collector.config
         block_bytes = cfg.blocksize * len(cfg.enabled_channels) * 8  # float64
-        compressed  = block_bytes * 0.5  # gzip ~50% compression
-        per_year    = (365 * 24 * 3600 / interval_s) * compressed
+        compressed = block_bytes * 0.5  # gzip ~50% compression
+        per_year = (365 * 24 * 3600 / interval_s) * compressed
         if per_year >= 1e9:
-            estimate = f"≈ {per_year/1e9:.1f} GiB/year"
+            estimate = f"≈ {per_year / 1e9:.1f} GiB/year"
         else:
-            estimate = f"≈ {per_year/1e6:.0f} MiB/year"
+            estimate = f"≈ {per_year / 1e6:.0f} MiB/year"
         if per_year > 50e9:
             estimate += "  ⚠ exceeds 50 GiB"
         dpg.set_value(ui.MON_DLG_ESTIMATE, estimate)
@@ -1505,51 +1509,47 @@ class GUI:
 
     def _arm_monitor(self):
         """Create MonitorSession from dialog config and start the controller."""
-        from datetime import datetime, timezone
         import re
+        from datetime import datetime, timezone
 
         if not self.collector.is_streaming:
             return
 
         # Read dialog config (fall back to defaults when dialog hasn't been opened)
-        interval_label = (
-            dpg.get_value(ui.MON_DLG_INTERVAL)
-            if dpg.does_item_exist(ui.MON_DLG_INTERVAL) else '1 h'
-        )
+        interval_label = dpg.get_value(ui.MON_DLG_INTERVAL) if dpg.does_item_exist(ui.MON_DLG_INTERVAL) else "1 h"
         interval_s = next(
-            (k for k, v in vibechecker.MONITOR_INTERVAL_PRESETS.items()
-             if v == interval_label),
+            (k for k, v in vibechecker.MONITOR_INTERVAL_PRESETS.items() if v == interval_label),
             3600,
         )
-        pre_buf_s  = float(dpg.get_value(ui.MON_DLG_PRE_BUFFER))  if dpg.does_item_exist(ui.MON_DLG_PRE_BUFFER)  else 60.0
-        burst_dur  = float(dpg.get_value(ui.MON_DLG_BURST_DUR))   if dpg.does_item_exist(ui.MON_DLG_BURST_DUR)   else 60.0
-        out_dir_s  = dpg.get_value(ui.MON_DLG_OUTPUT_DIR).strip()  if dpg.does_item_exist(ui.MON_DLG_OUTPUT_DIR)  else ''
-        compress   = dpg.get_value(ui.MON_DLG_COMPRESS)            if dpg.does_item_exist(ui.MON_DLG_COMPRESS)    else True
+        pre_buf_s = float(dpg.get_value(ui.MON_DLG_PRE_BUFFER)) if dpg.does_item_exist(ui.MON_DLG_PRE_BUFFER) else 60.0
+        burst_dur = float(dpg.get_value(ui.MON_DLG_BURST_DUR)) if dpg.does_item_exist(ui.MON_DLG_BURST_DUR) else 60.0
+        out_dir_s = dpg.get_value(ui.MON_DLG_OUTPUT_DIR).strip() if dpg.does_item_exist(ui.MON_DLG_OUTPUT_DIR) else ""
+        compress = dpg.get_value(ui.MON_DLG_COMPRESS) if dpg.does_item_exist(ui.MON_DLG_COMPRESS) else True
 
-        cfg          = self.collector.config
-        block_s      = cfg.blocksize / cfg.samplerate
+        cfg = self.collector.config
+        block_s = cfg.blocksize / cfg.samplerate
         pre_buffer_n = max(1, int(pre_buf_s / block_s)) if block_s > 0 else 1
 
-        now_utc   = datetime.now(timezone.utc)
-        serial    = (self.collector.sensor.serial_number if self.collector.sensor else 'sim')
-        safe_ser  = re.sub(r'[^a-zA-Z0-9_-]', '_', serial)
+        now_utc = datetime.now(timezone.utc)
+        serial = self.collector.sensor.serial_number if self.collector.sensor else "sim"
+        safe_ser = re.sub(r"[^a-zA-Z0-9_-]", "_", serial)
         session_id = f"{now_utc.strftime('%Y-%m-%d-%H%M%S')}_{safe_ser}"
 
         if out_dir_s:
             output_dir = Path(out_dir_s) / session_id
         else:
-            output_dir = vibechecker.data_dir() / 'monitor' / session_id
+            output_dir = vibechecker.data_dir() / "monitor" / session_id
 
         session = vibechecker.MonitorSession(
-            session_id        = session_id,
-            start_time        = now_utc,
-            interval_s        = float(interval_s),
-            pre_buffer_frames = pre_buffer_n,
-            burst_duration_s  = burst_dur,
-            max_burst_s       = 600.0,
-            output_dir        = output_dir,
-            compression       = 'gzip' if compress else 'none',
-            compression_level = 4,
+            session_id=session_id,
+            start_time=now_utc,
+            interval_s=float(interval_s),
+            pre_buffer_frames=pre_buffer_n,
+            burst_duration_s=burst_dur,
+            max_burst_s=600.0,
+            output_dir=output_dir,
+            compression="gzip" if compress else "none",
+            compression_level=4,
         )
 
         # Enlarge frame cache to hold pre-trigger frames
@@ -1562,8 +1562,7 @@ class GUI:
 
         self._update_monitor_card()
         # Disable config setup buttons while armed (tabs don't support enabled=)
-        for btn in (ui.BTN_DEVICE_SETUP, ui.BTN_CHANNELS_SETUP,
-                    ui.BTN_SPECTRUM_SETUP, ui.BTN_SENSOR_SETUP):
+        for btn in (ui.BTN_DEVICE_SETUP, ui.BTN_CHANNELS_SETUP, ui.BTN_SPECTRUM_SETUP, ui.BTN_SENSOR_SETUP):
             if dpg.does_item_exist(btn):
                 dpg.configure_item(btn, enabled=False)
 
@@ -1573,8 +1572,7 @@ class GUI:
         # Restore frame cache to default depth
         self.collector.resize_frame_cache(self.collector.config.cache_frames)
         self._update_monitor_card()
-        for btn in (ui.BTN_DEVICE_SETUP, ui.BTN_CHANNELS_SETUP,
-                    ui.BTN_SPECTRUM_SETUP, ui.BTN_SENSOR_SETUP):
+        for btn in (ui.BTN_DEVICE_SETUP, ui.BTN_CHANNELS_SETUP, ui.BTN_SPECTRUM_SETUP, ui.BTN_SENSOR_SETUP):
             if dpg.does_item_exist(btn):
                 dpg.configure_item(btn, enabled=True)
 
@@ -1583,46 +1581,25 @@ class GUI:
         if not dpg.does_item_exist(ui.MONITOR_ARM_BTN):
             return
         if self._monitor is not None and self._monitor.is_armed:
-            snap    = self._monitor.status_snapshot()
-            elapsed = snap['elapsed_s']
-            h, rem  = divmod(int(elapsed), 3600)
-            m, s    = divmod(rem, 60)
-            count   = snap['capture_count']
-            nxt     = snap['next_capture_s']
-            err     = snap['error']
-            status  = (
-                f"● REC  {h:02d}:{m:02d}:{s:02d}\n"
-                f"Captures: {count}  Next: {nxt:.0f}s"
-            )
+            snap = self._monitor.status_snapshot()
+            elapsed = snap["elapsed_s"]
+            h, rem = divmod(int(elapsed), 3600)
+            m, s = divmod(rem, 60)
+            count = snap["capture_count"]
+            nxt = snap["next_capture_s"]
+            err = snap["error"]
+            session_id = self._monitor._session.session_id if self._monitor._session else ""
+            status = f"● REC  {h:02d}:{m:02d}:{s:02d}\nCaptures: {count}  Next: {nxt:.0f}s\n{session_id}"
             if err:
                 status += f"\n⚠ {err[:40]}"
-            dpg.set_item_label(ui.MONITOR_ARM_BTN, "Disarm")
+            dpg.set_item_label(ui.MONITOR_ARM_BTN, f'{icons.IC["disarm"]}  Disarm')
             dpg.set_value(ui.MONITOR_STATUS_TEXT, status)
-            if dpg.does_item_exist(ui.MONITOR_SUMMARY_BTN):
-                dpg.configure_item(ui.MONITOR_SUMMARY_BTN, enabled=True)
         else:
-            dpg.set_item_label(ui.MONITOR_ARM_BTN, "Arm")
+            dpg.set_item_label(ui.MONITOR_ARM_BTN, f'{icons.IC["arm"]}  Arm')
             if not self.collector.is_streaming:
                 dpg.set_value(ui.MONITOR_STATUS_TEXT, "Start stream to arm")
             else:
                 dpg.set_value(ui.MONITOR_STATUS_TEXT, "Disarmed")
-            if dpg.does_item_exist(ui.MONITOR_SUMMARY_BTN):
-                dpg.configure_item(ui.MONITOR_SUMMARY_BTN, enabled=False)
-
-    def _on_monitor_summary(self, sender=None, data=None):
-        """Open the session output directory in the system file manager."""
-        if self._monitor is None or self._monitor._session is None:
-            return
-        out = self._monitor._session.output_dir
-        import subprocess
-        import sys
-        try:
-            if sys.platform == 'win32':
-                subprocess.Popen(['explorer', str(out)])
-            else:
-                subprocess.Popen(['xdg-open', str(out)])
-        except Exception:
-            pass
 
     # ------------------------------------------------------------------
     # Sensor Registry Dialog
@@ -1914,6 +1891,7 @@ class GUI:
 
     def _create_gui(self):
         dpg.create_context()
+        dpg.bind_font(icons.load())
 
         # ── Unified Config Dialog (Device / Sensors / Acquisition tabs) ───
         with dpg.window(
@@ -1935,7 +1913,7 @@ class GUI:
                             with dpg.group(horizontal=True):
                                 dpg.add_text("Detected Devices")
                                 dpg.add_spacer(width=_DLG_DEVICE_TAB_SPACER)
-                                dpg.add_button(label="Refresh", small=True, callback=self._start_device_discovery)
+                                dpg.add_button(label=icons.IC['refresh'], small=True, callback=self._start_device_discovery)
                             with dpg.group(tag=ui.DEVSETUP_DEVICE_LIST_GROUP):
                                 pass
 
@@ -1963,13 +1941,13 @@ class GUI:
                                     dpg.add_separator()
                                     with dpg.group(horizontal=True):
                                         dpg.add_button(
-                                            label="Add",
+                                            label=f'{icons.IC["add"]} Add',
                                             tag=ui.SCOPE_REGISTRY_ADD,
                                             callback=self._on_registry_add,
                                             width=_SREG_BTN_W,
                                         )
                                         dpg.add_button(
-                                            label="Delete",
+                                            label=f'{icons.IC["delete"]} Delete',
                                             tag=ui.SCOPE_REGISTRY_DELETE,
                                             callback=self._on_registry_delete,
                                             width=-1,
@@ -2023,7 +2001,7 @@ class GUI:
                             )
                             # Derived: Acquisition Time
                             dpg.add_input_text(label="Acq. Time", tag=ui.ACQ_DLG_ACQ_TIME, readonly=True, width=_w)
-                            
+
                             dpg.add_separator()
                             dpg.add_text("Signal Conditioning")
                             # Control: Highpass filter
@@ -2173,7 +2151,7 @@ class GUI:
                             dpg.add_text("", tag=ui.MON_DLG_ESTIMATE, color=_c("ON_SURFACE"))
 
             dpg.add_separator()
-            dpg.add_button(label="Close", callback=self._on_config_close, width=-1)
+            dpg.add_button(label=f'{icons.IC["close"]}  Close', callback=self._on_config_close, width=-1)
 
         # ── Section container theme (slightly lighter than window background) ──
         _sect_bg = vibechecker.hex_to_rgba(vibechecker.THEME_COLORS["SURFACE"])
@@ -2204,48 +2182,19 @@ class GUI:
             with dpg.group(horizontal=True):
                 # ── Controls column (left) ────────────────────────────
                 with dpg.child_window(width=CONTROLS_WIDTH, autosize_y=True):
-                    dpg.add_button(
-                        label="Device Setup",
-                        tag=ui.BTN_DEVICE_SETUP,
-                        callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_DEVICE),
-                        width=-1,
-                    )
-                    dpg.add_button(
-                        label="Channel Setup",
-                        tag=ui.BTN_CHANNELS_SETUP,
-                        callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_CHANNELS),
-                        width=-1,
-                    )
-                    dpg.add_button(
-                        label="Sensor Setup",
-                        tag=ui.BTN_SENSOR_SETUP,
-                        callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_SENSORS),
-                        width=-1,
-                    )
-                    dpg.add_button(
-                        label="Acquisition Setup",
-                        tag=ui.BTN_SPECTRUM_SETUP,
-                        callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_ACQUISITION),
-                        width=-1,
-                    )
-                    dpg.add_button(
-                        label="Signal Generator",
-                        tag=ui.BTN_SIGGEN_SETUP,
-                        callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_SIGGEN),
-                        width=-1,
-                    )
-                    dpg.add_button(
-                        label="Monitor Setup",
-                        tag=ui.BTN_MONITOR_SETUP,
-                        callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_MONITOR),
-                        width=-1,
-                    )
                     # ── Device ───────────────────────────────────────
-                    with dpg.child_window(
-                        border=True, autosize_x=True, height=_CARD_H_DEVICE, no_scrollbar=True
-                    ) as _s1:
+                    with dpg.child_window(border=True, width=-1, height=_CARD_H_DEVICE, no_scrollbar=True) as _s1:
                         dpg.bind_item_theme(_s1, self._sect_theme)
-                        dpg.add_text("Device")
+                        with dpg.group(horizontal=True):
+                            dpg.add_text(icons.IC['developer_board'])
+                            dpg.add_spacer(width=4)
+                            dpg.add_text("Device")
+                            dpg.add_spacer(width=-1)
+                            dpg.add_button(
+                                label=icons.IC['settings'],
+                                tag=ui.BTN_DEVICE_SETUP,
+                                callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_DEVICE),
+                            )
                         dpg.add_separator()
                         with dpg.group(horizontal=True):
                             with dpg.drawlist(width=16, height=16, tag=ui.DEVICE_STATUS):
@@ -2267,13 +2216,27 @@ class GUI:
                     # ── Channels ─────────────────────────────────────
                     with dpg.child_window(
                         border=True,
-                        autosize_x=True,
+                        width=-1,
                         height=_CARD_H_CHANNELS,
                         no_scrollbar=True,
                         tag=ui.CHANNELS_CARD,
                     ) as _s_ch:
                         dpg.bind_item_theme(_s_ch, self._sect_theme)
-                        dpg.add_text("Channels")
+                        with dpg.group(horizontal=True):
+                            dpg.add_text(icons.IC['channels'])
+                            dpg.add_spacer(width=4)
+                            dpg.add_text("Channels")
+                            dpg.add_spacer(width=-1)
+                            dpg.add_button(
+                                label=icons.IC['sensors'],
+                                tag=ui.BTN_SENSOR_SETUP,
+                                callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_SENSORS),
+                            )
+                            dpg.add_button(
+                                label=icons.IC['settings'],
+                                tag=ui.BTN_CHANNELS_SETUP,
+                                callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_CHANNELS),
+                            )
                         dpg.add_separator()
                         with dpg.group(tag=ui.CONN_CHANNEL_SUMMARY):
                             pass
@@ -2282,38 +2245,48 @@ class GUI:
                     dpg.add_spacer(height=6)
 
                     # ── Acquisition (stream control + spectrum info) ──
-                    with dpg.child_window(border=True, autosize_x=True, height=_CARD_H_ACQ, no_scrollbar=True) as _s2:
+                    with dpg.child_window(border=True, width=-1, height=_CARD_H_ACQ, no_scrollbar=True) as _s2:
                         dpg.bind_item_theme(_s2, self._sect_theme)
-                        dpg.add_text("Acquisition")
+                        with dpg.group(horizontal=True):
+                            dpg.add_text(icons.IC['acquisition'])
+                            dpg.add_spacer(width=4)
+                            dpg.add_text("Acquisition")
+                            dpg.add_spacer(width=-1)
+                            dpg.add_button(
+                                label=icons.IC['settings'],
+                                tag=ui.BTN_SPECTRUM_SETUP,
+                                callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_ACQUISITION),
+                            )
                         dpg.add_separator()
                         dpg.add_button(
-                            label="Stopped", tag=ui.ACQ_TOGGLE, callback=self._toggle_acquisition, width=-1, height=40
+                            label=f'{icons.IC["play_arrow"]}  Stopped', tag=ui.ACQ_TOGGLE,
+                            callback=self._toggle_acquisition, width=-1, height=40,
                         )
                         dpg.add_spacer(height=2)
-                        dpg.add_button(label="Single", tag=ui.ACQ_SINGLE, callback=self._collect_sample, width=-1)
+                        dpg.add_button(label=f'{icons.IC["photo_camera"]}  Single', tag=ui.ACQ_SINGLE, callback=self._collect_sample, width=-1)
                         dpg.add_button(
-                            label="Autoscale", tag=ui.ACQ_AUTOSCALE, callback=self._autoscale_plots, width=-1
+                            label=f'{icons.IC["fit_screen"]}  Autoscale', tag=ui.ACQ_AUTOSCALE, callback=self._autoscale_plots, width=-1
                         )
                         with dpg.group(horizontal=True):
                             dpg.add_button(
-                                label="Clear Cache", tag=ui.ACQ_CLEAR_CACHE, callback=self._clear_cache, width=-1
+                                label=f'{icons.IC["delete_sweep"]}  Clear Cache', tag=ui.ACQ_CLEAR_CACHE, callback=self._clear_cache, width=-1
                             )
                         dpg.add_spacer(height=4)
                         dpg.add_separator()
                         dpg.add_text("Browse Waveforms", color=_c("ON_SURFACE"))
                         with dpg.group(horizontal=True):
                             dpg.add_button(
-                                label="<<", tag=ui.ACQ_BROWSE_FIRST, callback=self._on_browse, width=28, enabled=False
+                                label=icons.IC['first_page'], tag=ui.ACQ_BROWSE_FIRST, callback=self._on_browse, width=28, enabled=False
                             )
                             dpg.add_button(
-                                label="<", tag=ui.ACQ_BROWSE_PREV, callback=self._on_browse, width=28, enabled=False
+                                label=icons.IC['navigate_before'], tag=ui.ACQ_BROWSE_PREV, callback=self._on_browse, width=28, enabled=False
                             )
                             dpg.add_text("No frames", tag=ui.ACQ_BROWSE_LABEL)
                             dpg.add_button(
-                                label=">", tag=ui.ACQ_BROWSE_NEXT, callback=self._on_browse, width=28, enabled=False
+                                label=icons.IC['navigate_next'], tag=ui.ACQ_BROWSE_NEXT, callback=self._on_browse, width=28, enabled=False
                             )
                             dpg.add_button(
-                                label=">>", tag=ui.ACQ_BROWSE_LAST, callback=self._on_browse, width=28, enabled=False
+                                label=icons.IC['last_page'], tag=ui.ACQ_BROWSE_LAST, callback=self._on_browse, width=28, enabled=False
                             )
                         dpg.add_spacer(height=6)
                         dpg.add_separator()
@@ -2329,10 +2302,52 @@ class GUI:
 
                     dpg.add_spacer(height=6)
 
-                    # ── File Handling ─────────────────────────────────
-                    with dpg.child_window(border=True, autosize_x=True, height=_CARD_H_FILE, no_scrollbar=True) as _s4:
+                    # ── Monitor Mode ──────────────────────────────────
+                    with dpg.child_window(
+                        border=True,
+                        width=-1,
+                        height=_CARD_H_MONITOR,
+                        no_scrollbar=True,
+                        tag=ui.MONITOR_CARD,
+                    ) as _s_mon:
+                        dpg.bind_item_theme(_s_mon, self._sect_theme)
+                        with dpg.group(horizontal=True):
+                            dpg.add_text(icons.IC['monitor_heart'])
+                            dpg.add_spacer(width=4)
+                            dpg.add_text("Monitor Mode")
+                            dpg.add_spacer(width=-1)
+                            dpg.add_button(
+                                label=icons.IC['settings'],
+                                tag=ui.BTN_MONITOR_SETUP,
+                                callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_MONITOR),
+                            )
+                        dpg.add_separator()
+                        dpg.add_button(
+                            label=f'{icons.IC["arm"]}  Arm',
+                            tag=ui.MONITOR_ARM_BTN,
+                            callback=self._on_arm_toggle,
+                            width=-1,
+                            height=32,
+                        )
+                        dpg.add_spacer(height=2)
+                        dpg.add_text("Disarmed", tag=ui.MONITOR_STATUS_TEXT, color=_c("ON_SURFACE"))
+
+                    dpg.add_spacer(height=6)
+
+                    # ── File ──────────────────────────────────────────
+                    with dpg.child_window(border=True, width=-1, height=_CARD_H_FILE, no_scrollbar=True) as _s4:
                         dpg.bind_item_theme(_s4, self._sect_theme)
-                        dpg.add_text("File Handling")
+                        with dpg.group(horizontal=True):
+                            dpg.add_text(icons.IC['folder'])
+                            dpg.add_spacer(width=4)
+                            dpg.add_text("File")
+                            dpg.add_spacer(width=-1)
+                            dpg.add_button(
+                                label=f'{icons.IC["save"]} Save', tag=ui.FILE_SAVE, callback=self._on_save_click
+                            )
+                            dpg.add_button(
+                                label=f'{icons.IC["folder_open"]} Load', tag=ui.FILE_LOAD, callback=self._on_load_click
+                            )
                         dpg.add_separator()
                         dpg.add_text("Measurement Notes", color=_c("ON_SURFACE"))
                         dpg.add_input_text(
@@ -2341,38 +2356,6 @@ class GUI:
                             width=-1,
                             height=90,
                             hint="Worksite, machine, sensor location…",
-                        )
-                        dpg.add_spacer(height=4)
-                        dpg.add_separator()
-                        with dpg.group(horizontal=True):
-                            dpg.add_button(
-                                label="Save", tag=ui.FILE_SAVE, callback=self._on_save_click, width=_BTN_HALF
-                            )
-                            dpg.add_button(
-                                label="Load", tag=ui.FILE_LOAD, callback=self._on_load_click, width=_BTN_HALF
-                            )
-
-                    dpg.add_spacer(height=6)
-
-                    # ── Monitor Mode ──────────────────────────────────
-                    with dpg.child_window(
-                        border=True, autosize_x=True, height=_CARD_H_MONITOR,
-                        no_scrollbar=True, tag=ui.MONITOR_CARD,
-                    ) as _s_mon:
-                        dpg.bind_item_theme(_s_mon, self._sect_theme)
-                        dpg.add_text("Monitor Mode")
-                        dpg.add_separator()
-                        dpg.add_button(
-                            label="Arm", tag=ui.MONITOR_ARM_BTN,
-                            callback=self._on_arm_toggle, width=-1, height=32,
-                        )
-                        dpg.add_spacer(height=2)
-                        dpg.add_text("Disarmed", tag=ui.MONITOR_STATUS_TEXT,
-                                     color=_c("ON_SURFACE"))
-                        dpg.add_spacer(height=4)
-                        dpg.add_button(
-                            label="Save Summary", tag=ui.MONITOR_SUMMARY_BTN,
-                            callback=self._on_monitor_summary, width=-1, enabled=False,
                         )
 
                 # ── Main column (center — plots) ──────────────────────
@@ -2519,18 +2502,25 @@ class GUI:
             dpg.add_key_press_handler(callback=self._on_key_press)
 
     def _on_key_press(self, sender, app_data) -> None:
-        key  = app_data
+        key = app_data
         ctrl = dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)
 
         if ctrl:
-            if   key == dpg.mvKey_A: self._autoscale_plots()
-            elif key == dpg.mvKey_K: self._toggle_acquisition()
-            elif key == dpg.mvKey_S: self._on_save_click()
-            elif key == dpg.mvKey_O: self._on_load_click()
-            elif key == dpg.mvKey_Q: dpg.stop_dearpygui()
+            if key == dpg.mvKey_A:
+                self._autoscale_plots()
+            elif key == dpg.mvKey_K:
+                self._toggle_acquisition()
+            elif key == dpg.mvKey_S:
+                self._on_save_click()
+            elif key == dpg.mvKey_O:
+                self._on_load_click()
+            elif key == dpg.mvKey_Q:
+                dpg.stop_dearpygui()
         elif not self.collector.is_streaming:
-            if   key == dpg.mvKey_Left:  self.collector.browse_frame(+1)
-            elif key == dpg.mvKey_Right: self.collector.browse_frame(-1)
+            if key == dpg.mvKey_Left:
+                self.collector.browse_frame(+1)
+            elif key == dpg.mvKey_Right:
+                self.collector.browse_frame(-1)
 
     def initialize(self):
         _cfg.ensure_default_config()
