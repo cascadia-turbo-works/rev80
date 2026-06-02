@@ -123,6 +123,13 @@ class MonitorController:
         self._armed = False
         log.info('Monitor anomaly detection disarmed')
 
+    def trigger_burst(self) -> None:
+        """Manually force a burst capture immediately. Noop if not recording."""
+        if not self._recording or self._session is None:
+            return
+        self._gate.enter_burst(self._session.burst_duration_s)
+        log.info('Monitor burst triggered manually')
+
     def set_anomaly_hook(self, hook: AnomalyHook) -> None:
         """Swap the anomaly hook while recording."""
         self._anomaly_hook = hook
