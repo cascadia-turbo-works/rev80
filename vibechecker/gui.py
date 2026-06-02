@@ -72,7 +72,7 @@ _CARD_H_ACQ = (
     _CARD_BASE_H + _CARD_BTN_H * 6 + _CARD_LINE_H * 10
 )  # Acquisition: toggle+controls+spectrum info box
 _CARD_H_FILE = _CARD_BASE_H + _CARD_LINE_H + 105  # notes field only (Save/Load in header)
-_CARD_H_MONITOR = _CARD_BASE_H + _CARD_BTN_H * 2 + _CARD_LINE_H * 4  # Arm + Load Session + status
+_CARD_H_MONITOR = _CARD_BASE_H + _CARD_BTN_H * 3 + _CARD_LINE_H * 4  # Record + Arm + Load Session + status
 
 
 def _c(key: str, alpha: int = 255) -> tuple:
@@ -145,7 +145,9 @@ class GUI:
         self._monitor: vibechecker.MonitorController | None = None
         self._session_browser_sessions: list = []
         self._session_browser_rows: list = []
-        self._session_browser_selected_capture: str | None = None
+        self._session_browser_burst_list: list = []
+        self._session_browser_selected_capture: int | None = None
+        self._session_browser_selected_burst: str | None = None
         self._session_browser_selected_session_dir = None
 
     # ------------------------------------------------------------------
@@ -461,7 +463,7 @@ class GUI:
                 height=_CARD_BASE_H + n_overflow * _CARD_LINE_H,
             )
 
-        if self._monitor is not None and self._monitor.is_armed:
+        if self._monitor is not None and self._monitor.is_recording:
             self._monitor.on_results(results, self.collector.data["frame_cache"])
 
         self._update_trend_plot()
@@ -494,7 +496,7 @@ class GUI:
             return
         self.collector.new_frame_event.clear()
         self._display_frame()
-        if self._monitor is not None and self._monitor.is_armed:
+        if self._monitor is not None and self._monitor.is_recording:
             self._update_monitor_card()
 
     def _redraw(self, sender=None, data=None):
@@ -1320,9 +1322,9 @@ class GUI:
         self._build_session_browser()
 
     def _build_session_browser(self) -> None:
-        """Build the session browser modal from scratch."""
+        """Build the session browser modal with Monitor and Bursts tabs."""
         sessions = self._scan_session_dirs()
-        DLG_W, DLG_H = 700, 500
+        DLG_W, DLG_H = 800, 560
         LEFT_W = 160
 
         with dpg.window(
@@ -1335,7 +1337,7 @@ class GUI:
             no_resize=False,
         ):
             with dpg.group(horizontal=True):
-                # ── Left: session list ────────────────────────────────
+                # ── Left: shared session list ──────────────────────────
                 with dpg.child_window(width=LEFT_W, height=DLG_H - 60, border=True):
                     if not sessions:
                         dpg.add_text("No sessions\nfound.", color=_c("ON_SURFACE"))
@@ -1348,39 +1350,71 @@ class GUI:
                             callback=self._on_session_list_select,
                         )
 
-                # ── Right: capture table ──────────────────────────────
+                # ── Right: tabbed detail pane ──────────────────────────
                 with dpg.child_window(width=-1, height=DLG_H - 60, border=True, tag='_SB_RIGHT'):
                     if not sessions:
                         dpg.add_text("No sessions found.", color=_c("ON_SURFACE"))
                     else:
-                        dpg.add_text("Select a session to view captures.",
-                                     tag='_SB_HINT', color=_c("ON_SURFACE"))
-                        with dpg.table(
-                            tag='_SB_TABLE',
-                            header_row=True,
-                            row_background=True,
-                            borders_innerV=True,
-                            borders_outerH=True,
-                            borders_outerV=True,
-                            scrollY=True,
-                            freeze_rows=1,
-                            height=-1,
-                            show=False,
-                        ):
-                            dpg.add_table_column(label="Timestamp", width_fixed=True, init_width_or_weight=190)
-                            dpg.add_table_column(label="Trigger",   width_fixed=True, init_width_or_weight=80)
-                            dpg.add_table_column(label="Ch0 (mV)",  width_fixed=True, init_width_or_weight=90)
-                            dpg.add_table_column(label="Ch1 (mV)",  width_fixed=True, init_width_or_weight=90)
+                        with dpg.tab_bar():
+                            # ── Monitor tab ─────────────────────────────
+                            with dpg.tab(label="Monitor"):
+                                dpg.add_text("Select a session to view captures.",
+                                             tag='_SB_HINT', color=_c("ON_SURFACE"))
+                                with dpg.table(
+                                    tag='_SB_TABLE',
+                                    header_row=True,
+                                    row_background=True,
+                                    borders_innerV=True,
+                                    borders_outerH=True,
+                                    borders_outerV=True,
+                                    scrollY=True,
+                                    freeze_rows=1,
+                                    height=-1,
+                                    show=False,
+                                ):
+                                    dpg.add_table_column(label="Timestamp",   width_fixed=True, init_width_or_weight=190)
+                                    dpg.add_table_column(label="Rel (s)",     width_fixed=True, init_width_or_weight=70)
+                                    dpg.add_table_column(label="Ch0 (mV)",   width_fixed=True, init_width_or_weight=90)
+                                    dpg.add_table_column(label="Ch1 (mV)",   width_fixed=True, init_width_or_weight=90)
+
+                            # ── Bursts tab ──────────────────────────────
+                            with dpg.tab(label="Bursts"):
+                                dpg.add_text("Select a session to view bursts.",
+                                             tag='_SB_BURST_HINT', color=_c("ON_SURFACE"))
+                                with dpg.table(
+                                    tag='_SB_BURST_TABLE',
+                                    header_row=True,
+                                    row_background=True,
+                                    borders_innerV=True,
+                                    borders_outerH=True,
+                                    borders_outerV=True,
+                                    scrollY=True,
+                                    freeze_rows=1,
+                                    height=-1,
+                                    show=False,
+                                ):
+                                    dpg.add_table_column(label="Timestamp",    width_fixed=True, init_width_or_weight=190)
+                                    dpg.add_table_column(label="Trigger",      width_fixed=True, init_width_or_weight=80)
+                                    dpg.add_table_column(label="Max Overall",  width_fixed=True, init_width_or_weight=90)
+                                    dpg.add_table_column(label="Duration (s)", width_fixed=True, init_width_or_weight=80)
 
             # ── Bottom bar ────────────────────────────────────────────
             dpg.add_spacer(height=4)
             with dpg.group(horizontal=True):
                 dpg.add_button(
-                    label=f'{icons.IC["folder_open"]}  Load',
+                    label=f'{icons.IC["folder_open"]}  Load Capture',
                     tag='_SB_LOAD_BTN',
                     callback=self._on_session_browser_load,
                     enabled=False,
-                    width=90,
+                    width=120,
+                    height=28,
+                )
+                dpg.add_button(
+                    label=f'{icons.IC["folder_open"]}  Load Burst',
+                    tag='_SB_LOAD_BURST_BTN',
+                    callback=self._on_session_browser_load_burst,
+                    enabled=False,
+                    width=110,
                     height=28,
                 )
                 dpg.add_spacer(width=-1)
@@ -1395,8 +1429,7 @@ class GUI:
             self._on_session_list_select(sender='_SB_SESSION_LIST', data=sessions[0][1])
 
     def _scan_session_dirs(self) -> list:
-        """Return [(session_id, label, session_dir)] sorted newest-first."""
-        import yaml
+        """Return [(session_id, label, session_dir, session_h5)] sorted newest-first."""
         monitor_root = vibechecker.data_dir() / 'monitor'
         sessions = []
         if not monitor_root.exists():
@@ -1413,88 +1446,161 @@ class GUI:
 
         for d in dirs:
             session_id = d.name
-            yaml_path = d / 'session.yaml'
+            h5 = d / 'session.h5'
+            if not h5.exists():
+                continue
             start_date = ''
-            if yaml_path.exists():
-                try:
-                    with open(yaml_path) as fh:
-                        meta = yaml.safe_load(fh) or {}
-                    start_time = meta.get('start_time', '')
-                    if start_time:
-                        start_date = str(start_time)[:10]
-                except Exception as exc:
-                    log.warning(f'session browser: cannot parse {yaml_path}: {exc}')
+            try:
+                import h5py
+                with h5py.File(str(h5), 'r') as f:
+                    meta = f.get('metadata')
+                    if meta is not None:
+                        start_time = meta.attrs.get('start_time', '')
+                        if start_time:
+                            start_date = str(start_time)[:10]
+            except Exception as exc:
+                log.warning(f'session browser: cannot read {h5}: {exc}')
             label = f'{session_id[:20]}\n{start_date}' if start_date else session_id[:20]
-            sessions.append((session_id, label, d))
+            sessions.append((session_id, label, d, h5))
 
         self._session_browser_sessions = sessions
         return sessions
 
     def _on_session_list_select(self, sender=None, data=None) -> None:
-        """Populate the capture table when a session is selected."""
+        """Populate the capture and burst tables when a session is selected."""
         if not self._session_browser_sessions:
             return
         selected = dpg.get_value('_SB_SESSION_LIST') if dpg.does_item_exist('_SB_SESSION_LIST') else data
         entry = next((s for s in self._session_browser_sessions if s[1] == selected), None)
         if entry is None:
             return
-        _, _, session_dir = entry
-
-        rows: list = []
-        if (session_dir / 'index.sqlite').exists():
-            try:
-                from vibechecker.monitor.index import SessionIndex
-                idx = SessionIndex(session_dir)
-                rows = idx.query(limit=500)
-                idx.close()
-            except Exception as exc:
-                log.error(f'session browser: cannot read index: {exc}')
-        self._session_browser_rows = rows
+        _, _, session_dir, session_h5 = entry
         self._session_browser_selected_session_dir = session_dir
         self._session_browser_selected_capture = None
 
+        # Read H5 data
+        captures: list = []
+        burst_list: list = []
+        try:
+            import h5py, json
+            with h5py.File(str(session_h5), 'r') as f:
+                # Interval captures
+                monitor_grp = f.get('monitor', {})
+                if monitor_grp:
+                    for i in sorted(monitor_grp.keys(), key=int):
+                        attrs = dict(monitor_grp[i].attrs)
+                        overall = json.loads(attrs.get('overall_json', '{}'))
+                        captures.append({
+                            'index':     int(i),
+                            'timestamp': attrs.get('timestamp', ''),
+                            'rel_time':  float(attrs.get('rel_time', 0)),
+                            'overall':   overall,
+                        })
+                # Bursts
+                if 'burst' in f:
+                    raw = f['burst'].attrs.get('burst_list', '[]')
+                    burst_list = json.loads(raw)
+        except Exception as exc:
+            log.error(f'session browser: cannot read {session_h5}: {exc}')
+
+        self._session_browser_rows = captures
+        self._session_browser_burst_list = burst_list
+
+        # ── Populate Monitor tab ───────────────────────────────────────
+        has_captures = bool(captures)
         if dpg.does_item_exist('_SB_HINT'):
-            dpg.configure_item('_SB_HINT', show=not rows)
+            dpg.configure_item('_SB_HINT', show=not has_captures)
         if dpg.does_item_exist('_SB_TABLE'):
-            dpg.configure_item('_SB_TABLE', show=bool(rows))
+            dpg.configure_item('_SB_TABLE', show=has_captures)
             for child in (dpg.get_item_children('_SB_TABLE', slot=1) or []):
                 dpg.delete_item(child)
-            for row in rows:
-                overall = row.get('overall', {})
+            for cap in captures:
+                overall = cap.get('overall', {})
                 ch0 = overall.get('0', overall.get(0, ''))
                 ch1 = overall.get('1', overall.get(1, ''))
                 ch0_str = f'{float(ch0):.4f}' if ch0 != '' else '-'
                 ch1_str = f'{float(ch1):.4f}' if ch1 != '' else '-'
-                capture_id = row.get('capture_id', '')
+                capture_index = cap['index']
                 with dpg.table_row(parent='_SB_TABLE'):
                     dpg.add_selectable(
-                        label=row.get('timestamp', ''),
+                        label=cap.get('timestamp', ''),
                         span_columns=True,
                         callback=self._on_capture_row_select,
-                        user_data=capture_id,
+                        user_data=capture_index,
                     )
-                    dpg.add_text(row.get('trigger', ''))
+                    dpg.add_text(f"{cap.get('rel_time', 0):.1f}")
                     dpg.add_text(ch0_str)
                     dpg.add_text(ch1_str)
 
         if dpg.does_item_exist('_SB_LOAD_BTN'):
             dpg.configure_item('_SB_LOAD_BTN', enabled=False)
 
+        # ── Populate Bursts tab ────────────────────────────────────────
+        has_bursts = bool(burst_list)
+        if dpg.does_item_exist('_SB_BURST_HINT'):
+            dpg.configure_item('_SB_BURST_HINT', show=not has_bursts)
+        if dpg.does_item_exist('_SB_BURST_TABLE'):
+            dpg.configure_item('_SB_BURST_TABLE', show=has_bursts)
+            for child in (dpg.get_item_children('_SB_BURST_TABLE', slot=1) or []):
+                dpg.delete_item(child)
+            for burst in burst_list:
+                max_overall = burst.get('max_overall_json', {})
+                if isinstance(max_overall, str):
+                    try:
+                        import json as _json
+                        max_overall = _json.loads(max_overall)
+                    except Exception:
+                        max_overall = {}
+                max_vals = list(max_overall.values()) if max_overall else []
+                max_str = f'{max(float(v) for v in max_vals):.4f}' if max_vals else '-'
+                burst_id = burst.get('burst_id', '')
+                with dpg.table_row(parent='_SB_BURST_TABLE'):
+                    dpg.add_selectable(
+                        label=burst.get('timestamp', ''),
+                        span_columns=True,
+                        callback=self._on_burst_row_select,
+                        user_data=burst_id,
+                    )
+                    dpg.add_text(burst.get('trigger_type', ''))
+                    dpg.add_text(max_str)
+                    dpg.add_text(f"{float(burst.get('duration_s', 0)):.1f}")
+
+        if dpg.does_item_exist('_SB_LOAD_BURST_BTN'):
+            dpg.configure_item('_SB_LOAD_BURST_BTN', enabled=False)
+
     def _on_capture_row_select(self, sender=None, data=None, user_data=None) -> None:
         self._session_browser_selected_capture = user_data
         if dpg.does_item_exist('_SB_LOAD_BTN'):
             dpg.configure_item('_SB_LOAD_BTN', enabled=True)
 
+    def _on_burst_row_select(self, sender=None, data=None, user_data=None) -> None:
+        self._session_browser_selected_burst = user_data
+        if dpg.does_item_exist('_SB_LOAD_BURST_BTN'):
+            dpg.configure_item('_SB_LOAD_BURST_BTN', enabled=True)
+
     def _on_session_browser_load(self, sender=None, data=None) -> None:
-        capture_id = self._session_browser_selected_capture
+        capture_index = self._session_browser_selected_capture
         session_dir = self._session_browser_selected_session_dir
-        if not capture_id or session_dir is None:
+        if capture_index is None or session_dir is None:
             return
-        h5_path = Path(str(session_dir)) / f'{capture_id}.h5'
+        session_h5 = Path(str(session_dir)) / 'session.h5'
         try:
-            self.collector.load_data(h5_path)
+            self.collector.load_monitor_capture(session_h5, capture_index)
         except Exception as exc:
-            log.error(f'session browser: failed to load {h5_path}: {exc}')
+            log.error(f'session browser: failed to load capture {capture_index} from {session_h5}: {exc}')
+            return
+        dpg.configure_item(ui.DLG_SESSION_BROWSER, show=False)
+
+    def _on_session_browser_load_burst(self, sender=None, data=None) -> None:
+        burst_id = self._session_browser_selected_burst
+        session_dir = self._session_browser_selected_session_dir
+        if not burst_id or session_dir is None:
+            return
+        session_h5 = Path(str(session_dir)) / 'session.h5'
+        try:
+            self.collector.load_monitor_burst(session_h5, burst_id)
+        except Exception as exc:
+            log.error(f'session browser: failed to load burst {burst_id} from {session_h5}: {exc}')
             return
         dpg.configure_item(ui.DLG_SESSION_BROWSER, show=False)
 
@@ -1720,19 +1826,20 @@ class GUI:
         estimate = f"Interval: {interval_est}\nBurst: {burst_est}"
         dpg.set_value(ui.MON_DLG_ESTIMATE, estimate)
 
-    def _on_arm_toggle(self, sender=None, data=None):
-        if self._monitor is not None and self._monitor.is_armed:
-            self._disarm_monitor()
+    def _on_record_toggle(self, sender=None, data=None):
+        if self._monitor is not None and self._monitor.is_recording:
+            self._stop_recording()
         else:
-            self._arm_monitor()
+            self._start_recording()
 
-    def _arm_monitor(self):
-        """Create MonitorSession from dialog config and start the controller."""
+    def _start_recording(self):
+        """Start streaming (if not running) and start monitor session."""
         import re
         from datetime import datetime, timezone
 
+        # Start streaming if needed
         if not self.collector.is_streaming:
-            return
+            self._toggle_acquisition()
 
         # Read dialog config (fall back to defaults when dialog hasn't been opened)
         interval_label = dpg.get_value(ui.MON_DLG_INTERVAL) if dpg.does_item_exist(ui.MON_DLG_INTERVAL) else "1 h"
@@ -1787,7 +1894,7 @@ class GUI:
             pre_buffer_frames=pre_buffer_n,
             burst_duration_s=burst_dur,
             max_burst_s=600.0,
-            output_dir=output_dir,
+            session_dir=output_dir,
             compression="gzip" if compress else "none",
             compression_level=4,
             acq_snapshot=acq_snapshot,
@@ -1796,53 +1903,74 @@ class GUI:
         )
 
         # Enlarge frame cache to hold pre-trigger frames
-        needed = max(self.collector.config.cache_frames, pre_buffer_n)
-        self.collector.resize_frame_cache(needed)
+        self.collector.resize_frame_cache(max(self.collector.config.cache_frames, pre_buffer_n))
 
         if self._monitor is None:
             self._monitor = vibechecker.MonitorController()
         self._monitor.start(session)
 
         self._update_monitor_card()
-        # Disable config setup buttons while armed (tabs don't support enabled=)
-        for btn in (ui.BTN_DEVICE_SETUP, ui.BTN_CHANNELS_SETUP, ui.BTN_SPECTRUM_SETUP, ui.BTN_SENSOR_SETUP):
+        # Disable config setup buttons while recording
+        for btn in (ui.BTN_DEVICE_SETUP, ui.BTN_CHANNELS_SETUP,
+                    ui.BTN_SPECTRUM_SETUP, ui.BTN_SENSOR_SETUP, ui.BTN_MONITOR_SETUP):
             if dpg.does_item_exist(btn):
                 dpg.configure_item(btn, enabled=False)
 
-    def _disarm_monitor(self):
+    def _stop_recording(self):
+        """Stop the monitor session; leave streaming running."""
         if self._monitor is not None:
             self._monitor.stop()
-        # Restore frame cache to default depth
         self.collector.resize_frame_cache(self.collector.config.cache_frames)
         self._update_monitor_card()
-        for btn in (ui.BTN_DEVICE_SETUP, ui.BTN_CHANNELS_SETUP, ui.BTN_SPECTRUM_SETUP, ui.BTN_SENSOR_SETUP):
+        for btn in (ui.BTN_DEVICE_SETUP, ui.BTN_CHANNELS_SETUP,
+                    ui.BTN_SPECTRUM_SETUP, ui.BTN_SENSOR_SETUP, ui.BTN_MONITOR_SETUP):
             if dpg.does_item_exist(btn):
                 dpg.configure_item(btn, enabled=True)
 
-    def _update_monitor_card(self):
-        """Refresh the Monitor card label and status text from controller state."""
-        if not dpg.does_item_exist(ui.MONITOR_ARM_BTN):
+    def _on_arm_toggle(self, sender=None, data=None):
+        if self._monitor is None or not self._monitor.is_recording:
             return
-        if self._monitor is not None and self._monitor.is_armed:
+        if self._monitor.is_armed:
+            self._monitor.disarm()
+        else:
+            self._monitor.arm()
+        self._update_monitor_card()
+
+    def _update_monitor_card(self):
+        """Refresh the Monitor card labels and status text from controller state."""
+        if not dpg.does_item_exist(ui.MONITOR_RECORD_BTN):
+            return
+        if self._monitor is not None and self._monitor.is_recording:
             snap = self._monitor.status_snapshot()
-            elapsed = snap["elapsed_s"]
-            h, rem = divmod(int(elapsed), 3600)
+            h, rem = divmod(int(snap['elapsed_s']), 3600)
             m, s = divmod(rem, 60)
-            count = snap["capture_count"]
-            nxt = snap["next_capture_s"]
-            err = snap["error"]
-            session_id = self._monitor._session.session_id if self._monitor._session else ""
-            status = f"● REC  {h:02d}:{m:02d}:{s:02d}\nCaptures: {count}  Next: {nxt:.0f}s\n{session_id}"
+            captures = snap['capture_count']
+            bursts = snap.get('burst_count', 0)
+            nxt = snap['next_capture_s']
+            err = snap.get('error')
+            status = (f"REC  {h:02d}:{m:02d}:{s:02d}\n"
+                      f"Captures: {captures}  Bursts: {bursts}  Next: {nxt:.0f}s")
             if err:
                 status += f"\nERR: {err[:40]}"
-            dpg.set_item_label(ui.MONITOR_ARM_BTN, f'{icons.IC["disarm"]}  Disarm')
+            session_id = self._monitor._session.session_id if self._monitor._session else ''
+            status += f"\n{session_id}"
+            dpg.set_item_label(ui.MONITOR_RECORD_BTN, f'{icons.IC["disarm"]}  Stop')
             dpg.set_value(ui.MONITOR_STATUS_TEXT, status)
+            # Arm button
+            if dpg.does_item_exist(ui.MONITOR_ARM_BTN):
+                dpg.configure_item(ui.MONITOR_ARM_BTN, enabled=True)
+                armed = self._monitor.is_armed
+                dpg.set_item_label(ui.MONITOR_ARM_BTN,
+                    f'{icons.IC["arm"]}  {"Disarm" if armed else "Arm"}')
         else:
-            dpg.set_item_label(ui.MONITOR_ARM_BTN, f'{icons.IC["arm"]}  Arm')
+            dpg.set_item_label(ui.MONITOR_RECORD_BTN, f'{icons.IC["record"]}  Record')
             if not self.collector.is_streaming:
-                dpg.set_value(ui.MONITOR_STATUS_TEXT, "Start stream to arm")
+                dpg.set_value(ui.MONITOR_STATUS_TEXT, 'Start stream to record')
             else:
-                dpg.set_value(ui.MONITOR_STATUS_TEXT, "Disarmed")
+                dpg.set_value(ui.MONITOR_STATUS_TEXT, 'Stopped')
+            if dpg.does_item_exist(ui.MONITOR_ARM_BTN):
+                dpg.configure_item(ui.MONITOR_ARM_BTN, enabled=False)
+                dpg.set_item_label(ui.MONITOR_ARM_BTN, f'{icons.IC["arm"]}  Arm')
 
     # ------------------------------------------------------------------
     # Sensor Registry Dialog
@@ -2566,14 +2694,22 @@ class GUI:
                             )
                         dpg.add_separator()
                         dpg.add_button(
-                            label=f'{icons.IC["arm"]}  Arm',
-                            tag=ui.MONITOR_ARM_BTN,
-                            callback=self._on_arm_toggle,
+                            label=f'{icons.IC["record"]}  Record',
+                            tag=ui.MONITOR_RECORD_BTN,
+                            callback=self._on_record_toggle,
                             width=-1,
                             height=32,
                         )
                         dpg.add_spacer(height=2)
-                        dpg.add_text("Disarmed", tag=ui.MONITOR_STATUS_TEXT, color=_c("ON_SURFACE"))
+                        dpg.add_button(
+                            label=f'{icons.IC["arm"]}  Arm',
+                            tag=ui.MONITOR_ARM_BTN,
+                            callback=self._on_arm_toggle,
+                            width=-1,
+                            enabled=False,
+                        )
+                        dpg.add_spacer(height=2)
+                        dpg.add_text("Start stream to record", tag=ui.MONITOR_STATUS_TEXT, color=_c("ON_SURFACE"))
                         dpg.add_spacer(height=4)
                         dpg.add_button(
                             label=f'{icons.IC["folder_open"]}  Load Session',

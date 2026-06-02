@@ -32,6 +32,7 @@ IC: dict[str, str] = {
     'save':                '\ueb4b',  # cod-save
     'folder_open':         '\ueaf7',  # cod-folder_opened
     # monitor arm / disarm
+    'record':              '\ueba7',  # cod-record
     'arm':                 '\uebf8',  # cod-target
     'disarm':              '\uead7',  # cod-debug_stop (reuse)
     # config dialog
