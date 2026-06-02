@@ -38,6 +38,7 @@ class MonitorController:
         self._burst_id:         str       = ''
         self._burst_frames:     list[dict] = []
         self._burst_results:    list      = []
+        self._burst_all_results: list[list] = []  # per-frame results during burst
         self._burst_pretrigger: int       = 0
         self._last_frame_cache: deque | None = None  # updated each on_results call
 
@@ -69,9 +70,10 @@ class MonitorController:
 
         self._capture_count = 0
         self._burst_count   = 0
-        self._in_burst      = False
-        self._burst_frames  = []
-        self._burst_results = []
+        self._in_burst          = False
+        self._burst_frames      = []
+        self._burst_results     = []
+        self._burst_all_results = []
         self._recording     = True
 
         if anomaly_hook is not None:
@@ -227,7 +229,8 @@ class MonitorController:
         self._in_burst       = True
         self._burst_end_mono = now + event.burst_duration_s
         self._burst_id       = datetime.now(timezone.utc).strftime('%Y-%m-%d-%H%M%S')
-        self._burst_results  = list(results)
+        self._burst_results     = list(results)
+        self._burst_all_results = [list(results)]
 
         # Snapshot pre-trigger frames
         n = self._session.pre_buffer_frames if self._session else 1
@@ -243,6 +246,7 @@ class MonitorController:
                              now: float, rel_time: float) -> None:
         latest = dict(frame_cache[-1]) if frame_cache else {}
         self._burst_frames.append(latest)
+        self._burst_all_results.append(list(results))
 
         # Retrigger check (only if armed)
         if self._armed:
@@ -265,6 +269,7 @@ class MonitorController:
             self._enqueue(
                 frames           = self._burst_frames,
                 results          = self._burst_results or results,
+                all_results      = self._burst_all_results,
                 trigger          = 'burst',
                 rel_time         = rel_time,
                 timestamp        = timestamp_str,
@@ -272,22 +277,25 @@ class MonitorController:
                 n_pretrigger     = self._burst_pretrigger,
             )
             self._burst_count += 1
-        self._burst_frames     = []
-        self._burst_results    = []
-        self._burst_id         = ''
-        self._burst_pretrigger = 0
+        self._burst_frames      = []
+        self._burst_results     = []
+        self._burst_all_results = []
+        self._burst_id          = ''
+        self._burst_pretrigger  = 0
         if self._gate and self._session:
             self._gate.exit_burst(time.monotonic())
 
     def _enqueue(self, frames: list, results: list, trigger: str,
                  rel_time: float, timestamp: str,
-                 burst_id: str = '', n_pretrigger: int = 0) -> None:
+                 burst_id: str = '', n_pretrigger: int = 0,
+                 all_results: list | None = None) -> None:
         item: dict = {
-            'frames':    frames,
-            'results':   results,
-            'trigger':   trigger,
-            'rel_time':  rel_time,
-            'timestamp': timestamp,
+            'frames':      frames,
+            'results':     results,
+            'all_results': all_results or [],
+            'trigger':     trigger,
+            'rel_time':    rel_time,
+            'timestamp':   timestamp,
         }
         if trigger != 'interval':
             item['burst_id']           = burst_id

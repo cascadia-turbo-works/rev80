@@ -1428,6 +1428,12 @@ class GUI:
             h5 = d / 'session.h5'
             if not h5.exists():
                 continue
+            try:
+                with h5py.File(str(h5), 'r') as _f:
+                    pass  # verify file is readable
+            except Exception as exc:
+                log.warning(f'session browser: skipping unreadable {h5}: {exc}')
+                continue
             sessions.append((d.name, d, h5))
 
         self._session_browser_sessions = sessions
@@ -1445,9 +1451,10 @@ class GUI:
         _, session_dir, session_h5 = entry
         self._session_browser_selected_session_dir = session_dir
 
-        # Load all interval frames immediately
+        # Load all interval frames immediately; guard against corrupt/old H5 files
         try:
             self.collector.load_monitor_session(session_h5)
+            self._autoscale_plots()
         except Exception as exc:
             log.error(f'session browser: failed to load session {session_h5}: {exc}')
 
@@ -1457,30 +1464,39 @@ class GUI:
             with h5py.File(str(session_h5), 'r') as f:
                 if 'burst' in f:
                     raw = f['burst'].attrs.get('burst_list', '[]')
-                    burst_list = json.loads(raw)
+                    if isinstance(raw, bytes):
+                        raw = raw.decode()
+                    burst_list = json.loads(raw) if raw else []
         except Exception as exc:
-            log.error(f'session browser: cannot read bursts from {session_h5}: {exc}')
+            log.warning(f'session browser: cannot read bursts from {session_h5}: {exc}')
 
         self._session_browser_burst_list = burst_list
         burst_labels = [
             f'{b.get("timestamp", "")[:19]}  {b.get("trigger_type","")}'
             for b in burst_list
+            if isinstance(b, dict)
         ]
         if dpg.does_item_exist('_SB_BURST_LIST'):
             dpg.configure_item('_SB_BURST_LIST', items=burst_labels)
 
         # Draw vertical lines on trend plot at burst trigger times
-        burst_rel_times = [float(b['rel_time']) for b in burst_list if 'rel_time' in b]
-        if dpg.does_item_exist(ui.PLT_TREND_AX_OVERALL):
-            if dpg.does_item_exist(ui.PLT_TREND_BURST_VLINES):
-                dpg.delete_item(ui.PLT_TREND_BURST_VLINES)
-            if burst_rel_times:
-                dpg.add_vline_series(
-                    burst_rel_times,
-                    parent=ui.PLT_TREND_AX_OVERALL,
-                    tag=ui.PLT_TREND_BURST_VLINES,
-                    label='Burst',
-                )
+        burst_rel_times = [
+            float(b['rel_time']) for b in burst_list
+            if isinstance(b, dict) and 'rel_time' in b
+        ]
+        try:
+            if dpg.does_item_exist(ui.PLT_TREND_AX_OVERALL):
+                if dpg.does_item_exist(ui.PLT_TREND_BURST_VLINES):
+                    dpg.delete_item(ui.PLT_TREND_BURST_VLINES)
+                if burst_rel_times:
+                    dpg.add_vline_series(
+                        burst_rel_times,
+                        parent=ui.PLT_TREND_AX_OVERALL,
+                        tag=ui.PLT_TREND_BURST_VLINES,
+                        label='Burst',
+                    )
+        except Exception as exc:
+            log.warning(f'session browser: failed to draw burst vlines: {exc}')
 
     def _on_burst_list_select(self, sender=None, data=None) -> None:
         """Load all frames from the selected burst event."""
@@ -1502,8 +1518,9 @@ class GUI:
         session_h5 = Path(str(session_dir)) / 'session.h5'
         try:
             self.collector.load_monitor_burst(session_h5, burst_id)
+            self._autoscale_plots()
         except Exception as exc:
-            log.error(f'session browser: failed to load burst {burst_id}: {exc}')
+            log.error(f'session browser: failed to load burst {burst_id} from {session_h5}: {exc}')
 
     def _on_session_browser_pick_folder(self, sender=None, data=None) -> None:
         """Open the platform-native folder picker; update the session folder input."""
