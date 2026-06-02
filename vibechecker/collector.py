@@ -543,6 +543,9 @@ class DataCollector:
         cache = self.data["frame_cache"]
         if not cache:
             return []
+        if not self.is_streaming:
+            # Clamp cursor to valid range when cache size changes (e.g. after loading a session)
+            self._cache_cursor = min(self._cache_cursor, len(cache) - 1)
         idx   = -1 if self.is_streaming else -1 - self._cache_cursor
         frame = cache[idx]
         results: list[vibechecker.ChannelResult] = []
@@ -833,6 +836,7 @@ class DataCollector:
         """Sync config from frame data and signal GUI after any load operation."""
         n = len(self.data["frame_cache"])
         log.debug(f"Loaded {n} frames into frame cache")
+        self._cache_cursor = 0  # always start at the most-recent frame
 
         if not n:
             return
@@ -967,6 +971,10 @@ class DataCollector:
         self._loaded_channel_sensor_configs = {}
         self._loaded_scope_sensors = {}
 
+        import json as _json
+        trend_rel_times: dict[int, list] = {}
+        trend_overalls:  dict[int, list] = {}
+
         with h5py.File(session_h5, "r") as f:
             version  = self._restore_metadata(f)
             ch_units = self._loaded_channel_units(f)
@@ -990,7 +998,28 @@ class DataCollector:
                     continue
                 frame = self._read_frame_group(fi_grp, ch_units, version)
                 self.data["frame_cache"].append(frame)
+                # Collect stored per-frame overall for trend reconstruction
+                rel_t = float(fi_grp.attrs.get("rel_time", 0.0))
+                raw_overall = fi_grp.attrs.get("overall_json", None)
+                if raw_overall is not None:
+                    try:
+                        overall = _json.loads(raw_overall)
+                        for ch_str, val in overall.items():
+                            ch = int(ch_str)
+                            trend_rel_times.setdefault(ch, []).append(rel_t)
+                            trend_overalls.setdefault(ch, []).append(float(val))
+                    except Exception:
+                        pass
 
         n = len(self.data["frame_cache"])
         log.debug(f"Loaded {n} burst frames for '{burst_id}' from {session_h5}")
         self._post_load()
+
+        # Rebuild trend from per-frame overall_json if available
+        for ch, rel_times in trend_rel_times.items():
+            overalls = trend_overalls[ch]
+            orders = np.zeros((len(overalls), 5))
+            orders[:, 2] = np.array(overalls)
+            self.trend[ch] = {"rel_times": np.array(rel_times), "orders": orders}
+        if trend_rel_times:
+            log.debug(f"Reconstructed burst trend from {len(trend_rel_times)} channels")
