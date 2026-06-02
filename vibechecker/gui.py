@@ -72,7 +72,7 @@ _CARD_H_ACQ = (
     _CARD_BASE_H + _CARD_BTN_H * 6 + _CARD_LINE_H * 10
 )  # Acquisition: toggle+controls+spectrum info box
 _CARD_H_FILE = _CARD_BASE_H + _CARD_LINE_H + 105  # notes field only (Save/Load in header)
-_CARD_H_MONITOR = _CARD_BASE_H + _CARD_BTN_H * 4 + _CARD_LINE_H * 4  # Record + Arm + Burst + Load Session + status
+_CARD_H_MONITOR = _CARD_BASE_H + _CARD_BTN_H * 4 + _CARD_LINE_H * 5  # Record+Arm+Burst+Load + status+burst indicator
 
 
 def _c(key: str, alpha: int = 255) -> tuple:
@@ -1493,20 +1493,21 @@ class GUI:
             log.error(f'session browser: failed to load burst {burst_id}: {exc}')
 
     def _on_session_browser_pick_folder(self, sender=None, data=None) -> None:
-        """Open a folder picker and update the session folder text input."""
+        """Open the platform-native folder picker; update the session folder input."""
         try:
-            import tkinter as tk
-            from tkinter import filedialog
-            root = tk.Tk()
-            root.withdraw()
-            folder = filedialog.askdirectory(
+            from plyer import filechooser
+            result = filechooser.open_file(
                 title="Select monitor sessions folder",
-                initialdir=str(vibechecker.data_dir() / 'monitor'),
+                path=str(vibechecker.data_dir() / 'monitor'),
+                multiple=False,
             )
-            root.destroy()
-            if folder and dpg.does_item_exist('_SB_FOLDER'):
-                dpg.set_value('_SB_FOLDER', folder)
+            if result:
+                folder = str(Path(result[0]).parent)
+                if dpg.does_item_exist('_SB_FOLDER'):
+                    dpg.set_value('_SB_FOLDER', folder)
                 self._refresh_session_browser()
+        except NotImplementedError:
+            log.warning('session browser: folder picker not supported on this platform')
         except Exception as exc:
             log.error(f'session browser: folder picker failed: {exc}')
 
@@ -1875,7 +1876,19 @@ class GUI:
                 dpg.set_item_label(ui.MONITOR_ARM_BTN,
                     f'{icons.IC["arm"]}  {"Disarm" if armed else "Arm"}')
             if dpg.does_item_exist(ui.MONITOR_BURST_BTN):
-                dpg.configure_item(ui.MONITOR_BURST_BTN, enabled=True)
+                dpg.configure_item(ui.MONITOR_BURST_BTN, enabled=not snap.get('is_in_burst', False))
+            # Burst indicator
+            if snap.get('is_in_burst', False):
+                remaining = snap.get('burst_remaining_s', 0.0)
+                if dpg.does_item_exist(ui.MONITOR_BURST_RECT):
+                    dpg.configure_item(ui.MONITOR_BURST_RECT, fill=_c("YELLOW"))
+                if dpg.does_item_exist(ui.MONITOR_BURST_TEXT):
+                    dpg.set_value(ui.MONITOR_BURST_TEXT, f'Burst: {remaining:.0f}s remaining')
+            else:
+                if dpg.does_item_exist(ui.MONITOR_BURST_RECT):
+                    dpg.configure_item(ui.MONITOR_BURST_RECT, fill=_c("GREEN"))
+                if dpg.does_item_exist(ui.MONITOR_BURST_TEXT):
+                    dpg.set_value(ui.MONITOR_BURST_TEXT, 'Ready')
         else:
             dpg.set_item_label(ui.MONITOR_RECORD_BTN, f'{icons.IC["record"]}  Record')
             if not self.collector.is_streaming:
@@ -1887,6 +1900,10 @@ class GUI:
                 dpg.set_item_label(ui.MONITOR_ARM_BTN, f'{icons.IC["arm"]}  Arm')
             if dpg.does_item_exist(ui.MONITOR_BURST_BTN):
                 dpg.configure_item(ui.MONITOR_BURST_BTN, enabled=False)
+            if dpg.does_item_exist(ui.MONITOR_BURST_RECT):
+                dpg.configure_item(ui.MONITOR_BURST_RECT, fill=_c("GREEN"))
+            if dpg.does_item_exist(ui.MONITOR_BURST_TEXT):
+                dpg.set_value(ui.MONITOR_BURST_TEXT, 'Ready')
 
     # ------------------------------------------------------------------
     # Sensor Registry Dialog
@@ -2633,6 +2650,17 @@ class GUI:
                         )
                         dpg.add_spacer(height=2)
                         dpg.add_text("Start stream to record", tag=ui.MONITOR_STATUS_TEXT, color=_c("ON_SURFACE"))
+                        dpg.add_spacer(height=4)
+                        with dpg.group(horizontal=True):
+                            with dpg.drawlist(width=16, height=16, tag=ui.MONITOR_BURST_STATUS):
+                                dpg.draw_rectangle(
+                                    pmin=(1, 1), pmax=(15, 15),
+                                    fill=_c("GREEN"),
+                                    color=(0, 0, 0, 0),
+                                    rounding=3,
+                                    tag=ui.MONITOR_BURST_RECT,
+                                )
+                            dpg.add_text("Ready", tag=ui.MONITOR_BURST_TEXT, color=_c("ON_SURFACE"))
                         dpg.add_spacer(height=4)
                         dpg.add_button(
                             label=f'{icons.IC["folder_open"]}  Load Session',

@@ -39,6 +39,7 @@ class MonitorController:
         self._burst_frames:     list[dict] = []
         self._burst_results:    list      = []
         self._burst_pretrigger: int       = 0
+        self._last_frame_cache: deque | None = None  # updated each on_results call
 
     # ------------------------------------------------------------------
     # Public API — recording lifecycle
@@ -124,10 +125,24 @@ class MonitorController:
         log.info('Monitor anomaly detection disarmed')
 
     def trigger_burst(self) -> None:
-        """Manually force a burst capture immediately. Noop if not recording."""
-        if not self._recording or self._session is None:
+        """Manually force a burst capture immediately. Noop if not recording or mid-burst."""
+        if not self._recording or self._session is None or self._in_burst:
             return
-        self._gate.enter_burst(self._session.burst_duration_s, time.monotonic())
+        now = time.monotonic()
+        self._in_burst       = True
+        self._burst_end_mono = now + self._session.burst_duration_s
+        self._burst_id       = datetime.now(timezone.utc).strftime('%Y-%m-%d-%H%M%S')
+        self._burst_results  = []
+        # Snapshot pre-trigger frames from last seen frame cache
+        n = self._session.pre_buffer_frames
+        if self._last_frame_cache:
+            pre = list(self._last_frame_cache)[-n:]
+            self._burst_frames     = [dict(f) for f in pre]
+            self._burst_pretrigger = len(self._burst_frames)
+        else:
+            self._burst_frames     = []
+            self._burst_pretrigger = 0
+        self._gate.enter_burst(self._session.burst_duration_s, now, self._session.max_burst_s)
         log.info('Monitor burst triggered manually')
 
     def set_anomaly_hook(self, hook: AnomalyHook) -> None:
@@ -143,6 +158,7 @@ class MonitorController:
         if not self._recording or not results:
             return
 
+        self._last_frame_cache = frame_cache  # for trigger_burst() pre-trigger snapshot
         now      = time.monotonic()
         rel_time = now - self._start_mono
 
@@ -177,14 +193,17 @@ class MonitorController:
             total_bytes = session.session_h5.stat().st_size
         else:
             total_bytes = 0
+        burst_remaining = max(0.0, self._burst_end_mono - now) if self._in_burst else 0.0
         return {
-            'elapsed_s':      elapsed,
-            'capture_count':  self._capture_count,
-            'burst_count':    self._burst_count,
-            'next_capture_s': time_next,
-            'queue_depth':    depth,
-            'total_bytes':    total_bytes,
-            'error':          str(err) if err else None,
+            'elapsed_s':        elapsed,
+            'capture_count':    self._capture_count,
+            'burst_count':      self._burst_count,
+            'next_capture_s':   time_next,
+            'queue_depth':      depth,
+            'total_bytes':      total_bytes,
+            'error':            str(err) if err else None,
+            'is_in_burst':      self._in_burst,
+            'burst_remaining_s': burst_remaining,
         }
 
     # ------------------------------------------------------------------
