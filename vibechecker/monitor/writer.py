@@ -12,7 +12,7 @@ log = vibechecker.get_logger(__name__)
 
 _DISK_GUARD_BYTES: int = 1 * 1024 ** 3  # 1 GiB
 _QUEUE_WARN_DEPTH: int = 50
-_FILE_VERSION: int = 5
+_FILE_VERSION: int = 4  # v4-compatible — loadable by collector.load_data()
 
 
 def _write_channel_group(h5_grp, ch: int, sample,
@@ -26,11 +26,6 @@ def _write_channel_group(h5_grp, ch: int, sample,
         compression=compression,
         compression_opts=compression_opts,
     )
-    cg.attrs['timestamp']  = sample.timestamp           # ISO string property
-    cg.attrs['rel_time']   = float(sample.rel_time)
-    cg.attrs['samplerate'] = int(sample.samplerate)
-    cg.attrs['status']     = str(sample.status)
-    cg.attrs['overflow']   = bool(sample.overflow)
 
 
 class MonitorWriterThread:
@@ -93,7 +88,6 @@ class MonitorWriterThread:
     def _write(self, item: dict) -> None:
         session = self._session
 
-        # Disk space guard
         free = shutil.disk_usage(session.output_dir).free
         if free < _DISK_GUARD_BYTES:
             log.error(
@@ -114,17 +108,48 @@ class MonitorWriterThread:
         h5_path = session.output_dir / f'{capture_id}.h5'
 
         with h5py.File(h5_path, 'w') as f:
-            f.attrs['session_id']   = session.session_id
-            f.attrs['file_version'] = _FILE_VERSION
-            f.attrs['trigger']      = trigger
-            f.attrs['capture_id']   = capture_id
-            f.attrs['timestamp']    = timestamp_str
+            # ── /metadata (v4-compatible) ─────────────────────────────
+            meta_grp = f.create_group('metadata')
+            meta_grp.attrs['version']         = _FILE_VERSION
+            meta_grp.attrs['notes']           = ''
+            meta_grp.attrs['session_id']      = session.session_id
+            meta_grp.attrs['capture_id']      = capture_id
+            meta_grp.attrs['capture_trigger'] = trigger
 
-            for frame_idx, frame_dict in enumerate(frames):
-                fg = f.create_group(f'frame_{frame_idx:04d}')
-                for ch, sample in sorted(
-                    (k, v) for k, v in frame_dict.items() if isinstance(k, int)
-                ):
+            # /metadata/acquisition — AcquisitionSettings snapshot
+            acq_grp = meta_grp.create_group('acquisition')
+            for k, v in session.acq_snapshot.items():
+                if k in ('channel_names', 'channel_target_units', 'channel_amplitude_modes'):
+                    continue  # stored per-channel below
+                acq_grp.attrs[k] = '' if v is None else v
+
+            # /metadata/scope_sensors — sensor library at arm time
+            ss_grp = meta_grp.create_group('scope_sensors')
+            for sid, sdict in session.sensor_snapshot.items():
+                sg = ss_grp.create_group(sid)
+                for k, v in sdict.items():
+                    sg.attrs[k] = v
+
+            # /metadata/channels — per-channel config at arm time
+            ch_grp = meta_grp.create_group('channels')
+            for ch_str, cdict in session.channel_snapshot.items():
+                cg = ch_grp.create_group(str(ch_str))
+                for k, v in cdict.items():
+                    cg.attrs[k] = v
+
+            # ── /frames (v4 layout) ───────────────────────────────────
+            frames_grp = f.create_group('frames')
+            for i, frame_dict in enumerate(frames):
+                fg = frames_grp.create_group(str(i))
+                ch_samples = {k: v for k, v in frame_dict.items() if isinstance(k, int)}
+                if not ch_samples:
+                    continue
+                first = next(iter(ch_samples.values()))
+                fg.attrs['timestamp']  = first.timestamp
+                fg.attrs['rel_time']   = float(first.rel_time)
+                fg.attrs['samplerate'] = int(first.samplerate)
+                fg.attrs['status']     = str(first.status)
+                for ch, sample in sorted(ch_samples.items()):
                     _write_channel_group(
                         fg, ch, sample,
                         compression=session.compression,

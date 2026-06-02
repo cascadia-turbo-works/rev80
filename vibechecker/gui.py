@@ -72,7 +72,7 @@ _CARD_H_ACQ = (
     _CARD_BASE_H + _CARD_BTN_H * 6 + _CARD_LINE_H * 10
 )  # Acquisition: toggle+controls+spectrum info box
 _CARD_H_FILE = _CARD_BASE_H + _CARD_LINE_H + 105  # notes field only (Save/Load in header)
-_CARD_H_MONITOR = _CARD_BASE_H + _CARD_BTN_H + _CARD_LINE_H * 4  # Arm btn + status lines
+_CARD_H_MONITOR = _CARD_BASE_H + _CARD_BTN_H * 2 + _CARD_LINE_H * 4  # Arm + Load Session + status
 
 
 def _c(key: str, alpha: int = 255) -> tuple:
@@ -143,6 +143,10 @@ class GUI:
         self._autoscale_pending: bool = False  # True → autoscale on next frame
         self._was_streaming_before_config: bool = False  # stream state when config opened
         self._monitor: vibechecker.MonitorController | None = None
+        self._session_browser_sessions: list = []
+        self._session_browser_rows: list = []
+        self._session_browser_selected_capture: str | None = None
+        self._session_browser_selected_session_dir = None
 
     # ------------------------------------------------------------------
     # Status indicator helpers
@@ -1303,6 +1307,206 @@ class GUI:
                         if dpg.does_item_exist(t):
                             dpg.hide_item(t)
 
+    # ------------------------------------------------------------------
+    # Session Browser
+    # ------------------------------------------------------------------
+
+    def _open_session_browser(self, sender=None, data=None) -> None:
+        """Open (or refresh) the Monitor Session browser modal."""
+        if dpg.does_item_exist(ui.DLG_SESSION_BROWSER):
+            self._refresh_session_browser()
+            dpg.configure_item(ui.DLG_SESSION_BROWSER, show=True)
+            return
+        self._build_session_browser()
+
+    def _build_session_browser(self) -> None:
+        """Build the session browser modal from scratch."""
+        sessions = self._scan_session_dirs()
+        DLG_W, DLG_H = 700, 500
+        LEFT_W = 160
+
+        with dpg.window(
+            label="Load Monitor Session",
+            modal=True,
+            show=True,
+            tag=ui.DLG_SESSION_BROWSER,
+            width=DLG_W,
+            height=DLG_H,
+            no_resize=False,
+        ):
+            with dpg.group(horizontal=True):
+                # ── Left: session list ────────────────────────────────
+                with dpg.child_window(width=LEFT_W, height=DLG_H - 60, border=True):
+                    if not sessions:
+                        dpg.add_text("No sessions\nfound.", color=_c("ON_SURFACE"))
+                    else:
+                        dpg.add_listbox(
+                            items=[s[1] for s in sessions],
+                            tag='_SB_SESSION_LIST',
+                            width=-1,
+                            num_items=min(20, len(sessions)),
+                            callback=self._on_session_list_select,
+                        )
+
+                # ── Right: capture table ──────────────────────────────
+                with dpg.child_window(width=-1, height=DLG_H - 60, border=True, tag='_SB_RIGHT'):
+                    if not sessions:
+                        dpg.add_text("No sessions found.", color=_c("ON_SURFACE"))
+                    else:
+                        dpg.add_text("Select a session to view captures.",
+                                     tag='_SB_HINT', color=_c("ON_SURFACE"))
+                        with dpg.table(
+                            tag='_SB_TABLE',
+                            header_row=True,
+                            row_background=True,
+                            borders_innerV=True,
+                            borders_outerH=True,
+                            borders_outerV=True,
+                            scrollY=True,
+                            freeze_rows=1,
+                            height=-1,
+                            show=False,
+                        ):
+                            dpg.add_table_column(label="Timestamp", width_fixed=True, init_width_or_weight=190)
+                            dpg.add_table_column(label="Trigger",   width_fixed=True, init_width_or_weight=80)
+                            dpg.add_table_column(label="Ch0 (mV)",  width_fixed=True, init_width_or_weight=90)
+                            dpg.add_table_column(label="Ch1 (mV)",  width_fixed=True, init_width_or_weight=90)
+
+            # ── Bottom bar ────────────────────────────────────────────
+            dpg.add_spacer(height=4)
+            with dpg.group(horizontal=True):
+                dpg.add_button(
+                    label=f'{icons.IC["folder_open"]}  Load',
+                    tag='_SB_LOAD_BTN',
+                    callback=self._on_session_browser_load,
+                    enabled=False,
+                    width=90,
+                    height=28,
+                )
+                dpg.add_spacer(width=-1)
+                dpg.add_button(
+                    label=f'{icons.IC["close"]}  Close',
+                    callback=lambda: dpg.configure_item(ui.DLG_SESSION_BROWSER, show=False),
+                    width=90,
+                    height=28,
+                )
+
+        if sessions:
+            self._on_session_list_select(sender='_SB_SESSION_LIST', data=sessions[0][1])
+
+    def _scan_session_dirs(self) -> list:
+        """Return [(session_id, label, session_dir)] sorted newest-first."""
+        import yaml
+        monitor_root = vibechecker.data_dir() / 'monitor'
+        sessions = []
+        if not monitor_root.exists():
+            return sessions
+        try:
+            dirs = sorted(
+                [d for d in monitor_root.iterdir() if d.is_dir()],
+                key=lambda d: d.name,
+                reverse=True,
+            )
+        except OSError as exc:
+            log.error(f'session browser: cannot list {monitor_root}: {exc}')
+            return sessions
+
+        for d in dirs:
+            session_id = d.name
+            yaml_path = d / 'session.yaml'
+            start_date = ''
+            if yaml_path.exists():
+                try:
+                    with open(yaml_path) as fh:
+                        meta = yaml.safe_load(fh) or {}
+                    start_time = meta.get('start_time', '')
+                    if start_time:
+                        start_date = str(start_time)[:10]
+                except Exception as exc:
+                    log.warning(f'session browser: cannot parse {yaml_path}: {exc}')
+            label = f'{session_id[:20]}\n{start_date}' if start_date else session_id[:20]
+            sessions.append((session_id, label, d))
+
+        self._session_browser_sessions = sessions
+        return sessions
+
+    def _on_session_list_select(self, sender=None, data=None) -> None:
+        """Populate the capture table when a session is selected."""
+        if not self._session_browser_sessions:
+            return
+        selected = dpg.get_value('_SB_SESSION_LIST') if dpg.does_item_exist('_SB_SESSION_LIST') else data
+        entry = next((s for s in self._session_browser_sessions if s[1] == selected), None)
+        if entry is None:
+            return
+        _, _, session_dir = entry
+
+        rows: list = []
+        if (session_dir / 'index.sqlite').exists():
+            try:
+                from vibechecker.monitor.index import SessionIndex
+                idx = SessionIndex(session_dir)
+                rows = idx.query(limit=500)
+                idx.close()
+            except Exception as exc:
+                log.error(f'session browser: cannot read index: {exc}')
+        self._session_browser_rows = rows
+        self._session_browser_selected_session_dir = session_dir
+        self._session_browser_selected_capture = None
+
+        if dpg.does_item_exist('_SB_HINT'):
+            dpg.configure_item('_SB_HINT', show=not rows)
+        if dpg.does_item_exist('_SB_TABLE'):
+            dpg.configure_item('_SB_TABLE', show=bool(rows))
+            for child in (dpg.get_item_children('_SB_TABLE', slot=1) or []):
+                dpg.delete_item(child)
+            for row in rows:
+                overall = row.get('overall', {})
+                ch0 = overall.get('0', overall.get(0, ''))
+                ch1 = overall.get('1', overall.get(1, ''))
+                ch0_str = f'{float(ch0):.4f}' if ch0 != '' else '-'
+                ch1_str = f'{float(ch1):.4f}' if ch1 != '' else '-'
+                capture_id = row.get('capture_id', '')
+                with dpg.table_row(parent='_SB_TABLE'):
+                    dpg.add_selectable(
+                        label=row.get('timestamp', ''),
+                        span_columns=True,
+                        callback=self._on_capture_row_select,
+                        user_data=capture_id,
+                    )
+                    dpg.add_text(row.get('trigger', ''))
+                    dpg.add_text(ch0_str)
+                    dpg.add_text(ch1_str)
+
+        if dpg.does_item_exist('_SB_LOAD_BTN'):
+            dpg.configure_item('_SB_LOAD_BTN', enabled=False)
+
+    def _on_capture_row_select(self, sender=None, data=None, user_data=None) -> None:
+        self._session_browser_selected_capture = user_data
+        if dpg.does_item_exist('_SB_LOAD_BTN'):
+            dpg.configure_item('_SB_LOAD_BTN', enabled=True)
+
+    def _on_session_browser_load(self, sender=None, data=None) -> None:
+        capture_id = self._session_browser_selected_capture
+        session_dir = self._session_browser_selected_session_dir
+        if not capture_id or session_dir is None:
+            return
+        h5_path = Path(str(session_dir)) / f'{capture_id}.h5'
+        try:
+            self.collector.load_data(h5_path)
+        except Exception as exc:
+            log.error(f'session browser: failed to load {h5_path}: {exc}')
+            return
+        dpg.configure_item(ui.DLG_SESSION_BROWSER, show=False)
+
+    def _refresh_session_browser(self) -> None:
+        sessions = self._scan_session_dirs()
+        if dpg.does_item_exist('_SB_SESSION_LIST'):
+            dpg.configure_item('_SB_SESSION_LIST', items=[s[1] for s in sessions])
+            if sessions:
+                self._on_session_list_select(sender='_SB_SESSION_LIST', data=sessions[0][1])
+
+    # ------------------------------------------------------------------
+
     def _on_config_close(self, sender=None, data=None):
         """Apply all tab settings, do a single reconnect, then hide the dialog.
 
@@ -1489,16 +1693,31 @@ class GUI:
             (k for k, v in vibechecker.MONITOR_INTERVAL_PRESETS.items() if v == interval_label),
             3600,
         )
+        burst_dur_s = float(dpg.get_value(ui.MON_DLG_BURST_DUR)) if dpg.does_item_exist(ui.MON_DLG_BURST_DUR) else 60.0
+
         cfg = self.collector.config
+        block_s = cfg.blocksize / cfg.samplerate if cfg.samplerate else 1.0
         block_bytes = cfg.blocksize * len(cfg.enabled_channels) * 8  # float64
         compressed = block_bytes * 0.5  # gzip ~50% compression
+
+        # Interval logger: one capture per interval
         per_year = (365 * 24 * 3600 / interval_s) * compressed
         if per_year >= 1e9:
-            estimate = f"≈ {per_year / 1e9:.1f} GiB/year"
+            interval_est = f"~{per_year / 1e9:.1f} GiB/year"
         else:
-            estimate = f"≈ {per_year / 1e6:.0f} MiB/year"
+            interval_est = f"~{per_year / 1e6:.0f} MiB/year"
         if per_year > 50e9:
-            estimate += "  ⚠ exceeds 50 GiB"
+            interval_est += "  (exceeds 50 GiB)"
+
+        # Per burst: frames captured during burst duration
+        burst_frames = max(1, int(burst_dur_s / block_s)) if block_s > 0 else 1
+        burst_bytes = burst_frames * compressed
+        if burst_bytes >= 1e6:
+            burst_est = f"~{burst_bytes / 1e6:.1f} MiB/burst"
+        else:
+            burst_est = f"~{burst_bytes / 1e3:.0f} KiB/burst"
+
+        estimate = f"Interval: {interval_est}\nBurst: {burst_est}"
         dpg.set_value(ui.MON_DLG_ESTIMATE, estimate)
 
     def _on_arm_toggle(self, sender=None, data=None):
@@ -1540,6 +1759,27 @@ class GUI:
         else:
             output_dir = vibechecker.data_dir() / "monitor" / session_id
 
+        # Build config snapshots for embedding in every capture file
+        acq_snapshot = cfg.to_dict()
+        ch_snapshot: dict = {}
+        for ch in cfg.enabled_channels:
+            sc = self.collector.scope_sensors.get(ch)
+            ch_snapshot[str(ch)] = {
+                'name':           cfg.name_for(ch),
+                'unit':           'mV',
+                'coupling':       cfg.coupling_for(ch),
+                'voltage_range':  cfg.voltage_range_for(ch),
+                'scope_sensor_id': sc.id if sc else '',
+                'target_unit':    cfg.target_unit_for(ch),
+                'amplitude_mode': cfg.amplitude_mode_for(ch),
+            }
+        seen: set = set()
+        sensor_snapshot: dict = {}
+        for sc in self.collector.scope_sensors.values():
+            if sc.id not in seen:
+                seen.add(sc.id)
+                sensor_snapshot[sc.id] = sc.to_dict()
+
         session = vibechecker.MonitorSession(
             session_id=session_id,
             start_time=now_utc,
@@ -1550,6 +1790,9 @@ class GUI:
             output_dir=output_dir,
             compression="gzip" if compress else "none",
             compression_level=4,
+            acq_snapshot=acq_snapshot,
+            channel_snapshot=ch_snapshot,
+            sensor_snapshot=sensor_snapshot,
         )
 
         # Enlarge frame cache to hold pre-trigger frames
@@ -1591,7 +1834,7 @@ class GUI:
             session_id = self._monitor._session.session_id if self._monitor._session else ""
             status = f"● REC  {h:02d}:{m:02d}:{s:02d}\nCaptures: {count}  Next: {nxt:.0f}s\n{session_id}"
             if err:
-                status += f"\n⚠ {err[:40]}"
+                status += f"\nERR: {err[:40]}"
             dpg.set_item_label(ui.MONITOR_ARM_BTN, f'{icons.IC["disarm"]}  Disarm')
             dpg.set_value(ui.MONITOR_STATUS_TEXT, status)
         else:
@@ -2101,7 +2344,7 @@ class GUI:
                     with dpg.tab(label="Monitor", tag=ui.CONFIG_TAB_MONITOR):
                         with dpg.child_window(autosize_x=True, height=-1):
                             _mon_w = 220
-                            dpg.add_text("Monitor Mode — Interval Datalogger")
+                            dpg.add_text("Interval Datalogger")
                             dpg.add_separator()
                             dpg.add_combo(
                                 label="Capture interval",
@@ -2331,6 +2574,13 @@ class GUI:
                         )
                         dpg.add_spacer(height=2)
                         dpg.add_text("Disarmed", tag=ui.MONITOR_STATUS_TEXT, color=_c("ON_SURFACE"))
+                        dpg.add_spacer(height=4)
+                        dpg.add_button(
+                            label=f'{icons.IC["folder_open"]}  Load Session',
+                            tag=ui.BTN_MONITOR_BROWSE,
+                            callback=self._open_session_browser,
+                            width=-1,
+                        )
 
                     dpg.add_spacer(height=6)
 
