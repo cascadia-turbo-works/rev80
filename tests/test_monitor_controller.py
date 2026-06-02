@@ -193,7 +193,7 @@ class TestIntervalCapture:
         assert len(h5_files) >= 1
 
     def test_h5_file_has_frame_and_channel_groups(self, tmp_path):
-        """HDF5 layout: file_version=5 in attrs, frame_0000/0/data present."""
+        """HDF5 layout: v4-compatible — metadata group, frames/0/0/data present."""
         ctrl = MonitorController()
         session = _make_session(tmp_path, interval_s=0.05)
         ctrl.start(session)
@@ -204,10 +204,12 @@ class TestIntervalCapture:
         h5_files = list(session.output_dir.glob('*.h5'))
         assert h5_files, 'Expected at least one .h5 file'
         with h5py.File(h5_files[0], 'r') as f:
-            assert f.attrs['file_version'] == 5
-            assert 'frame_0000' in f
-            assert '0' in f['frame_0000']
-            assert 'data' in f['frame_0000']['0']
+            assert f['metadata'].attrs['version'] == 4
+            assert 'capture_trigger' in f['metadata'].attrs
+            assert 'frames' in f
+            assert '0' in f['frames']
+            assert '0' in f['frames']['0']
+            assert 'data' in f['frames']['0']['0']
 
     def test_index_row_trigger_is_interval(self, tmp_path):
         ctrl = MonitorController()

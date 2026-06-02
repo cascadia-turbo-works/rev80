@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -14,3 +14,7 @@ class MonitorSession:
     output_dir: Path              # where to write HDF5 files + index.sqlite
     compression: str = 'gzip'
     compression_level: int = 4
+    # Snapshots captured at arm time — embedded in every v4-compatible capture file
+    acq_snapshot: dict = field(default_factory=dict)      # AcquisitionSettings.to_dict()
+    channel_snapshot: dict = field(default_factory=dict)  # {ch: {name, unit, ...}}
+    sensor_snapshot: dict = field(default_factory=dict)   # {sensor_id: ScopeSensor.to_dict()}
