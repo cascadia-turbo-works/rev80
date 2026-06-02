@@ -150,17 +150,19 @@ class TestLifecycle:
 
 class TestIntervalCapture:
 
-    def test_no_capture_before_deadline(self, tmp_path):
+    def test_no_second_capture_before_deadline(self, tmp_path):
+        """First call captures immediately; a second call before the next deadline does not."""
         ctrl = MonitorController()
         session = _make_session(tmp_path, interval_s=100.0)
         ctrl.start(session)
         frame_cache = _make_frame_cache()
         results = [_make_result()]
-        ctrl.on_results(results, frame_cache)
+        ctrl.on_results(results, frame_cache)  # first call → immediate capture
+        ctrl.on_results(results, frame_cache)  # second call 0 s later → no new capture
         ctrl.stop()
 
         idx = SessionIndex(session.output_dir)
-        assert idx.count() == 0
+        assert idx.count() == 1
         idx.close()
 
     def test_captures_written_to_index(self, tmp_path):

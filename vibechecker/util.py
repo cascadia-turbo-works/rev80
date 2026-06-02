@@ -220,7 +220,6 @@ class UI_Elements:
     MONITOR_CARD         = 'MONITOR_CARD'
     MONITOR_ARM_BTN      = 'MONITOR_ARM_BTN'
     MONITOR_STATUS_TEXT  = 'MONITOR_STATUS_TEXT'
-    MONITOR_SUMMARY_BTN  = 'MONITOR_SUMMARY_BTN'
 
     # Monitor config dialog inputs
     MON_DLG_INTERVAL     = 'MON_DLG_INTERVAL'
