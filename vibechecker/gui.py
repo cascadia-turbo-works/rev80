@@ -1469,6 +1469,19 @@ class GUI:
         if dpg.does_item_exist('_SB_BURST_LIST'):
             dpg.configure_item('_SB_BURST_LIST', items=burst_labels)
 
+        # Draw vertical lines on trend plot at burst trigger times
+        burst_rel_times = [float(b['rel_time']) for b in burst_list if 'rel_time' in b]
+        if dpg.does_item_exist(ui.PLT_TREND_AX_OVERALL):
+            if dpg.does_item_exist(ui.PLT_TREND_BURST_VLINES):
+                dpg.delete_item(ui.PLT_TREND_BURST_VLINES)
+            if burst_rel_times:
+                dpg.add_vline_series(
+                    burst_rel_times,
+                    parent=ui.PLT_TREND_AX_OVERALL,
+                    tag=ui.PLT_TREND_BURST_VLINES,
+                    label='Burst',
+                )
+
     def _on_burst_list_select(self, sender=None, data=None) -> None:
         """Load all frames from the selected burst event."""
         if not self._session_browser_burst_list:
@@ -1496,15 +1509,13 @@ class GUI:
         """Open the platform-native folder picker; update the session folder input."""
         try:
             from plyer import filechooser
-            result = filechooser.open_file(
+            result = filechooser.choose_dir(
                 title="Select monitor sessions folder",
                 path=str(vibechecker.data_dir() / 'monitor'),
-                multiple=False,
             )
             if result:
-                folder = str(Path(result[0]).parent)
                 if dpg.does_item_exist('_SB_FOLDER'):
-                    dpg.set_value('_SB_FOLDER', folder)
+                    dpg.set_value('_SB_FOLDER', str(result[0]))
                 self._refresh_session_browser()
         except NotImplementedError:
             log.warning('session browser: folder picker not supported on this platform')

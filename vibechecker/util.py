@@ -222,6 +222,7 @@ class UI_Elements:
     MONITOR_BURST_STATUS = 'MONITOR_BURST_STATUS'   # drawlist
     MONITOR_BURST_RECT   = 'MONITOR_BURST_RECT'     # rectangle inside drawlist
     MONITOR_BURST_TEXT   = 'MONITOR_BURST_TEXT'     # "Xs remaining" text
+    PLT_TREND_BURST_VLINES = 'PLT_TREND_BURST_VLINES'  # vline_series on trend plot
     DLG_SESSION_BROWSER  = 'DLG_SESSION_BROWSER'
     MONITOR_CARD         = 'MONITOR_CARD'
     MONITOR_RECORD_BTN   = 'MONITOR_RECORD_BTN'
