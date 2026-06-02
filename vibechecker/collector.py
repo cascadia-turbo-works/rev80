@@ -856,6 +856,39 @@ class DataCollector:
         self.init_trend_channels()
         self.reprocess_last_block()
 
+    def load_monitor_session(self, session_h5: Path) -> None:
+        """Load all interval frames from a monitor session into frame_cache.
+
+        Reads /metadata/ for config restore, then all /monitor/{N}/ groups in order.
+        The frame_cache deque naturally caps at cache_frames, keeping the most recent N.
+        """
+        if not session_h5.is_file():
+            log.error(f"load_monitor_session: file does not exist: {session_h5}")
+            return
+
+        self.data["frame_cache"].clear()
+        self.trend = {}
+        self._loaded_channel_sensor_configs = {}
+        self._loaded_scope_sensors = {}
+
+        with h5py.File(session_h5, "r") as f:
+            version  = self._restore_metadata(f)
+            ch_units = self._loaded_channel_units(f)
+
+            mon_grp = f.get("monitor")
+            if mon_grp is None:
+                log.error(f"load_monitor_session: no /monitor group in {session_h5}")
+                return
+
+            keys = sorted(mon_grp.keys(), key=int)
+            for key in keys:
+                frame = self._read_frame_group(mon_grp[key], ch_units, version)
+                self.data["frame_cache"].append(frame)
+
+        n = len(self.data["frame_cache"])
+        log.debug(f"Loaded {n} monitor frames from {session_h5}")
+        self._post_load()
+
     def load_monitor_capture(self, session_h5: Path, capture_index: int) -> None:
         """Load a single interval capture frame into frame_cache and trigger display.
 
