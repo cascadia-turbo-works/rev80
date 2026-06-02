@@ -33,14 +33,16 @@ class MonitorController:
         self._burst_count   = 0
 
         # Burst state
-        self._in_burst:         bool      = False
-        self._burst_end_mono:   float     = 0.0
-        self._burst_id:         str       = ''
-        self._burst_frames:     list[dict] = []
-        self._burst_results:    list      = []
-        self._burst_all_results: list[list] = []  # per-frame results during burst
-        self._burst_pretrigger: int       = 0
-        self._last_frame_cache: deque | None = None  # updated each on_results call
+        self._in_burst:             bool      = False
+        self._burst_end_mono:       float     = 0.0
+        self._burst_id:             str       = ''
+        self._burst_frames:         list[dict] = []
+        self._burst_results:        list      = []
+        self._burst_all_results:    list[list] = []  # per-frame results during burst
+        self._burst_pretrigger:     int       = 0
+        self._burst_trigger_ts:     str       = ''   # ISO UTC timestamp at trigger
+        self._burst_trigger_rel:    float     = 0.0  # session rel_time at trigger
+        self._last_frame_cache:     deque | None = None
 
     # ------------------------------------------------------------------
     # Public API — recording lifecycle
@@ -131,10 +133,13 @@ class MonitorController:
         if not self._recording or self._session is None or self._in_burst:
             return
         now = time.monotonic()
-        self._in_burst       = True
-        self._burst_end_mono = now + self._session.burst_duration_s
-        self._burst_id       = datetime.now(timezone.utc).strftime('%Y-%m-%d-%H%M%S')
-        self._burst_results  = []
+        utc_now = datetime.now(timezone.utc)
+        self._in_burst            = True
+        self._burst_end_mono      = now + self._session.burst_duration_s
+        self._burst_id            = utc_now.strftime('%Y-%m-%d-%H%M%S')
+        self._burst_trigger_ts    = utc_now.isoformat()
+        self._burst_trigger_rel   = now - self._start_mono
+        self._burst_results       = []
         # Snapshot pre-trigger frames from last seen frame cache
         n = self._session.pre_buffer_frames
         if self._last_frame_cache:
@@ -226,11 +231,14 @@ class MonitorController:
 
     def _start_burst(self, event: AnomalyEvent, results: list,
                      frame_cache: deque, now: float, rel_time: float) -> None:
-        self._in_burst       = True
-        self._burst_end_mono = now + event.burst_duration_s
-        self._burst_id       = datetime.now(timezone.utc).strftime('%Y-%m-%d-%H%M%S')
-        self._burst_results     = list(results)
-        self._burst_all_results = [list(results)]
+        utc_now = datetime.now(timezone.utc)
+        self._in_burst            = True
+        self._burst_end_mono      = now + event.burst_duration_s
+        self._burst_id            = utc_now.strftime('%Y-%m-%d-%H%M%S')
+        self._burst_trigger_ts    = utc_now.isoformat()
+        self._burst_trigger_rel   = rel_time
+        self._burst_results       = list(results)
+        self._burst_all_results   = [list(results)]
 
         # Snapshot pre-trigger frames
         n = self._session.pre_buffer_frames if self._session else 1
@@ -265,23 +273,24 @@ class MonitorController:
     def _flush_burst(self, results: list, rel_time: float) -> None:
         self._in_burst = False
         if self._burst_frames:
-            timestamp_str = datetime.now(timezone.utc).isoformat()
             self._enqueue(
-                frames           = self._burst_frames,
-                results          = self._burst_results or results,
-                all_results      = self._burst_all_results,
-                trigger          = 'burst',
-                rel_time         = rel_time,
-                timestamp        = timestamp_str,
-                burst_id         = self._burst_id,
-                n_pretrigger     = self._burst_pretrigger,
+                frames             = self._burst_frames,
+                results            = self._burst_results or results,
+                all_results        = self._burst_all_results,
+                trigger            = 'burst',
+                rel_time           = self._burst_trigger_rel,   # trigger time, not flush time
+                timestamp          = self._burst_trigger_ts,    # trigger timestamp
+                burst_id           = self._burst_id,
+                n_pretrigger       = self._burst_pretrigger,
             )
             self._burst_count += 1
-        self._burst_frames      = []
-        self._burst_results     = []
-        self._burst_all_results = []
-        self._burst_id          = ''
-        self._burst_pretrigger  = 0
+        self._burst_frames       = []
+        self._burst_results      = []
+        self._burst_all_results  = []
+        self._burst_id           = ''
+        self._burst_pretrigger   = 0
+        self._burst_trigger_ts   = ''
+        self._burst_trigger_rel  = 0.0
         if self._gate and self._session:
             self._gate.exit_burst(time.monotonic())
 

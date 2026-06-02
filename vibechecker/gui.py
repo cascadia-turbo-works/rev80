@@ -1516,6 +1516,12 @@ class GUI:
         if not burst_id or session_dir is None:
             return
         session_h5 = Path(str(session_dir)) / 'session.h5'
+        # Remove session vlines — burst view is independent, trend rebased to trigger=0
+        try:
+            if dpg.does_item_exist(ui.PLT_TREND_BURST_VLINES):
+                dpg.delete_item(ui.PLT_TREND_BURST_VLINES)
+        except Exception:
+            pass
         try:
             self.collector.load_monitor_burst(session_h5, burst_id)
             self._autoscale_plots()

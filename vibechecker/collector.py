@@ -991,6 +991,9 @@ class DataCollector:
                 )
                 return
 
+            # Rebase all rel_times to trigger=0 so burst displays independently
+            trigger_rel = float(bid_grp.attrs.get("trigger_rel_time", 0.0))
+
             n_frames = int(bid_grp.attrs.get("n_frames", len(bid_grp)))
             for fi in range(n_frames):
                 fi_grp = bid_grp.get(str(fi))
@@ -998,8 +1001,9 @@ class DataCollector:
                     continue
                 frame = self._read_frame_group(fi_grp, ch_units, version)
                 self.data["frame_cache"].append(frame)
-                # Collect stored per-frame overall for trend reconstruction
-                rel_t = float(fi_grp.attrs.get("rel_time", 0.0))
+                # Collect stored per-frame overall, rebased to trigger=0
+                raw_rel_t = float(fi_grp.attrs.get("rel_time", 0.0))
+                rel_t = raw_rel_t - trigger_rel
                 raw_overall = fi_grp.attrs.get("overall_json", None)
                 if raw_overall is not None:
                     try:

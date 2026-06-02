@@ -260,7 +260,8 @@ class MonitorWriterThread:
 
             bid_grp = burst_root.create_group(burst_id)
             bid_grp.attrs['trigger_type']        = trigger
-            bid_grp.attrs['trigger_timestamp']   = timestamp_str
+            bid_grp.attrs['trigger_timestamp']   = timestamp_str   # trigger time (UTC ISO)
+            bid_grp.attrs['trigger_rel_time']    = rel_time        # session-relative trigger time
             bid_grp.attrs['burst_duration_s']    = duration_s
             bid_grp.attrs['max_overall_json']    = overall_json
             bid_grp.attrs['n_frames']            = n_frames
