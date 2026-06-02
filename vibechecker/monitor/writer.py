@@ -292,6 +292,7 @@ class MonitorWriterThread:
             burst_list.append({
                 'burst_id':         burst_id,
                 'timestamp':        timestamp_str,
+                'rel_time':         rel_time,
                 'trigger_type':     trigger,
                 'max_overall_json': overall_json,
                 'duration_s':       duration_s,

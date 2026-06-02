@@ -871,6 +871,10 @@ class DataCollector:
         self._loaded_channel_sensor_configs = {}
         self._loaded_scope_sensors = {}
 
+        import json as _json
+        trend_rel_times: dict[int, list] = {}
+        trend_overalls:  dict[int, list] = {}
+
         with h5py.File(session_h5, "r") as f:
             version  = self._restore_metadata(f)
             ch_units = self._loaded_channel_units(f)
@@ -882,12 +886,36 @@ class DataCollector:
 
             keys = sorted(mon_grp.keys(), key=int)
             for key in keys:
-                frame = self._read_frame_group(mon_grp[key], ch_units, version)
+                grp = mon_grp[key]
+                frame = self._read_frame_group(grp, ch_units, version)
                 self.data["frame_cache"].append(frame)
+                # Collect stored overall values for trend reconstruction
+                rel_t = float(grp.attrs.get("rel_time", 0.0))
+                try:
+                    overall = _json.loads(grp.attrs.get("overall_json", "{}"))
+                except Exception:
+                    overall = {}
+                for ch_str, val in overall.items():
+                    ch = int(ch_str)
+                    trend_rel_times.setdefault(ch, []).append(rel_t)
+                    trend_overalls.setdefault(ch, []).append(float(val))
 
         n = len(self.data["frame_cache"])
         log.debug(f"Loaded {n} monitor frames from {session_h5}")
-        self._post_load()
+        self._post_load()  # clears trend, reprocesses last frame
+
+        # Rebuild trend from stored overall_json — overwrites the single point
+        # added by reprocess_last_block() with the full session history.
+        for ch, rel_times in trend_rel_times.items():
+            overalls = trend_overalls[ch]
+            orders = np.zeros((len(overalls), 5))
+            orders[:, 2] = np.array(overalls)  # col 2 = order 0 = raw mV RMS
+            self.trend[ch] = {
+                "rel_times": np.array(rel_times),
+                "orders":    orders,
+            }
+        if trend_rel_times:
+            log.debug(f"Reconstructed trend from {n} monitor frame attrs")
 
     def load_monitor_capture(self, session_h5: Path, capture_index: int) -> None:
         """Load a single interval capture frame into frame_cache and trigger display.
