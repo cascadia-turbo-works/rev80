@@ -11,10 +11,14 @@ class MonitorSession:
     pre_buffer_frames: int        # number of frames to prepend before burst trigger
     burst_duration_s: float       # how long burst capture runs after anomaly trigger
     max_burst_s: float            # maximum burst extension cap
-    output_dir: Path              # where to write HDF5 files + index.sqlite
+    session_dir: Path             # directory; session.h5 lives at session_dir/session.h5
     compression: str = 'gzip'
     compression_level: int = 4
-    # Snapshots captured at arm time — embedded in every v4-compatible capture file
+    # Snapshots captured at arm time — embedded in session.h5
     acq_snapshot: dict = field(default_factory=dict)      # AcquisitionSettings.to_dict()
     channel_snapshot: dict = field(default_factory=dict)  # {ch: {name, unit, ...}}
     sensor_snapshot: dict = field(default_factory=dict)   # {sensor_id: ScopeSensor.to_dict()}
+
+    @property
+    def session_h5(self) -> Path:
+        return self.session_dir / 'session.h5'

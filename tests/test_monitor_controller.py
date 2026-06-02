@@ -5,7 +5,6 @@ interval_s is set very short (0.05–0.1 s) so tests complete in <2 s wall time.
 """
 
 import time
-import yaml
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,7 +15,6 @@ import pytest
 
 import vibechecker as vc
 from vibechecker.monitor.controller import MonitorController
-from vibechecker.monitor.index import SessionIndex
 from vibechecker.monitor.session import MonitorSession
 from vibechecker.sample import ChannelResult, VibeSample
 
@@ -34,7 +32,7 @@ def _make_session(tmp_path: Path, interval_s: float = 0.1,
         pre_buffer_frames = pre_buffer_frames,
         burst_duration_s  = 0.3,
         max_burst_s       = 5.0,
-        output_dir        = tmp_path / 'session',
+        session_dir       = tmp_path / 'session',
     )
 
 
@@ -92,37 +90,33 @@ def _drive(ctrl: MonitorController, frame_cache: deque, results: list,
 
 class TestLifecycle:
 
-    def test_start_creates_output_dir(self, tmp_path):
+    def test_start_creates_session_dir(self, tmp_path):
         ctrl = MonitorController()
         session = _make_session(tmp_path)
         ctrl.start(session)
-        assert session.output_dir.exists()
+        # Writer creates session_dir on first write; we just verify it exists after stop
+        results = [_make_result()]
+        ctrl.on_results(results, _make_frame_cache())
         ctrl.stop()
+        assert session.session_dir.exists()
 
-    def test_start_creates_index_sqlite(self, tmp_path):
-        ctrl = MonitorController()
-        session = _make_session(tmp_path)
-        ctrl.start(session)
-        assert (session.output_dir / 'index.sqlite').exists()
-        ctrl.stop()
-
-    def test_is_armed_after_start(self, tmp_path):
+    def test_is_recording_after_start(self, tmp_path):
         ctrl = MonitorController()
         ctrl.start(_make_session(tmp_path))
-        assert ctrl.is_armed
+        assert ctrl.is_recording
         ctrl.stop()
 
-    def test_is_not_armed_after_stop(self, tmp_path):
+    def test_is_not_recording_after_stop(self, tmp_path):
         ctrl = MonitorController()
         ctrl.start(_make_session(tmp_path))
         ctrl.stop()
+        assert not ctrl.is_recording
+
+    def test_is_not_armed_by_default(self, tmp_path):
+        ctrl = MonitorController()
+        ctrl.start(_make_session(tmp_path))
         assert not ctrl.is_armed
-
-    def test_stop_writes_session_yaml(self, tmp_path):
-        ctrl = MonitorController()
-        ctrl.start(_make_session(tmp_path))
         ctrl.stop()
-        assert (tmp_path / 'session' / 'session.yaml').exists()
 
     def test_stop_is_idempotent(self, tmp_path):
         ctrl = MonitorController()
@@ -138,14 +132,54 @@ class TestLifecycle:
             session_id='s2', start_time=datetime.now(timezone.utc),
             interval_s=0.1, pre_buffer_frames=2,
             burst_duration_s=0.3, max_burst_s=5.0,
-            output_dir=tmp_path / 'session2',
+            session_dir=tmp_path / 'session2',
         )
         ctrl.start(s2)  # must not raise even though s1 is still running
         ctrl.stop()
 
 
 # ---------------------------------------------------------------------------
-# Interval capture
+# Arm / disarm
+# ---------------------------------------------------------------------------
+
+class TestArmDisarm:
+
+    def test_arm_enables_armed_flag(self, tmp_path):
+        ctrl = MonitorController()
+        ctrl.start(_make_session(tmp_path))
+        assert not ctrl.is_armed
+        ctrl.arm()
+        assert ctrl.is_armed
+        ctrl.stop()
+
+    def test_disarm_clears_armed_flag(self, tmp_path):
+        ctrl = MonitorController()
+        ctrl.start(_make_session(tmp_path))
+        ctrl.arm()
+        ctrl.disarm()
+        assert not ctrl.is_armed
+        ctrl.stop()
+
+    def test_arm_noop_when_not_recording(self):
+        ctrl = MonitorController()
+        ctrl.arm()  # must not raise
+        assert not ctrl.is_armed
+
+    def test_disarm_noop_when_not_recording(self):
+        ctrl = MonitorController()
+        ctrl.disarm()  # must not raise
+        assert not ctrl.is_armed
+
+    def test_stop_clears_armed_flag(self, tmp_path):
+        ctrl = MonitorController()
+        ctrl.start(_make_session(tmp_path))
+        ctrl.arm()
+        ctrl.stop()
+        assert not ctrl.is_armed
+
+
+# ---------------------------------------------------------------------------
+# Interval capture — HDF5 layout v5
 # ---------------------------------------------------------------------------
 
 class TestIntervalCapture:
@@ -161,12 +195,13 @@ class TestIntervalCapture:
         ctrl.on_results(results, frame_cache)  # second call 0 s later → no new capture
         ctrl.stop()
 
-        idx = SessionIndex(session.output_dir)
-        assert idx.count() == 1
-        idx.close()
+        assert session.session_h5.exists()
+        with h5py.File(session.session_h5, 'r') as f:
+            assert '0' in f['monitor']
+            assert '1' not in f['monitor']
 
-    def test_captures_written_to_index(self, tmp_path):
-        """After several deadlines pass, SQLite should accumulate rows."""
+    def test_captures_written_to_h5(self, tmp_path):
+        """After several deadlines pass, /monitor should accumulate groups."""
         ctrl = MonitorController()
         session = _make_session(tmp_path, interval_s=0.05)
         ctrl.start(session)
@@ -175,25 +210,12 @@ class TestIntervalCapture:
         _drive(ctrl, frame_cache, results, duration_s=0.8)
         ctrl.stop()
 
-        idx = SessionIndex(session.output_dir)
-        count = idx.count()
-        idx.close()
-        assert count >= 1
-
-    def test_h5_files_created(self, tmp_path):
-        """Each interval capture must produce one .h5 file."""
-        ctrl = MonitorController()
-        session = _make_session(tmp_path, interval_s=0.05)
-        ctrl.start(session)
-        frame_cache = _make_frame_cache()
-        _drive(ctrl, frame_cache, [_make_result()], duration_s=0.3)
-        ctrl.stop()
-
-        h5_files = list(session.output_dir.glob('*.h5'))
-        assert len(h5_files) >= 1
+        assert session.session_h5.exists()
+        with h5py.File(session.session_h5, 'r') as f:
+            assert len(f['monitor']) >= 1
 
     def test_h5_file_has_frame_and_channel_groups(self, tmp_path):
-        """HDF5 layout: v4-compatible — metadata group, frames/0/0/data present."""
+        """HDF5 layout v5: /metadata with file_version=5, /monitor/0/0/data."""
         ctrl = MonitorController()
         session = _make_session(tmp_path, interval_s=0.05)
         ctrl.start(session)
@@ -201,32 +223,17 @@ class TestIntervalCapture:
         _drive(ctrl, frame_cache, [_make_result()], duration_s=0.2)
         ctrl.stop()
 
-        h5_files = list(session.output_dir.glob('*.h5'))
-        assert h5_files, 'Expected at least one .h5 file'
-        with h5py.File(h5_files[0], 'r') as f:
-            assert f['metadata'].attrs['version'] == 4
-            assert 'capture_trigger' in f['metadata'].attrs
-            assert 'frames' in f
-            assert '0' in f['frames']
-            assert '0' in f['frames']['0']
-            assert 'data' in f['frames']['0']['0']
+        assert session.session_h5.exists()
+        with h5py.File(session.session_h5, 'r') as f:
+            assert 'metadata' in f
+            assert f['metadata'].attrs['file_version'] == 5
+            assert 'monitor' in f
+            assert '0' in f['monitor']
+            assert '0' in f['monitor']['0']       # channel group
+            assert 'data' in f['monitor']['0']['0']
 
-    def test_index_row_trigger_is_interval(self, tmp_path):
-        ctrl = MonitorController()
-        session = _make_session(tmp_path, interval_s=0.05)
-        ctrl.start(session)
-        frame_cache = _make_frame_cache()
-        _drive(ctrl, frame_cache, [_make_result()], duration_s=0.2)
-        ctrl.stop()
-
-        idx = SessionIndex(session.output_dir)
-        rows = idx.query()
-        idx.close()
-        assert rows
-        assert rows[0]['trigger'] == 'interval'
-
-    def test_index_row_overall_json(self, tmp_path):
-        """Each row must store per-channel overall amplitude."""
+    def test_monitor_group_has_overall_json(self, tmp_path):
+        """Each /monitor/{N}/ group stores overall_json attr with ch amplitude."""
         ctrl = MonitorController()
         session = _make_session(tmp_path, interval_s=0.05)
         ctrl.start(session)
@@ -235,12 +242,12 @@ class TestIntervalCapture:
         _drive(ctrl, frame_cache, results, duration_s=0.2)
         ctrl.stop()
 
-        idx = SessionIndex(session.output_dir)
-        rows = idx.query()
-        idx.close()
-        assert rows
-        assert '0' in rows[0]['overall']
-        assert isinstance(rows[0]['overall']['0'], float)
+        import json
+        with h5py.File(session.session_h5, 'r') as f:
+            overall_json = f['monitor']['0'].attrs['overall_json']
+            overall = json.loads(overall_json)
+            assert '0' in overall
+            assert isinstance(overall['0'], float)
 
 
 # ---------------------------------------------------------------------------
@@ -249,22 +256,20 @@ class TestIntervalCapture:
 
 class TestStatusSnapshot:
 
-    def test_armed_fields_present(self, tmp_path):
+    def test_recording_fields_present(self, tmp_path):
         ctrl = MonitorController()
         ctrl.start(_make_session(tmp_path))
         snap = ctrl.status_snapshot()
-        assert snap['armed'] is True
         assert snap['capture_count'] == 0
+        assert snap['burst_count'] == 0
         assert snap['queue_depth'] >= 0
         assert snap['next_capture_s'] >= 0
-        assert snap['in_burst'] is False
         assert snap['error'] is None
         ctrl.stop()
 
     def test_disarmed_defaults(self):
         ctrl = MonitorController()
         snap = ctrl.status_snapshot()
-        assert snap['armed'] is False
         assert snap['elapsed_s'] == 0.0
 
     def test_capture_count_increments(self, tmp_path):
@@ -277,32 +282,12 @@ class TestStatusSnapshot:
         ctrl.stop()
         assert snap['capture_count'] >= 1
 
-
-# ---------------------------------------------------------------------------
-# Session metadata
-# ---------------------------------------------------------------------------
-
-class TestSessionMeta:
-
-    def test_session_id_in_index(self, tmp_path):
+    def test_total_bytes_after_writes(self, tmp_path):
         ctrl = MonitorController()
-        session = _make_session(tmp_path)
+        session = _make_session(tmp_path, interval_s=0.05)
         ctrl.start(session)
+        frame_cache = _make_frame_cache()
+        _drive(ctrl, frame_cache, [_make_result()], duration_s=0.3)
         ctrl.stop()
-
-        idx = SessionIndex(session.output_dir)
-        assert idx.get_meta('session_id') == session.session_id
-        idx.close()
-
-    def test_session_yaml_fields(self, tmp_path):
-        ctrl = MonitorController()
-        session = _make_session(tmp_path)
-        ctrl.start(session)
-        ctrl.stop()
-
-        with open(session.output_dir / 'session.yaml') as f:
-            data = yaml.safe_load(f)
-        assert data['session_id'] == session.session_id
-        assert 'start_time' in data
-        assert 'stop_time' in data
-        assert data['interval_s'] == session.interval_s
+        snap = ctrl.status_snapshot()
+        assert snap['total_bytes'] > 0

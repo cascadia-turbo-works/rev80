@@ -675,90 +675,20 @@ class DataCollector:
             log.error(f"load_data: file does not exist: {target}")
             return
 
-        def decode(x):
-            return x.decode() if isinstance(x, bytes) else str(x)
-
         self.data["frame_cache"].clear()
         self.trend = {}
         self._loaded_channel_sensor_configs = {}
         self._loaded_scope_sensors = {}
 
         with h5py.File(target, "r") as f:
-            version = int(f["metadata"].attrs.get("version", 3))
-            meta_grp = f["metadata"]
-            self.notes = decode(meta_grp.attrs.get("notes", ""))
-
-            # Acquisition settings
-            if "acquisition" in meta_grp:
-                acq_dict = {k: (None if v == "" else v) for k, v in meta_grp["acquisition"].attrs.items()}
-                self.config = vibechecker.AcquisitionSettings.from_dict(acq_dict)
-
-            # Scope sensor library — {sensor_id: dict}
-            if "scope_sensors" in meta_grp:
-                for sid, sg in meta_grp["scope_sensors"].items():
-                    d: dict = {}
-                    for k, v in sg.attrs.items():
-                        if isinstance(v, (bytes, np.bytes_)):
-                            d[k] = v.decode()
-                        elif isinstance(v, (np.integer,)):
-                            d[k] = int(v)
-                        elif isinstance(v, (np.floating,)):
-                            d[k] = float(v)
-                        else:
-                            d[k] = v
-                    d["id"] = sid
-                    self._loaded_scope_sensors[sid] = d
-
-            # Channel metadata — restore names, target units, and sensor configs
-            ch_units: dict[int, str] = {}
-            if "channels" in meta_grp:
-                for ch_str, cg in meta_grp["channels"].items():
-                    ch = int(ch_str)
-                    name           = decode(cg.attrs.get("name", ""))
-                    unit           = decode(cg.attrs.get("unit", "mV"))
-                    target_unit    = decode(cg.attrs.get("target_unit", ""))
-                    sensor_id      = decode(cg.attrs.get("scope_sensor_id", ""))
-                    coupling       = decode(cg.attrs.get("coupling", "AC"))
-                    voltage_range  = int(cg.attrs.get("voltage_range", 7))
-                    amplitude_mode = decode(cg.attrs.get("amplitude_mode", ""))
-                    if name:
-                        self.config.channel_names[ch] = name
-                    if target_unit:
-                        self.config.channel_target_units[ch] = target_unit
-                    if amplitude_mode:
-                        self.config.channel_amplitude_modes[ch] = amplitude_mode
-                    self.config.channel_couplings[ch] = coupling
-                    self.config.channel_voltage_ranges[ch] = voltage_range
-                    ch_units[ch] = unit
-                    if sensor_id and sensor_id in self._loaded_scope_sensors:
-                        self._loaded_channel_sensor_configs[ch] = dict(self._loaded_scope_sensors[sensor_id])
-                    else:
-                        self._loaded_channel_sensor_configs[ch] = {}
+            version  = self._restore_metadata(f)
+            ch_units = self._loaded_channel_units(f)
 
             # Frames — v4+ always mV; v3 used the recorded unit
             if "frames" in f:
                 for idx in sorted(f["frames"].keys(), key=int):
-                    fg = f["frames"][idx]
-                    ts_str     = decode(fg.attrs["timestamp"])
-                    rel_time   = float(fg.attrs["rel_time"])
-                    samplerate = int(fg.attrs["samplerate"])
-                    status     = decode(fg.attrs["status"])
-                    try:
-                        timestamp = datetime.fromisoformat(ts_str)
-                    except (ValueError, TypeError):
-                        timestamp = datetime.now()
-                    frame_samples: dict[int, vibechecker.VibeSample] = {}
-                    for ch_str, cg in fg.items():
-                        if not ch_str.isdigit():
-                            continue
-                        ch   = int(ch_str)
-                        data = np.ascontiguousarray(cg["data"][()], dtype=np.float64)
-                        unit = "mV" if version >= 4 else ch_units.get(ch, "mV")
-                        frame_samples[ch] = vibechecker.VibeSample(
-                            status=status, _timestamp=timestamp, samplerate=samplerate,
-                            unit=unit, overflow=False, data=data, rel_time=rel_time,
-                        )
-                    self.data["frame_cache"].append(frame_samples)
+                    frame = self._read_frame_group(f["frames"][idx], ch_units, version)
+                    self.data["frame_cache"].append(frame)
 
             # Trend
             if "trend" in f:
@@ -791,8 +721,118 @@ class DataCollector:
                                 "orders":    orders,
                             }
 
+        self._post_load()
+
+    def _restore_metadata(self, f: 'h5py.File') -> int:
+        """Restore AcquisitionSettings and sensor config from /metadata in an open HDF5 file.
+
+        Returns the file version integer.  Side-effects:
+          self.config, self.notes, self._loaded_scope_sensors,
+          self._loaded_channel_sensor_configs updated in-place.
+        """
+        def decode(x):
+            return x.decode() if isinstance(x, bytes) else str(x)
+
+        version  = int(f["metadata"].attrs.get("version",
+                       f["metadata"].attrs.get("file_version", 3)))
+        meta_grp = f["metadata"]
+        self.notes = decode(meta_grp.attrs.get("notes", ""))
+
+        # Acquisition settings
+        if "acquisition" in meta_grp:
+            acq_dict = {k: (None if v == "" else v)
+                        for k, v in meta_grp["acquisition"].attrs.items()}
+            self.config = vibechecker.AcquisitionSettings.from_dict(acq_dict)
+
+        # Scope sensor library — {sensor_id: dict}
+        self._loaded_scope_sensors = {}
+        if "scope_sensors" in meta_grp:
+            for sid, sg in meta_grp["scope_sensors"].items():
+                d: dict = {}
+                for k, v in sg.attrs.items():
+                    if isinstance(v, (bytes, np.bytes_)):
+                        d[k] = v.decode()
+                    elif isinstance(v, (np.integer,)):
+                        d[k] = int(v)
+                    elif isinstance(v, (np.floating,)):
+                        d[k] = float(v)
+                    else:
+                        d[k] = v
+                d["id"] = sid
+                self._loaded_scope_sensors[sid] = d
+
+        # Channel metadata — restore names, target units, and sensor configs
+        self._loaded_channel_sensor_configs = {}
+        if "channels" in meta_grp:
+            for ch_str, cg in meta_grp["channels"].items():
+                ch             = int(ch_str)
+                name           = decode(cg.attrs.get("name", ""))
+                target_unit    = decode(cg.attrs.get("target_unit", ""))
+                sensor_id      = decode(cg.attrs.get("scope_sensor_id", ""))
+                coupling       = decode(cg.attrs.get("coupling", "AC"))
+                voltage_range  = int(cg.attrs.get("voltage_range", 7))
+                amplitude_mode = decode(cg.attrs.get("amplitude_mode", ""))
+                if name:
+                    self.config.channel_names[ch] = name
+                if target_unit:
+                    self.config.channel_target_units[ch] = target_unit
+                if amplitude_mode:
+                    self.config.channel_amplitude_modes[ch] = amplitude_mode
+                self.config.channel_couplings[ch]    = coupling
+                self.config.channel_voltage_ranges[ch] = voltage_range
+                if sensor_id and sensor_id in self._loaded_scope_sensors:
+                    self._loaded_channel_sensor_configs[ch] = dict(
+                        self._loaded_scope_sensors[sensor_id]
+                    )
+                else:
+                    self._loaded_channel_sensor_configs[ch] = {}
+
+        return version
+
+    def _loaded_channel_units(self, f: 'h5py.File') -> dict[int, str]:
+        """Return per-channel unit strings from /metadata/channels in an open file."""
+        def decode(x):
+            return x.decode() if isinstance(x, bytes) else str(x)
+
+        ch_units: dict[int, str] = {}
+        meta_grp = f.get("metadata")
+        if meta_grp is not None and "channels" in meta_grp:
+            for ch_str, cg in meta_grp["channels"].items():
+                ch_units[int(ch_str)] = decode(cg.attrs.get("unit", "mV"))
+        return ch_units
+
+    def _read_frame_group(self, fg: 'h5py.Group', ch_units: dict[int, str],
+                          version: int) -> dict[int, 'vibechecker.VibeSample']:
+        """Read one HDF5 frame group into a dict[int, VibeSample]."""
+        def decode(x):
+            return x.decode() if isinstance(x, bytes) else str(x)
+
+        ts_str     = decode(fg.attrs["timestamp"])
+        rel_time   = float(fg.attrs["rel_time"])
+        samplerate = int(fg.attrs["samplerate"])
+        status     = decode(fg.attrs["status"])
+        try:
+            timestamp = datetime.fromisoformat(ts_str)
+        except (ValueError, TypeError):
+            timestamp = datetime.now()
+
+        frame_samples: dict[int, vibechecker.VibeSample] = {}
+        for ch_str, cg in fg.items():
+            if not ch_str.isdigit():
+                continue
+            ch   = int(ch_str)
+            data = np.ascontiguousarray(cg["data"][()], dtype=np.float64)
+            unit = "mV" if version >= 4 else ch_units.get(ch, "mV")
+            frame_samples[ch] = vibechecker.VibeSample(
+                status=status, _timestamp=timestamp, samplerate=samplerate,
+                unit=unit, overflow=False, data=data, rel_time=rel_time,
+            )
+        return frame_samples
+
+    def _post_load(self) -> None:
+        """Sync config from frame data and signal GUI after any load operation."""
         n = len(self.data["frame_cache"])
-        log.debug(f"Loaded {n} frames from {target}")
+        log.debug(f"Loaded {n} frames into frame cache")
 
         if not n:
             return
@@ -815,3 +855,81 @@ class DataCollector:
 
         self.init_trend_channels()
         self.reprocess_last_block()
+
+    def load_monitor_capture(self, session_h5: Path, capture_index: int) -> None:
+        """Load a single interval capture frame into frame_cache and trigger display.
+
+        Reads /metadata/ for config restore, then /monitor/{capture_index}/ for data.
+        """
+        if not session_h5.is_file():
+            log.error(f"load_monitor_capture: file does not exist: {session_h5}")
+            return
+
+        self.data["frame_cache"].clear()
+        self.trend = {}
+        self._loaded_channel_sensor_configs = {}
+        self._loaded_scope_sensors = {}
+
+        with h5py.File(session_h5, "r") as f:
+            version  = self._restore_metadata(f)
+            ch_units = self._loaded_channel_units(f)
+
+            mon_grp = f.get("monitor")
+            if mon_grp is None:
+                log.error(f"load_monitor_capture: no /monitor group in {session_h5}")
+                return
+
+            key = str(capture_index)
+            if key not in mon_grp:
+                log.error(
+                    f"load_monitor_capture: capture {capture_index} not found in {session_h5}"
+                )
+                return
+
+            frame = self._read_frame_group(mon_grp[key], ch_units, version)
+            self.data["frame_cache"].append(frame)
+
+        log.debug(f"Loaded monitor capture {capture_index} from {session_h5}")
+        self._post_load()
+
+    def load_monitor_burst(self, session_h5: Path, burst_id: str) -> None:
+        """Load all frames from a burst event into frame_cache and trigger display.
+
+        Reads /metadata/ for config restore, then /burst/{burst_id}/{0..N-1}/ for data.
+        """
+        if not session_h5.is_file():
+            log.error(f"load_monitor_burst: file does not exist: {session_h5}")
+            return
+
+        self.data["frame_cache"].clear()
+        self.trend = {}
+        self._loaded_channel_sensor_configs = {}
+        self._loaded_scope_sensors = {}
+
+        with h5py.File(session_h5, "r") as f:
+            version  = self._restore_metadata(f)
+            ch_units = self._loaded_channel_units(f)
+
+            burst_grp = f.get("burst")
+            if burst_grp is None:
+                log.error(f"load_monitor_burst: no /burst group in {session_h5}")
+                return
+
+            bid_grp = burst_grp.get(burst_id)
+            if bid_grp is None:
+                log.error(
+                    f"load_monitor_burst: burst '{burst_id}' not found in {session_h5}"
+                )
+                return
+
+            n_frames = int(bid_grp.attrs.get("n_frames", len(bid_grp)))
+            for fi in range(n_frames):
+                fi_grp = bid_grp.get(str(fi))
+                if fi_grp is None:
+                    continue
+                frame = self._read_frame_group(fi_grp, ch_units, version)
+                self.data["frame_cache"].append(frame)
+
+        n = len(self.data["frame_cache"])
+        log.debug(f"Loaded {n} burst frames for '{burst_id}' from {session_h5}")
+        self._post_load()

@@ -2,12 +2,9 @@ import time
 from collections import deque
 from datetime import datetime, timezone
 
-import yaml
-
 import vibechecker
 from vibechecker.monitor.anomaly import AnomalyEvent, AnomalyHook, NullAnomalyHook
 from vibechecker.monitor.gate import IntervalGate
-from vibechecker.monitor.index import SessionIndex
 from vibechecker.monitor.session import MonitorSession
 from vibechecker.monitor.writer import MonitorWriterThread
 
@@ -17,6 +14,9 @@ log = vibechecker.get_logger(__name__)
 class MonitorController:
     """Gate, anomaly detection, and write dispatch for Monitor Mode.
 
+    Recording lifecycle: start(session) / stop().
+    Anomaly detection: arm() / disarm() — independent of recording state.
+
     Called from the GUI thread via ``on_results(results, frame_cache)``
     after each call to ``collector.process_samples()``.
     """
@@ -24,80 +24,116 @@ class MonitorController:
     def __init__(self) -> None:
         self._session:      MonitorSession | None      = None
         self._gate:         IntervalGate | None        = None
-        self._index:        SessionIndex | None        = None
         self._writer:       MonitorWriterThread | None = None
         self._anomaly_hook: AnomalyHook                = NullAnomalyHook()
+        self._recording     = False
         self._armed         = False
         self._start_mono    = 0.0
         self._capture_count = 0
+        self._burst_count   = 0
 
         # Burst state
-        self._in_burst:        bool      = False
-        self._burst_end_mono:  float     = 0.0
-        self._burst_capture_id: str      = ''
-        self._burst_frames:    list[dict] = []
-        self._burst_results:   list      = []
+        self._in_burst:         bool      = False
+        self._burst_end_mono:   float     = 0.0
+        self._burst_id:         str       = ''
+        self._burst_frames:     list[dict] = []
+        self._burst_results:    list      = []
+        self._burst_pretrigger: int       = 0
 
     # ------------------------------------------------------------------
-    # Public API
+    # Public API — recording lifecycle
     # ------------------------------------------------------------------
 
     @property
+    def is_recording(self) -> bool:
+        """True when a session is running (writer thread active)."""
+        return self._recording
+
+    @property
     def is_armed(self) -> bool:
+        """True when anomaly detection is active (implies is_recording)."""
         return self._armed
 
     def start(self, session: MonitorSession,
               anomaly_hook: AnomalyHook | None = None) -> None:
-        if self._armed:
+        """Start a new recording session. Stops any running session first."""
+        if self._recording:
             self.stop()
 
         self._session = session
-        session.output_dir.mkdir(parents=True, exist_ok=True)
-
-        self._index = SessionIndex(session.output_dir)
-        self._index.set_meta('session_id', session.session_id)
-        self._index.set_meta('start_time', session.start_time.isoformat())
-        self._index.set_meta('interval_s', str(session.interval_s))
-
         self._start_mono = time.monotonic()
         self._gate = IntervalGate(session.interval_s, self._start_mono)
-        self._writer = MonitorWriterThread(session, self._index)
+        self._writer = MonitorWriterThread(session)
         self._writer.start()
 
-        self._anomaly_hook = anomaly_hook or NullAnomalyHook()
         self._capture_count = 0
-        self._in_burst = False
-        self._burst_frames = []
+        self._burst_count   = 0
+        self._in_burst      = False
+        self._burst_frames  = []
         self._burst_results = []
-        self._armed = True
+        self._recording     = True
+
+        if anomaly_hook is not None:
+            self._anomaly_hook = anomaly_hook
+            self._armed = True
+        else:
+            self._armed = False
 
         log.info(
-            f'Monitor armed: session={session.session_id} '
+            f'Monitor recording started: session={session.session_id} '
             f'interval={session.interval_s}s'
         )
 
     def stop(self) -> None:
-        if not self._armed:
+        """Stop the recording session and flush the writer."""
+        if not self._recording:
             return
-        self._armed = False
+        self._recording = False
+        self._armed     = False
 
         # Flush any partial burst
         if self._in_burst and self._burst_frames:
-            now = time.monotonic()
+            now      = time.monotonic()
             rel_time = now - self._start_mono
             self._flush_burst(self._burst_results, rel_time)
 
         if self._writer:
             self._writer.stop()
-        if self._index and self._session:
-            self._write_session_yaml()
-            self._index.close()
 
-        log.info(f'Monitor disarmed. Captures saved: {self._capture_count}')
+        log.info(
+            f'Monitor stopped. Captures: {self._capture_count}, '
+            f'Bursts: {self._burst_count}'
+        )
+
+    # ------------------------------------------------------------------
+    # Public API — arm / disarm (anomaly detection only)
+    # ------------------------------------------------------------------
+
+    def arm(self) -> None:
+        """Enable anomaly detection. Noop if not recording."""
+        if not self._recording:
+            return
+        self._armed = True
+        log.info('Monitor anomaly detection armed')
+
+    def disarm(self) -> None:
+        """Disable anomaly detection. Noop if not recording."""
+        if not self._recording:
+            return
+        self._armed = False
+        log.info('Monitor anomaly detection disarmed')
+
+    def set_anomaly_hook(self, hook: AnomalyHook) -> None:
+        """Swap the anomaly hook while recording."""
+        self._anomaly_hook = hook
+
+    # ------------------------------------------------------------------
+    # Main callback
+    # ------------------------------------------------------------------
 
     def on_results(self, results: list, frame_cache: deque) -> None:
         """Called from GUI thread after process_samples(). Non-blocking."""
-        if not self._armed or not results:
+        if not self._recording or not results:
             return
 
         now      = time.monotonic()
@@ -107,11 +143,12 @@ class MonitorController:
             self._handle_burst_frame(results, frame_cache, now, rel_time)
             return
 
-        # Check anomaly hook
-        event: AnomalyEvent | None = self._anomaly_hook.on_results(results, frame_cache)
-        if event is not None:
-            self._start_burst(event, results, frame_cache, now, rel_time)
-            return
+        # Check anomaly hook only when armed
+        if self._armed:
+            event: AnomalyEvent | None = self._anomaly_hook.on_results(results, frame_cache)
+            if event is not None:
+                self._start_burst(event, results, frame_cache, now, rel_time)
+                return
 
         # Normal interval gate
         if self._gate.should_capture(now):
@@ -124,19 +161,22 @@ class MonitorController:
 
     def status_snapshot(self) -> dict:
         now       = time.monotonic()
-        elapsed   = (now - self._start_mono) if self._armed else 0.0
+        elapsed   = (now - self._start_mono) if self._recording else 0.0
         time_next = self._gate.time_to_next(now) if self._gate else 0.0
         depth     = self._writer.queue_depth if self._writer else 0
-        db_bytes  = self._index.total_bytes() if self._index else 0
         err       = self._writer.error if self._writer else None
+        session   = self._session
+        if session and session.session_h5.exists():
+            total_bytes = session.session_h5.stat().st_size
+        else:
+            total_bytes = 0
         return {
-            'armed':          self._armed,
             'elapsed_s':      elapsed,
             'capture_count':  self._capture_count,
-            'queue_depth':    depth,
-            'total_bytes':    db_bytes,
+            'burst_count':    self._burst_count,
             'next_capture_s': time_next,
-            'in_burst':       self._in_burst,
+            'queue_depth':    depth,
+            'total_bytes':    total_bytes,
             'error':          str(err) if err else None,
         }
 
@@ -146,23 +186,28 @@ class MonitorController:
 
     def _capture_interval(self, results: list, frame_cache: deque,
                           rel_time: float) -> None:
-        capture_id = datetime.now(timezone.utc).strftime('%Y-%m-%d-%H%M%S')
-        latest     = dict(frame_cache[-1]) if frame_cache else {}
-        self._enqueue(capture_id, [latest], results, 'interval', rel_time)
+        timestamp_str = datetime.now(timezone.utc).isoformat()
+        latest        = dict(frame_cache[-1]) if frame_cache else {}
+        self._enqueue(
+            frames     = [latest],
+            results    = results,
+            trigger    = 'interval',
+            rel_time   = rel_time,
+            timestamp  = timestamp_str,
+        )
 
     def _start_burst(self, event: AnomalyEvent, results: list,
                      frame_cache: deque, now: float, rel_time: float) -> None:
-        self._in_burst        = True
-        self._burst_end_mono  = now + event.burst_duration_s
-        self._burst_capture_id = (
-            datetime.now(timezone.utc).strftime('%Y-%m-%d-%H%M%S') + '_burst'
-        )
-        self._burst_results = list(results)
+        self._in_burst       = True
+        self._burst_end_mono = now + event.burst_duration_s
+        self._burst_id       = datetime.now(timezone.utc).strftime('%Y-%m-%d-%H%M%S')
+        self._burst_results  = list(results)
 
         # Snapshot pre-trigger frames
         n = self._session.pre_buffer_frames if self._session else 1
         pre = list(frame_cache)[-n:] if frame_cache else []
-        self._burst_frames = [dict(f) for f in pre]
+        self._burst_frames     = [dict(f) for f in pre]
+        self._burst_pretrigger = len(self._burst_frames)
 
         log.warning(
             f'Monitor: anomaly burst triggered on ch{event.channel} — {event.reason}'
@@ -173,15 +218,16 @@ class MonitorController:
         latest = dict(frame_cache[-1]) if frame_cache else {}
         self._burst_frames.append(latest)
 
-        # Retrigger check
-        event: AnomalyEvent | None = self._anomaly_hook.on_results(results, frame_cache)
-        if event is not None and self._session:
-            self._gate.enter_burst(
-                event.burst_duration_s,
-                now=now,
-                max_burst_s=self._session.max_burst_s,
-            )
-            self._burst_end_mono = self._gate._burst_end  # sync
+        # Retrigger check (only if armed)
+        if self._armed:
+            event: AnomalyEvent | None = self._anomaly_hook.on_results(results, frame_cache)
+            if event is not None and self._session:
+                self._gate.enter_burst(
+                    event.burst_duration_s,
+                    now=now,
+                    max_burst_s=self._session.max_burst_s,
+                )
+                self._burst_end_mono = self._gate._burst_end  # sync
 
         if now >= self._burst_end_mono:
             self._flush_burst(results, rel_time)
@@ -189,44 +235,38 @@ class MonitorController:
     def _flush_burst(self, results: list, rel_time: float) -> None:
         self._in_burst = False
         if self._burst_frames:
+            timestamp_str = datetime.now(timezone.utc).isoformat()
             self._enqueue(
-                self._burst_capture_id,
-                self._burst_frames,
-                self._burst_results or results,
-                'burst',
-                rel_time,
+                frames           = self._burst_frames,
+                results          = self._burst_results or results,
+                trigger          = 'burst',
+                rel_time         = rel_time,
+                timestamp        = timestamp_str,
+                burst_id         = self._burst_id,
+                n_pretrigger     = self._burst_pretrigger,
             )
-        self._burst_frames    = []
-        self._burst_results   = []
-        self._burst_capture_id = ''
+            self._burst_count += 1
+        self._burst_frames     = []
+        self._burst_results    = []
+        self._burst_id         = ''
+        self._burst_pretrigger = 0
         if self._gate and self._session:
             self._gate.exit_burst(time.monotonic())
 
-    def _enqueue(self, capture_id: str, frames: list, results: list,
-                 trigger: str, rel_time: float) -> None:
-        item = {
-            'capture_id': capture_id,
-            'frames':     frames,
-            'results':    results,
-            'trigger':    trigger,
-            'rel_time':   rel_time,
-            'timestamp':  datetime.now(timezone.utc).isoformat(),
+    def _enqueue(self, frames: list, results: list, trigger: str,
+                 rel_time: float, timestamp: str,
+                 burst_id: str = '', n_pretrigger: int = 0) -> None:
+        item: dict = {
+            'frames':    frames,
+            'results':   results,
+            'trigger':   trigger,
+            'rel_time':  rel_time,
+            'timestamp': timestamp,
         }
-        if self._writer and self._writer.enqueue(item):
-            self._capture_count += 1
+        if trigger != 'interval':
+            item['burst_id']           = burst_id
+            item['n_pretrigger_frames'] = n_pretrigger
 
-    def _write_session_yaml(self) -> None:
-        if not self._session:
-            return
-        summary = {
-            'session_id':    self._session.session_id,
-            'start_time':    self._session.start_time.isoformat(),
-            'stop_time':     datetime.now(timezone.utc).isoformat(),
-            'interval_s':    self._session.interval_s,
-            'capture_count': self._capture_count,
-            'output_dir':    str(self._session.output_dir),
-        }
-        path = self._session.output_dir / 'session.yaml'
-        with open(path, 'w') as f:
-            yaml.dump(summary, f, default_flow_style=False)
-        log.info(f'Session summary: {path}')
+        if self._writer and self._writer.enqueue(item):
+            if trigger == 'interval':
+                self._capture_count += 1
