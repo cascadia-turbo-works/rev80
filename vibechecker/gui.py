@@ -1464,9 +1464,14 @@ class GUI:
         # Load all interval frames immediately; guard against corrupt/old H5 files
         try:
             self.collector.load_monitor_session(session_h5)
-            self._autoscale_plots()
         except Exception as exc:
             log.error(f'session browser: failed to load session {session_h5}: {exc}')
+
+        # Re-add series for the channels now present in the loaded data
+        for ch in sorted(self.collector.config.enabled_channels):
+            self._add_channel_series(ch)
+
+        self._autoscale_plots()
 
         # Populate burst listbox
         burst_list: list = []
@@ -1532,11 +1537,21 @@ class GUI:
                 dpg.delete_item(ui.PLT_TREND_BURST_VLINES)
         except Exception:
             pass
+
+        for ch in range(_MAX_CHANNELS):
+            self._remove_channel_series(ch)
+        if dpg.does_item_exist(ui.PLT_TREND_CURSOR):
+            dpg.delete_item(ui.PLT_TREND_CURSOR)
+
         try:
             self.collector.load_monitor_burst(session_h5, burst_id)
-            self._autoscale_plots()
         except Exception as exc:
             log.error(f'session browser: failed to load burst {burst_id} from {session_h5}: {exc}')
+
+        for ch in sorted(self.collector.config.enabled_channels):
+            self._add_channel_series(ch)
+
+        self._autoscale_plots()
 
     def _on_session_browser_pick_folder(self, sender=None, data=None) -> None:
         """Open the platform-native folder picker; update the session folder input."""
