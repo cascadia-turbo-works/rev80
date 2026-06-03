@@ -995,11 +995,12 @@ class DataCollector:
             n_pretrigger = int(bid_grp.attrs.get("n_pretrigger_frames", 0))
 
             # Rebase rel_times so trigger frame = 0, pre-trigger = negative.
-            # Use the trigger frame's own stored rel_time as the origin — it is
-            # on the same time scale as all other frame rel_times (stream-relative).
+            # Use the trigger frame's own stored rel_time as origin (same time scale).
+            import math as _math
             trigger_frame_grp = bid_grp.get(str(n_pretrigger))
             if trigger_frame_grp is not None:
-                trigger_rel = float(trigger_frame_grp.attrs.get("rel_time", 0.0))
+                raw_trigger = float(trigger_frame_grp.attrs.get("rel_time", 0.0))
+                trigger_rel = raw_trigger if _math.isfinite(raw_trigger) else 0.0
             else:
                 trigger_rel = 0.0
 
@@ -1010,7 +1011,8 @@ class DataCollector:
                 frame = self._read_frame_group(fi_grp, ch_units, version)
                 self.data["frame_cache"].append(frame)
                 # Per-frame overall for trend, rebased to trigger=0
-                raw_rel_t = float(fi_grp.attrs.get("rel_time", 0.0))
+                raw_rel_t_f = float(fi_grp.attrs.get("rel_time", 0.0))
+                raw_rel_t = raw_rel_t_f if _math.isfinite(raw_rel_t_f) else 0.0
                 rel_t = raw_rel_t - trigger_rel
                 raw_overall = fi_grp.attrs.get("overall_json", None)
                 if raw_overall is not None:
@@ -1027,11 +1029,17 @@ class DataCollector:
         log.debug(f"Loaded {n} burst frames for '{burst_id}' from {session_h5}")
         self._post_load()
 
-        # Rebuild trend from per-frame overall_json if available
+        # Rebuild trend from per-frame overall_json, filtering any NaN/inf values
+        import math as _math
         for ch, rel_times in trend_rel_times.items():
             overalls = trend_overalls[ch]
-            orders = np.zeros((len(overalls), 5))
-            orders[:, 2] = np.array(overalls)
-            self.trend[ch] = {"rel_times": np.array(rel_times), "orders": orders}
+            valid = [(t, v) for t, v in zip(rel_times, overalls)
+                     if _math.isfinite(t) and _math.isfinite(v)]
+            if not valid:
+                continue
+            vt, vv = zip(*valid)
+            orders = np.zeros((len(vv), 5))
+            orders[:, 2] = np.array(vv)
+            self.trend[ch] = {"rel_times": np.array(vt), "orders": orders}
         if trend_rel_times:
             log.debug(f"Reconstructed burst trend from {len(trend_rel_times)} channels")

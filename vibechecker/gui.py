@@ -802,15 +802,19 @@ class GUI:
             if dpg.does_item_exist(ax):
                 dpg.fit_axis_data(ax)
 
-        # Trend X: fit to current data extent
+        # Trend X: fit to current data extent, excluding NaN/inf
+        import math as _math
         all_times: list[float] = []
         for ch in self.collector.config.enabled_channels:
             td = self.collector.trend.get(ch, {})
             rt = td.get("rel_times")
             if rt is not None and len(rt) > 0:
-                all_times.extend(rt.tolist())
+                all_times.extend(t for t in rt.tolist() if _math.isfinite(t))
         if all_times and dpg.does_item_exist(ui.PLT_TREND_AX_TIME):
-            dpg.set_axis_limits(ui.PLT_TREND_AX_TIME, 0.0, max(all_times) * 1.5)
+            t_min = min(all_times)
+            t_max = max(all_times)
+            pad = max((t_max - t_min) * 0.1, 0.5)
+            dpg.set_axis_limits(ui.PLT_TREND_AX_TIME, t_min - pad, t_max + pad)
         elif dpg.does_item_exist(ui.PLT_TREND_AX_TIME):
             dpg.fit_axis_data(ui.PLT_TREND_AX_TIME)
 
@@ -1451,6 +1455,12 @@ class GUI:
         _, session_dir, session_h5 = entry
         self._session_browser_selected_session_dir = session_dir
 
+        # Clear stale plot series before loading (prevents color cycle accumulation)
+        for ch in range(_MAX_CHANNELS):
+            self._remove_channel_series(ch)
+        if dpg.does_item_exist(ui.PLT_TREND_CURSOR):
+            dpg.delete_item(ui.PLT_TREND_CURSOR)
+
         # Load all interval frames immediately; guard against corrupt/old H5 files
         try:
             self.collector.load_monitor_session(session_h5)
@@ -1902,6 +1912,7 @@ class GUI:
             session_id = self._monitor._session.session_id if self._monitor._session else ''
             status += f"\n{session_id}"
             dpg.set_item_label(ui.MONITOR_RECORD_BTN, f'{icons.IC["disarm"]}  Stop')
+            dpg.configure_item(ui.MONITOR_RECORD_BTN, enabled=True)
             dpg.set_value(ui.MONITOR_STATUS_TEXT, status)
             # Arm / Burst buttons
             if dpg.does_item_exist(ui.MONITOR_ARM_BTN):
@@ -2876,7 +2887,13 @@ class GUI:
         key = app_data
         ctrl = dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)
 
-        if ctrl:
+        if key == dpg.mvKey_Escape:
+            # Close whichever modal is currently visible
+            if dpg.does_item_exist(ui.DLG_SESSION_BROWSER) and dpg.is_item_shown(ui.DLG_SESSION_BROWSER):
+                dpg.configure_item(ui.DLG_SESSION_BROWSER, show=False)
+            elif dpg.does_item_exist(ui.DLG_CONFIG) and dpg.is_item_shown(ui.DLG_CONFIG):
+                self._on_config_close()
+        elif ctrl:
             if key == dpg.mvKey_A:
                 self._autoscale_plots()
             elif key == dpg.mvKey_K:
