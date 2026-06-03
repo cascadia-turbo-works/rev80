@@ -1467,9 +1467,11 @@ class GUI:
         except Exception as exc:
             log.error(f'session browser: failed to load session {session_h5}: {exc}')
 
-        # Re-add series for the channels now present in the loaded data
+        # Re-add series and sync display state — mirrors _on_load_file post-load steps
         for ch in sorted(self.collector.config.enabled_channels):
             self._add_channel_series(ch)
+        self._update_axis_assignment()
+        self._update_results_section_visibility()
 
         self._autoscale_plots()
 
@@ -1550,6 +1552,8 @@ class GUI:
 
         for ch in sorted(self.collector.config.enabled_channels):
             self._add_channel_series(ch)
+        self._update_axis_assignment()
+        self._update_results_section_visibility()
 
         self._autoscale_plots()
 
