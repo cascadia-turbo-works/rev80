@@ -2946,14 +2946,67 @@ class GUI:
         #       is stable (see _on_config_close TODO above).
         # self._open_config_dialog(ui.CONFIG_TAB_DEVICE)
 
-    def run(self):
+    def _load_from_path(self, path_str: str) -> None:
+        """Load an h5 file (v4 measurement or v5 monitor session) by path.
+
+        Detects the file type from the HDF5 structure and routes to the
+        appropriate loader.  Called after the first render frame so all
+        DPG plot series exist.
+        """
+        import h5py
+        p = Path(path_str.strip())
+        if not p.exists():
+            log.error(f"--from-file: path does not exist: {p}")
+            return
+        # Resolve a session directory to its session.h5
+        if p.is_dir():
+            candidate = p / "session.h5"
+            if candidate.exists():
+                p = candidate
+            else:
+                log.error(f"--from-file: directory has no session.h5: {p}")
+                return
+        try:
+            with h5py.File(str(p), "r") as f:
+                is_monitor = "monitor" in f
+        except Exception as exc:
+            log.error(f"--from-file: cannot open {p}: {exc}")
+            return
+
+        log.info(f"--from-file: loading {'monitor session' if is_monitor else 'measurement'} {p}")
+        if is_monitor:
+            for ch in range(_MAX_CHANNELS):
+                self._remove_channel_series(ch)
+            if dpg.does_item_exist(ui.PLT_TREND_CURSOR):
+                dpg.delete_item(ui.PLT_TREND_CURSOR)
+            try:
+                self.collector.load_monitor_session(p)
+            except Exception as exc:
+                log.error(f"--from-file: load_monitor_session failed: {exc}")
+                return
+            for ch in sorted(self.collector.config.enabled_channels):
+                self._add_channel_series(ch)
+            self._update_axis_assignment()
+            self._update_results_section_visibility()
+            self._autoscale_plots()
+        else:
+            self._on_load_file(p)
+
+    def run(self, initial_file: str | None = None):
         log.info("Launch app window")
         dpg.create_viewport(title="Vibe Logger", width=WINDOW_WIDTH, height=WINDOW_HEIGHT)
         dpg.show_viewport()
         dpg.set_primary_window(ui.PRIMARY_WINDOW, True)
         threading.Thread(target=self._autoconnect, daemon=True).start()
         log.info("Start DPG backend")
+        _loaded = not initial_file   # False = load pending after first frame
         while dpg.is_dearpygui_running():
+            if not _loaded:
+                # Defer one frame so all DPG series are fully initialised
+                dpg.render_dearpygui_frame()
+                self._load_from_path(initial_file)
+                _loaded = True
+                continue
             self._poll_new_frames()
             dpg.render_dearpygui_frame()
 

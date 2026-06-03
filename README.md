@@ -7,6 +7,7 @@ A Python desktop application for capturing, analyzing, and recording vibration d
 ## Table of Contents
 
 - [Features](#features)
+- [CLI Reference](#cli-reference)
 - [Installing on Windows](#installing-on-windows)
 - [Installing from Source (any OS)](#installing-from-source-any-os)
 - [Contributing](#contributing)
@@ -43,6 +44,43 @@ A Python desktop application for capturing, analyzing, and recording vibration d
 - Configurable units: acceleration (g, mm/s², in/s²), velocity (mm/s, in/s, mil/s), displacement (mm, in, mil)
 - **Monitor Mode** — interval datalogger: captures frames at a configurable interval (5 s – 2 days), stores all captures in a single session HDF5, anomaly-triggered burst capture (manual trigger; automatic anomaly detection in Phase 2)
 - **Session browser** — load and browse historical monitor sessions; burst events displayed as vertical markers on the vibration trend
+
+---
+
+## CLI Reference
+
+### GUI mode
+
+```bash
+python -m vibechecker                                       # launch GUI
+python -m vibechecker --from-file path/to/file.h5          # load measurement on startup
+python -m vibechecker --from-file path/to/session_dir/     # load monitor session on startup
+python -m vibechecker --debug                               # verbose logging
+```
+
+`--from-file` accepts a v4 single-measurement `.h5` file or a v5 monitor session directory (containing `session.h5`). The GUI opens, displays the data immediately, and the session browser and file browser remain fully functional.
+
+### Headless mode
+
+```bash
+python -m vibechecker --headless [options]
+vibechecker-headless [options]        # after pip install
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--interval SECS` | 3600 | Capture interval |
+| `--pre-buffer SECS` | 60 | Pre-trigger buffer duration |
+| `--burst-duration SECS` | 60 | Burst capture duration |
+| `--output DIR` | `DEVDATA/monitor/` | Output root directory |
+| `--device SERIAL` | auto-detect | PicoScope serial, or `sim` |
+| `--channels N [N ...]` | from device config | Channel indices to enable |
+| `--maxfreq HZ` | from device config | Max analysis frequency |
+| `--binsize HZ` | from device config | Frequency resolution |
+| `--no-compress` | — | Disable gzip compression |
+| `--debug` | — | Verbose logging to stderr |
+
+Writes a v5 `session.h5` file loadable by the GUI session browser or `--from-file`. Clean shutdown on Ctrl+C or SIGTERM.
 
 ---
 
@@ -85,13 +123,55 @@ Works on Windows, Linux, and macOS. Requires Python 3.10+.
 3. Run the app:
 
    ```bash
+   # GUI (default)
    python -m vibechecker
+
+   # GUI — open directly on a saved measurement or monitor session
+   python -m vibechecker --from-file DEVDATA/my_run.h5
+   python -m vibechecker --from-file DEVDATA/monitor/2026-06-02-130000/
+
+   # Headless interval datalogger (no display required)
+   python -m vibechecker --headless --interval 3600
+   python -m vibechecker --headless --device sim --interval 5   # offline test
 
    # With debug logging to console
    python -m vibechecker --debug
    ```
 
-**Runtime dependencies:** `numpy`, `scipy`, `dearpygui==2.0.0`, `h5py`, `pyyaml`, `picosdk`
+**Runtime dependencies:** `numpy`, `scipy`, `dearpygui==2.0.0`, `h5py`, `pyyaml`, `plyer`, `picosdk`
+
+**Headless (no display) usage:**
+
+```bash
+# Auto-detect PicoScope, hourly captures
+python -m vibechecker --headless --interval 3600
+
+# Fully explicit
+vibechecker-headless \
+  --interval 300 \
+  --pre-buffer 30 \
+  --burst-duration 60 \
+  --output /mnt/nas/vibration \
+  --channels 0 1 \
+  --maxfreq 2000 \
+  --binsize 1
+
+# Simulated sensor (no hardware)
+vibechecker-headless --device sim --interval 10
+```
+
+Sessions written by the headless mode are identical v5 HDF5 files and can be loaded in the GUI:
+
+```bash
+# Open GUI on a specific session directory
+python -m vibechecker --from-file /mnt/nas/vibration/2026-06-02-130000/
+
+# Or point at the session.h5 directly
+python -m vibechecker --from-file /mnt/nas/vibration/2026-06-02-130000/session.h5
+
+# Or a regular single-measurement save
+python -m vibechecker --from-file DEVDATA/my_measurement.h5
+```
 
 The `picosdk` package requires the PicoScope 4000A driver (`ps4000a.dll` / `libps4000a.so`) to be present on the system for hardware use. The app will start without it and show a "driver not found" notice in the device dialog — the simulated sensor is still available.
 
