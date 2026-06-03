@@ -1504,7 +1504,7 @@ class GUI:
                 if dpg.does_item_exist(ui.PLT_TREND_BURST_VLINES):
                     dpg.delete_item(ui.PLT_TREND_BURST_VLINES)
                 if burst_rel_times:
-                    dpg.add_vline_series(
+                    dpg.add_inf_line_series(
                         burst_rel_times,
                         parent=ui.PLT_TREND_AX_OVERALL,
                         tag=ui.PLT_TREND_BURST_VLINES,
