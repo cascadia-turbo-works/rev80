@@ -35,12 +35,14 @@ A Python desktop application for capturing, analyzing, and recording vibration d
 - Per-channel 4th-order Butterworth highpass and lowpass filters
 - Configurable IEPE sensor library: sensitivity (mV/EU), modality, engineering units
 - PicoScope 4000A built-in signal generator for excitation testing
-- HDF5 file save/load for post-processing and archiving
+- HDF5 file save/load for post-processing and archiving (v4 format)
 - Configurable frame cache depth (default 32 frames) with backward browse
 - Trend plot: overall vibration amplitude over time per channel
 - Simulated sensor (bearing-defect signal generator) for offline development and CI testing
 - Configurable amplitude modes: RMS, 0-P, P-P
 - Configurable units: acceleration (g, mm/s², in/s²), velocity (mm/s, in/s, mil/s), displacement (mm, in, mil)
+- **Monitor Mode** — interval datalogger: captures frames at a configurable interval (5 s – 2 days), stores all captures in a single session HDF5, anomaly-triggered burst capture (manual trigger; automatic anomaly detection in Phase 2)
+- **Session browser** — load and browse historical monitor sessions; burst events displayed as vertical markers on the vibration trend
 
 ---
 
@@ -120,20 +122,32 @@ python -m vibechecker
 ### Project layout
 
 ```
-vibechecker/          Python package
-  _paths.py           Runtime-safe path resolution (dev vs frozen)
-  _pico_loader.py     Windows DLL search path setup for frozen builds
-  logging.yaml        Logging configuration (bundled with package)
-assets/               App icon source
-  vibechecker_icon.svg  Source artwork — edit this to change the icon
-  make_icons.sh         Regenerates vibechecker.ico from SVG via Inkscape + ImageMagick
-  vibechecker.ico       Multi-resolution icon used by installer and exe
-drivers/              PicoScope DLLs (Windows build only, not committed)
-installer/            Inno Setup script
-tests/                pytest suite
-vibechecker.spec      PyInstaller build spec
-build.sh              Full build pipeline (Git Bash on Windows)
-build.bat             Full build pipeline (cmd.exe on Windows)
+vibechecker/              Python package
+  _paths.py               Runtime-safe path resolution (dev vs frozen)
+  _pico_loader.py         Windows DLL search path setup for frozen builds
+  logging.yaml            Logging configuration (bundled with package)
+  monitor/                Monitor Mode package
+    __init__.py
+    session.py            MonitorSession dataclass
+    gate.py               IntervalGate scheduler
+    anomaly.py            AnomalyHook protocol + NullAnomalyHook stub
+    writer.py             MonitorWriterThread (daemon, writes session.h5)
+    controller.py         MonitorController (is_recording / is_armed)
+  assets/
+    fonts/                CommitMono Nerd Font (gitignored — add locally)
+assets/                   App icon source
+  vibechecker_icon.svg    Source artwork
+  make_icons.sh           Regenerates vibechecker.ico via Inkscape + ImageMagick
+  vibechecker.ico         Multi-resolution icon used by installer and exe
+drivers/                  PicoScope DLLs (Windows build only, not committed)
+installer/                Inno Setup script
+tests/                    pytest suite
+  test_monitor_controller.py
+  test_monitor_gate.py
+  test_monitor_index.py
+  test_monitor_session_load.py   full write→load→browse integration tests
+vibechecker.spec          PyInstaller build spec
+build.sh / build.bat      Full build pipeline
 ```
 
 ### Replacing the app icon
@@ -198,11 +212,11 @@ build.bat           # cmd.exe / PowerShell
 
 ## Architecture
 
-The app is a linear pipeline. The hardware thread and the GUI render loop are decoupled via a `threading.Event` — the collector never calls into DPG directly.
+The pipeline is strictly layered. The hardware thread and the GUI render loop are decoupled via a `threading.Event` — the collector never imports or calls into DPG. All DSP (Welch FFT, filtering, integration) lives in `collector.py`; `gui.py` is a pure presentation layer that consumes pre-computed `ChannelResult` objects.
 
 ```text
-  Hardware thread                           Main thread
-  ─────────────────                         ───────────────────
+  Hardware thread                           Main (GUI) thread
+  ─────────────────                         ─────────────────────────────────
 
 ┌────────────────────────────┐
 │  PicoScopeStream           │
@@ -211,32 +225,45 @@ The app is a linear pipeline. The hardware thread and the GUI render loop are de
 │  → ADC → mV → callback     │
 └─────────────┬──────────────┘
               │ dict: {status, rel_time,
-              │  timestamp, unit, channels,
-              │  data, overflow_mask}
+              │  timestamp, channels, data}
               ▼
 ┌────────────────────────────┐
 │  DataCollector             │
+│  receive_data():           │
 │  → mV → EU (ScopeSensor)  │
 │  → Butterworth HP + LP    │
 │  → VibeSample per channel  │
 │  → frame_cache.append()   │
-│  → new_frame_event.set()  │─ ─ ─ ─ ─ ─ ─▶┌────────────────────────────┐
-└────────────────────────────┘               │  GUI render loop            │
-                                             │  _poll_new_frames():         │
-                                             │    if event set:            │
-                                             │      grab frame_cache[-1]  │
-                                             │      process_samples()      │
-                                             │      _display_frame()       │
-                                             └─────────────┬──────────────┘
-                                                           │ (on save)
-                                                           ▼
-                                             ┌────────────────────────────┐
+│  → new_frame_event.set()  │─ ─ ─ ─ ─ ─ ─▶┌──────────────────────────────┐
+└────────────────────────────┘               │  GUI render loop              │
+                                             │  _poll_new_frames():          │
+                                             │    if event set:              │
+                                             │      process_samples()   ←DSP │
+                                             │        Welch PSD              │
+                                             │        integration (mV→EU)    │
+                                             │        peak detection         │
+                                             │      → ChannelResult[]        │
+                                             │      _display_frame()         │
+                                             │        update DPG plots       │
+                                             │      monitor.on_results()─────┼──▶┌────────────────────┐
+                                             └─────────────┬────────────────┘   │ MonitorController  │
+                                                           │                    │ IntervalGate       │
+                                                           │ (on save)          │ MonitorWriterThread│
+                                                           ▼                    │ → session.h5       │
+                                             ┌────────────────────────────┐    └────────────────────┘
                                              │  HDF5 files in DEVDATA/    │
                                              │  save_data() / load_data() │
+                                             │  monitor/{id}/session.h5   │
                                              └────────────────────────────┘
 ```
 
-When the GUI is slower than the hardware data rate, it skips to the latest frame — all earlier frames remain in the ring cache (configurable depth, default 32 frames) for browsing. The hardware thread is never blocked by GUI rendering.
+**Decoupling properties:**
+- `collector.py`, `monitor/`, `sample.py`, `picoscope.py` — zero DPG imports. Any event loop can drive them.
+- `new_frame_event` is a `threading.Event` — a stdlib primitive with no GUI dependency.
+- `MonitorWriterThread` runs as a daemon thread independent of both the hardware thread and GUI.
+- A headless process can replace the GUI by polling `new_frame_event`, calling `process_samples()`, and passing results to `MonitorController` — approximately 50 lines.
+
+When the GUI is slower than the hardware data rate it skips to the latest frame — earlier frames remain in the ring cache (default 32 frames) for browsing. The hardware thread is never blocked by rendering.
 
 ---
 
@@ -246,16 +273,23 @@ When the GUI is slower than the hardware data rate, it skips to the latest frame
 | --- | --- |
 | `__main__.py` | Entry point — logging setup, `GUI` instantiation, main loop, cleanup |
 | `logger.py` | YAML-configured logging (`logging.yaml`); writes to `log/`; global exception hook |
-| `util.py` | Constants (`MAXFREQ_PRESETS`, `BINSIZE_PRESETS`, `UNITS`, `AMPLITUDE_MODES`), unit taxonomy and SI conversion, integration order helpers, `UI_Elements` DPG tag registry, exceptions |
+| `util.py` | Constants (`MAXFREQ_PRESETS`, `BINSIZE_PRESETS`, `UNITS`, `AMPLITUDE_MODES`, `MONITOR_INTERVAL_PRESETS`), unit taxonomy and SI conversion, integration order helpers, `UI_Elements` DPG tag registry |
+| `icons.py` | CommitMono Nerd Font (Codicons) registry; `load()` registers font with DPG; `IC` dict maps icon names to `\uXXXX` codepoints |
 | `sensor.py` | `VibeSensor` dataclass — device metadata; `find()` enumerates hardware PicoScopes only; `simulated()` returns a test sensor; `connect()` returns the appropriate stream |
 | `picoscope.py` | `FindPicoScope()` — enumerates PS4000A units; `PicoScopeStream` — polling thread, ADC→mV, overflow detection, watchdog recovery, signal generator setup |
 | `scope_sensor.py` | `ScopeSensor` dataclass — IEPE sensor metadata: name, sensitivity (mV/EU), engineering units, amplitude mode, UUID |
-| `scope_sensor_registry.py` | `ScopeSensorRegistry` — YAML-backed CRUD for user sensor library and per-channel assignments; persists signal generator config |
-| `sample.py` | `AcquisitionSettings` — spectrum, filter, and cache config with derived properties; `VibeSample` — single-channel time-domain block with cached PSD; `ChannelResult` — frozen display-ready result |
-| `config.py` | OS-aware config directory; per-device YAML persistence (channels, signal generator, acquisition settings); atomic writes; fallback to built-in defaults |
-| `collector.py` | `DataCollector` — multi-channel acquisition state machine: stream lifecycle, per-channel filter application, configurable frame cache (default 32 frames), `new_frame_event` signal for GUI, trend accumulation, HDF5 save/load |
+| `scope_sensor_registry.py` | `ScopeSensorRegistry` — YAML-backed CRUD for user sensor library and per-channel assignments |
+| `sample.py` | `AcquisitionSettings` — spectrum, filter, and cache config with derived properties; `VibeSample` — single-channel time-domain block; `ChannelResult` — frozen display-ready result from `process_sample()` |
+| `config.py` | OS-aware config directory; per-device YAML persistence (channels, acquisition settings, monitor defaults); atomic writes; fallback to built-in defaults |
+| `collector.py` | `DataCollector` — multi-channel acquisition state machine: stream lifecycle, per-channel Butterworth filtering, mV→EU conversion, frame ring cache, `new_frame_event` signal, DSP via `process_sample()` / `process_samples()`, trend accumulation, HDF5 save/load, monitor session loaders |
 | `simulation.py` | `SimulatedSensor` (daemon thread) + signal generators: `GenerateTone`, `GenerateNoise`, `GenerateBearingVibration_SpectralMethod`, `GenerateBearingVibration_TemporalMethod` |
-| `gui.py` | `GUI` class — dearpygui three-column layout with manual render loop (`_poll_new_frames`), channel config panel, sensor library, spectrum and time-domain plots, trend plots, file I/O |
+| `gui.py` | `GUI` class — dearpygui three-column layout with manual render loop (`_poll_new_frames`), all config dialogs, spectrum/time/trend plots, file I/O, monitor card, session browser |
+| `monitor/__init__.py` | Re-exports: `MonitorController`, `MonitorSession` |
+| `monitor/session.py` | `MonitorSession` frozen dataclass — session parameters + config snapshots captured at arm time |
+| `monitor/gate.py` | `IntervalGate` — snap-to-grid capture scheduler; burst mode entry/exit; caller-supplied time (unit-testable) |
+| `monitor/anomaly.py` | `AnomalyHook` Protocol; `NullAnomalyHook` (Phase 1 stub); `AnomalyEvent` dataclass |
+| `monitor/writer.py` | `MonitorWriterThread` — daemon thread; appends interval frames to `/monitor/` and burst frames to `/burst/` in `session.h5`; disk-space guard |
+| `monitor/controller.py` | `MonitorController` — owns gate, writer, anomaly hook; `is_recording` / `is_armed` independent flags; `trigger_burst()` for manual burst |
 
 ---
 
@@ -464,24 +498,59 @@ The default source for `SimulatedSensor` is `GenerateBearingVibration_TemporalMe
 
 ## Data Storage
 
-Samples are saved as HDF5 (`.h5`) files in the `DEVDATA/` directory. The multi-channel layout is:
+### Manual saves (v4 format)
+
+Single-measurement saves written by **File → Save** or `DataCollector.save_data()`:
 
 ```
-/frames/{i}/
-    meta/
-        timestamp, rel_time, samplerate, status
-    channels/{ch}/
-        data, unit, modality, coupling
-/trend/{ch}/
-    rel_times, overall
+DEVDATA/YYYY-MM-DD-HHMMSS.h5
+  /metadata/
+    .attrs              version=4, notes
+    acquisition/        AcquisitionSettings fields
+    scope_sensors/      sensor library snapshot
+    channels/{ch}/      per-channel config
+  /frames/{i}/
+    .attrs              timestamp, rel_time, samplerate, status
+    {ch}/data           (blocksize,) float64 mV, gzip-compressed
+  /trend/{ch}/
+    rel_times, orders   (M,5) integration orders matrix
 ```
 
 ```python
-collector.save_data("DEVDATA/my_run")
-# → writes DEVDATA/my_run_2024-01-15T14-32-00.h5
-#   (colons replaced by hyphens for FAT32 compatibility)
+collector.save_data(Path("DEVDATA/my_run.h5"))
+collector.load_data(Path("DEVDATA/my_run.h5"))
+```
 
-collector.load_data("DEVDATA/my_run_2024-01-15T14-32-00.h5")
+### Monitor sessions (v5 format)
+
+Monitor Mode writes one `session.h5` per session, appending frames as the interval gate fires:
+
+```
+DEVDATA/monitor/{session_id}/session.h5
+  /metadata/
+    .attrs              file_version=5, session_id, start_time, interval_s
+    acquisition/        AcquisitionSettings snapshot at arm time
+    scope_sensors/      sensor library at arm time
+    channels/{ch}/      per-channel config at arm time
+  /monitor/{N}/         one group per interval gate firing (N=0,1,2,…)
+    .attrs              timestamp, rel_time, samplerate, status,
+                        overall_json, peaks_json
+    {ch}/data           (blocksize,) float64 mV, gzip-compressed
+  /burst/{burst_id}/    one group per burst event
+    .attrs              trigger_type, trigger_timestamp, trigger_rel_time,
+                        burst_duration_s, max_overall_json, n_frames,
+                        n_pretrigger_frames
+    {frame_index}/
+      .attrs            timestamp, rel_time, is_pretrigger, overall_json
+      {ch}/data
+  /burst.attrs          burst_list — JSON array of burst summaries
+```
+
+`session_id = "YYYY-MM-DD-HHMMSS"` (UTC). Loaded via the session browser or:
+
+```python
+collector.load_monitor_session(session_h5)
+collector.load_monitor_burst(session_h5, burst_id)
 ```
 
 ---
@@ -573,21 +642,33 @@ The PicoScope 4000A driver (`ps4000a.dll` on Windows, `libps4000a.so` on Linux) 
 
 ## Testing
 
-Tests use `VibeSensor.simulated()` directly and run without physical hardware.
+Tests use `VibeSensor.simulated()` and synthetic data — no hardware required. The full suite runs in ~50 s.
 
 ```bash
-# Run all tests
+# Run all tests (no hardware)
 pytest tests/
 
+# Skip hardware-dependent tests explicitly
+pytest tests/ -k "not hardware and not siggen"
+
 # Single file
-pytest tests/test_sample.py
+pytest tests/test_monitor_session_load.py
 
 # Single test
 pytest tests/test_vibechecker.py::test_save
-
-# Filter by keyword
-pytest tests/ -k "stream"
 ```
 
-Hardware-specific tests in `tests/test_picoscope_hw.py` skip automatically when no PicoScope is detected (`VibeSensor.find()` returns empty).
+| Test file | Coverage |
+|---|---|
+| `test_sample.py` | `AcquisitionSettings`, `VibeSample`, `ChannelResult` |
+| `test_vibechecker.py` | `DataCollector` stream lifecycle, save/load, trend |
+| `test_acquisition_settings.py` | Derived properties, setter validation |
+| `test_scope_sensor.py` | Sensor calibration pipeline, mV→EU scaling |
+| `test_picoscope.py` | `FindPicoScope` enumeration logic (mocked driver) |
+| `test_config.py` | YAML persistence, defaults, atomic writes |
+| `test_monitor_gate.py` | `IntervalGate` snap-to-grid, burst entry/exit |
+| `test_monitor_controller.py` | `MonitorController` lifecycle, burst count, HDF5 structure |
+| `test_monitor_session_load.py` | Full write→load→browse integration: interval frames, burst frames, trend reconstruction, NaN regression guard |
+
+Hardware-specific tests skip automatically when no PicoScope is detected.
 
