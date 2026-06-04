@@ -2997,7 +2997,8 @@ class GUI:
         dpg.create_viewport(title="Vibe Logger", width=WINDOW_WIDTH, height=WINDOW_HEIGHT)
         dpg.show_viewport()
         dpg.set_primary_window(ui.PRIMARY_WINDOW, True)
-        threading.Thread(target=self._autoconnect, daemon=True).start()
+        if not initial_file:
+            threading.Thread(target=self._autoconnect, daemon=True).start()
         log.info("Start DPG backend")
         _loaded = not initial_file   # False = load pending after first frame
         while dpg.is_dearpygui_running():
