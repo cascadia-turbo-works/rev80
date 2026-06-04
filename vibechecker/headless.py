@@ -33,7 +33,7 @@ def _list_devices() -> int:
     sensors = vibechecker.VibeSensor.find()
     if vibechecker.PICOSCOPE_DRIVER_MISSING:
         print("PicoScope driver not installed — cannot enumerate hardware devices.")
-        print("Install picosdk or run with --device sim.")
+        print("Install it with:  sudo ./drivers/install-picoscope4000a-driver.sh")
         return 1
     if not sensors:
         print("No PicoScope devices found.")
@@ -181,9 +181,15 @@ def run(args: argparse.Namespace) -> int:
             return 1
     else:
         sensors = vibechecker.VibeSensor.find()
+        if vibechecker.PICOSCOPE_DRIVER_MISSING:
+            print("ERROR: PicoScope driver not installed.", file=sys.stderr)
+            print("       Install it with:", file=sys.stderr)
+            print("         sudo ./drivers/install-picoscope4000a-driver.sh", file=sys.stderr)
+            print("       Use --device sim to run without hardware.", file=sys.stderr)
+            return 1
         if not sensors:
             print("ERROR: No PicoScope device found.", file=sys.stderr)
-            print("       Check USB connection and picosdk driver.", file=sys.stderr)
+            print("       Check the USB connection and try again.", file=sys.stderr)
             print("       Use --device sim to run with a simulated sensor.", file=sys.stderr)
             return 1
         sensor = sensors[0]
