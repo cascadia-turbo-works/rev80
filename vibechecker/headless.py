@@ -179,10 +179,32 @@ def run(args: argparse.Namespace) -> int:
     print(f"  interval  : {args.interval}s")
     print(f"  output    : {session.session_dir}")
     print(f"  channels  : {config.enabled_channels}")
-    print(f"  Press Ctrl+C to stop\n")
+    print(f"  t + Enter : trigger manual burst")
+    print(f"  Ctrl+C    : stop\n")
+
+    # ── Keyboard input thread (t = manual burst trigger) ──────────────────────
+    def _kbd_loop():
+        while not _SHUTDOWN:
+            try:
+                line = sys.stdin.readline()
+            except Exception:
+                break
+            if not line:       # EOF (pipe closed / non-interactive)
+                break
+            if line.strip().lower().startswith('t'):
+                if monitor.is_recording:
+                    monitor.trigger_burst()
+                    print("  [manual burst triggered]", flush=True)
+                else:
+                    print("  [not recording]", flush=True)
+
+    import threading as _threading
+    _kbd_thread = _threading.Thread(target=_kbd_loop, daemon=True, name="headless-kbd")
+    _kbd_thread.start()
 
     # ── Event loop ────────────────────────────────────────────────────────────
-    last_status = time.monotonic()
+    _prev_captures = 0
+    _prev_bursts   = 0
 
     while not _SHUTDOWN:
         if not collector.new_frame_event.wait(timeout=1.0):
@@ -193,24 +215,30 @@ def run(args: argparse.Namespace) -> int:
         if results:
             monitor.on_results(results, collector.data["frame_cache"])
 
-        # Print status line every 10 s
-        now = time.monotonic()
-        if now - last_status >= 10.0:
-            snap = monitor.status_snapshot()
-            h, rem = divmod(int(snap["elapsed_s"]), 3600)
+        snap = monitor.status_snapshot()
+
+        # Log on every new capture or burst
+        n_captures = snap["capture_count"]
+        n_bursts   = snap["burst_count"]
+
+        if n_captures != _prev_captures:
+            elapsed = snap["elapsed_s"]
+            h, rem = divmod(int(elapsed), 3600)
             m, s   = divmod(rem, 60)
-            print(
-                f"  [{h:02d}:{m:02d}:{s:02d}]  "
-                f"captures={snap['capture_count']}  "
-                f"bursts={snap['burst_count']}  "
-                f"next={snap['next_capture_s']:.0f}s  "
-                f"size={snap['total_bytes'] / 1e6:.1f} MB",
-                flush=True,
+            log.info(
+                f"capture #{n_captures}  [{h:02d}:{m:02d}:{s:02d}]  "
+                f"size={snap['total_bytes'] / 1e6:.1f} MB  "
+                f"next={snap['next_capture_s']:.0f}s"
             )
-            if snap["error"]:
-                log.error(f"Writer error: {snap['error']}")
-                _SHUTDOWN = True
-            last_status = now
+            _prev_captures = n_captures
+
+        if n_bursts != _prev_bursts:
+            log.info(f"burst #{n_bursts} complete  size={snap['total_bytes'] / 1e6:.1f} MB")
+            _prev_bursts = n_bursts
+
+        if snap["error"]:
+            log.error(f"Writer error: {snap['error']}")
+            _SHUTDOWN = True
 
     # ── Clean shutdown ────────────────────────────────────────────────────────
     print("\nStopping…")
