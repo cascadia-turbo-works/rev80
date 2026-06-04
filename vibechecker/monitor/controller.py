@@ -171,12 +171,19 @@ class MonitorController:
 
         if self._in_burst:
             self._handle_burst_frame(results, frame_cache, now, rel_time)
+            # Interval gate still runs during burst so the trend stays complete
+            if self._gate.should_capture(now):
+                self._gate.mark_captured(now)
+                self._capture_interval(results, frame_cache, rel_time)
             return
 
         # Check anomaly hook only when armed
         if self._armed:
             event: AnomalyEvent | None = self._anomaly_hook.on_results(results, frame_cache)
             if event is not None:
+                # Write trigger frame to interval trend before entering burst
+                self._gate.mark_captured(now)
+                self._capture_interval(results, frame_cache, rel_time)
                 self._start_burst(event, results, frame_cache, now, rel_time)
                 return
 
