@@ -1827,6 +1827,23 @@ class GUI:
         dpg.set_value(ui.MON_DLG_COMPRESS, compress)
         self._on_monitor_config_change()
 
+        # Restore anomaly settings
+        anom = mon.get("anomaly", {})
+        def _sv(tag, val):
+            if dpg.does_item_exist(tag):
+                dpg.set_value(tag, val)
+        _sv(ui.MON_ANOM_ENABLED,   bool(anom.get("enabled",    False)))
+        _sv(ui.MON_ANOM_HOOK,      str(anom.get("hook_type",  "RMS")))
+        _sv(ui.MON_ANOM_RMS_PCT,   float(anom.get("rms_pct",   10.0)))
+        _sv(ui.MON_ANOM_RMS_N,     int(anom.get("rms_n",       3)))
+        _sv(ui.MON_ANOM_RMS_ALPHA, float(anom.get("rms_alpha", 0.97)))
+        _sv(ui.MON_ANOM_RMS_WARMUP,int(anom.get("rms_warmup",  30)))
+        _sv(ui.MON_ANOM_SPEC_DB,   float(anom.get("spec_db",   3.0)))
+        _sv(ui.MON_ANOM_SPEC_N,    int(anom.get("spec_n",      3)))
+        _sv(ui.MON_ANOM_SPEC_FMIN, float(anom.get("spec_fmin", 0.0)))
+        _sv(ui.MON_ANOM_SPEC_FMAX, float(anom.get("spec_fmax", 0.0)))
+        self._on_anom_config_change()
+
     def _save_monitor_config(self) -> None:
         """Persist monitor + anomaly config to device YAML so headless mode can read it."""
         serial = self.collector.sensor.serial_number if self.collector.sensor else "__default__"
@@ -1998,12 +2015,92 @@ class GUI:
             if dpg.does_item_exist(btn):
                 dpg.configure_item(btn, enabled=True)
 
+    def _on_anom_config_change(self, sender=None, data=None) -> None:
+        """Show/hide RMS/Spectral settings groups based on hook selection."""
+        if not dpg.does_item_exist(ui.MON_ANOM_HOOK):
+            return
+        hook = dpg.get_value(ui.MON_ANOM_HOOK)
+        if dpg.does_item_exist(ui.MON_ANOM_RMS_GROUP):
+            dpg.configure_item(ui.MON_ANOM_RMS_GROUP,  show=hook in ('RMS',  'Both'))
+        if dpg.does_item_exist(ui.MON_ANOM_SPEC_GROUP):
+            dpg.configure_item(ui.MON_ANOM_SPEC_GROUP, show=hook in ('Spectral', 'Both'))
+
+    def _build_anomaly_hook(self):
+        """Read anomaly config widgets and return a configured hook."""
+        from vibechecker.monitor.anomaly import (
+            RmsThresholdHook, SpectralThresholdHook, CompositeAnomalyHook, NullAnomalyHook,
+        )
+        def _get(tag, default):
+            return dpg.get_value(tag) if dpg.does_item_exist(tag) else default
+
+        if not _get(ui.MON_ANOM_ENABLED, False):
+            return NullAnomalyHook()
+
+        hook_type = str(_get(ui.MON_ANOM_HOOK, 'RMS'))
+        burst_dur = float(_get(ui.MON_DLG_BURST_DUR, 60.0))
+
+        rms_hook = None
+        if hook_type in ('RMS', 'Both'):
+            rms_hook = RmsThresholdHook(
+                rms_threshold_pct    = float(_get(ui.MON_ANOM_RMS_PCT,    10.0)),
+                consecutive_n        = int(_get(ui.MON_ANOM_RMS_N,        3)),
+                baseline_alpha       = float(_get(ui.MON_ANOM_RMS_ALPHA,  0.97)),
+                min_baseline_samples = int(_get(ui.MON_ANOM_RMS_WARMUP,   30)),
+                burst_duration_s     = burst_dur,
+            )
+
+        spec_hook = None
+        if hook_type in ('Spectral', 'Both'):
+            fmin_v = float(_get(ui.MON_ANOM_SPEC_FMIN, 0.0))
+            fmax_v = float(_get(ui.MON_ANOM_SPEC_FMAX, 0.0))
+            spec_hook = SpectralThresholdHook(
+                spectral_threshold_db = float(_get(ui.MON_ANOM_SPEC_DB, 3.0)),
+                consecutive_n         = int(_get(ui.MON_ANOM_SPEC_N,    3)),
+                fmin                  = fmin_v if fmin_v > 0 else None,
+                fmax                  = fmax_v if fmax_v > 0 else None,
+                burst_duration_s      = burst_dur,
+            )
+
+        if rms_hook and spec_hook:
+            return CompositeAnomalyHook([rms_hook, spec_hook])
+        return rms_hook or spec_hook or NullAnomalyHook()
+
+    def _on_set_spectral_baseline(self, sender=None, data=None) -> None:
+        """Snapshot the current frame's spectrum as the spectral anomaly baseline."""
+        from vibechecker.monitor.anomaly import SpectralThresholdHook, CompositeAnomalyHook
+        if self._monitor is None or not self._monitor.is_recording:
+            log.warning("Set Spectral Baseline: not recording")
+            return
+        results = self.collector.process_samples()
+        if not results:
+            log.warning("Set Spectral Baseline: no data available")
+            return
+        hook = self._monitor._anomaly_hook
+        if isinstance(hook, SpectralThresholdHook):
+            hook.set_baseline(results)
+        elif isinstance(hook, CompositeAnomalyHook):
+            for h in hook._hooks:
+                if isinstance(h, SpectralThresholdHook):
+                    h.set_baseline(results)
+        log.info("Spectral baseline set")
+
+    def _on_reset_baseline(self, sender=None, data=None) -> None:
+        """Clear the anomaly baseline so it re-calibrates from the next frame."""
+        if self._monitor is None:
+            return
+        hook = self._monitor._anomaly_hook
+        if hasattr(hook, 'reset_baseline'):
+            hook.reset_baseline()
+        log.info("Anomaly baseline reset")
+
     def _on_arm_toggle(self, sender=None, data=None):
         if self._monitor is None or not self._monitor.is_recording:
             return
         if self._monitor.is_armed:
             self._monitor.disarm()
         else:
+            hook = self._build_anomaly_hook()
+            self._monitor.set_anomaly_hook(hook)
             self._monitor.arm()
         self._update_monitor_card()
 
@@ -2618,6 +2715,44 @@ class GUI:
                             dpg.add_spacer(height=6)
                             dpg.add_separator()
                             dpg.add_text("", tag=ui.MON_DLG_ESTIMATE, color=_c("ON_SURFACE"))
+
+                            # ── Anomaly Detection ───────────────────────
+                            dpg.add_spacer(height=8)
+                            dpg.add_separator()
+                            dpg.add_text("Anomaly Detection")
+                            dpg.add_checkbox(
+                                label="Enable",
+                                tag=ui.MON_ANOM_ENABLED,
+                                default_value=False,
+                                callback=self._on_anom_config_change,
+                            )
+                            dpg.add_combo(
+                                label="Hook",
+                                items=["RMS", "Spectral", "Both"],
+                                tag=ui.MON_ANOM_HOOK,
+                                default_value="RMS",
+                                callback=self._on_anom_config_change,
+                                width=_mon_w,
+                            )
+
+                            with dpg.group(tag=ui.MON_ANOM_RMS_GROUP):
+                                dpg.add_text("RMS settings", color=_c("ON_SURFACE"))
+                                dpg.add_input_float(label="Threshold %",   tag=ui.MON_ANOM_RMS_PCT,   default_value=10.0, min_value=1.0,  max_value=100.0, step=1.0,  width=_mon_w)
+                                dpg.add_input_int(  label="Consecutive N", tag=ui.MON_ANOM_RMS_N,     default_value=3,    min_value=1,    max_value=20,    width=_mon_w)
+                                dpg.add_input_float(label="EWMA alpha",    tag=ui.MON_ANOM_RMS_ALPHA, default_value=0.97, min_value=0.5,  max_value=0.999, step=0.01, format="%.3f", width=_mon_w)
+                                dpg.add_input_int(  label="Warmup frames", tag=ui.MON_ANOM_RMS_WARMUP,default_value=30,   min_value=5,    max_value=500,   width=_mon_w)
+
+                            with dpg.group(tag=ui.MON_ANOM_SPEC_GROUP, show=False):
+                                dpg.add_text("Spectral settings", color=_c("ON_SURFACE"))
+                                dpg.add_input_float(label="Threshold dB",    tag=ui.MON_ANOM_SPEC_DB,   default_value=3.0, min_value=0.5, max_value=30.0, step=0.5,  width=_mon_w)
+                                dpg.add_input_int(  label="Consecutive N",   tag=ui.MON_ANOM_SPEC_N,    default_value=3,   min_value=1,   max_value=20,   width=_mon_w)
+                                dpg.add_input_float(label="Freq min (Hz)",   tag=ui.MON_ANOM_SPEC_FMIN, default_value=0.0, min_value=0.0, step=10.0,      width=_mon_w)
+                                dpg.add_input_float(label="Freq max (0=all)",tag=ui.MON_ANOM_SPEC_FMAX, default_value=0.0, min_value=0.0, step=10.0,      width=_mon_w)
+
+                            dpg.add_spacer(height=4)
+                            with dpg.group(horizontal=True):
+                                dpg.add_button(label="Set Spectral Baseline", tag=ui.MON_ANOM_SET_BASELINE, callback=self._on_set_spectral_baseline)
+                                dpg.add_button(label="Reset Baseline",        tag=ui.MON_ANOM_RESET,        callback=self._on_reset_baseline)
 
             dpg.add_separator()
             dpg.add_button(label=f'{icons.IC["close"]}  Close', callback=self._on_config_close, width=-1)
