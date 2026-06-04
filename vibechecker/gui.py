@@ -1680,6 +1680,7 @@ class GUI:
         else:
             self.collector.reprocess_last_block()
 
+        self._save_monitor_config()
         self._was_streaming_before_config = False
         dpg.hide_item(ui.DLG_CONFIG)
 
@@ -1813,6 +1814,43 @@ class GUI:
         dpg.set_value(ui.MON_DLG_OUTPUT_DIR, str(out_dir))
         dpg.set_value(ui.MON_DLG_COMPRESS, compress)
         self._on_monitor_config_change()
+
+    def _save_monitor_config(self) -> None:
+        """Persist monitor + anomaly config to device YAML so headless mode can read it."""
+        serial = self.collector.sensor.serial_number if self.collector.sensor else "__default__"
+        device_cfg = _cfg.load_device_config(serial)
+
+        def _get(tag, default):
+            return dpg.get_value(tag) if dpg.does_item_exist(tag) else default
+
+        interval_label = _get(ui.MON_DLG_INTERVAL, "1 h")
+        interval_s = next(
+            (k for k, v in vibechecker.MONITOR_INTERVAL_PRESETS.items() if v == interval_label),
+            3600,
+        )
+        device_cfg['monitor'] = {
+            'interval_s':        float(interval_s),
+            'pre_buffer_s':      float(_get(ui.MON_DLG_PRE_BUFFER,  60.0)),
+            'burst_duration_s':  float(_get(ui.MON_DLG_BURST_DUR,   60.0)),
+            'max_burst_s':       600.0,
+            'output_dir':        str(_get(ui.MON_DLG_OUTPUT_DIR, '')).strip() or None,
+            'compression':       'gzip' if _get(ui.MON_DLG_COMPRESS, True) else 'none',
+            'compression_level': 4,
+            'anomaly': {
+                'enabled':       bool(_get(ui.MON_ANOM_ENABLED,    False)),
+                'hook_type':     str(_get(ui.MON_ANOM_HOOK,        'RMS')),
+                'rms_pct':       float(_get(ui.MON_ANOM_RMS_PCT,   10.0)),
+                'rms_n':         int(_get(ui.MON_ANOM_RMS_N,       3)),
+                'rms_alpha':     float(_get(ui.MON_ANOM_RMS_ALPHA, 0.97)),
+                'rms_warmup':    int(_get(ui.MON_ANOM_RMS_WARMUP,  30)),
+                'spec_db':       float(_get(ui.MON_ANOM_SPEC_DB,   3.0)),
+                'spec_n':        int(_get(ui.MON_ANOM_SPEC_N,      3)),
+                'spec_fmin':     float(_get(ui.MON_ANOM_SPEC_FMIN, 0.0)),
+                'spec_fmax':     float(_get(ui.MON_ANOM_SPEC_FMAX, 0.0)),
+            },
+        }
+        _cfg.save_device_config(serial, device_cfg)
+        log.debug(f"Monitor config saved for {serial}")
 
     def _on_monitor_config_change(self, sender=None, data=None):
         """Update the storage estimate label when Monitor config widgets change."""

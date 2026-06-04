@@ -144,6 +144,19 @@ def run(args: argparse.Namespace) -> int:
     serial = sensor.serial_number
     device_cfg = _cfg.load_device_config(serial)
 
+    # Apply saved monitor defaults — CLI args (non-None) take precedence
+    mon_cfg = device_cfg.get("monitor", {})
+    if args.interval is None:
+        args.interval = float(mon_cfg.get("interval_s", 3600))
+    if args.pre_buffer is None:
+        args.pre_buffer = float(mon_cfg.get("pre_buffer_s", 60))
+    if args.burst_duration is None:
+        args.burst_duration = float(mon_cfg.get("burst_duration_s", 60))
+    if args.output is None and mon_cfg.get("output_dir"):
+        args.output = mon_cfg["output_dir"]
+    if not args.no_compress and mon_cfg.get("compression") == "none":
+        args.no_compress = True
+
     config = AcquisitionSettings.from_dict(
         device_cfg.get("acquisition", {})
     )
@@ -264,15 +277,15 @@ def main() -> None:
         prog="vibechecker-headless",
         description="vibechecker interval datalogger — no GUI required",
     )
-    parser.add_argument("--interval",       type=float, default=3600,
+    parser.add_argument("--interval",       type=float, default=None,
                         metavar="SECS",
-                        help="Capture interval in seconds (default: 3600)")
-    parser.add_argument("--pre-buffer",     type=float, default=60,
+                        help="Capture interval in seconds (default: from device config or 3600)")
+    parser.add_argument("--pre-buffer",     type=float, default=None,
                         metavar="SECS",
-                        help="Pre-trigger buffer duration in seconds (default: 60)")
-    parser.add_argument("--burst-duration", type=float, default=60,
+                        help="Pre-trigger buffer duration in seconds (default: from device config or 60)")
+    parser.add_argument("--burst-duration", type=float, default=None,
                         metavar="SECS",
-                        help="Burst capture duration in seconds (default: 60)")
+                        help="Burst capture duration in seconds (default: from device config or 60)")
     parser.add_argument("--output",         type=str,   default=None,
                         metavar="DIR",
                         help="Override output root directory")
