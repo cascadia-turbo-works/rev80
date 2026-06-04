@@ -1326,18 +1326,21 @@ class GUI:
         self._build_session_browser()
 
     def _build_session_browser(self) -> None:
-        """Build the session browser modal — session list + burst list, select to load."""
-        DLG_W, DLG_H = 760, 520
-        COL_W = 340          # each of the two list columns
-        ROW_H = DLG_H - 130  # height of the two list panes
+        """Build the session browser modal — session table + burst table."""
+        DLG_W, DLG_H = 980, 540
+        ROW_H = DLG_H - 130
+
+        _tbl_kw = dict(
+            header_row=True, row_background=True,
+            borders_innerV=True, borders_outerH=True, borders_outerV=True,
+            scrollY=True, freeze_rows=1, height=-1,
+        )
 
         with dpg.window(
             label="Load Monitor Session",
-            modal=True,
-            show=True,
+            modal=True, show=True,
             tag=ui.DLG_SESSION_BROWSER,
-            width=DLG_W,
-            height=DLG_H,
+            width=DLG_W, height=DLG_H,
             no_resize=False,
         ):
             # ── Source folder row ─────────────────────────────────────
@@ -1356,33 +1359,29 @@ class GUI:
                 )
             dpg.add_spacer(height=6)
 
-            # ── Two-column list area ──────────────────────────────────
+            # ── Two-column table area ─────────────────────────────────
             with dpg.group(horizontal=True):
-                # ── Sessions column ───────────────────────────────────
-                with dpg.child_window(width=COL_W, height=ROW_H, border=True):
-                    dpg.add_text("Sessions", color=_c("ON_SURFACE"))
+                # ── Sessions table ────────────────────────────────────
+                with dpg.child_window(width=520, height=ROW_H, border=True):
+                    dpg.add_text("Sessions  (click to load)", color=_c("ON_SURFACE"))
                     dpg.add_separator()
-                    dpg.add_listbox(
-                        items=[],
-                        tag='_SB_SESSION_LIST',
-                        width=-1,
-                        num_items=20,
-                        callback=self._on_session_list_select,
-                    )
+                    with dpg.table(tag='_SB_SESSION_TABLE', **_tbl_kw):
+                        dpg.add_table_column(label="Date",     width_fixed=True, init_width_or_weight=90)
+                        dpg.add_table_column(label="Time",     width_fixed=True, init_width_or_weight=70)
+                        dpg.add_table_column(label="Ch",       width_fixed=True, init_width_or_weight=30)
+                        dpg.add_table_column(label="Captures", width_fixed=True, init_width_or_weight=70)
+                        dpg.add_table_column(label="Bursts",   width_fixed=True, init_width_or_weight=55)
 
                 dpg.add_spacer(width=6)
 
-                # ── Bursts column ─────────────────────────────────────
+                # ── Bursts table ──────────────────────────────────────
                 with dpg.child_window(width=-1, height=ROW_H, border=True):
-                    dpg.add_text("Bursts (select to load)", color=_c("ON_SURFACE"))
+                    dpg.add_text("Bursts  (click to load)", color=_c("ON_SURFACE"))
                     dpg.add_separator()
-                    dpg.add_listbox(
-                        items=[],
-                        tag='_SB_BURST_LIST',
-                        width=-1,
-                        num_items=20,
-                        callback=self._on_burst_list_select,
-                    )
+                    with dpg.table(tag='_SB_BURST_TABLE', **_tbl_kw):
+                        dpg.add_table_column(label="Date",        width_fixed=True, init_width_or_weight=90)
+                        dpg.add_table_column(label="Time",        width_fixed=True, init_width_or_weight=70)
+                        dpg.add_table_column(label="Max Overall", width_fixed=True, init_width_or_weight=110)
 
             # ── Bottom bar ────────────────────────────────────────────
             dpg.add_spacer(height=8)
@@ -1390,25 +1389,25 @@ class GUI:
                 dpg.add_button(
                     label=f'{icons.IC["refresh"]}  Refresh',
                     callback=self._refresh_session_browser,
-                    width=100,
-                    height=28,
+                    width=100, height=28,
                 )
                 dpg.add_spacer(width=-1)
                 dpg.add_button(
                     label=f'{icons.IC["close"]}  Close',
                     callback=lambda: dpg.configure_item(ui.DLG_SESSION_BROWSER, show=False),
-                    width=90,
-                    height=28,
+                    width=90, height=28,
                 )
 
         self._refresh_session_browser()
 
     def _scan_session_dirs(self) -> list:
-        """Return [(session_id, session_dir, session_h5)] sorted newest-first.
+        """Return session metadata dicts sorted newest-first.
 
+        Each entry: {session_id, session_dir, session_h5,
+                     date, time, n_channels, n_captures, n_bursts}
         Reads the folder from the _SB_FOLDER widget if it exists, else default.
         """
-        import h5py
+        import h5py, json as _json
         if dpg.does_item_exist('_SB_FOLDER'):
             folder_str = dpg.get_value('_SB_FOLDER').strip()
             monitor_root = Path(folder_str) if folder_str else vibechecker.data_dir() / 'monitor'
@@ -1421,8 +1420,7 @@ class GUI:
         try:
             dirs = sorted(
                 [d for d in monitor_root.iterdir() if d.is_dir()],
-                key=lambda d: d.name,
-                reverse=True,
+                key=lambda d: d.name, reverse=True,
             )
         except OSError as exc:
             log.error(f'session browser: cannot list {monitor_root}: {exc}')
@@ -1433,26 +1431,47 @@ class GUI:
             if not h5.exists():
                 continue
             try:
-                with h5py.File(str(h5), 'r') as _f:
-                    pass  # verify file is readable
+                with h5py.File(str(h5), 'r') as f:
+                    meta = f.get('metadata', {})
+                    start_time = str(meta.attrs.get('start_time', d.name) if meta else d.name)
+                    # Parse date / time from ISO timestamp
+                    if 'T' in start_time:
+                        dt_part = start_time[:19]
+                        date_s, time_s = dt_part[:10], dt_part[11:19]
+                    else:
+                        date_s, time_s = start_time[:10], start_time[11:19]
+                    n_channels  = len(f.get('metadata/channels', {}))
+                    n_captures  = len(f.get('monitor', {}))
+                    burst_raw   = f['burst'].attrs.get('burst_list', '[]') if 'burst' in f else '[]'
+                    if isinstance(burst_raw, bytes):
+                        burst_raw = burst_raw.decode()
+                    n_bursts    = len(_json.loads(burst_raw) if burst_raw else [])
             except Exception as exc:
-                log.warning(f'session browser: skipping unreadable {h5}: {exc}')
+                log.warning(f'session browser: skipping {h5}: {exc}')
                 continue
-            sessions.append((d.name, d, h5))
+            sessions.append({
+                'session_id': d.name,
+                'session_dir': d,
+                'session_h5': h5,
+                'date': date_s,
+                'time': time_s,
+                'n_channels': n_channels,
+                'n_captures': n_captures,
+                'n_bursts': n_bursts,
+            })
 
         self._session_browser_sessions = sessions
         return sessions
 
-    def _on_session_list_select(self, sender=None, data=None) -> None:
-        """Load all interval frames from the selected session; populate burst list."""
+    def _on_session_list_select(self, sender=None, data=None, user_data=None) -> None:
+        """Load all interval frames from the selected session; populate burst table."""
         import h5py, json
-        if not self._session_browser_sessions:
-            return
-        selected = dpg.get_value('_SB_SESSION_LIST') if dpg.does_item_exist('_SB_SESSION_LIST') else data
-        entry = next((s for s in self._session_browser_sessions if s[0] == selected), None)
+        # user_data carries the session dict when called from table row selectable
+        entry = user_data
         if entry is None:
             return
-        _, session_dir, session_h5 = entry
+        session_dir = entry['session_dir']
+        session_h5  = entry['session_h5']
         self._session_browser_selected_session_dir = session_dir
 
         # Clear stale plot series before loading (prevents color cycle accumulation)
@@ -1488,13 +1507,34 @@ class GUI:
             log.warning(f'session browser: cannot read bursts from {session_h5}: {exc}')
 
         self._session_browser_burst_list = burst_list
-        burst_labels = [
-            f'{b.get("timestamp", "")[:19]}  {b.get("trigger_type","")}'
-            for b in burst_list
-            if isinstance(b, dict)
-        ]
-        if dpg.does_item_exist('_SB_BURST_LIST'):
-            dpg.configure_item('_SB_BURST_LIST', items=burst_labels)
+
+        # Rebuild burst table rows
+        if dpg.does_item_exist('_SB_BURST_TABLE'):
+            for child in (dpg.get_item_children('_SB_BURST_TABLE', slot=1) or []):
+                dpg.delete_item(child)
+            for b in burst_list:
+                if not isinstance(b, dict):
+                    continue
+                ts = b.get('timestamp', '')
+                if 'T' in ts:
+                    date_s, time_s = ts[:10], ts[11:19]
+                else:
+                    date_s, time_s = ts[:10], ts[11:19]
+                try:
+                    max_ov = json.loads(b.get('max_overall_json', '{}'))
+                    max_val = max((float(v) for v in max_ov.values()), default=0.0)
+                    max_str = f'{max_val:.4f}'
+                except Exception:
+                    max_str = '-'
+                with dpg.table_row(parent='_SB_BURST_TABLE'):
+                    dpg.add_selectable(
+                        label=date_s,
+                        span_columns=True,
+                        callback=self._on_burst_list_select,
+                        user_data=b,
+                    )
+                    dpg.add_text(time_s)
+                    dpg.add_text(max_str)
 
         # Draw vertical lines on trend plot at burst trigger times
         burst_rel_times = [
@@ -1515,18 +1555,10 @@ class GUI:
         except Exception as exc:
             log.warning(f'session browser: failed to draw burst vlines: {exc}')
 
-    def _on_burst_list_select(self, sender=None, data=None) -> None:
+    def _on_burst_list_select(self, sender=None, data=None, user_data=None) -> None:
         """Load all frames from the selected burst event."""
-        if not self._session_browser_burst_list:
-            return
-        selected_label = dpg.get_value('_SB_BURST_LIST') if dpg.does_item_exist('_SB_BURST_LIST') else data
-        # Find burst by matching the label we built
-        burst = next(
-            (b for b in self._session_browser_burst_list
-             if f'{b.get("timestamp","")[:19]}  {b.get("trigger_type","")}' == selected_label),
-            None,
-        )
-        if burst is None:
+        burst = user_data
+        if not burst:
             return
         burst_id = burst.get('burst_id', '')
         session_dir = self._session_browser_selected_session_dir
@@ -1576,13 +1608,32 @@ class GUI:
 
     def _refresh_session_browser(self) -> None:
         sessions = self._scan_session_dirs()
-        labels = [s[0] for s in sessions]
-        if dpg.does_item_exist('_SB_SESSION_LIST'):
-            dpg.configure_item('_SB_SESSION_LIST', items=labels)
-        if dpg.does_item_exist('_SB_BURST_LIST'):
-            dpg.configure_item('_SB_BURST_LIST', items=[])
+
+        # Rebuild session table
+        if dpg.does_item_exist('_SB_SESSION_TABLE'):
+            for child in (dpg.get_item_children('_SB_SESSION_TABLE', slot=1) or []):
+                dpg.delete_item(child)
+            for s in sessions:
+                with dpg.table_row(parent='_SB_SESSION_TABLE'):
+                    dpg.add_selectable(
+                        label=s['date'],
+                        span_columns=True,
+                        callback=self._on_session_list_select,
+                        user_data=s,
+                    )
+                    dpg.add_text(s['time'])
+                    dpg.add_text(str(s['n_channels']))
+                    dpg.add_text(str(s['n_captures']))
+                    dpg.add_text(str(s['n_bursts']))
+
+        # Clear burst table until a session is selected
+        if dpg.does_item_exist('_SB_BURST_TABLE'):
+            for child in (dpg.get_item_children('_SB_BURST_TABLE', slot=1) or []):
+                dpg.delete_item(child)
+
+        # Auto-select newest session
         if sessions:
-            self._on_session_list_select(sender='_SB_SESSION_LIST', data=sessions[0][0])
+            self._on_session_list_select(user_data=sessions[0])
 
     # ------------------------------------------------------------------
 
