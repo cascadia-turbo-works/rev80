@@ -2992,12 +2992,12 @@ class GUI:
         else:
             self._on_load_file(p)
 
-    def run(self, initial_file: str | None = None):
+    def run(self, initial_file: str | None = None, autodetect: bool = True):
         log.info("Launch app window")
         dpg.create_viewport(title="Vibe Logger", width=WINDOW_WIDTH, height=WINDOW_HEIGHT)
         dpg.show_viewport()
         dpg.set_primary_window(ui.PRIMARY_WINDOW, True)
-        if not initial_file:
+        if autodetect:
             threading.Thread(target=self._autoconnect, daemon=True).start()
         log.info("Start DPG backend")
         _loaded = not initial_file   # False = load pending after first frame
