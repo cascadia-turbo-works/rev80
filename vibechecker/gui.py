@@ -144,6 +144,8 @@ class GUI:
         self._was_streaming_before_config: bool = False  # stream state when config opened
         self._monitor: vibechecker.MonitorController | None = None
         self._session_browser_sessions: list = []
+        self._sb_session_sel_ids: list = []   # selectable item IDs for single-select
+        self._sb_burst_sel_ids:   list = []
         self._session_browser_rows: list = []
         self._session_browser_burst_list: list = []
         self._session_browser_selected_capture: int | None = None
@@ -1470,6 +1472,11 @@ class GUI:
         entry = user_data
         if entry is None:
             return
+        # Single-select: deselect all other rows, keep only the clicked one active
+        for sel_id in self._sb_session_sel_ids:
+            if dpg.does_item_exist(sel_id):
+                dpg.set_value(sel_id, sel_id == sender)
+        self._sb_burst_sel_ids.clear()
         session_dir = entry['session_dir']
         session_h5  = entry['session_h5']
         self._session_browser_selected_session_dir = session_dir
@@ -1509,6 +1516,7 @@ class GUI:
         self._session_browser_burst_list = burst_list
 
         # Rebuild burst table rows
+        self._sb_burst_sel_ids.clear()
         if dpg.does_item_exist('_SB_BURST_TABLE'):
             for child in (dpg.get_item_children('_SB_BURST_TABLE', slot=1) or []):
                 dpg.delete_item(child)
@@ -1516,10 +1524,7 @@ class GUI:
                 if not isinstance(b, dict):
                     continue
                 ts = b.get('timestamp', '')
-                if 'T' in ts:
-                    date_s, time_s = ts[:10], ts[11:19]
-                else:
-                    date_s, time_s = ts[:10], ts[11:19]
+                date_s, time_s = ts[:10], ts[11:19] if 'T' in ts or len(ts) > 10 else (ts[:10], '')
                 try:
                     max_ov = json.loads(b.get('max_overall_json', '{}'))
                     max_val = max((float(v) for v in max_ov.values()), default=0.0)
@@ -1527,12 +1532,13 @@ class GUI:
                 except Exception:
                     max_str = '-'
                 with dpg.table_row(parent='_SB_BURST_TABLE'):
-                    dpg.add_selectable(
+                    sel_id = dpg.add_selectable(
                         label=date_s,
                         span_columns=True,
                         callback=self._on_burst_list_select,
                         user_data=b,
                     )
+                    self._sb_burst_sel_ids.append(sel_id)
                     dpg.add_text(time_s)
                     dpg.add_text(max_str)
 
@@ -1560,6 +1566,10 @@ class GUI:
         burst = user_data
         if not burst:
             return
+        # Single-select: deselect all other burst rows
+        for sel_id in self._sb_burst_sel_ids:
+            if dpg.does_item_exist(sel_id):
+                dpg.set_value(sel_id, sel_id == sender)
         burst_id = burst.get('burst_id', '')
         session_dir = self._session_browser_selected_session_dir
         if not burst_id or session_dir is None:
@@ -1610,17 +1620,19 @@ class GUI:
         sessions = self._scan_session_dirs()
 
         # Rebuild session table
+        self._sb_session_sel_ids.clear()
         if dpg.does_item_exist('_SB_SESSION_TABLE'):
             for child in (dpg.get_item_children('_SB_SESSION_TABLE', slot=1) or []):
                 dpg.delete_item(child)
             for s in sessions:
                 with dpg.table_row(parent='_SB_SESSION_TABLE'):
-                    dpg.add_selectable(
+                    sel_id = dpg.add_selectable(
                         label=s['date'],
                         span_columns=True,
                         callback=self._on_session_list_select,
                         user_data=s,
                     )
+                    self._sb_session_sel_ids.append(sel_id)
                     dpg.add_text(s['time'])
                     dpg.add_text(str(s['n_channels']))
                     dpg.add_text(str(s['n_captures']))
