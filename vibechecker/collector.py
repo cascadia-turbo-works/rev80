@@ -456,8 +456,9 @@ class DataCollector:
                    config.lowpass_enabled, config.lowpass_fc)
         if sample.psd_mv is None or sample._psd_config_key != psd_key:
             nfft     = int(samplerate / config.binsize)
-            nperseg  = nfft
-            noverlap = min(sample.blocksize - 1, int(nperseg * config.welch_overlap))
+            nperseg  = min(nfft, len(filtered_mv))
+            nfft     = max(nfft, nperseg)
+            noverlap = min(nperseg - 1, int(nperseg * config.welch_overlap))
             freq_hz, psd_mv = scipy.signal.welch(
                 filtered_mv, fs=float(samplerate),
                 window=config.fft_window, nperseg=nperseg, noverlap=noverlap,
