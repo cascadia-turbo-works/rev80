@@ -171,10 +171,6 @@ class MonitorController:
 
         if self._in_burst:
             self._handle_burst_frame(results, frame_cache, now, rel_time)
-            # Interval gate still runs during burst so the trend stays complete
-            if self._gate.should_capture(now):
-                self._gate.mark_captured(now)
-                self._capture_interval(results, frame_cache, rel_time)
             return
 
         # Check anomaly hook only when armed
@@ -216,8 +212,10 @@ class MonitorController:
             'queue_depth':      depth,
             'total_bytes':      total_bytes,
             'error':            str(err) if err else None,
-            'is_in_burst':      self._in_burst,
+            'is_in_burst':       self._in_burst,
             'burst_remaining_s': burst_remaining,
+            'baseline':          self._anomaly_hook.baseline_snapshot()
+                                 if hasattr(self._anomaly_hook, 'baseline_snapshot') else {},
         }
 
     # ------------------------------------------------------------------
@@ -263,16 +261,9 @@ class MonitorController:
         self._burst_frames.append(latest)
         self._burst_all_results.append(list(results))
 
-        # Retrigger check (only if armed)
+        # Keep EWMA adapting during burst but suppress retriggers
         if self._armed:
-            event: AnomalyEvent | None = self._anomaly_hook.on_results(results, frame_cache)
-            if event is not None and self._session:
-                self._gate.enter_burst(
-                    event.burst_duration_s,
-                    now=now,
-                    max_burst_s=self._session.max_burst_s,
-                )
-                self._burst_end_mono = self._gate._burst_end  # sync
+            self._anomaly_hook.update_baseline(results)
 
         if now >= self._burst_end_mono:
             self._flush_burst(results, rel_time)
