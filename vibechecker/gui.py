@@ -1046,7 +1046,7 @@ class GUI:
             for ch in range(_MAX_CHANNELS):
                 self._remove_channel_series(ch)
             self.collector.reset_channel_config(sensor.num_channels)
-            device_cfg = _cfg.load_device_config(sensor.serial_number)
+            device_cfg = _cfg.load_device_config(sensor.model_name, sensor.serial_number)
             self._restore_channel_assignments(device_cfg)
             self.collector.reconnect_stream()
             self._set_device_status("connected")
@@ -1234,7 +1234,7 @@ class GUI:
                 for _ch in range(_MAX_CHANNELS):
                     self._remove_channel_series(_ch)
                 self.collector.reset_channel_config(sensor.num_channels)
-                device_cfg = _cfg.load_device_config(sensor.serial_number)
+                device_cfg = _cfg.load_device_config(sensor.model_name, sensor.serial_number)
                 self._restore_channel_assignments(device_cfg)
                 self.collector.reconnect_stream()
                 self._set_device_status("connected")
@@ -1804,12 +1804,10 @@ class GUI:
     # ------------------------------------------------------------------
 
     def _populate_monitor_tab(self):
-        """Sync Monitor config tab widgets from current device config."""
+        """Sync Monitor config tab widgets from acquisition.yaml."""
         if not dpg.does_item_exist(ui.MON_DLG_INTERVAL):
             return
-        serial = self.collector.sensor.serial_number if self.collector.sensor else "__default__"
-        device_cfg = _cfg.load_device_config(serial)
-        mon = device_cfg.get("monitor", {})
+        mon = _cfg.load_acquisition_config().get("monitor", {})
         interval_s = float(mon.get("interval_s", 3600))
         pre_buf_s = float(mon.get("pre_buffer_s", 60))
         burst_dur_s = float(mon.get("burst_duration_s", 60))
@@ -1845,10 +1843,7 @@ class GUI:
         self._on_anom_config_change()
 
     def _save_monitor_config(self) -> None:
-        """Persist monitor + anomaly config to device YAML so headless mode can read it."""
-        serial = self.collector.sensor.serial_number if self.collector.sensor else "__default__"
-        device_cfg = _cfg.load_device_config(serial)
-
+        """Persist monitor + anomaly config to acquisition.yaml."""
         def _get(tag, default):
             return dpg.get_value(tag) if dpg.does_item_exist(tag) else default
 
@@ -1857,7 +1852,8 @@ class GUI:
             (k for k, v in vibechecker.MONITOR_INTERVAL_PRESETS.items() if v == interval_label),
             3600,
         )
-        device_cfg['monitor'] = {
+        acq_cfg = _cfg.load_acquisition_config()
+        acq_cfg['monitor'] = {
             'interval_s':        float(interval_s),
             'pre_buffer_s':      float(_get(ui.MON_DLG_PRE_BUFFER,  60.0)),
             'burst_duration_s':  float(_get(ui.MON_DLG_BURST_DUR,   60.0)),
@@ -1878,8 +1874,8 @@ class GUI:
                 'spec_fmax':     float(_get(ui.MON_ANOM_SPEC_FMAX, 0.0)),
             },
         }
-        _cfg.save_device_config(serial, device_cfg)
-        log.debug(f"Monitor config saved for {serial}")
+        _cfg.save_acquisition_config(acq_cfg)
+        log.debug("Monitor config saved to acquisition.yaml")
 
     def _on_monitor_config_change(self, sender=None, data=None):
         """Update the storage estimate label when Monitor config widgets change."""
@@ -2285,12 +2281,14 @@ class GUI:
             }
             for c in range(self._num_channels)
         }
-        device_cfg = {
-            "channels": channels,
-            "siggen": self.collector.siggen_config,
-            "acquisition": self.collector.config.to_dict(),
-        }
-        _cfg.save_device_config(self.collector.sensor.serial_number, device_cfg)
+        _cfg.save_device_config(
+            self.collector.sensor.model_name,
+            self.collector.sensor.serial_number,
+            {"channels": channels, "siggen": self.collector.siggen_config},
+        )
+        acq_cfg = _cfg.load_acquisition_config()
+        acq_cfg['acquisition'] = self.collector.config.to_dict()
+        _cfg.save_acquisition_config(acq_cfg)
 
     def _on_channel_enable_change(self, ch: int):
         if not dpg.does_item_exist(ui.scope_ch_enabled(ch)):
@@ -2389,16 +2387,19 @@ class GUI:
 
     def _restore_channel_assignments(self, device_cfg: dict | None = None):
         """Apply saved channel assignments, siggen, and acquisition config to the collector."""
-        if device_cfg is None:
-            if self.collector.sensor is not None:
-                device_cfg = _cfg.load_device_config(self.collector.sensor.serial_number)
-            else:
-                device_cfg = _cfg.load_device_config("__default__")
-
-        # Restore acquisition settings wholesale; channel-specific dicts applied below
-        acq_dict = device_cfg.get("acquisition", {})
+        # Acquisition settings always come from acquisition.yaml (instance-wide).
+        acq_dict = _cfg.load_acquisition_config().get("acquisition", {})
         if acq_dict:
             self.collector.config = AcquisitionSettings.from_dict(acq_dict)
+
+        if device_cfg is None:
+            if self.collector.sensor is not None:
+                device_cfg = _cfg.load_device_config(
+                    self.collector.sensor.model_name,
+                    self.collector.sensor.serial_number,
+                )
+            else:
+                device_cfg = {}
 
         # Restore siggen
         siggen = device_cfg.get("siggen")
@@ -3166,7 +3167,8 @@ class GUI:
                 self.collector.browse_frame(-1)
 
     def initialize(self):
-        _cfg.ensure_default_config()
+        _cfg.ensure_defaults_config()
+        _cfg.ensure_acquisition_config()
         self._create_gui()
         self._setup_keyboard_handlers()
         self._update_spectrum_info()

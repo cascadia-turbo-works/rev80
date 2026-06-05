@@ -70,9 +70,9 @@ def _list_sensors() -> int:
 def _edit_config() -> int:
     import os
     import subprocess
-    from vibechecker.config import config_dir, default_config_path, ensure_default_config
-    ensure_default_config()
-    path   = default_config_path()
+    from vibechecker.config import acquisition_config_path, ensure_acquisition_config
+    ensure_acquisition_config()
+    path   = acquisition_config_path()
     editor = os.environ.get("EDITOR", os.environ.get("VISUAL", "nano"))
     print(f"Opening {path} with {editor} …")
     result = subprocess.run([editor, str(path)])
@@ -196,8 +196,9 @@ def run(args: argparse.Namespace) -> int:
         log.info(f"Found {sensor.model_name} s/n {sensor.serial_number}")
 
     # ── Load device config and build collector ────────────────────────────────
-    device_cfg = _cfg.load_device_config(sensor.serial_number)
-    mon_cfg    = device_cfg.get("monitor", {})
+    acq_cfg    = _cfg.load_acquisition_config()
+    device_cfg = _cfg.load_device_config(sensor.model_name, sensor.serial_number)
+    mon_cfg    = acq_cfg.get("monitor", {})
 
     if args.interval is None:
         args.interval      = float(mon_cfg.get("interval_s",      3600))
@@ -210,9 +211,9 @@ def run(args: argparse.Namespace) -> int:
     if not args.no_compress and mon_cfg.get("compression") == "none":
         args.no_compress = True
 
-    config = AcquisitionSettings.from_dict(device_cfg.get("acquisition", {}))
+    config = AcquisitionSettings.from_dict(acq_cfg.get("acquisition", {}))
 
-    # Load per-channel fields from the 'channels' block (not acquisition)
+    # Load per-channel fields from the device 'channels' block
     for ch_key, info in device_cfg.get("channels", {}).items():
         ch = int(ch_key)
         if info.get("voltage_range") is not None:
