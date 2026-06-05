@@ -403,12 +403,14 @@ def main() -> None:
 
     # Info commands — handled before any heavy import
     info = parser.add_argument_group("info commands")
+    info.add_argument("--init-config",  action="store_true",
+                      help="Seed ~/.config/vibechecker/ with default config files and exit")
     info.add_argument("--list-devices", action="store_true",
                       help="List connected PicoScope devices and exit")
     info.add_argument("--list-sensors", action="store_true",
                       help="List IEPE sensors in the library and exit")
     info.add_argument("--edit-config",  action="store_true",
-                      help="Open default.yaml in $EDITOR and exit")
+                      help="Open acquisition.yaml in $EDITOR and exit")
 
     # Session options
     sess = parser.add_argument_group("session options")
@@ -439,6 +441,9 @@ def main() -> None:
     args = parser.parse_args()
 
     # Info commands: minimal imports, return immediately
+    if args.init_config:
+        from vibechecker.__main__ import _init_config
+        sys.exit(_init_config())
     if args.list_devices:
         sys.exit(_list_devices())
     if args.list_sensors:
@@ -448,6 +453,8 @@ def main() -> None:
 
     # Full session: now pull in everything
     import vibechecker
+    import vibechecker.config as _cfg_boot
+    _cfg_boot.ensure_config_dir()
     vibechecker.setup_logging(debug=args.debug)
     sys.excepthook = vibechecker.exception_handler
     vibechecker.get_logger().info("vibechecker headless started")

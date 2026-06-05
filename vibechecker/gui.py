@@ -3167,8 +3167,7 @@ class GUI:
                 self.collector.browse_frame(-1)
 
     def initialize(self):
-        _cfg.ensure_defaults_config()
-        _cfg.ensure_acquisition_config()
+        _cfg.ensure_config_dir()
         self._create_gui()
         self._setup_keyboard_handlers()
         self._update_spectrum_info()
