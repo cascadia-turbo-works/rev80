@@ -154,106 +154,125 @@ class RmsThresholdHook:
 
 
 class SpectralThresholdHook:
-    """Compares current PSD against a stored reference PSD.
-
-    Triggers when any bin in the configured frequency band exceeds the
-    reference by ``spectral_threshold_db`` dB for ``consecutive_n`` frames.
+    """EWMA self-calibrating per-bin baseline — fires when any bin deviates beyond threshold.
 
     Parameters
     ----------
-    spectral_threshold_db:
-        dB excess over reference that constitutes an anomaly (e.g. 3.0 dB).
+    spectral_threshold_pct:
+        Percentage deviation from the EWMA baseline that triggers (e.g. 50 means 50 %).
     consecutive_n:
-        Number of consecutive exceeding frames before an event is raised.
+        Number of consecutive above-threshold frames required before firing.
+    baseline_alpha:
+        EWMA decay factor per bin.  0.995 ≈ very slow adaptation (~200-frame half-life).
+    min_baseline_samples:
+        Warmup period; no events until each channel has at least this many frames.
     fmin, fmax:
-        Optional frequency band limits (Hz).  Bins outside [fmin, fmax]
-        are ignored.  ``None`` means no limit on that side.
+        Frequency band limits (Hz).  None or negative value means no limit on that side.
     burst_duration_s:
         Duration placed in the returned AnomalyEvent.
     """
 
     def __init__(
         self,
-        spectral_threshold_db: float = 3.0,
-        consecutive_n: int = 3,
+        spectral_threshold_pct: float = 50.0,
+        consecutive_n: int = 10,
+        baseline_alpha: float = 0.995,
+        min_baseline_samples: int = 10,
         fmin: float | None = None,
         fmax: float | None = None,
         burst_duration_s: float = 60.0,
     ):
-        self._threshold_db = spectral_threshold_db
+        self._threshold_frac = spectral_threshold_pct / 100.0
         self._consecutive_n = consecutive_n
+        self._alpha = baseline_alpha
+        self._min_samples = min_baseline_samples
         self._fmin = fmin
         self._fmax = fmax
         self._burst_duration_s = burst_duration_s
 
-        # Per-channel reference PSD
-        self._ref_freq: dict[int, np.ndarray] = {}
-        self._ref_spectrum: dict[int, np.ndarray] = {}
+        # Per-channel EWMA state
+        self._baseline: dict[int, np.ndarray] = {}
+        self._n_samples: dict[int, int] = {}
         self._consec_above: dict[int, int] = {}
 
-    def has_baseline(self, ch: int) -> bool:
-        """Return True if a reference PSD has been stored for channel ``ch``."""
-        return ch in self._ref_spectrum
+    def reset_baseline(self) -> None:
+        """Clear all per-channel EWMA state so the hook re-calibrates from scratch."""
+        self._baseline.clear()
+        self._n_samples.clear()
+        self._consec_above.clear()
 
     def set_baseline(self, results: list) -> None:
-        """Snapshot freq and spectrum from each ChannelResult as the reference PSD.
+        """Seed the EWMA baseline from a snapshot of the current spectra.
 
-        Resets consecutive counters for all channels in ``results``.
+        Resets consecutive counters. Useful for the GUI 'Set Baseline' button.
         """
         for r in results:
             ch = r.channel
-            self._ref_freq[ch] = np.array(r.freq, dtype=float)
-            self._ref_spectrum[ch] = np.array(r.spectrum, dtype=float)
+            self._baseline[ch] = np.array(r.spectrum, dtype=float)
+            self._n_samples[ch] = self._min_samples   # skip warmup
             self._consec_above[ch] = 0
 
-    def reset_baseline(self) -> None:
-        """Clear all reference PSDs and consecutive counters."""
-        self._ref_freq.clear()
-        self._ref_spectrum.clear()
-        self._consec_above.clear()
+    def _freq_mask(self, freq: np.ndarray) -> np.ndarray:
+        mask = np.ones(len(freq), dtype=bool)
+        if self._fmin is not None:
+            mask &= freq >= self._fmin
+        if self._fmax is not None:
+            mask &= freq <= self._fmax
+        return mask
+
+    def update_baseline(self, results: list) -> None:
+        """Update EWMA state without checking for trigger events."""
+        for r in results:
+            self._update_channel(r.channel, np.array(r.spectrum, dtype=float))
+
+    def _update_channel(self, ch: int, spectrum: np.ndarray) -> None:
+        if ch not in self._n_samples:
+            self._n_samples[ch] = 0
+            self._baseline[ch] = spectrum.copy()
+            self._consec_above[ch] = 0
+        n = self._n_samples[ch]
+        if n == 0:
+            self._baseline[ch] = spectrum.copy()
+        else:
+            self._baseline[ch] = self._alpha * self._baseline[ch] + (1.0 - self._alpha) * spectrum
+        self._n_samples[ch] = n + 1
 
     def on_results(self, results: list, frame_cache) -> 'AnomalyEvent | None':
         for r in results:
             ch = r.channel
+            spectrum = np.array(r.spectrum, dtype=float)
 
-            # Skip channels with no reference
-            if ch not in self._ref_spectrum:
+            self._update_channel(ch, spectrum)
+
+            if self._n_samples[ch] < self._min_samples:
+                self._consec_above[ch] = 0
                 continue
 
-            ref_spectrum = self._ref_spectrum[ch]
-            cur_spectrum = np.array(r.spectrum, dtype=float)
-
-            # Skip if array lengths differ (settings may have changed)
-            if len(cur_spectrum) != len(ref_spectrum):
-                continue
-
-            # Build frequency-band mask
             freq = np.array(r.freq, dtype=float)
-            mask = np.ones(len(freq), dtype=bool)
-            if self._fmin is not None:
-                mask &= freq >= self._fmin
-            if self._fmax is not None:
-                mask &= freq <= self._fmax
-
-            if not np.any(mask):
+            if len(freq) != len(spectrum):
+                self._consec_above[ch] = 0
                 continue
 
-            # Compute dB excess over reference; guard against divide-by-zero
-            with np.errstate(divide='ignore', invalid='ignore'):
-                db_excess = 10.0 * np.log10(
-                    cur_spectrum[mask] / np.maximum(ref_spectrum[mask], 1e-12)
-                )
-                db_excess = np.nan_to_num(db_excess, nan=0.0, posinf=0.0, neginf=0.0)
+            mask = self._freq_mask(freq)
+            if not np.any(mask):
+                self._consec_above[ch] = 0
+                continue
 
-            if np.any(db_excess > self._threshold_db):
+            baseline = self._baseline[ch]
+            deviation = np.abs(spectrum[mask] - baseline[mask]) / np.maximum(baseline[mask], 1e-12)
+
+            if np.any(deviation > self._threshold_frac):
                 self._consec_above.setdefault(ch, 0)
                 self._consec_above[ch] += 1
                 if self._consec_above[ch] >= self._consecutive_n:
                     self._consec_above[ch] = 0
-                    max_excess = float(np.max(db_excess))
+                    peak_idx  = int(np.argmax(deviation))
+                    peak_freq = float(freq[mask][peak_idx])
+                    max_dev   = float(deviation[peak_idx]) * 100.0
                     reason = (
-                        f"Spectral excess {max_excess:.1f} dB > "
-                        f"{self._threshold_db:.1f} dB threshold on ch{ch}"
+                        f"Spectral deviation {max_dev:.1f}% > "
+                        f"{self._threshold_frac * 100:.1f}% threshold "
+                        f"on ch{ch} @ {peak_freq:.1f} Hz"
                     )
                     return AnomalyEvent(
                         trigger_time=datetime.now(timezone.utc),

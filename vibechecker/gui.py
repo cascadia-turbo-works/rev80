@@ -1808,9 +1808,9 @@ class GUI:
         if not dpg.does_item_exist(ui.MON_DLG_INTERVAL):
             return
         mon = _cfg.load_acquisition_config().get("monitor", {})
-        interval_s = float(mon.get("interval_s", 3600))
-        pre_buf_s = float(mon.get("pre_buffer_s", 60))
-        burst_dur_s = float(mon.get("burst_duration_s", 60))
+        interval_s = float(mon.get("interval_s", 600))
+        pre_buf_s = float(mon.get("pre_burst_s", 30))
+        burst_dur_s = float(mon.get("burst_duration_s", 120))
         out_dir = mon.get("output_dir") or ""
         compress = mon.get("compression", "gzip") == "gzip"
 
@@ -1835,11 +1835,11 @@ class GUI:
         _sv(ui.MON_ANOM_RMS_PCT,   float(anom.get("rms_pct",   10.0)))
         _sv(ui.MON_ANOM_RMS_N,     int(anom.get("rms_n",       3)))
         _sv(ui.MON_ANOM_RMS_ALPHA, float(anom.get("rms_alpha", 0.97)))
-        _sv(ui.MON_ANOM_RMS_WARMUP,int(anom.get("rms_warmup",  30)))
-        _sv(ui.MON_ANOM_SPEC_DB,   float(anom.get("spec_db",   3.0)))
-        _sv(ui.MON_ANOM_SPEC_N,    int(anom.get("spec_n",      3)))
-        _sv(ui.MON_ANOM_SPEC_FMIN, float(anom.get("spec_fmin", 0.0)))
-        _sv(ui.MON_ANOM_SPEC_FMAX, float(anom.get("spec_fmax", 0.0)))
+        _sv(ui.MON_ANOM_RMS_WARMUP,int(anom.get("warmup",      10)))
+        _sv(ui.MON_ANOM_SPEC_DB,   float(anom.get("spec_pct",  50.0)))
+        _sv(ui.MON_ANOM_SPEC_N,    int(anom.get("spec_n",      10)))
+        _sv(ui.MON_ANOM_SPEC_FMIN, float(anom.get("spec_fmin") or 0.0))
+        _sv(ui.MON_ANOM_SPEC_FMAX, float(anom.get("spec_fmax") or 0.0))
         self._on_anom_config_change()
 
     def _save_monitor_config(self) -> None:
@@ -1855,8 +1855,8 @@ class GUI:
         acq_cfg = _cfg.load_acquisition_config()
         acq_cfg['monitor'] = {
             'interval_s':        float(interval_s),
-            'pre_buffer_s':      float(_get(ui.MON_DLG_PRE_BUFFER,  60.0)),
-            'burst_duration_s':  float(_get(ui.MON_DLG_BURST_DUR,   60.0)),
+            'pre_burst_s':       float(_get(ui.MON_DLG_PRE_BUFFER,  30.0)),
+            'burst_duration_s':  float(_get(ui.MON_DLG_BURST_DUR,   120.0)),
             'max_burst_s':       600.0,
             'output_dir':        str(_get(ui.MON_DLG_OUTPUT_DIR, '')).strip() or None,
             'compression':       'gzip' if _get(ui.MON_DLG_COMPRESS, True) else 'none',
@@ -1867,11 +1867,11 @@ class GUI:
                 'rms_pct':       float(_get(ui.MON_ANOM_RMS_PCT,   10.0)),
                 'rms_n':         int(_get(ui.MON_ANOM_RMS_N,       3)),
                 'rms_alpha':     float(_get(ui.MON_ANOM_RMS_ALPHA, 0.97)),
-                'rms_warmup':    int(_get(ui.MON_ANOM_RMS_WARMUP,  30)),
-                'spec_db':       float(_get(ui.MON_ANOM_SPEC_DB,   3.0)),
-                'spec_n':        int(_get(ui.MON_ANOM_SPEC_N,      3)),
-                'spec_fmin':     float(_get(ui.MON_ANOM_SPEC_FMIN, 0.0)),
-                'spec_fmax':     float(_get(ui.MON_ANOM_SPEC_FMAX, 0.0)),
+                'warmup':        int(_get(ui.MON_ANOM_RMS_WARMUP,  10)),
+                'spec_pct':      float(_get(ui.MON_ANOM_SPEC_DB,   50.0)),
+                'spec_n':        int(_get(ui.MON_ANOM_SPEC_N,      10)),
+                'spec_fmin':     _get(ui.MON_ANOM_SPEC_FMIN, None) or None,
+                'spec_fmax':     _get(ui.MON_ANOM_SPEC_FMAX, None) or None,
             },
         }
         _cfg.save_acquisition_config(acq_cfg)
