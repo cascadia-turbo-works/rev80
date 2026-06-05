@@ -1,8 +1,11 @@
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Protocol, runtime_checkable
 
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -133,6 +136,12 @@ class RmsThresholdHook:
 
             if deviation > self._threshold_frac:
                 self._consec_above[ch] += 1
+                log.debug(
+                    "RMS ping ch%d: %.4g %s  baseline=%.4g  dev=%.1f%%  [%d/%d]",
+                    ch, current, getattr(r, 'unit', ''),
+                    baseline, deviation * 100.0,
+                    self._consec_above[ch], self._consecutive_n,
+                )
                 if self._consec_above[ch] >= self._consecutive_n:
                     # Reset counter before returning so the next run starts fresh
                     self._consec_above[ch] = 0
@@ -264,11 +273,16 @@ class SpectralThresholdHook:
             if np.any(deviation > self._threshold_frac):
                 self._consec_above.setdefault(ch, 0)
                 self._consec_above[ch] += 1
+                peak_idx  = int(np.argmax(deviation))
+                peak_freq = float(freq[mask][peak_idx])
+                max_dev   = float(deviation[peak_idx]) * 100.0
+                log.debug(
+                    "Spectral ping ch%d: dev=%.1f%% @ %.1f Hz  [%d/%d]",
+                    ch, max_dev, peak_freq,
+                    self._consec_above[ch], self._consecutive_n,
+                )
                 if self._consec_above[ch] >= self._consecutive_n:
                     self._consec_above[ch] = 0
-                    peak_idx  = int(np.argmax(deviation))
-                    peak_freq = float(freq[mask][peak_idx])
-                    max_dev   = float(deviation[peak_idx]) * 100.0
                     reason = (
                         f"Spectral deviation {max_dev:.1f}% > "
                         f"{self._threshold_frac * 100:.1f}% threshold "
