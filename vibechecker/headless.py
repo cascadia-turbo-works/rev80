@@ -201,11 +201,11 @@ def run(args: argparse.Namespace) -> int:
     mon_cfg    = acq_cfg.get("monitor", {})
 
     if args.interval is None:
-        args.interval      = float(mon_cfg.get("interval_s",      3600))
+        args.interval      = float(mon_cfg.get("interval_s",      600))
     if args.pre_buffer is None:
-        args.pre_buffer    = float(mon_cfg.get("pre_buffer_s",    60))
+        args.pre_buffer    = float(mon_cfg.get("pre_burst_s",     30))
     if args.burst_duration is None:
-        args.burst_duration = float(mon_cfg.get("burst_duration_s", 60))
+        args.burst_duration = float(mon_cfg.get("burst_duration_s", 120))
     if args.output is None and mon_cfg.get("output_dir"):
         args.output = mon_cfg["output_dir"]
     if not args.no_compress and mon_cfg.get("compression") == "none":
@@ -252,21 +252,24 @@ def run(args: argparse.Namespace) -> int:
         from vibechecker.monitor.anomaly import (
             CompositeAnomalyHook, RmsThresholdHook, SpectralThresholdHook,
         )
-        hook_type = anom_cfg.get("hook_type", "RMS")
+        hook_type = anom_cfg.get("hook_type", "rms").lower()
+        warmup    = int(anom_cfg.get("warmup", 10))
         hooks = []
-        if hook_type in ("RMS", "Both"):
+        if hook_type in ("rms", "both"):
             hooks.append(RmsThresholdHook(
-                rms_threshold_pct    = float(anom_cfg.get("rms_pct",    10.0)),
-                consecutive_n        = int(anom_cfg.get("rms_n",        3)),
-                baseline_alpha       = float(anom_cfg.get("rms_alpha",  0.97)),
-                min_baseline_samples = int(anom_cfg.get("rms_warmup",   30)),
+                rms_threshold_pct    = float(anom_cfg.get("rms_pct",   10.0)),
+                consecutive_n        = int(anom_cfg.get("rms_n",       3)),
+                baseline_alpha       = float(anom_cfg.get("rms_alpha", 0.97)),
+                min_baseline_samples = warmup,
             ))
-        if hook_type in ("Spectral", "Both"):
+        if hook_type in ("spectral", "both"):
             hooks.append(SpectralThresholdHook(
-                spectral_threshold_db = float(anom_cfg.get("spec_db",   3.0)),
-                consecutive_n         = int(anom_cfg.get("spec_n",      3)),
-                fmin                  = float(anom_cfg.get("spec_fmin", 0.0)),
-                fmax                  = float(anom_cfg.get("spec_fmax", 0.0)),
+                spectral_threshold_pct = float(anom_cfg.get("spec_pct",   50.0)),
+                consecutive_n          = int(anom_cfg.get("spec_n",       10)),
+                baseline_alpha         = float(anom_cfg.get("spec_alpha", 0.995)),
+                min_baseline_samples   = warmup,
+                fmin                   = anom_cfg.get("spec_fmin",  None),
+                fmax                   = anom_cfg.get("spec_fmax",  None),
             ))
         if hooks:
             monitor.set_anomaly_hook(CompositeAnomalyHook(hooks))

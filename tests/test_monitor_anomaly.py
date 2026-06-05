@@ -202,144 +202,139 @@ class TestRmsThresholdHook:
 # SpectralThresholdHook tests
 # ---------------------------------------------------------------------------
 
+def _make_spectral_result(channel=0, spectrum_scale=1.0, n=64, samplerate=1000):
+    """ChannelResult with a flat spectrum of spectrum_scale amplitude."""
+    freq = np.linspace(0, samplerate / 2, n // 2 + 1)
+    spectrum = np.ones_like(freq) * spectrum_scale
+    return ChannelResult(
+        channel=channel, unit='mV', overflow=False,
+        time_data=np.ones(n), time_vec=np.arange(n) / samplerate,
+        samplerate=samplerate, freq=freq, spectrum=spectrum,
+        peaks=np.array([], dtype=int), overall=spectrum_scale,
+        timestamp=datetime.now(timezone.utc), rel_time=0.0, status='OKAY',
+    )
+
+
 class TestSpectralThresholdHook:
 
-    def test_spectral_no_baseline_no_trigger(self):
-        """Without calling set_baseline, on_results must return None."""
-        hook = SpectralThresholdHook(spectral_threshold_db=3.0, consecutive_n=1)
-        results = [_make_result(channel=0, overall=1.0)]
-        assert hook.on_results(results, None) is None
-
-    def test_spectral_triggers_above_threshold(self):
-        """Spectrum at 10× baseline (≈ +10 dB) for consecutive_n frames should fire."""
-        consecutive_n = 3
+    def test_warmup_suppresses_triggers(self):
+        """During warmup (min_baseline_samples frames not yet seen), never triggers."""
         hook = SpectralThresholdHook(
-            spectral_threshold_db=3.0,
-            consecutive_n=consecutive_n,
+            spectral_threshold_pct=10.0,
+            consecutive_n=1,
+            min_baseline_samples=5,
         )
-        baseline_result = _make_result(channel=0, overall=0.1)
-        hook.set_baseline([baseline_result])
+        # Feed huge spectrum — should still not trigger during warmup
+        results = [_make_spectral_result(channel=0, spectrum_scale=1000.0)]
+        events = [hook.on_results(results, None) for _ in range(4)]
+        assert all(e is None for e in events)
 
-        # Build a result whose spectrum is 10× the baseline spectrum
-        n = 64
-        samplerate = 1000
-        freq = np.linspace(0, samplerate / 2, n // 2 + 1)
-        high_spectrum = np.ones_like(freq) * 0.1  # 10× the baseline 0.01
-
-        high_result = ChannelResult(
-            channel=0, unit='mV', overflow=False,
-            time_data=np.ones(n), time_vec=np.arange(n) / samplerate,
-            samplerate=samplerate, freq=freq, spectrum=high_spectrum,
-            peaks=np.array([], dtype=int), overall=1.0,
-            timestamp=datetime.now(timezone.utc), rel_time=0.0, status='OKAY',
+    def test_triggers_above_threshold(self):
+        """After set_baseline seeds the EWMA, sustained 10× excess triggers."""
+        hook = SpectralThresholdHook(
+            spectral_threshold_pct=50.0,   # 50% deviation threshold
+            consecutive_n=3,
+            baseline_alpha=0.99,
+            min_baseline_samples=1,
         )
+        # Seed baseline at scale=0.01
+        hook.set_baseline([_make_spectral_result(channel=0, spectrum_scale=0.01)])
 
+        # Feed 10× the baseline (1000% deviation, way above 50% threshold)
+        high = _make_spectral_result(channel=0, spectrum_scale=0.1)
         event = None
-        for _ in range(consecutive_n):
-            event = hook.on_results([high_result], None)
+        for _ in range(3):
+            event = hook.on_results([high], None)
 
         assert event is not None
         assert isinstance(event, AnomalyEvent)
         assert event.channel == 0
+        assert 'Spectral' in event.reason
 
-    def test_spectral_no_trigger_below_threshold(self):
-        """Spectrum at 1.5× baseline (< 3 dB) must not trigger."""
-        consecutive_n = 3
+    def test_no_trigger_below_threshold(self):
+        """Deviation below threshold never triggers even over many frames."""
         hook = SpectralThresholdHook(
-            spectral_threshold_db=3.0,
-            consecutive_n=consecutive_n,
+            spectral_threshold_pct=100.0,  # need 100% deviation to trigger
+            consecutive_n=3,
+            baseline_alpha=0.99,
+            min_baseline_samples=1,
         )
-        baseline_result = _make_result(channel=0)
-        hook.set_baseline([baseline_result])
+        hook.set_baseline([_make_spectral_result(channel=0, spectrum_scale=0.01)])
 
-        n = 64
-        samplerate = 1000
-        freq = np.linspace(0, samplerate / 2, n // 2 + 1)
-        # 1.5× = ~1.76 dB, below 3 dB threshold
-        low_spectrum = np.ones_like(freq) * 0.015
-
-        low_result = ChannelResult(
-            channel=0, unit='mV', overflow=False,
-            time_data=np.ones(n), time_vec=np.arange(n) / samplerate,
-            samplerate=samplerate, freq=freq, spectrum=low_spectrum,
-            peaks=np.array([], dtype=int), overall=0.1,
-            timestamp=datetime.now(timezone.utc), rel_time=0.0, status='OKAY',
-        )
-
-        events = [hook.on_results([low_result], None) for _ in range(consecutive_n)]
+        # 1.5× baseline = 50% deviation — below 100% threshold
+        low = _make_spectral_result(channel=0, spectrum_scale=0.015)
+        events = [hook.on_results([low], None) for _ in range(5)]
         assert all(e is None for e in events)
 
-    def test_spectral_fmin_fmax_masks_bins(self):
+    def test_fmin_fmax_masks_out_of_band_excess(self):
         """Excess only outside [fmin, fmax] must not trigger."""
-        n = 64
-        samplerate = 1000
+        n, samplerate = 64, 1000
         freq = np.linspace(0, samplerate / 2, n // 2 + 1)
-        # Monitoring band: [100, 200] Hz
+
         hook = SpectralThresholdHook(
-            spectral_threshold_db=3.0,
+            spectral_threshold_pct=50.0,
             consecutive_n=3,
+            baseline_alpha=0.99,
+            min_baseline_samples=1,
             fmin=100.0,
             fmax=200.0,
         )
 
         baseline_spectrum = np.ones_like(freq) * 0.01
-        baseline_result = ChannelResult(
+        hook.set_baseline([ChannelResult(
             channel=0, unit='mV', overflow=False,
             time_data=np.ones(n), time_vec=np.arange(n) / samplerate,
             samplerate=samplerate, freq=freq, spectrum=baseline_spectrum,
-            peaks=np.array([], dtype=int), overall=0.1,
+            peaks=np.array([], dtype=int), overall=0.01,
             timestamp=datetime.now(timezone.utc), rel_time=0.0, status='OKAY',
-        )
-        hook.set_baseline([baseline_result])
+        )])
 
-        # Excess only at frequencies OUTSIDE [100, 200] Hz (i.e. above 400 Hz)
-        high_spectrum = baseline_spectrum.copy()
-        high_spectrum[freq > 400.0] = 1.0  # +40 dB but outside band
+        # Massive excess but only above 400 Hz — outside the [100, 200] band
+        out_of_band = baseline_spectrum.copy()
+        out_of_band[freq > 400.0] = 100.0
 
-        high_result = ChannelResult(
+        result = ChannelResult(
             channel=0, unit='mV', overflow=False,
             time_data=np.ones(n), time_vec=np.arange(n) / samplerate,
-            samplerate=samplerate, freq=freq, spectrum=high_spectrum,
+            samplerate=samplerate, freq=freq, spectrum=out_of_band,
             peaks=np.array([], dtype=int), overall=1.0,
             timestamp=datetime.now(timezone.utc), rel_time=0.0, status='OKAY',
         )
-
-        events = [hook.on_results([high_result], None) for _ in range(5)]
+        events = [hook.on_results([result], None) for _ in range(5)]
         assert all(e is None for e in events)
 
-    def test_spectral_reset_clears_reference(self):
-        """After reset_baseline(), excess frames must not trigger."""
-        consecutive_n = 3
+    def test_none_fmin_fmax_uses_full_range(self):
+        """fmin=None, fmax=None (YAML null) covers the full spectrum."""
         hook = SpectralThresholdHook(
-            spectral_threshold_db=3.0,
-            consecutive_n=consecutive_n,
+            spectral_threshold_pct=50.0,
+            consecutive_n=2,
+            baseline_alpha=0.99,
+            min_baseline_samples=1,
+            fmin=None,
+            fmax=None,
         )
-        baseline_result = _make_result(channel=0)
-        hook.set_baseline([baseline_result])
+        hook.set_baseline([_make_spectral_result(channel=0, spectrum_scale=0.01)])
+        high = _make_spectral_result(channel=0, spectrum_scale=1.0)  # 100× = 9900%
+        event = None
+        for _ in range(2):
+            event = hook.on_results([high], None)
+        assert event is not None
+
+    def test_reset_clears_ewma_and_reenters_warmup(self):
+        """After reset_baseline(), the hook re-enters warmup and won't trigger."""
+        hook = SpectralThresholdHook(
+            spectral_threshold_pct=50.0,
+            consecutive_n=1,
+            baseline_alpha=0.99,
+            min_baseline_samples=3,
+        )
+        hook.set_baseline([_make_spectral_result(channel=0, spectrum_scale=0.01)])
         hook.reset_baseline()
 
-        n = 64
-        samplerate = 1000
-        freq = np.linspace(0, samplerate / 2, n // 2 + 1)
-        high_spectrum = np.ones_like(freq) * 1.0  # massive excess
-
-        high_result = ChannelResult(
-            channel=0, unit='mV', overflow=False,
-            time_data=np.ones(n), time_vec=np.arange(n) / samplerate,
-            samplerate=samplerate, freq=freq, spectrum=high_spectrum,
-            peaks=np.array([], dtype=int), overall=1.0,
-            timestamp=datetime.now(timezone.utc), rel_time=0.0, status='OKAY',
-        )
-
-        events = [hook.on_results([high_result], None) for _ in range(consecutive_n)]
+        # Massive spectrum — but back in warmup, no trigger
+        high = _make_spectral_result(channel=0, spectrum_scale=1000.0)
+        events = [hook.on_results([high], None) for _ in range(2)]
         assert all(e is None for e in events)
-
-    def test_spectral_has_baseline(self):
-        """has_baseline returns False before set_baseline and True after."""
-        hook = SpectralThresholdHook()
-        assert hook.has_baseline(0) is False
-        hook.set_baseline([_make_result(channel=0)])
-        assert hook.has_baseline(0) is True
 
 
 # ---------------------------------------------------------------------------
@@ -355,7 +350,7 @@ class TestCompositeAnomalyHook:
             consecutive_n=2,
             min_baseline_samples=5,
         )
-        spectral_hook = SpectralThresholdHook(spectral_threshold_db=3.0, consecutive_n=2)
+        spectral_hook = SpectralThresholdHook(spectral_threshold_pct=50.0, consecutive_n=2)
         composite = CompositeAnomalyHook([rms_hook, spectral_hook])
 
         results_normal = [_make_result(channel=0, overall=1.0)]
@@ -387,14 +382,14 @@ class TestCompositeAnomalyHook:
         for _ in range(5):
             composite.on_results(results, None)
 
-        # Set spectral baseline
+        # Set spectral baseline (seeds EWMA and skips warmup)
         spectral_hook.set_baseline(results)
-        assert spectral_hook.has_baseline(0) is True
+        assert spectral_hook._n_samples.get(0, 0) >= spectral_hook._min_samples
 
         composite.reset_baseline()
 
-        # After reset: spectral baseline should be cleared
-        assert spectral_hook.has_baseline(0) is False
+        # After reset: EWMA state should be cleared
+        assert spectral_hook._n_samples.get(0, 0) == 0
 
         # After reset: rms_hook warmup should restart — sending one huge frame
         # must not trigger since we are back in warmup
