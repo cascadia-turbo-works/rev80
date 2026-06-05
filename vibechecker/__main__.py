@@ -9,6 +9,8 @@ def _parse_args():
         add_help=False,   # keep --help working via DPG passthrough
     )
     p.add_argument("--headless",      action="store_true")
+    p.add_argument("--init-config",   action="store_true",
+                   help="Seed ~/.config/vibechecker/ with default config files and exit")
     p.add_argument("--from-file",     metavar="PATH", default=None,
                    help="Load an h5 measurement or monitor session on startup")
     p.add_argument("--autodetect",    action=argparse.BooleanOptionalAction,
@@ -24,8 +26,25 @@ def _parse_args():
 
     return args, remaining
 
+def _init_config() -> int:
+    from vibechecker.config import acquisition_config_path, ensure_config_dir
+    cfg_dir = acquisition_config_path().parent
+    before  = set(cfg_dir.rglob('*.yaml')) if cfg_dir.exists() else set()
+
+    ensure_config_dir()
+
+    print(f"Config directory: {cfg_dir}\n")
+    for path in sorted(cfg_dir.rglob('*.yaml')):
+        tag = " [created]" if path not in before else ""
+        print(f"  {path.relative_to(cfg_dir)}{tag}")
+    return 0
+
+
 def main():
     args, _ = _parse_args()
+
+    if args.init_config:
+        sys.exit(_init_config())
 
     if args.headless:
         sys.argv = [sys.argv[0]] + [a for a in sys.argv[1:] if a != "--headless"]

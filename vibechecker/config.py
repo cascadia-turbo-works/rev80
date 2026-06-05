@@ -169,6 +169,12 @@ def ensure_acquisition_config() -> None:
         _atomic_yaml_write(path, copy.deepcopy(_BUILTIN_ACQ))
 
 
+def ensure_config_dir() -> None:
+    """Seed all config files that don't already exist. Safe to call on every startup."""
+    ensure_defaults_config()
+    ensure_acquisition_config()
+
+
 # ---------------------------------------------------------------------------
 # Acquisition config (acquisition.yaml)
 # ---------------------------------------------------------------------------
