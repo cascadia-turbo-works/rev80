@@ -52,10 +52,11 @@ A Python desktop application for capturing, analyzing, and recording vibration d
 ### GUI mode
 
 ```bash
-python -m vibechecker                                       # launch GUI
-python -m vibechecker --from-file path/to/file.h5          # load measurement on startup
-python -m vibechecker --from-file path/to/session_dir/     # load monitor session on startup
-python -m vibechecker --debug                               # verbose logging
+vibechecker                                          # launch GUI
+vibechecker --from-file path/to/file.h5             # load measurement on startup
+vibechecker --from-file path/to/session_dir/        # load monitor session on startup
+vibechecker --init-config                            # seed config files and exit
+vibechecker --debug                                  # verbose logging
 ```
 
 `--from-file` accepts a v4 single-measurement `.h5` file or a v5 monitor session directory (containing `session.h5`). The GUI opens, displays the data immediately, and the session browser and file browser remain fully functional.
@@ -63,24 +64,81 @@ python -m vibechecker --debug                               # verbose logging
 ### Headless mode
 
 ```bash
+vibechecker-headless [options]
+# or equivalently:
 python -m vibechecker --headless [options]
-vibechecker-headless [options]        # after pip install
 ```
+
+**Before first use on a new machine, seed the config directory:**
+
+```bash
+vibechecker-headless --init-config
+```
+
+This writes `acquisition.yaml` and `devices/picoscope-defaults.yaml` to `~/.config/vibechecker/` so you can edit them before connecting hardware.
+
+**Info commands** (return immediately, no hardware or heavy imports):
+
+| Command | Description |
+|---|---|
+| `--init-config` | Create default config files and list them |
+| `--list-devices` | Enumerate connected PicoScope devices |
+| `--list-sensors` | Show the IEPE sensor library |
+| `--edit-config` | Open `acquisition.yaml` in `$EDITOR` |
+
+**Session options:**
 
 | Option | Default | Description |
 |---|---|---|
-| `--interval SECS` | 3600 | Capture interval |
-| `--pre-buffer SECS` | 60 | Pre-trigger buffer duration |
-| `--burst-duration SECS` | 60 | Burst capture duration |
+| `--interval SECS` | 600 | Capture interval in seconds |
+| `--pre-buffer SECS` | 30 | Pre-burst buffer duration |
+| `--burst-duration SECS` | 120 | Burst capture duration |
 | `--output DIR` | `DEVDATA/monitor/` | Output root directory |
-| `--device SERIAL` | auto-detect | PicoScope serial, or `sim` |
-| `--channels N [N ...]` | from device config | Channel indices to enable |
-| `--maxfreq HZ` | from device config | Max analysis frequency |
-| `--binsize HZ` | from device config | Frequency resolution |
 | `--no-compress` | — | Disable gzip compression |
+| `--start-now` | — | Skip the pre-start confirmation prompt |
+
+**Acquisition options:**
+
+| Option | Default | Description |
+|---|---|---|
+| `--device SERIAL` | auto-detect | PicoScope serial number, or `sim` |
+| `--channels N [N ...]` | from device config | Channel indices to enable (persisted to device config) |
+| `--maxfreq HZ` | from `acquisition.yaml` | Max analysis frequency override |
+| `--binsize HZ` | from `acquisition.yaml` | Frequency resolution override |
 | `--debug` | — | Verbose logging to stderr |
 
-Writes a v5 `session.h5` file loadable by the GUI session browser or `--from-file`. Clean shutdown on Ctrl+C or SIGTERM.
+**First-run device config:** On the first run with a new PicoScope, headless generates
+`devices/picoscope-<model>-<SN>.yaml` from the defaults template before the confirmation
+prompt. Edit it to set channel coupling, voltage range, and sensor assignments, then restart.
+
+**Channel persistence:** `--channels 0 1` updates the `enabled` flag in the saved device
+config so the setting is sticky across restarts — you do not need to repeat the flag.
+
+**Confirmation gate:** Before connecting, headless prints a session summary (device, channels,
+sample rate, monitor interval, anomaly config, config file paths) and waits for Enter. Use
+`--start-now` to bypass this for unattended use (systemd, cron, scripts).
+
+**Example workflows:**
+
+```bash
+# First time on a new Pi — seed config, connect scope, generate device config
+vibechecker-headless --init-config
+vibechecker-headless --list-devices
+vibechecker-headless                          # generates device config, shows summary
+
+# Edit settings, then start unattended
+nano ~/.config/vibechecker/acquisition.yaml
+nano ~/.config/vibechecker/devices/picoscope-4424A-JY123.yaml
+vibechecker-headless --start-now
+
+# One-liner with explicit overrides (changes persisted to device config)
+vibechecker-headless --channels 0 1 --interval 300 --start-now
+
+# Simulated sensor — offline testing, no hardware
+vibechecker-headless --device sim --interval 10 --start-now
+```
+
+Writes a v5 `session.h5` file loadable by the GUI session browser or `--from-file`. Clean shutdown on `Ctrl+C` or `SIGTERM` (suitable for systemd `Restart=on-failure`).
 
 ---
 
@@ -131,8 +189,9 @@ Works on Windows, Linux, and macOS. Requires Python 3.10+.
    python -m vibechecker --from-file DEVDATA/monitor/2026-06-02-130000/
 
    # Headless interval datalogger (no display required)
-   python -m vibechecker --headless --interval 3600
-   python -m vibechecker --headless --device sim --interval 5   # offline test
+   vibechecker-headless --init-config              # seed config files first
+   vibechecker-headless                            # auto-detect scope, show summary
+   vibechecker-headless --device sim --interval 10 --start-now  # offline test
 
    # With debug logging to console
    python -m vibechecker --debug
@@ -143,21 +202,25 @@ Works on Windows, Linux, and macOS. Requires Python 3.10+.
 **Headless (no display) usage:**
 
 ```bash
-# Auto-detect PicoScope, hourly captures
-python -m vibechecker --headless --interval 3600
+# Seed config on a fresh install
+vibechecker-headless --init-config
 
-# Fully explicit
+# Auto-detect PicoScope — shows summary, waits for Enter
+vibechecker-headless
+
+# Fully explicit, skip prompt (suitable for scripts/systemd)
 vibechecker-headless \
   --interval 300 \
   --pre-buffer 30 \
-  --burst-duration 60 \
+  --burst-duration 120 \
   --output /mnt/nas/vibration \
   --channels 0 1 \
-  --maxfreq 2000 \
-  --binsize 1
+  --maxfreq 1000 \
+  --binsize 1 \
+  --start-now
 
 # Simulated sensor (no hardware)
-vibechecker-headless --device sim --interval 10
+vibechecker-headless --device sim --interval 10 --start-now
 ```
 
 Sessions written by the headless mode are identical v5 HDF5 files and can be loaded in the GUI:
@@ -637,59 +700,136 @@ collector.load_monitor_burst(session_h5, burst_id)
 
 ## Configuration and Persistence
 
-Config is persisted in the OS-specific config directory:
+Config lives in the OS-specific config directory:
 - **Linux/macOS:** `$XDG_CONFIG_HOME/vibechecker/` (default: `~/.config/vibechecker/`)
 - **Windows:** `%APPDATA%\vibechecker\`
 
-### Per-device configuration
+Run `vibechecker --init-config` (or `vibechecker-headless --init-config`) to create the
+directory and seed all default files. The layout is:
 
-Device-specific settings are stored in `devices/{sanitized_serial}.yaml` when the device is disconnected or via explicit GUI action:
+```
+~/.config/vibechecker/
+  acquisition.yaml                       # acquisition + monitor settings (instance-wide)
+  scope_sensors.yaml                     # IEPE sensor library (shared across all devices)
+  devices/
+    picoscope-defaults.yaml              # channel template applied to new devices
+    picoscope-4424A-JY123.yaml           # per-device channel + siggen config
+```
+
+### `acquisition.yaml` — instance-wide settings
+
+Acquisition and monitor settings are shared across all scopes on this machine. Edit this
+file to change capture intervals, anomaly thresholds, filter settings, etc.
+
+```yaml
+acquisition:
+  maxfreq: 1000.0           # Hz — drives sample rate (samplerate = nextpow2(2 × maxfreq))
+  binsize: 1.0              # Hz — drives FFT block size
+  fft_window: hann
+  welch_overlap: 0.5
+  highpass_enabled: true
+  highpass_fc: 10.0         # Hz
+  lowpass_enabled: false
+  lowpass_fc: 1000.0        # Hz
+  trend_max_points: 5000
+  cache_frames: 15
+
+monitor:
+  interval_s: 600           # seconds between interval captures
+  pre_burst_s: 30           # seconds of pre-trigger data saved with each burst
+  burst_duration_s: 120     # seconds of post-trigger burst capture
+  max_burst_s: 600          # maximum burst length even if anomaly keeps retriggering
+  output_dir: null          # null → DEVDATA/monitor/
+  compression: gzip
+  compression_level: 4
+  anomaly:
+    enabled: true
+    hook_type: rms          # rms | spectral | both
+    warmup: 10              # frames before anomaly detection activates
+    rms_pct: 10.0           # % deviation from EWMA baseline to trigger
+    rms_n: 3                # consecutive frames above threshold required
+    rms_alpha: 0.97         # EWMA decay (higher = slower adaptation)
+    spec_pct: 50.0          # % per-bin deviation from EWMA baseline to trigger
+    spec_n: 10
+    spec_alpha: 0.995       # very slow adaptation — spectral baseline is stable
+    spec_fmin: null         # null = no lower frequency limit
+    spec_fmax: null         # null = no upper frequency limit
+```
+
+### `devices/picoscope-defaults.yaml` — channel template
+
+Applied to every channel when a new device is seen for the first time. Edit this before
+connecting a new scope to set your preferred defaults site-wide:
+
+```yaml
+channel:
+  enabled: false            # only channel 0 is enabled on new devices
+  sensor_id: null
+  voltage_range: 6          # PS4000A range index (6 = ±1 V)
+  coupling: AC
+  channel_name: null        # null → defaults to 'Ch A', 'Ch B', …
+  target_unit: null         # null → use sensor engineering units
+  amplitude_mode: 0-P
+
+siggen:
+  enabled: false
+  wave_type: PS4000A_SINE
+  freq_hz: 1000.0
+  pktopk_uv: 1000000        # 1 V pk-pk
+  offset_uv: 0
+```
+
+### `devices/picoscope-<model>-<SN>.yaml` — per-device channel config
+
+Channel coupling, voltage range, sensor assignments, and signal generator settings for a
+specific scope. Generated automatically on first connection; edit to customise each channel.
 
 ```yaml
 channels:
   0:
     enabled: true
-    sensor_id: <uuid>           # reference to global sensor library
-    voltage_range: 7            # PS4000A range index
+    sensor_id: <uuid>       # from scope_sensors.yaml
+    voltage_range: 6        # ±1 V
     coupling: AC
-acquisition:
-  maxfreq: 2000.0               # Hz
-  binsize: 2.0                  # Hz
-  cache_frames: 32              # configurable ring buffer depth
-  fft_window: hann
-  welch_overlap: 0.5
-  highpass_enabled: true
-  highpass_fc: 10.0             # Hz
-  lowpass_enabled: false
-  lowpass_fc: 1000.0            # Hz
-  trend_max_points: 500
-siggen:                          # optional signal generator config
-  enabled: true
+    channel_name: Motor NDE
+    target_unit: in/s
+    amplitude_mode: 0-P
+  1:
+    enabled: false
+    sensor_id: null
+    voltage_range: 6
+    coupling: AC
+    channel_name: null
+    target_unit: null
+    amplitude_mode: 0-P
+siggen:
+  enabled: false
   wave_type: PS4000A_SINE
-  freq_hz: 100.0
-  pktopk_uv: 500000
+  freq_hz: 1000.0
+  pktopk_uv: 1000000
   offset_uv: 0
 ```
 
-Unknown device? Falls back to `devices/default.yaml` template, then built-in defaults. When reconnecting, the device's saved config is restored.
+### `scope_sensors.yaml` — global IEPE sensor library
 
-### Global sensor library
-
-User-defined IEPE sensors are stored in `scope_sensors.yaml` as a list of `ScopeSensor` dicts:
+User-defined IEPE sensors shared across all devices. Add entries here to make sensors
+available for assignment in the GUI Channel Config panel or headless config:
 
 ```yaml
 - id: <uuid>
   name: PCB 352C33 Ch1
-  sensitivity_mv_per_eu: 10.2   # mV/g, mV/(mm/s), etc.
-  engineering_units: g          # acceleration modality
-  target_unit: in/s             # display unit override (optional)
+  sensitivity_mv_per_eu: 10.2   # mV per engineering unit
+  engineering_units: g
+  target_unit: in/s             # optional display unit override
 ```
 
-Managed via `ScopeSensorRegistry` — provides CRUD operations and per-channel assignment persistence.
+Managed via `ScopeSensorRegistry` — provides CRUD operations. When a sensor is assigned to
+a channel, `DataCollector` divides incoming mV by `sensitivity` to produce engineering units.
 
 ### Logging
 
-Logging is configured via `vibechecker/logging.yaml`. In development, log files are written to `log/`. In a frozen Windows build, logs are written to `~/Documents/vibechecker/logs/`.
+Logging is configured via `vibechecker/logging.yaml`. In development, log files are written
+to `log/`. In a frozen Windows build, logs go to `~/Documents/vibechecker/logs/`.
 
 ---
 
