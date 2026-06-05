@@ -69,6 +69,33 @@ class RmsThresholdHook:
         self._n_samples.clear()
         self._consec_above.clear()
 
+    def baseline_snapshot(self) -> dict[int, float]:
+        """Return a copy of the current per-channel EWMA baseline values."""
+        return dict(self._baseline)
+
+    def update_baseline(self, results: list) -> None:
+        """Update EWMA state without checking for trigger events.
+
+        Called during burst frames so the baseline keeps adapting while
+        suppressing spurious retriggers.
+        """
+        for r in results:
+            ch = r.channel
+            current = r.overall
+            if ch not in self._n_samples:
+                self._n_samples[ch] = 0
+                self._baseline[ch] = current
+                self._consec_above[ch] = 0
+            n = self._n_samples[ch]
+            if n == 0:
+                self._baseline[ch] = current
+            else:
+                self._baseline[ch] = (
+                    self._alpha * self._baseline[ch]
+                    + (1.0 - self._alpha) * current
+                )
+            self._n_samples[ch] = n + 1
+
     def on_results(self, results: list, frame_cache) -> 'AnomalyEvent | None':
         for r in results:
             ch = r.channel
@@ -259,8 +286,21 @@ class CompositeAnomalyHook:
                 return event
         return None
 
+    def update_baseline(self, results: list) -> None:
+        """Propagate update_baseline() to every child hook that supports it."""
+        for hook in self._hooks:
+            if hasattr(hook, 'update_baseline'):
+                hook.update_baseline(results)
+
     def reset_baseline(self) -> None:
         """Propagate reset_baseline() to every child hook that supports it."""
         for hook in self._hooks:
             if hasattr(hook, 'reset_baseline'):
                 hook.reset_baseline()
+
+    def baseline_snapshot(self) -> dict[int, float]:
+        """Return baseline from the first child hook that exposes one."""
+        for hook in self._hooks:
+            if hasattr(hook, 'baseline_snapshot'):
+                return hook.baseline_snapshot()
+        return {}

@@ -316,7 +316,10 @@ def run(args: argparse.Namespace) -> int:
                  f"next {snap['next_capture_s']:.0f}s  "
                  f"{snap['total_bytes'] / 1e6:.1f} MB{burst_tag}\033[0m"]
 
+        baseline = snap.get('baseline', {})
         for r in results:
+            bl = baseline.get(r.channel)
+            bl_str = f"  \033[90mbaseline={bl:.4g} {r.unit}\033[0m" if bl is not None else ""
             if r.peaks is not None and len(r.peaks):
                 top = r.peaks[:3]
                 peaks_str = "  ".join(
@@ -327,6 +330,7 @@ def run(args: argparse.Namespace) -> int:
             lines.append(
                 f"\033[2K\r  Ch{r.channel}  overall={r.overall:.4g} {r.unit}"
                 + (f"  peaks: {peaks_str}" if peaks_str else "")
+                + bl_str
             )
 
         # Erase previous block and redraw

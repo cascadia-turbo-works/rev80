@@ -25,10 +25,11 @@ class IntervalGate:
                     max_burst_s: float = 600.0) -> None:
         """Enter burst mode or extend current burst (retrigger)."""
         if self._in_burst:
-            # retrigger: extend but cap at max_burst_s from now
-            self._burst_end = min(self._burst_end + duration_s, now + max_burst_s)
+            # retrigger: extend but cap at max_burst_s from the ORIGINAL burst start
+            self._burst_end = min(self._burst_end + duration_s, self._burst_start + max_burst_s)
         else:
             self._in_burst = True
+            self._burst_start = now
             self._burst_end = now + duration_s
 
     def exit_burst(self, now: float) -> None:
