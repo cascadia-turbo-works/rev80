@@ -211,6 +211,21 @@ def run(args: argparse.Namespace) -> int:
         args.no_compress = True
 
     config = AcquisitionSettings.from_dict(device_cfg.get("acquisition", {}))
+
+    # Load per-channel fields from the 'channels' block (not acquisition)
+    for ch_key, info in device_cfg.get("channels", {}).items():
+        ch = int(ch_key)
+        if info.get("voltage_range") is not None:
+            config.channel_voltage_ranges[ch] = info["voltage_range"]
+        if info.get("coupling"):
+            config.channel_couplings[ch] = info["coupling"]
+        if info.get("channel_name"):
+            config.channel_names[ch] = info["channel_name"]
+        if info.get("target_unit"):
+            config.channel_target_units[ch] = info["target_unit"]
+        if info.get("amplitude_mode"):
+            config.channel_amplitude_modes[ch] = info["amplitude_mode"]
+
     _apply_overrides(config, args)
 
     collector = DataCollector()
