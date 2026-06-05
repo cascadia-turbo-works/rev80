@@ -142,6 +142,62 @@ def _apply_overrides(config, args) -> None:
         config.enabled_channels = sorted(set(int(c) for c in args.channels))
 
 
+# ── Session summary ────────────────────────────────────────────────────────────
+
+def _print_session_summary(sensor, config, args, mon_cfg, anom_cfg, device_path) -> None:
+    from pathlib import Path
+    import vibechecker
+    from vibechecker.config import acquisition_config_path
+
+    interval_s    = args.interval
+    burst_dur_s   = args.burst_duration
+    pre_burst_s   = args.pre_buffer
+
+    h, rem = divmod(int(interval_s), 3600)
+    m, s   = divmod(rem, 60)
+    interval_str = (
+        f"{h}h {m:02d}m" if h else f"{m}m {s:02d}s" if m else f"{s}s"
+    )
+
+    ch_labels = "  ".join(
+        f"{config.name_for(ch)} (ch{ch})" for ch in config.enabled_channels
+    )
+    anom_enabled = anom_cfg.get("enabled", False)
+    hook_type    = anom_cfg.get("hook_type", "rms").upper()
+
+    print(f"\n{'─' * 54}")
+    print(f"  vibechecker headless")
+    print(f"{'─' * 54}")
+    print(f"  Device      {sensor.model_name}  s/n {sensor.serial_number}")
+    print(f"  Channels    {ch_labels or '(none)'}")
+    print(f"  Sample rate {config.samplerate} Hz   block {config.blocksize}   "
+          f"resolution {config.binsize:.3g} Hz")
+    print()
+    print(f"  Monitor")
+    print(f"    Interval  {interval_str}  ({interval_s:.0f}s)")
+    print(f"    Pre-burst {pre_burst_s:.0f}s   Burst {burst_dur_s:.0f}s  "
+          f"max {mon_cfg.get('max_burst_s', 600):.0f}s")
+    if anom_enabled:
+        warmup = anom_cfg.get("warmup", 10)
+        if hook_type in ("RMS", "BOTH"):
+            print(f"    Anomaly   RMS  threshold={anom_cfg.get('rms_pct', 10):.4g}%  "
+                  f"n={anom_cfg.get('rms_n', 3)}  warmup={warmup}")
+        if hook_type in ("SPECTRAL", "BOTH"):
+            fmin = anom_cfg.get("spec_fmin")
+            fmax = anom_cfg.get("spec_fmax")
+            band = (f"{fmin:.0f}–{fmax:.0f} Hz"
+                    if fmin is not None and fmax is not None else "full band")
+            print(f"    Anomaly   Spectral  threshold={anom_cfg.get('spec_pct', 50):.4g}%  "
+                  f"n={anom_cfg.get('spec_n', 10)}  {band}  warmup={warmup}")
+    else:
+        print(f"    Anomaly   disabled")
+    print()
+    print(f"  Config files")
+    print(f"    Acquisition  {acquisition_config_path()}")
+    print(f"    Device       {device_path}")
+    print(f"{'─' * 54}\n")
+
+
 # ── Main event loop ────────────────────────────────────────────────────────────
 
 def run(args: argparse.Namespace) -> int:
@@ -195,10 +251,31 @@ def run(args: argparse.Namespace) -> int:
         sensor = sensors[0]
         log.info(f"Found {sensor.model_name} s/n {sensor.serial_number}")
 
-    # ── Load device config and build collector ────────────────────────────────
-    acq_cfg    = _cfg.load_acquisition_config()
-    device_cfg = _cfg.load_device_config(sensor.model_name, sensor.serial_number)
-    mon_cfg    = acq_cfg.get("monitor", {})
+    # ── Load / create device config ───────────────────────────────────────────
+    acq_cfg  = _cfg.load_acquisition_config()
+    mon_cfg  = acq_cfg.get("monitor", {})
+
+    device_path = _cfg.device_config_path(sensor.model_name, sensor.serial_number)
+    if not device_path.exists():
+        log.info("New device — generating config: %s", device_path)
+        channels = _cfg.new_device_channels(sensor.num_channels)
+        device_cfg = {'channels': channels, 'siggen': None}
+        _cfg.save_device_config(sensor.model_name, sensor.serial_number, device_cfg)
+        print(f"  Created device config: {device_path}")
+    else:
+        device_cfg = _cfg.load_device_config(sensor.model_name, sensor.serial_number)
+
+    # Apply --channels override: update enabled flags and persist
+    if args.channels:
+        enabled_set = set(int(c) for c in args.channels)
+        changed = False
+        for ch, info in device_cfg.get("channels", {}).items():
+            want = ch in enabled_set
+            if info.get("enabled") != want:
+                info["enabled"] = want
+                changed = True
+        if changed:
+            _cfg.save_device_config(sensor.model_name, sensor.serial_number, device_cfg)
 
     if args.interval is None:
         args.interval      = float(mon_cfg.get("interval_s",      600))
@@ -213,9 +290,12 @@ def run(args: argparse.Namespace) -> int:
 
     config = AcquisitionSettings.from_dict(acq_cfg.get("acquisition", {}))
 
-    # Load per-channel fields from the device 'channels' block
+    # Load per-channel fields from device config; derive enabled_channels from 'enabled' flag
+    enabled_channels = []
     for ch_key, info in device_cfg.get("channels", {}).items():
         ch = int(ch_key)
+        if info.get("enabled", False):
+            enabled_channels.append(ch)
         if info.get("voltage_range") is not None:
             config.channel_voltage_ranges[ch] = info["voltage_range"]
         if info.get("coupling"):
@@ -226,12 +306,29 @@ def run(args: argparse.Namespace) -> int:
             config.channel_target_units[ch] = info["target_unit"]
         if info.get("amplitude_mode"):
             config.channel_amplitude_modes[ch] = info["amplitude_mode"]
+    if enabled_channels:
+        config.enabled_channels = sorted(enabled_channels)
 
-    _apply_overrides(config, args)
+    # CLI overrides (maxfreq, binsize; --channels already applied above)
+    if args.maxfreq:
+        config.maxfreq = float(args.maxfreq)
+    if args.binsize:
+        config.binsize = float(args.binsize)
 
     collector = DataCollector()
     collector.config = config
     collector.init_trend_channels()
+
+    # ── Summary + confirmation gate ───────────────────────────────────────────
+    anom_cfg = mon_cfg.get("anomaly", {})
+    _print_session_summary(sensor, config, args, mon_cfg, anom_cfg, device_path)
+    if not getattr(args, 'start_now', False):
+        try:
+            input("Press Enter to start monitoring, or Ctrl+C to abort… ")
+        except (KeyboardInterrupt, EOFError):
+            print("\nAborted.")
+            return 0
+    print()
 
     # ── Connect stream ────────────────────────────────────────────────────────
     collector.connect_sensor(sensor)
@@ -247,7 +344,6 @@ def run(args: argparse.Namespace) -> int:
     collector.resize_frame_cache(max(config.cache_frames, session.pre_buffer_frames))
     monitor.start(session)
 
-    anom_cfg = mon_cfg.get("anomaly", {})
     if anom_cfg.get("enabled", False):
         from vibechecker.monitor.anomaly import (
             CompositeAnomalyHook, RmsThresholdHook, SpectralThresholdHook,
@@ -276,12 +372,8 @@ def run(args: argparse.Namespace) -> int:
             monitor.arm()
             log.info(f"Anomaly detection armed: {hook_type}")
 
-    print(f"\nvibechecker headless — session {session_id}")
-    print(f"  interval  : {args.interval}s")
-    print(f"  output    : {session.session_dir}")
-    print(f"  channels  : {config.enabled_channels}")
-    print(f"  t + Enter : trigger manual burst")
-    print(f"  Ctrl+C    : stop\n")
+    print(f"Session {session_id} — recording to {session.session_dir}")
+    print(f"  t + Enter: manual burst   Ctrl+C: stop\n")
 
     # ── Keyboard input thread ─────────────────────────────────────────────────
     def _kbd_loop():
@@ -427,6 +519,8 @@ def main() -> None:
                       help="Override output root directory")
     sess.add_argument("--no-compress",    action="store_true",
                       help="Disable gzip compression")
+    sess.add_argument("--start-now",      action="store_true",
+                      help="Skip the pre-start confirmation prompt")
 
     # Device / acquisition options
     acq = parser.add_argument_group("acquisition options")
