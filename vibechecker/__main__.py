@@ -24,13 +24,13 @@ def _parse_args():
 
     return args, remaining
 
-if __name__ == "__main__":
+def main():
     args, _ = _parse_args()
 
     if args.headless:
         sys.argv = [sys.argv[0]] + [a for a in sys.argv[1:] if a != "--headless"]
-        from vibechecker.headless import main
-        main()
+        from vibechecker.headless import main as headless_main
+        headless_main()
     else:
         vibechecker.setup_logging(debug=args.debug)
         vibechecker.log_system_info()
@@ -40,3 +40,6 @@ if __name__ == "__main__":
         app.initialize()
         app.run(initial_file=args.from_file, autodetect=args.autodetect)
         app.cleanup()
+
+if __name__ == "__main__":
+    main()

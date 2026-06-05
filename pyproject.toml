@@ -20,6 +20,7 @@ dependencies = [
 
 [project.scripts]
 vibechecker-headless = "vibechecker.headless:main"
+vibechecker = "vibechecker.__main__:main"
 
 [project.optional-dependencies]
 gui = ["dearpygui==2.0.0"]
