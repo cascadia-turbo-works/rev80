@@ -231,6 +231,32 @@ def run(args: argparse.Namespace) -> int:
     collector.resize_frame_cache(max(config.cache_frames, session.pre_buffer_frames))
     monitor.start(session)
 
+    anom_cfg = mon_cfg.get("anomaly", {})
+    if anom_cfg.get("enabled", False):
+        from vibechecker.monitor.anomaly import (
+            CompositeAnomalyHook, RmsThresholdHook, SpectralThresholdHook,
+        )
+        hook_type = anom_cfg.get("hook_type", "RMS")
+        hooks = []
+        if hook_type in ("RMS", "Both"):
+            hooks.append(RmsThresholdHook(
+                rms_threshold_pct    = float(anom_cfg.get("rms_pct",    10.0)),
+                consecutive_n        = int(anom_cfg.get("rms_n",        3)),
+                baseline_alpha       = float(anom_cfg.get("rms_alpha",  0.97)),
+                min_baseline_samples = int(anom_cfg.get("rms_warmup",   30)),
+            ))
+        if hook_type in ("Spectral", "Both"):
+            hooks.append(SpectralThresholdHook(
+                spectral_threshold_db = float(anom_cfg.get("spec_db",   3.0)),
+                consecutive_n         = int(anom_cfg.get("spec_n",      3)),
+                fmin                  = float(anom_cfg.get("spec_fmin", 0.0)),
+                fmax                  = float(anom_cfg.get("spec_fmax", 0.0)),
+            ))
+        if hooks:
+            monitor.set_anomaly_hook(CompositeAnomalyHook(hooks))
+            monitor.arm()
+            log.info(f"Anomaly detection armed: {hook_type}")
+
     print(f"\nvibechecker headless — session {session_id}")
     print(f"  interval  : {args.interval}s")
     print(f"  output    : {session.session_dir}")
@@ -257,8 +283,43 @@ def run(args: argparse.Namespace) -> int:
     threading.Thread(target=_kbd_loop, daemon=True, name="headless-kbd").start()
 
     # ── Event loop ────────────────────────────────────────────────────────────
-    prev_captures = 0
-    prev_bursts   = 0
+    prev_captures  = 0
+    prev_bursts    = 0
+    _status_lines  = 0  # tracks how many lines to erase on next redraw
+
+    def _print_status(results: list) -> None:
+        nonlocal _status_lines
+        snap    = monitor.status_snapshot()
+        elapsed = snap["elapsed_s"]
+        h, rem  = divmod(int(elapsed), 3600)
+        m, s    = divmod(rem, 60)
+        burst_tag = f"  \033[33m[BURST {snap['burst_remaining_s']:.0f}s]\033[0m" \
+                    if snap["is_in_burst"] else ""
+
+        lines = [f"\033[2K\r\033[90m[{h:02d}:{m:02d}:{s:02d}]  "
+                 f"cap #{snap['capture_count']}  "
+                 f"next {snap['next_capture_s']:.0f}s  "
+                 f"{snap['total_bytes'] / 1e6:.1f} MB{burst_tag}\033[0m"]
+
+        for r in results:
+            if r.peaks is not None and len(r.peaks):
+                top = r.peaks[:3]
+                peaks_str = "  ".join(
+                    f"{r.freq[i]:.0f}Hz={r.spectrum[i]:.3g}" for i in top
+                )
+            else:
+                peaks_str = ""
+            lines.append(
+                f"\033[2K\r  Ch{r.channel}  overall={r.overall:.4g} {r.unit}"
+                + (f"  peaks: {peaks_str}" if peaks_str else "")
+            )
+
+        # Erase previous block and redraw
+        if _status_lines:
+            sys.stdout.write(f"\033[{_status_lines}A")
+        sys.stdout.write("\n".join(lines) + "\n")
+        sys.stdout.flush()
+        _status_lines = len(lines)
 
     while not shutdown.is_set():
         if not collector.new_frame_event.wait(timeout=1.0):
@@ -268,6 +329,7 @@ def run(args: argparse.Namespace) -> int:
         results = collector.process_samples()
         if results:
             monitor.on_results(results, collector.data["frame_cache"])
+            _print_status(results)
 
         snap = monitor.status_snapshot()
 
