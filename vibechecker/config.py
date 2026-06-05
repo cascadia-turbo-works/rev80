@@ -31,19 +31,29 @@ log = vibechecker.get_logger(__name__)
 DEFAULT_CACHE_FRAMES: int = 32
 
 # Template for a single channel — used by picoscope-defaults.yaml and new-device init.
+# channel_name / target_unit are null so the app falls back to "Ch A", sensor EU, etc.
 _BUILTIN_CHANNEL_TEMPLATE: dict[str, Any] = {
-    'enabled':        True,
+    'enabled':        False,
     'sensor_id':      None,
-    'voltage_range':  7,
+    'voltage_range':  6,      # ±1 V
     'coupling':       'AC',
-    'channel_name':   '',
-    'target_unit':    '',
-    'amplitude_mode': '',
+    'channel_name':   None,
+    'target_unit':    None,
+    'amplitude_mode': '0-P',
+}
+
+# Siggen template — stored in picoscope-defaults.yaml and written on every device save
+# so the user always has editable siggen settings even when the generator is off.
+_BUILTIN_SIGGEN: dict[str, Any] = {
+    'wave_type':  'PS4000A_SINE',
+    'freq_hz':    1000.0,
+    'pktopk_uv':  1_000_000,
+    'offset_uv':  0,
 }
 
 # Device file defaults (channels + siggen only).
 _BUILTIN_DEVICE: dict[str, Any] = {
-    'channels': {0: copy.deepcopy(_BUILTIN_CHANNEL_TEMPLATE)},
+    'channels': {0: {**copy.deepcopy(_BUILTIN_CHANNEL_TEMPLATE), 'enabled': True}},
     'siggen':   None,
 }
 
@@ -154,11 +164,14 @@ def _atomic_yaml_write(path: Path, data: Any) -> None:
 # ---------------------------------------------------------------------------
 
 def ensure_defaults_config() -> None:
-    """Write devices/picoscope-defaults.yaml with built-in template if absent."""
+    """Write devices/picoscope-defaults.yaml with built-in templates if absent."""
     path = defaults_channel_path()
     if not path.exists():
         log.info('Creating channel defaults: %s', path)
-        _atomic_yaml_write(path, {'channel': copy.deepcopy(_BUILTIN_CHANNEL_TEMPLATE)})
+        _atomic_yaml_write(path, {
+            'channel': copy.deepcopy(_BUILTIN_CHANNEL_TEMPLATE),
+            'siggen':  {**copy.deepcopy(_BUILTIN_SIGGEN), 'enabled': False},
+        })
 
 
 def ensure_acquisition_config() -> None:
@@ -230,10 +243,14 @@ def save_device_config(model_name: str, serial_number: str, data: dict[str, Any]
     """Atomically write channel + siggen config for the given device.
 
     Only 'channels' and 'siggen' keys are written; acquisition settings belong
-    in acquisition.yaml.
+    in acquisition.yaml. Siggen is always written as {enabled: bool, ...settings}
+    so the user retains editable settings even when the generator is off.
     """
     path = device_config_path(model_name, serial_number)
-    filtered = {k: data[k] for k in ('channels', 'siggen') if k in data}
+    filtered: dict[str, Any] = {}
+    if 'channels' in data:
+        filtered['channels'] = data['channels']
+    filtered['siggen'] = _siggen_for_yaml(data.get('siggen'))
     _atomic_yaml_write(path, filtered)
     log.debug('Saved device config to %s', path)
 
@@ -260,9 +277,14 @@ def load_defaults_channel() -> dict[str, Any]:
 
 
 def new_device_channels(num_channels: int) -> dict[int, dict[str, Any]]:
-    """Build a channels dict for a brand-new device using the defaults template."""
+    """Build a channels dict for a brand-new device using the defaults template.
+
+    Channel 0 is enabled; all others default to disabled.
+    """
     template = load_defaults_channel()
-    return {ch: copy.deepcopy(template) for ch in range(num_channels)}
+    channels = {ch: copy.deepcopy(template) for ch in range(num_channels)}
+    channels[0]['enabled'] = True
+    return channels
 
 
 # ---------------------------------------------------------------------------
@@ -293,7 +315,11 @@ def _merge_acquisition(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _merge_device(data: dict[str, Any]) -> dict[str, Any]:
-    """Return device data with missing per-channel keys filled from built-in template."""
+    """Return device data with missing per-channel keys filled from built-in template.
+
+    Siggen translation: YAML stores {enabled: bool, ...settings...}.
+    In memory: None = disabled, dict-without-enabled = enabled.
+    """
     result: dict[str, Any] = {'channels': {}, 'siggen': None}
 
     if 'channels' in data and isinstance(data['channels'], dict):
@@ -305,6 +331,20 @@ def _merge_device(data: dict[str, Any]) -> dict[str, Any]:
             result['channels'][ch] = merged
 
     if 'siggen' in data:
-        result['siggen'] = data['siggen']
+        sg = data['siggen']
+        if isinstance(sg, dict):
+            enabled = sg.get('enabled', True)   # True default: old files have no flag
+            result['siggen'] = None if not enabled else {
+                k: v for k, v in sg.items() if k != 'enabled'
+            }
+        else:
+            result['siggen'] = sg   # None from old format
 
     return result
+
+
+def _siggen_for_yaml(siggen_config: dict | None) -> dict[str, Any]:
+    """Convert in-memory siggen (None or settings-dict) to the YAML representation."""
+    if siggen_config is None:
+        return {**copy.deepcopy(_BUILTIN_SIGGEN), 'enabled': False}
+    return {**siggen_config, 'enabled': True}
