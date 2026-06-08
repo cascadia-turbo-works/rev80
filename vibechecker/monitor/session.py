@@ -14,6 +14,8 @@ class MonitorSession:
     session_dir: Path             # directory; session.h5 lives at session_dir/session.h5
     compression: str = 'gzip'
     compression_level: int = 4
+    cooldown_enabled: bool = False
+    cooldown_s: float = 0.0       # blocks new anomaly-triggered bursts for this long after one fires
     # Snapshots captured at arm time — embedded in session.h5
     acq_snapshot: dict = field(default_factory=dict)      # AcquisitionSettings.to_dict()
     channel_snapshot: dict = field(default_factory=dict)  # {ch: {name, unit, ...}}
