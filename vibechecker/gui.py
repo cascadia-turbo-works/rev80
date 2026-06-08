@@ -1946,6 +1946,13 @@ class GUI:
         if not self.collector.is_streaming:
             self._toggle_acquisition()
 
+        # Abort if the stream failed to start (no device connected / stream is None)
+        if not self.collector.is_streaming:
+            log.warning("Monitor: cannot start — connect a device first")
+            if dpg.does_item_exist(ui.MONITOR_STATUS_TEXT):
+                dpg.set_value(ui.MONITOR_STATUS_TEXT, "No device connected")
+            return
+
         # Read dialog config (fall back to defaults when dialog hasn't been opened)
         interval_label = dpg.get_value(ui.MON_DLG_INTERVAL) if dpg.does_item_exist(ui.MON_DLG_INTERVAL) else "1 h"
         interval_s = next(
