@@ -283,3 +283,18 @@ Current setup: bare git repo at `git@192.168.0.43:repo/vibegui.git`
 
 !# Record only top x peaks, or (freq,amp) over amplitude threshold to reduce data load.
 
+## Todo 2026-06-05
+
+- anomaly threshold simplified
+  - enable + hard upper limit
+  - enable + hard lower limit
+- watch shift of one-time peak to guage speed change?
+- rms_n -> rms_s tripping window in time instead of frames
+- How to handle repeated triggers? Just let it run.
+
+- Error recording session from gui.
+
+Verbage:
+- start monitor. Record -> monitor
+- arm by default, remove button
+- Trigger burst -> record burst
