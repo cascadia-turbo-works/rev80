@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 import vibechecker as vc
+from vibechecker.monitor.anomaly import AnomalyEvent
 from vibechecker.monitor.controller import MonitorController
 from vibechecker.monitor.session import MonitorSession
 from vibechecker.sample import ChannelResult, VibeSample
@@ -112,12 +113,6 @@ class TestLifecycle:
         ctrl.stop()
         assert not ctrl.is_recording
 
-    def test_is_not_armed_by_default(self, tmp_path):
-        ctrl = MonitorController()
-        ctrl.start(_make_session(tmp_path))
-        assert not ctrl.is_armed
-        ctrl.stop()
-
     def test_stop_is_idempotent(self, tmp_path):
         ctrl = MonitorController()
         ctrl.start(_make_session(tmp_path))
@@ -139,43 +134,106 @@ class TestLifecycle:
 
 
 # ---------------------------------------------------------------------------
-# Arm / disarm
+# Anomaly hook wiring — built at start(), no separate arm/disarm step
 # ---------------------------------------------------------------------------
 
-class TestArmDisarm:
+class _AlwaysFireHook:
+    """Stub anomaly hook that fires an event on every call — for wiring tests."""
 
-    def test_arm_enables_armed_flag(self, tmp_path):
+    def __init__(self, burst_duration_s: float = 0.05):
+        self.calls = 0
+        self._burst_duration_s = burst_duration_s
+
+    def on_results(self, results, frame_cache):
+        self.calls += 1
+        return AnomalyEvent(
+            trigger_time=datetime.now(timezone.utc),
+            channel=0, reason='stub', burst_duration_s=self._burst_duration_s,
+            trigger_rel_time=0.0,
+        )
+
+
+class TestAnomalyHookWiring:
+
+    def test_hook_passed_at_start_fires_without_arming(self, tmp_path):
+        """The hook supplied to start() is active immediately — no arm() step exists."""
         ctrl = MonitorController()
-        ctrl.start(_make_session(tmp_path))
-        assert not ctrl.is_armed
-        ctrl.arm()
-        assert ctrl.is_armed
+        hook = _AlwaysFireHook()
+        session = _make_session(tmp_path, interval_s=100.0)
+        ctrl.start(session, anomaly_hook=hook)
+        ctrl.on_results([_make_result()], _make_frame_cache())
+        assert hook.calls >= 1
+        assert ctrl._in_burst
         ctrl.stop()
 
-    def test_disarm_clears_armed_flag(self, tmp_path):
+    def test_no_hook_records_without_detection(self, tmp_path):
+        """start(session) with no hook records normally; nothing ever bursts."""
         ctrl = MonitorController()
-        ctrl.start(_make_session(tmp_path))
-        ctrl.arm()
-        ctrl.disarm()
-        assert not ctrl.is_armed
+        session = _make_session(tmp_path, interval_s=100.0)
+        ctrl.start(session)
+        ctrl.on_results([_make_result()], _make_frame_cache())
+        assert not ctrl._in_burst
         ctrl.stop()
 
-    def test_arm_noop_when_not_recording(self):
-        ctrl = MonitorController()
-        ctrl.arm()  # must not raise
-        assert not ctrl.is_armed
 
-    def test_disarm_noop_when_not_recording(self):
-        ctrl = MonitorController()
-        ctrl.disarm()  # must not raise
-        assert not ctrl.is_armed
+# ---------------------------------------------------------------------------
+# Cooldown gating
+# ---------------------------------------------------------------------------
 
-    def test_stop_clears_armed_flag(self, tmp_path):
+class TestCooldownGating:
+
+    def _cooldown_session(self, tmp_path, cooldown_enabled, cooldown_s=10.0):
+        return MonitorSession(
+            session_id='cooldown-test', start_time=datetime.now(timezone.utc),
+            interval_s=100.0, pre_buffer_frames=2,
+            burst_duration_s=0.05, max_burst_s=5.0,
+            session_dir=tmp_path / 'session',
+            cooldown_enabled=cooldown_enabled, cooldown_s=cooldown_s,
+        )
+
+    def test_cooldown_suppresses_hook_after_burst(self, tmp_path):
+        """Once a burst fires, cooldown blocks further hook checks until it expires."""
         ctrl = MonitorController()
-        ctrl.start(_make_session(tmp_path))
-        ctrl.arm()
+        hook = _AlwaysFireHook()
+        session = self._cooldown_session(tmp_path, cooldown_enabled=True, cooldown_s=10.0)
+        ctrl.start(session, anomaly_hook=hook)
+        frame_cache = _make_frame_cache()
+        results = [_make_result()]
+
+        ctrl.on_results(results, frame_cache)   # triggers burst, arms cooldown
+        assert ctrl._in_burst
+        calls_at_trigger = hook.calls
+
+        _drive(ctrl, frame_cache, results, duration_s=0.2)
+        assert not ctrl._in_burst   # burst has run its course
+
+        ctrl.on_results(results, frame_cache)
+        assert hook.calls == calls_at_trigger, "hook must not be consulted during cooldown"
         ctrl.stop()
-        assert not ctrl.is_armed
+
+    def test_disabled_cooldown_allows_immediate_retrigger(self, tmp_path):
+        """Without cooldown enabled, the hook is consulted again as soon as the burst ends."""
+        ctrl = MonitorController()
+        hook = _AlwaysFireHook()
+        session = self._cooldown_session(tmp_path, cooldown_enabled=False)
+        ctrl.start(session, anomaly_hook=hook)
+        frame_cache = _make_frame_cache()
+        results = [_make_result()]
+
+        ctrl.on_results(results, frame_cache)   # triggers the first burst
+        assert ctrl._in_burst
+
+        # Drive until that burst completes and flushes
+        deadline = time.monotonic() + 2.0
+        while ctrl._in_burst and time.monotonic() < deadline:
+            ctrl.on_results(results, frame_cache)
+            time.sleep(0.01)
+        assert not ctrl._in_burst
+
+        calls_before_retrigger = hook.calls
+        ctrl.on_results(results, frame_cache)   # no cooldown — hook consulted immediately
+        assert hook.calls > calls_before_retrigger
+        ctrl.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +325,7 @@ class TestStatusSnapshot:
         assert snap['error'] is None
         ctrl.stop()
 
-    def test_disarmed_defaults(self):
+    def test_default_snapshot_before_start(self):
         ctrl = MonitorController()
         snap = ctrl.status_snapshot()
         assert snap['elapsed_s'] == 0.0

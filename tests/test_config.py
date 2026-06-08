@@ -175,7 +175,7 @@ class TestAcquisitionConfig:
             data = cfg.load_acquisition_config()
         assert data['monitor']['anomaly']['enabled'] is True
         assert data['monitor']['anomaly']['rms_pct'] == 15.0
-        assert data['monitor']['anomaly']['rms_n'] == cfg._BUILTIN_ACQ['monitor']['anomaly']['rms_n']
+        assert data['monitor']['anomaly']['rms_s'] == cfg._BUILTIN_ACQ['monitor']['anomaly']['rms_s']
 
     def test_roundtrip(self, tmp_path):
         vc = tmp_path / 'vc'

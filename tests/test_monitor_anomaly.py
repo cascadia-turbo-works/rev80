@@ -1,5 +1,7 @@
 """Tests for Phase 2 anomaly detection hooks in vibechecker.monitor.anomaly."""
-from datetime import datetime, timezone
+import logging
+import time
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pytest
@@ -7,6 +9,7 @@ import pytest
 from vibechecker.monitor.anomaly import (
     AnomalyEvent,
     CompositeAnomalyHook,
+    FixedThresholdHook,
     NullAnomalyHook,
     RmsThresholdHook,
     SpectralThresholdHook,
@@ -18,12 +21,12 @@ from vibechecker.sample import ChannelResult
 # Helper
 # ---------------------------------------------------------------------------
 
-def _make_result(channel=0, overall=0.1, n=64, samplerate=1000):
+def _make_result(channel=0, overall=0.1, n=64, samplerate=1000, unit='mV', rel_time=0.0):
     freq = np.linspace(0, samplerate / 2, n // 2 + 1)
     spectrum = np.ones_like(freq) * 0.01
     return ChannelResult(
         channel=channel,
-        unit='mV',
+        unit=unit,
         overflow=False,
         time_data=np.ones(n) * overall,
         time_vec=np.arange(n) / samplerate,
@@ -33,7 +36,7 @@ def _make_result(channel=0, overall=0.1, n=64, samplerate=1000):
         peaks=np.array([], dtype=int),
         overall=overall,
         timestamp=datetime.now(timezone.utc),
-        rel_time=0.0,
+        rel_time=rel_time,
         status='OKAY',
     )
 
@@ -396,3 +399,171 @@ class TestCompositeAnomalyHook:
         results_high = [_make_result(channel=0, overall=1000.0)]
         event = composite.on_results(results_high, None)
         assert event is None
+
+
+# ---------------------------------------------------------------------------
+# RmsThresholdHook — t=0 / streak-start tracking
+# ---------------------------------------------------------------------------
+
+class TestRmsStreakTracking:
+    """The hook must remember the *first* anomalous frame as the t=0 reference,
+    even though the event only fires `consecutive_n` frames later."""
+
+    def test_trigger_rel_time_is_first_anomalous_frame(self):
+        consecutive_n = 3
+        min_samples = 5
+        hook = RmsThresholdHook(
+            rms_threshold_pct=10.0,
+            consecutive_n=consecutive_n,
+            min_baseline_samples=min_samples,
+        )
+        results_normal = [_make_result(channel=0, overall=1.0, rel_time=0.0)]
+        for _ in range(min_samples):
+            hook.on_results(results_normal, None)
+
+        t0 = 100.0
+        results_high_t0 = [_make_result(channel=0, overall=10.0, rel_time=t0)]
+        results_high_t1 = [_make_result(channel=0, overall=10.0, rel_time=t0 + 1.0)]
+        results_high_t2 = [_make_result(channel=0, overall=10.0, rel_time=t0 + 2.0)]
+
+        assert hook.on_results(results_high_t0, None) is None
+        assert hook.on_results(results_high_t1, None) is None
+        event = hook.on_results(results_high_t2, None)
+
+        assert event is not None
+        assert event.trigger_rel_time == pytest.approx(t0)
+
+    def test_trigger_time_captured_at_streak_start_not_at_fire(self):
+        consecutive_n = 3
+        min_samples = 5
+        hook = RmsThresholdHook(
+            rms_threshold_pct=10.0,
+            consecutive_n=consecutive_n,
+            min_baseline_samples=min_samples,
+        )
+        results_normal = [_make_result(channel=0, overall=1.0)]
+        for _ in range(min_samples):
+            hook.on_results(results_normal, None)
+
+        results_high = [_make_result(channel=0, overall=10.0)]
+
+        before_streak = datetime.now(timezone.utc)
+        hook.on_results(results_high, None)               # frame 1 — streak starts
+        after_streak_start = datetime.now(timezone.utc)
+        time.sleep(0.05)
+        hook.on_results(results_high, None)               # frame 2
+        time.sleep(0.05)
+        event = hook.on_results(results_high, None)       # frame 3 — fires
+
+        assert event is not None
+        # trigger_time reflects when the streak STARTED, not when the hook fired
+        assert before_streak <= event.trigger_time <= after_streak_start
+        assert event.trigger_time < datetime.now(timezone.utc) - timedelta(seconds=0.05)
+
+    def test_streak_resets_on_normal_frame_clears_t0(self):
+        """A below-threshold frame mid-streak clears the remembered t=0 reference."""
+        consecutive_n = 3
+        min_samples = 5
+        hook = RmsThresholdHook(
+            rms_threshold_pct=10.0,
+            consecutive_n=consecutive_n,
+            baseline_alpha=1.0,   # frozen baseline — isolates streak logic from EWMA drift
+            min_baseline_samples=min_samples,
+        )
+        results_normal = [_make_result(channel=0, overall=1.0, rel_time=0.0)]
+        for _ in range(min_samples):
+            hook.on_results(results_normal, None)
+
+        results_high_a = [_make_result(channel=0, overall=10.0, rel_time=10.0)]
+        hook.on_results(results_high_a, None)
+        assert 0 in hook._streak_start_rel
+
+        hook.on_results(results_normal, None)             # resets the streak
+        assert 0 not in hook._streak_start_rel
+
+        results_high_b = [_make_result(channel=0, overall=10.0, rel_time=50.0)]
+        hook.on_results(results_high_b, None)
+        hook.on_results(results_high_b, None)
+        event = hook.on_results(results_high_b, None)
+
+        assert event is not None
+        assert event.trigger_rel_time == pytest.approx(50.0)
+
+
+# ---------------------------------------------------------------------------
+# FixedThresholdHook tests
+# ---------------------------------------------------------------------------
+
+class TestFixedThresholdHook:
+
+    def test_upper_limit_triggers_when_exceeded(self):
+        hook = FixedThresholdHook(upper_limit=1.0, upper_unit='in/s')
+        results = [_make_result(channel=0, overall=2.0, unit='in/s')]
+        event = hook.on_results(results, None)
+        assert event is not None
+        assert event.channel == 0
+        assert 'upper' in event.reason.lower()
+
+    def test_upper_limit_no_trigger_when_below(self):
+        hook = FixedThresholdHook(upper_limit=1.0, upper_unit='in/s')
+        results = [_make_result(channel=0, overall=0.5, unit='in/s')]
+        assert hook.on_results(results, None) is None
+
+    def test_lower_limit_triggers_when_below(self):
+        hook = FixedThresholdHook(lower_limit=0.1, lower_unit='in/s')
+        results = [_make_result(channel=0, overall=0.05, unit='in/s')]
+        event = hook.on_results(results, None)
+        assert event is not None
+        assert 'lower' in event.reason.lower()
+
+    def test_lower_limit_no_trigger_when_above(self):
+        hook = FixedThresholdHook(lower_limit=0.1, lower_unit='in/s')
+        results = [_make_result(channel=0, overall=1.0, unit='in/s')]
+        assert hook.on_results(results, None) is None
+
+    def test_fires_immediately_no_debounce(self):
+        """Unlike the EWMA hooks, fixed thresholds fire on the very first frame."""
+        hook = FixedThresholdHook(upper_limit=1.0, upper_unit='in/s')
+        results = [_make_result(channel=0, overall=5.0, unit='in/s')]
+        assert hook.on_results(results, None) is not None
+
+    def test_converts_compatible_units(self):
+        """1 in/s ≈ 25.4 mm/s — a channel reporting mm/s triggers against an in/s limit."""
+        hook = FixedThresholdHook(upper_limit=1.0, upper_unit='in/s')
+        results = [_make_result(channel=0, overall=30.0, unit='mm/s')]   # > 25.4 mm/s
+        event = hook.on_results(results, None)
+        assert event is not None
+
+    def test_no_trigger_when_channel_unit_is_mv(self):
+        """A channel without sensor/EU (raw 'mV') can't be evaluated — skipped, not crashed."""
+        hook = FixedThresholdHook(upper_limit=1.0, upper_unit='in/s')
+        results = [_make_result(channel=0, overall=999.0, unit='mV')]
+        assert hook.on_results(results, None) is None
+
+    def test_warns_once_per_channel_for_incompatible_units(self, caplog):
+        """Mismatched modalities (e.g. velocity limit vs. an acceleration channel) warn once."""
+        hook = FixedThresholdHook(upper_limit=1.0, upper_unit='in/s')
+        results = [_make_result(channel=0, overall=999.0, unit='g')]
+        with caplog.at_level(logging.WARNING):
+            assert hook.on_results(results, None) is None
+            assert hook.on_results(results, None) is None
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+
+    def test_independent_upper_and_lower(self):
+        """Both limits may be enabled at once; either may fire independently."""
+        hook = FixedThresholdHook(upper_limit=2.0, upper_unit='in/s',
+                                  lower_limit=0.1, lower_unit='in/s')
+        below  = [_make_result(channel=0, overall=0.05, unit='in/s')]
+        above  = [_make_result(channel=0, overall=3.0,  unit='in/s')]
+        normal = [_make_result(channel=0, overall=1.0,  unit='in/s')]
+
+        assert hook.on_results(normal, None) is None
+
+        lower_event = hook.on_results(below, None)
+        assert lower_event is not None
+        assert 'lower' in lower_event.reason.lower()
+
+        upper_event = hook.on_results(above, None)
+        assert upper_event is not None
+        assert 'upper' in upper_event.reason.lower()
