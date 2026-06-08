@@ -84,13 +84,21 @@ _BUILTIN_ACQ: dict[str, Any] = {
             'hook_type':  'rms',
             'warmup':     10,
             'rms_pct':    10.0,
-            'rms_n':      3,
+            'rms_s':      3.0,    # sustained deviation time (s) before firing; 0 = fire on first frame
             'rms_alpha':  0.97,
             'spec_pct':   50.0,
             'spec_alpha': 0.995,
             'spec_n':     10,
             'spec_fmin':  None,   # null = no lower limit
             'spec_fmax':  None,   # null = no upper limit
+            'cooldown_enabled':  False,
+            'cooldown_s':        300.0,
+            'fixed_upper_enabled': False,
+            'fixed_upper_value':   1.0,
+            'fixed_upper_unit':    'in/s',
+            'fixed_lower_enabled': False,
+            'fixed_lower_value':   0.05,
+            'fixed_lower_unit':    'in/s',
         },
     },
 }
