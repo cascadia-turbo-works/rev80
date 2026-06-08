@@ -81,7 +81,7 @@ def _edit_config() -> int:
 
 # ── Helpers used only during a live session ────────────────────────────────────
 
-def _build_session(collector, args, session_id):
+def _build_session(collector, args, session_id, anom_cfg=None):
     from datetime import datetime, timezone
     from pathlib import Path
     import vibechecker
@@ -116,6 +116,8 @@ def _build_session(collector, args, session_id):
             seen.add(sc.id)
             sensor_snapshot[sc.id] = sc.to_dict()
 
+    anom_cfg = anom_cfg or {}
+
     from vibechecker.monitor.session import MonitorSession
     return MonitorSession(
         session_id        = session_id,
@@ -127,10 +129,74 @@ def _build_session(collector, args, session_id):
         session_dir       = session_dir,
         compression       = "none" if args.no_compress else "gzip",
         compression_level = 4,
+        cooldown_enabled  = bool(anom_cfg.get("cooldown_enabled", False)),
+        cooldown_s        = float(anom_cfg.get("cooldown_s", 0.0)),
         acq_snapshot      = cfg.to_dict(),
         channel_snapshot  = ch_snapshot,
         sensor_snapshot   = sensor_snapshot,
     )
+
+
+def _build_anomaly_hook(anom_cfg: dict, config, pre_buffer_s: float = 0.0):
+    """Build the composite anomaly hook from monitor.anomaly config.
+
+    The `enabled` switch gates the EWMA-based hooks (RMS / Spectral); the
+    fixed-level threshold trigger has its own independent enable switches and
+    fires regardless of `enabled`.
+    """
+    from vibechecker.monitor.anomaly import (
+        CompositeAnomalyHook, FixedThresholdHook, NullAnomalyHook,
+        RmsThresholdHook, SpectralThresholdHook,
+    )
+
+    hooks: list = []
+    warmup = int(anom_cfg.get("warmup", 10))
+
+    if anom_cfg.get("enabled", False):
+        hook_type = anom_cfg.get("hook_type", "rms").lower()
+
+        if hook_type in ("rms", "both"):
+            period = config.acquisition_period
+            rms_s  = float(anom_cfg.get("rms_s", 3.0))
+            consecutive_n = max(1, round(rms_s / period) + 1) if period > 0 else 1
+            if rms_s > 0.25 * pre_buffer_s:
+                log.warning(
+                    "Monitor anomaly: RMS sustained time %.3gs exceeds 25%% of the "
+                    "pre-trigger buffer (%.3gs) — the t=0 frame will eat into the "
+                    "pre-anomaly context captured in each burst", rms_s, pre_buffer_s,
+                )
+            hooks.append(RmsThresholdHook(
+                rms_threshold_pct    = float(anom_cfg.get("rms_pct",   10.0)),
+                consecutive_n        = consecutive_n,
+                baseline_alpha       = float(anom_cfg.get("rms_alpha", 0.97)),
+                min_baseline_samples = warmup,
+            ))
+        if hook_type in ("spectral", "both"):
+            hooks.append(SpectralThresholdHook(
+                spectral_threshold_pct = float(anom_cfg.get("spec_pct",   50.0)),
+                consecutive_n          = int(anom_cfg.get("spec_n",       10)),
+                baseline_alpha         = float(anom_cfg.get("spec_alpha", 0.995)),
+                min_baseline_samples   = warmup,
+                fmin                   = anom_cfg.get("spec_fmin",  None),
+                fmax                   = anom_cfg.get("spec_fmax",  None),
+            ))
+
+    upper_on = bool(anom_cfg.get("fixed_upper_enabled", False))
+    lower_on = bool(anom_cfg.get("fixed_lower_enabled", False))
+    if upper_on or lower_on:
+        hooks.append(FixedThresholdHook(
+            upper_limit = float(anom_cfg.get("fixed_upper_value", 1.0))  if upper_on else None,
+            upper_unit  = str(anom_cfg.get("fixed_upper_unit",    "in/s")),
+            lower_limit = float(anom_cfg.get("fixed_lower_value", 0.05)) if lower_on else None,
+            lower_unit  = str(anom_cfg.get("fixed_lower_unit",    "in/s")),
+        ))
+
+    if not hooks:
+        return NullAnomalyHook()
+    if len(hooks) == 1:
+        return hooks[0]
+    log.info(f"Anomaly detection enabled: {len(hooks)} hook(s)")
+    return CompositeAnomalyHook(hooks)
 
 
 def _apply_overrides(config, args) -> None:
@@ -181,7 +247,7 @@ def _print_session_summary(sensor, config, args, mon_cfg, anom_cfg, device_path)
         warmup = anom_cfg.get("warmup", 10)
         if hook_type in ("RMS", "BOTH"):
             print(f"    Anomaly   RMS  threshold={anom_cfg.get('rms_pct', 10):.4g}%  "
-                  f"n={anom_cfg.get('rms_n', 3)}  warmup={warmup}")
+                  f"sustained={anom_cfg.get('rms_s', 3.0):.3g}s  warmup={warmup}")
         if hook_type in ("SPECTRAL", "BOTH"):
             fmin = anom_cfg.get("spec_fmin")
             fmax = anom_cfg.get("spec_fmax")
@@ -338,39 +404,13 @@ def run(args: argparse.Namespace) -> int:
 
     # ── Build session ─────────────────────────────────────────────────────────
     session_id = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H%M%S")
-    session    = _build_session(collector, args, session_id)
+    session    = _build_session(collector, args, session_id, anom_cfg)
     monitor    = MonitorController()
 
-    collector.resize_frame_cache(max(config.cache_frames, session.pre_buffer_frames))
-    monitor.start(session)
+    anomaly_hook = _build_anomaly_hook(anom_cfg, config, pre_buffer_s=float(args.pre_buffer))
 
-    if anom_cfg.get("enabled", False):
-        from vibechecker.monitor.anomaly import (
-            CompositeAnomalyHook, RmsThresholdHook, SpectralThresholdHook,
-        )
-        hook_type = anom_cfg.get("hook_type", "rms").lower()
-        warmup    = int(anom_cfg.get("warmup", 10))
-        hooks = []
-        if hook_type in ("rms", "both"):
-            hooks.append(RmsThresholdHook(
-                rms_threshold_pct    = float(anom_cfg.get("rms_pct",   10.0)),
-                consecutive_n        = int(anom_cfg.get("rms_n",       3)),
-                baseline_alpha       = float(anom_cfg.get("rms_alpha", 0.97)),
-                min_baseline_samples = warmup,
-            ))
-        if hook_type in ("spectral", "both"):
-            hooks.append(SpectralThresholdHook(
-                spectral_threshold_pct = float(anom_cfg.get("spec_pct",   50.0)),
-                consecutive_n          = int(anom_cfg.get("spec_n",       10)),
-                baseline_alpha         = float(anom_cfg.get("spec_alpha", 0.995)),
-                min_baseline_samples   = warmup,
-                fmin                   = anom_cfg.get("spec_fmin",  None),
-                fmax                   = anom_cfg.get("spec_fmax",  None),
-            ))
-        if hooks:
-            monitor.set_anomaly_hook(CompositeAnomalyHook(hooks))
-            monitor.arm()
-            log.info(f"Anomaly detection armed: {hook_type}")
+    collector.resize_frame_cache(max(config.cache_frames, session.pre_buffer_frames))
+    monitor.start(session, anomaly_hook=anomaly_hook)
 
     print(f"Session {session_id} — recording to {session.session_dir}")
     print(f"  t + Enter: manual burst   Ctrl+C: stop\n")
