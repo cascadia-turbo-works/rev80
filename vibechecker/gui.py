@@ -72,7 +72,7 @@ _CARD_H_ACQ = (
     _CARD_BASE_H + _CARD_BTN_H * 6 + _CARD_LINE_H * 10
 )  # Acquisition: toggle+controls+spectrum info box
 _CARD_H_FILE = _CARD_BASE_H + _CARD_LINE_H + 105  # notes field only (Save/Load in header)
-_CARD_H_MONITOR = _CARD_BASE_H + _CARD_BTN_H * 4 + _CARD_LINE_H * 5  # Record+Arm+Burst+Load + status+burst indicator
+_CARD_H_MONITOR = _CARD_BASE_H + _CARD_BTN_H * 4 + _CARD_LINE_H * 5  # Monitor+Reset+RecordBurst+Load + status+burst indicator
 
 
 def _c(key: str, alpha: int = 255) -> tuple:
@@ -1833,13 +1833,24 @@ class GUI:
         _sv(ui.MON_ANOM_ENABLED,   bool(anom.get("enabled",    False)))
         _sv(ui.MON_ANOM_HOOK,      str(anom.get("hook_type",  "RMS")))
         _sv(ui.MON_ANOM_RMS_PCT,   float(anom.get("rms_pct",   10.0)))
-        _sv(ui.MON_ANOM_RMS_N,     int(anom.get("rms_n",       3)))
+        _sv(ui.MON_ANOM_RMS_S,     float(anom.get("rms_s",     3.0)))
         _sv(ui.MON_ANOM_RMS_ALPHA, float(anom.get("rms_alpha", 0.97)))
         _sv(ui.MON_ANOM_RMS_WARMUP,int(anom.get("warmup",      10)))
-        _sv(ui.MON_ANOM_SPEC_DB,   float(anom.get("spec_pct",  50.0)))
+        _sv(ui.MON_ANOM_SPEC_PCT,  float(anom.get("spec_pct",  50.0)))
         _sv(ui.MON_ANOM_SPEC_N,    int(anom.get("spec_n",      10)))
         _sv(ui.MON_ANOM_SPEC_FMIN, float(anom.get("spec_fmin") or 0.0))
         _sv(ui.MON_ANOM_SPEC_FMAX, float(anom.get("spec_fmax") or 0.0))
+
+        _sv(ui.MON_ANOM_FIXED_UPPER_ENABLED, bool(anom.get("fixed_upper_enabled", False)))
+        _sv(ui.MON_ANOM_FIXED_UPPER_VALUE,   float(anom.get("fixed_upper_value",  1.0)))
+        _sv(ui.MON_ANOM_FIXED_UPPER_UNIT,    str(anom.get("fixed_upper_unit",     "in/s")))
+        _sv(ui.MON_ANOM_FIXED_LOWER_ENABLED, bool(anom.get("fixed_lower_enabled", False)))
+        _sv(ui.MON_ANOM_FIXED_LOWER_VALUE,   float(anom.get("fixed_lower_value",  0.05)))
+        _sv(ui.MON_ANOM_FIXED_LOWER_UNIT,    str(anom.get("fixed_lower_unit",     "in/s")))
+
+        _sv(ui.MON_ANOM_COOLDOWN_ENABLED, bool(anom.get("cooldown_enabled", False)))
+        _sv(ui.MON_ANOM_COOLDOWN_S,       float(anom.get("cooldown_s",      300.0)))
+
         self._on_anom_config_change()
 
     def _save_monitor_config(self) -> None:
@@ -1865,13 +1876,21 @@ class GUI:
                 'enabled':       bool(_get(ui.MON_ANOM_ENABLED,    False)),
                 'hook_type':     str(_get(ui.MON_ANOM_HOOK,        'RMS')),
                 'rms_pct':       float(_get(ui.MON_ANOM_RMS_PCT,   10.0)),
-                'rms_n':         int(_get(ui.MON_ANOM_RMS_N,       3)),
+                'rms_s':         float(_get(ui.MON_ANOM_RMS_S,     3.0)),
                 'rms_alpha':     float(_get(ui.MON_ANOM_RMS_ALPHA, 0.97)),
                 'warmup':        int(_get(ui.MON_ANOM_RMS_WARMUP,  10)),
-                'spec_pct':      float(_get(ui.MON_ANOM_SPEC_DB,   50.0)),
+                'spec_pct':      float(_get(ui.MON_ANOM_SPEC_PCT,  50.0)),
                 'spec_n':        int(_get(ui.MON_ANOM_SPEC_N,      10)),
                 'spec_fmin':     _get(ui.MON_ANOM_SPEC_FMIN, None) or None,
                 'spec_fmax':     _get(ui.MON_ANOM_SPEC_FMAX, None) or None,
+                'cooldown_enabled':    bool(_get(ui.MON_ANOM_COOLDOWN_ENABLED, False)),
+                'cooldown_s':          float(_get(ui.MON_ANOM_COOLDOWN_S,      300.0)),
+                'fixed_upper_enabled': bool(_get(ui.MON_ANOM_FIXED_UPPER_ENABLED, False)),
+                'fixed_upper_value':   float(_get(ui.MON_ANOM_FIXED_UPPER_VALUE,  1.0)),
+                'fixed_upper_unit':    str(_get(ui.MON_ANOM_FIXED_UPPER_UNIT,     'in/s')),
+                'fixed_lower_enabled': bool(_get(ui.MON_ANOM_FIXED_LOWER_ENABLED, False)),
+                'fixed_lower_value':   float(_get(ui.MON_ANOM_FIXED_LOWER_VALUE,  0.05)),
+                'fixed_lower_unit':    str(_get(ui.MON_ANOM_FIXED_LOWER_UNIT,     'in/s')),
             },
         }
         _cfg.save_acquisition_config(acq_cfg)
@@ -1938,6 +1957,9 @@ class GUI:
         out_dir_s = dpg.get_value(ui.MON_DLG_OUTPUT_DIR).strip() if dpg.does_item_exist(ui.MON_DLG_OUTPUT_DIR) else ""
         compress = dpg.get_value(ui.MON_DLG_COMPRESS) if dpg.does_item_exist(ui.MON_DLG_COMPRESS) else True
 
+        cooldown_enabled = bool(dpg.get_value(ui.MON_ANOM_COOLDOWN_ENABLED)) if dpg.does_item_exist(ui.MON_ANOM_COOLDOWN_ENABLED) else False
+        cooldown_s       = float(dpg.get_value(ui.MON_ANOM_COOLDOWN_S)) if dpg.does_item_exist(ui.MON_ANOM_COOLDOWN_S) else 0.0
+
         cfg = self.collector.config
         block_s = cfg.blocksize / cfg.samplerate
         pre_buffer_n = max(1, int(pre_buf_s / block_s)) if block_s > 0 else 1
@@ -1981,6 +2003,8 @@ class GUI:
             session_dir=output_dir,
             compression="gzip" if compress else "none",
             compression_level=4,
+            cooldown_enabled=cooldown_enabled,
+            cooldown_s=cooldown_s,
             acq_snapshot=acq_snapshot,
             channel_snapshot=ch_snapshot,
             sensor_snapshot=sensor_snapshot,
@@ -1991,7 +2015,8 @@ class GUI:
 
         if self._monitor is None:
             self._monitor = vibechecker.MonitorController()
-        self._monitor.start(session)
+        anomaly_hook = self._build_anomaly_hook(pre_buffer_s=pre_buf_s)
+        self._monitor.start(session, anomaly_hook=anomaly_hook)
 
         self._update_monitor_card()
         # Disable config setup buttons while recording
@@ -2021,84 +2046,93 @@ class GUI:
         if dpg.does_item_exist(ui.MON_ANOM_SPEC_GROUP):
             dpg.configure_item(ui.MON_ANOM_SPEC_GROUP, show=hook in ('Spectral', 'Both'))
 
-    def _build_anomaly_hook(self):
-        """Read anomaly config widgets and return a configured hook."""
+    def _build_anomaly_hook(self, pre_buffer_s: float | None = None):
+        """Read anomaly config widgets and return a configured hook.
+
+        Built once at session start from the config dialog (or saved config
+        defaults if the dialog was never opened) — the hook is then active for
+        the whole session; there is no separate arm/disarm step.
+        """
         from vibechecker.monitor.anomaly import (
-            RmsThresholdHook, SpectralThresholdHook, CompositeAnomalyHook, NullAnomalyHook,
+            RmsThresholdHook, SpectralThresholdHook, FixedThresholdHook,
+            CompositeAnomalyHook, NullAnomalyHook,
         )
         def _get(tag, default):
             return dpg.get_value(tag) if dpg.does_item_exist(tag) else default
 
-        if not _get(ui.MON_ANOM_ENABLED, False):
-            return NullAnomalyHook()
-
-        hook_type = str(_get(ui.MON_ANOM_HOOK, 'RMS'))
         burst_dur = float(_get(ui.MON_DLG_BURST_DUR, 60.0))
+        if pre_buffer_s is None:
+            pre_buffer_s = float(_get(ui.MON_DLG_PRE_BUFFER, 60.0))
 
-        rms_hook = None
-        if hook_type in ('RMS', 'Both'):
-            rms_hook = RmsThresholdHook(
-                rms_threshold_pct    = float(_get(ui.MON_ANOM_RMS_PCT,    10.0)),
-                consecutive_n        = int(_get(ui.MON_ANOM_RMS_N,        3)),
-                baseline_alpha       = float(_get(ui.MON_ANOM_RMS_ALPHA,  0.97)),
-                min_baseline_samples = int(_get(ui.MON_ANOM_RMS_WARMUP,   30)),
-                burst_duration_s     = burst_dur,
-            )
+        hooks = []
 
-        spec_hook = None
-        if hook_type in ('Spectral', 'Both'):
-            fmin_v = float(_get(ui.MON_ANOM_SPEC_FMIN, 0.0))
-            fmax_v = float(_get(ui.MON_ANOM_SPEC_FMAX, 0.0))
-            spec_hook = SpectralThresholdHook(
-                spectral_threshold_db = float(_get(ui.MON_ANOM_SPEC_DB, 3.0)),
-                consecutive_n         = int(_get(ui.MON_ANOM_SPEC_N,    3)),
-                fmin                  = fmin_v if fmin_v > 0 else None,
-                fmax                  = fmax_v if fmax_v > 0 else None,
-                burst_duration_s      = burst_dur,
-            )
+        # ── EWMA-based hooks (RMS / Spectral) — gated by the main Enable switch
+        if _get(ui.MON_ANOM_ENABLED, False):
+            hook_type = str(_get(ui.MON_ANOM_HOOK, 'RMS'))
+            warmup    = int(_get(ui.MON_ANOM_RMS_WARMUP, 30))
 
-        if rms_hook and spec_hook:
-            return CompositeAnomalyHook([rms_hook, spec_hook])
-        return rms_hook or spec_hook or NullAnomalyHook()
+            if hook_type in ('RMS', 'Both'):
+                period = self.collector.config.acquisition_period
+                rms_s  = float(_get(ui.MON_ANOM_RMS_S, 3.0))
+                consecutive_n = max(1, round(rms_s / period) + 1) if period > 0 else 1
+                if rms_s > 0.25 * pre_buffer_s:
+                    log.warning(
+                        "Monitor anomaly: RMS sustained time %.3gs exceeds 25%% of the "
+                        "pre-trigger buffer (%.3gs) — the t=0 frame will eat into the "
+                        "pre-anomaly context captured in each burst",
+                        rms_s, pre_buffer_s,
+                    )
+                hooks.append(RmsThresholdHook(
+                    rms_threshold_pct    = float(_get(ui.MON_ANOM_RMS_PCT,    10.0)),
+                    consecutive_n        = consecutive_n,
+                    baseline_alpha       = float(_get(ui.MON_ANOM_RMS_ALPHA,  0.97)),
+                    min_baseline_samples = warmup,
+                    burst_duration_s     = burst_dur,
+                ))
 
-    def _on_set_spectral_baseline(self, sender=None, data=None) -> None:
-        """Snapshot the current frame's spectrum as the spectral anomaly baseline."""
-        from vibechecker.monitor.anomaly import SpectralThresholdHook, CompositeAnomalyHook
-        if self._monitor is None or not self._monitor.is_recording:
-            log.warning("Set Spectral Baseline: not recording")
-            return
-        results = self.collector.process_samples()
-        if not results:
-            log.warning("Set Spectral Baseline: no data available")
-            return
-        hook = self._monitor._anomaly_hook
-        if isinstance(hook, SpectralThresholdHook):
-            hook.set_baseline(results)
-        elif isinstance(hook, CompositeAnomalyHook):
-            for h in hook._hooks:
-                if isinstance(h, SpectralThresholdHook):
-                    h.set_baseline(results)
-        log.info("Spectral baseline set")
+            if hook_type in ('Spectral', 'Both'):
+                fmin_v = float(_get(ui.MON_ANOM_SPEC_FMIN, 0.0))
+                fmax_v = float(_get(ui.MON_ANOM_SPEC_FMAX, 0.0))
+                hooks.append(SpectralThresholdHook(
+                    spectral_threshold_pct = float(_get(ui.MON_ANOM_SPEC_PCT, 50.0)),
+                    consecutive_n          = int(_get(ui.MON_ANOM_SPEC_N,     3)),
+                    min_baseline_samples   = warmup,
+                    fmin                   = fmin_v if fmin_v > 0 else None,
+                    fmax                   = fmax_v if fmax_v > 0 else None,
+                    burst_duration_s       = burst_dur,
+                ))
+
+        # ── Fixed-level threshold trigger — independent enable switches
+        upper_on = bool(_get(ui.MON_ANOM_FIXED_UPPER_ENABLED, False))
+        lower_on = bool(_get(ui.MON_ANOM_FIXED_LOWER_ENABLED, False))
+        if upper_on or lower_on:
+            hooks.append(FixedThresholdHook(
+                upper_limit = float(_get(ui.MON_ANOM_FIXED_UPPER_VALUE, 1.0))  if upper_on else None,
+                upper_unit  = str(_get(ui.MON_ANOM_FIXED_UPPER_UNIT,    'in/s')),
+                lower_limit = float(_get(ui.MON_ANOM_FIXED_LOWER_VALUE, 0.05)) if lower_on else None,
+                lower_unit  = str(_get(ui.MON_ANOM_FIXED_LOWER_UNIT,    'in/s')),
+                burst_duration_s = burst_dur,
+            ))
+
+        if not hooks:
+            return NullAnomalyHook()
+        if len(hooks) == 1:
+            return hooks[0]
+        return CompositeAnomalyHook(hooks)
 
     def _on_reset_baseline(self, sender=None, data=None) -> None:
-        """Clear the anomaly baseline so it re-calibrates from the next frame."""
-        if self._monitor is None:
+        """Clear EWMA baseline data on the active anomaly hook(s) and restart warmup.
+
+        Available from the Monitor card while recording — the config dialog is
+        locked out during a session, but baselines may need recalibrating
+        mid-run (e.g. after a maintenance event changes the "normal" level).
+        """
+        if self._monitor is None or not self._monitor.is_recording:
             return
         hook = self._monitor._anomaly_hook
         if hasattr(hook, 'reset_baseline'):
             hook.reset_baseline()
-        log.info("Anomaly baseline reset")
-
-    def _on_arm_toggle(self, sender=None, data=None):
-        if self._monitor is None or not self._monitor.is_recording:
-            return
-        if self._monitor.is_armed:
-            self._monitor.disarm()
-        else:
-            hook = self._build_anomaly_hook()
-            self._monitor.set_anomaly_hook(hook)
-            self._monitor.arm()
-        self._update_monitor_card()
+        log.info("Anomaly baseline reset — re-calibrating from next frame")
 
     def _on_manual_burst(self, sender=None, data=None):
         if self._monitor is None or not self._monitor.is_recording:
@@ -2127,12 +2161,8 @@ class GUI:
             dpg.set_item_label(ui.MONITOR_RECORD_BTN, f'{icons.IC["disarm"]}  Stop')
             dpg.configure_item(ui.MONITOR_RECORD_BTN, enabled=True)
             dpg.set_value(ui.MONITOR_STATUS_TEXT, status)
-            # Arm / Burst buttons
-            if dpg.does_item_exist(ui.MONITOR_ARM_BTN):
-                dpg.configure_item(ui.MONITOR_ARM_BTN, enabled=True)
-                armed = self._monitor.is_armed
-                dpg.set_item_label(ui.MONITOR_ARM_BTN,
-                    f'{icons.IC["arm"]}  {"Disarm" if armed else "Arm"}')
+            if dpg.does_item_exist(ui.MONITOR_RESET_BTN):
+                dpg.configure_item(ui.MONITOR_RESET_BTN, enabled=True)
             if dpg.does_item_exist(ui.MONITOR_BURST_BTN):
                 dpg.configure_item(ui.MONITOR_BURST_BTN, enabled=not snap.get('is_in_burst', False))
             # Burst indicator
@@ -2148,14 +2178,13 @@ class GUI:
                 if dpg.does_item_exist(ui.MONITOR_BURST_TEXT):
                     dpg.set_value(ui.MONITOR_BURST_TEXT, 'Ready')
         else:
-            dpg.set_item_label(ui.MONITOR_RECORD_BTN, f'{icons.IC["record"]}  Record')
+            dpg.set_item_label(ui.MONITOR_RECORD_BTN, f'{icons.IC["record"]}  Monitor')
             if not self.collector.is_streaming:
                 dpg.set_value(ui.MONITOR_STATUS_TEXT, 'Start stream to record')
             else:
                 dpg.set_value(ui.MONITOR_STATUS_TEXT, 'Stopped')
-            if dpg.does_item_exist(ui.MONITOR_ARM_BTN):
-                dpg.configure_item(ui.MONITOR_ARM_BTN, enabled=False)
-                dpg.set_item_label(ui.MONITOR_ARM_BTN, f'{icons.IC["arm"]}  Arm')
+            if dpg.does_item_exist(ui.MONITOR_RESET_BTN):
+                dpg.configure_item(ui.MONITOR_RESET_BTN, enabled=False)
             if dpg.does_item_exist(ui.MONITOR_BURST_BTN):
                 dpg.configure_item(ui.MONITOR_BURST_BTN, enabled=False)
             if dpg.does_item_exist(ui.MONITOR_BURST_RECT):
@@ -2473,6 +2502,10 @@ class GUI:
             no_scroll_with_mouse=True,
         ):
             with dpg.child_window(height=-_DLG_CLOSE_H, no_scrollbar=True, border=False):
+                def _tip(target, text):
+                    with dpg.tooltip(parent=target):
+                        dpg.add_text(text, wrap=320)
+
                 with dpg.tab_bar(tag=ui.CONFIG_TAB_BAR):
                     # ── Device tab ─────────────────────────────────────────
                     with dpg.tab(label="Device", tag=ui.CONFIG_TAB_DEVICE):
@@ -2520,7 +2553,14 @@ class GUI:
                                             width=-1,
                                         )
                                 with dpg.child_window(autosize_x=True, height=-1):
-                                    dpg.add_text("Sensor Configuration")
+                                    _sens_hdr = dpg.add_text("Sensor Configuration  (?)")
+                                    _tip(_sens_hdr,
+                                         "Source EU is the engineering unit the sensor produces "
+                                         "(e.g. g, mm/s, in/s). "
+                                         "Sensitivity is the charge-amp output voltage per EU, "
+                                         "from the sensor calibration certificate (e.g. 100 mV/g). "
+                                         "These values are used to scale raw scope voltage into "
+                                         "physical units.")
                                     dpg.add_input_text(label="Name", tag=ui.SREG_FIELD_NAME, width=_SREG_FIELD_W)
                                     dpg.add_combo(
                                         label="Source EU",
@@ -2554,7 +2594,12 @@ class GUI:
 
                             # Control: Freq. Resolution
                             dpg.add_separator()
-                            dpg.add_text("Acqusition Sample Count")
+                            _acq_n_hdr = dpg.add_text("Acquisition Sample Count  (?)")
+                            _tip(_acq_n_hdr,
+                                 "Freq. Resolution sets the spectral bin width (Hz/line). "
+                                 "Finer resolution means more samples per block, which increases "
+                                 "acquisition time and memory per frame. "
+                                 "The derived 'Acq. Time' shows how long each block takes to fill.")
                             dpg.add_combo(
                                 label="Freq. Resolution",
                                 tag=ui.ACQ_DLG_BINSIZE,
@@ -2602,9 +2647,17 @@ class GUI:
                             dpg.add_input_text(label="Memory", tag=ui.ACQ_DLG_MEMORY, readonly=True, width=_w)
 
                             dpg.add_separator()
-                            dpg.add_text("FFT Conditioning")
+                            _fft_hdr = dpg.add_text("FFT Conditioning  (?)")
+                            _tip(_fft_hdr,
+                                 "Welch Overlap: fraction of data shared between adjacent FFT "
+                                 "segments. 50% is typical — higher overlap smooths the spectrum "
+                                 "at the cost of correlated estimates.\n\n"
+                                 "Window: shape applied to each segment before FFT. Hann is a "
+                                 "good general-purpose choice. Flat-top improves amplitude "
+                                 "accuracy for calibration; Blackman-Harris reduces sidelobes "
+                                 "for closely-spaced peaks.")
                             # Control: Welch % Overlap
-                            dpg.add_input_float(
+                            _welch_w = dpg.add_input_float(
                                 label="Welch Overlap %",
                                 tag=ui.ACQ_DLG_OVERLAP,
                                 default_value=50.0,
@@ -2624,7 +2677,11 @@ class GUI:
                     # ── Signal Generator tab ────────────────────────────────
                     with dpg.tab(label="Generate", tag=ui.CONFIG_TAB_SIGGEN):
                         with dpg.child_window(autosize_x=True, height=-1):
-                            dpg.add_text("PicoScope Signal Generator")
+                            _sg_hdr = dpg.add_text("PicoScope Signal Generator  (?)")
+                            _tip(_sg_hdr,
+                                 "Built-in AWG on the PicoScope's front-panel BNC output. "
+                                 "Use for sensor check-out, resonance excitation, or shaker drive. "
+                                 "Hardware only — has no effect in simulation mode.")
                             dpg.add_separator()
                             dpg.add_checkbox(
                                 label="Enable signal generator", tag=ui.SIGGEN_ENABLED, default_value=False
@@ -2661,8 +2718,6 @@ class GUI:
                                 max_value=2000.0,
                                 width=_DLG_SIGGEN_W,
                             )
-                            dpg.add_spacer(height=6)
-                            dpg.add_text("Note: Only active on PicoScope hardware.", color=_c("ON_SURFACE"))
 
                     # ── Monitor tab ─────────────────────────────────────────
                     with dpg.tab(label="Monitor", tag=ui.CONFIG_TAB_MONITOR):
@@ -2678,7 +2733,7 @@ class GUI:
                                 width=_mon_w,
                                 callback=self._on_monitor_config_change,
                             )
-                            dpg.add_input_float(
+                            _pretrig_w = dpg.add_input_float(
                                 label="Pre-trigger buffer (s)",
                                 tag=ui.MON_DLG_PRE_BUFFER,
                                 default_value=60.0,
@@ -2687,6 +2742,11 @@ class GUI:
                                 width=_mon_w,
                                 callback=self._on_monitor_config_change,
                             )
+                            _tip(_pretrig_w,
+                                 "Raw data captured before the trigger timestamp and prepended "
+                                 "to each burst. Drawn from the ring cache — lets you see the "
+                                 "run-up to an event. Must be less than the ring cache duration "
+                                 "(Cache Frames × Acq. Time in the Acquisition tab).")
                             dpg.add_input_float(
                                 label="Burst duration (s)",
                                 tag=ui.MON_DLG_BURST_DUR,
@@ -2720,14 +2780,22 @@ class GUI:
                             # ── Anomaly Detection ───────────────────────
                             dpg.add_spacer(height=8)
                             dpg.add_separator()
-                            dpg.add_text("Anomaly Detection")
+                            _anom_hdr = dpg.add_text("Anomaly Detection  (?)")
+                            _tip(_anom_hdr,
+                                 "Automatically triggers a burst capture when live vibration "
+                                 "deviates from a self-calibrating baseline.\n\n"
+                                 "RMS: tracks overall amplitude via an exponential moving average "
+                                 "and fires when it shifts by more than Threshold %.\n\n"
+                                 "Spectral: tracks the full frequency-domain shape and fires when "
+                                 "the mean spectral deviation exceeds the threshold — useful for "
+                                 "detecting changes in specific harmonics or bearing tones.")
                             dpg.add_checkbox(
                                 label="Enable",
                                 tag=ui.MON_ANOM_ENABLED,
                                 default_value=False,
                                 callback=self._on_anom_config_change,
                             )
-                            dpg.add_combo(
+                            _hook_combo = dpg.add_combo(
                                 label="Hook",
                                 items=["RMS", "Spectral", "Both"],
                                 tag=ui.MON_ANOM_HOOK,
@@ -2735,25 +2803,79 @@ class GUI:
                                 callback=self._on_anom_config_change,
                                 width=_mon_w,
                             )
+                            _tip(_hook_combo,
+                                 "RMS: monitors overall vibration level. "
+                                 "Spectral: monitors the frequency-domain shape. "
+                                 "Both: either detector can trigger a burst independently.")
 
                             with dpg.group(tag=ui.MON_ANOM_RMS_GROUP):
                                 dpg.add_text("RMS settings", color=_c("ON_SURFACE"))
-                                dpg.add_input_float(label="Threshold %",   tag=ui.MON_ANOM_RMS_PCT,   default_value=10.0, min_value=1.0,  max_value=100.0, step=1.0,  width=_mon_w)
-                                dpg.add_input_int(  label="Consecutive N", tag=ui.MON_ANOM_RMS_N,     default_value=3,    min_value=1,    max_value=20,    width=_mon_w)
-                                dpg.add_input_float(label="EWMA alpha",    tag=ui.MON_ANOM_RMS_ALPHA, default_value=0.97, min_value=0.5,  max_value=0.999, step=0.01, format="%.3f", width=_mon_w)
-                                dpg.add_input_int(  label="Warmup frames", tag=ui.MON_ANOM_RMS_WARMUP,default_value=30,   min_value=5,    max_value=500,   width=_mon_w)
+                                dpg.add_input_float(label="Threshold %",    tag=ui.MON_ANOM_RMS_PCT,   default_value=10.0, min_value=1.0,  max_value=100.0, step=1.0,  width=_mon_w)
+                                _rms_s_w = dpg.add_input_float(label="Sustained (s)",  tag=ui.MON_ANOM_RMS_S,     default_value=3.0,  min_value=0.0,  max_value=3600.0, step=1.0, width=_mon_w,
+                                                    callback=self._on_anom_config_change)
+                                _tip(_rms_s_w,
+                                     "Signal must remain above threshold for this many seconds "
+                                     "before a burst is triggered. Filters momentary spikes. "
+                                     "Set to 0 to trigger on the first anomalous frame.")
+                                _alpha_w = dpg.add_input_float(label="EWMA alpha",     tag=ui.MON_ANOM_RMS_ALPHA, default_value=0.97, min_value=0.5,  max_value=0.999, step=0.01, format="%.3f", width=_mon_w)
+                                _tip(_alpha_w,
+                                     "Exponential smoothing factor for the baseline. "
+                                     "Higher values (→ 1.0) make the baseline adapt more slowly — "
+                                     "better for detecting sustained changes while ignoring brief transients. "
+                                     "Lower values track faster but may miss slow drift.")
+                                _warmup_w = dpg.add_input_int(  label="Warmup frames",  tag=ui.MON_ANOM_RMS_WARMUP,default_value=30,   min_value=5,    max_value=500,   width=_mon_w)
+                                _tip(_warmup_w,
+                                     "Number of frames collected to build the initial baseline "
+                                     "before anomaly detection activates. Increase if the machine "
+                                     "takes a while to reach steady-state after startup.")
 
                             with dpg.group(tag=ui.MON_ANOM_SPEC_GROUP, show=False):
-                                dpg.add_text("Spectral settings", color=_c("ON_SURFACE"))
-                                dpg.add_input_float(label="Threshold dB",    tag=ui.MON_ANOM_SPEC_DB,   default_value=3.0, min_value=0.5, max_value=30.0, step=0.5,  width=_mon_w)
+                                _spec_hdr = dpg.add_text("Spectral settings  (?)", color=_c("ON_SURFACE"))
+                                _tip(_spec_hdr,
+                                     "Compares the live PSD against a learned spectral baseline. "
+                                     "Triggers when the mean deviation across the monitored band "
+                                     "exceeds Threshold % for Consecutive N frames. "
+                                     "Useful for detecting new harmonics or changes in bearing tones "
+                                     "that don't shift overall level much.")
+                                dpg.add_input_float(label="Threshold %",     tag=ui.MON_ANOM_SPEC_PCT,  default_value=50.0, min_value=1.0, max_value=500.0, step=1.0,  width=_mon_w)
                                 dpg.add_input_int(  label="Consecutive N",   tag=ui.MON_ANOM_SPEC_N,    default_value=3,   min_value=1,   max_value=20,   width=_mon_w)
                                 dpg.add_input_float(label="Freq min (Hz)",   tag=ui.MON_ANOM_SPEC_FMIN, default_value=0.0, min_value=0.0, step=10.0,      width=_mon_w)
                                 dpg.add_input_float(label="Freq max (0=all)",tag=ui.MON_ANOM_SPEC_FMAX, default_value=0.0, min_value=0.0, step=10.0,      width=_mon_w)
 
-                            dpg.add_spacer(height=4)
+                            # ── Fixed Level Trigger ─────────────────────
+                            dpg.add_spacer(height=8)
+                            dpg.add_separator()
+                            _fixed_hdr = dpg.add_text("Fixed Level Trigger  (?)")
+                            _tip(_fixed_hdr,
+                                 "Fires immediately on a fixed overall-amplitude level — "
+                                 "no baseline or warmup. Channels without a sensor/EU "
+                                 "assigned cannot be evaluated.")
+                            _unit_items = sorted(UNIT_TO_SI.keys())
                             with dpg.group(horizontal=True):
-                                dpg.add_button(label="Set Spectral Baseline", tag=ui.MON_ANOM_SET_BASELINE, callback=self._on_set_spectral_baseline)
-                                dpg.add_button(label="Reset Baseline",        tag=ui.MON_ANOM_RESET,        callback=self._on_reset_baseline)
+                                _upper_chk = dpg.add_checkbox(label="Upper limit", tag=ui.MON_ANOM_FIXED_UPPER_ENABLED, default_value=False)
+                                dpg.add_input_float(tag=ui.MON_ANOM_FIXED_UPPER_VALUE, default_value=1.0, step=0.0, width=90)
+                                dpg.add_combo(tag=ui.MON_ANOM_FIXED_UPPER_UNIT, items=_unit_items, default_value='in/s', width=80)
+                            _tip(_upper_chk, "Burst when overall vibration rises above this level.")
+                            with dpg.group(horizontal=True):
+                                _lower_chk = dpg.add_checkbox(label="Lower limit", tag=ui.MON_ANOM_FIXED_LOWER_ENABLED, default_value=False)
+                                dpg.add_input_float(tag=ui.MON_ANOM_FIXED_LOWER_VALUE, default_value=0.05, step=0.0, width=90)
+                                dpg.add_combo(tag=ui.MON_ANOM_FIXED_LOWER_UNIT, items=_unit_items, default_value='in/s', width=80)
+                            _tip(_lower_chk, "Burst when overall vibration drops below this level.")
+
+                            # ── Cooldown ────────────────────────────────
+                            dpg.add_spacer(height=8)
+                            dpg.add_separator()
+                            _cooldown_hdr = dpg.add_text("Cooldown  (?)")
+                            _tip(_cooldown_hdr,
+                                 "Blocks further anomaly-triggered bursts for this long "
+                                 "after one fires — keeps long events from cluttering "
+                                 "the session with overlapping captures.")
+                            dpg.add_checkbox(label="Enable", tag=ui.MON_ANOM_COOLDOWN_ENABLED, default_value=False)
+                            dpg.add_input_float(
+                                label="Cooldown period (s)", tag=ui.MON_ANOM_COOLDOWN_S,
+                                default_value=300.0, min_value=0.0, max_value=86400.0,
+                                step=10.0, width=_mon_w,
+                            )
 
             dpg.add_separator()
             dpg.add_button(label=f'{icons.IC["close"]}  Close', callback=self._on_config_close, width=-1)
@@ -2928,7 +3050,7 @@ class GUI:
                             )
                         dpg.add_separator()
                         dpg.add_button(
-                            label=f'{icons.IC["record"]}  Record',
+                            label=f'{icons.IC["record"]}  Monitor',
                             tag=ui.MONITOR_RECORD_BTN,
                             callback=self._on_record_toggle,
                             width=-1,
@@ -2936,14 +3058,14 @@ class GUI:
                         )
                         dpg.add_spacer(height=2)
                         dpg.add_button(
-                            label=f'{icons.IC["arm"]}  Arm',
-                            tag=ui.MONITOR_ARM_BTN,
-                            callback=self._on_arm_toggle,
+                            label=f'{icons.IC["refresh"]}  Reset Baseline',
+                            tag=ui.MONITOR_RESET_BTN,
+                            callback=self._on_reset_baseline,
                             width=-1,
                             enabled=False,
                         )
                         dpg.add_button(
-                            label=f'{icons.IC["photo_camera"]}  Trigger Burst',
+                            label=f'{icons.IC["photo_camera"]}  Record Burst',
                             tag=ui.MONITOR_BURST_BTN,
                             callback=self._on_manual_burst,
                             width=-1,

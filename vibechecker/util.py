@@ -226,7 +226,7 @@ class UI_Elements:
     DLG_SESSION_BROWSER  = 'DLG_SESSION_BROWSER'
     MONITOR_CARD         = 'MONITOR_CARD'
     MONITOR_RECORD_BTN   = 'MONITOR_RECORD_BTN'
-    MONITOR_ARM_BTN      = 'MONITOR_ARM_BTN'
+    MONITOR_RESET_BTN    = 'MONITOR_RESET_BTN'
     MONITOR_STATUS_TEXT  = 'MONITOR_STATUS_TEXT'
 
     # Monitor config dialog inputs
@@ -237,21 +237,33 @@ class UI_Elements:
     MON_DLG_COMPRESS     = 'MON_DLG_COMPRESS'
     MON_DLG_ESTIMATE     = 'MON_DLG_ESTIMATE'
 
-    # Anomaly detection config (Monitor config tab)
+    # Anomaly detection config (Monitor config tab) — controls the EWMA-based
+    # RMS / Spectral hooks. Fixed-level and cooldown triggers below have their
+    # own independent enable switches.
     MON_ANOM_ENABLED      = 'MON_ANOM_ENABLED'
     MON_ANOM_HOOK         = 'MON_ANOM_HOOK'
     MON_ANOM_RMS_GROUP    = 'MON_ANOM_RMS_GROUP'
     MON_ANOM_RMS_PCT      = 'MON_ANOM_RMS_PCT'
-    MON_ANOM_RMS_N        = 'MON_ANOM_RMS_N'
+    MON_ANOM_RMS_S        = 'MON_ANOM_RMS_S'
     MON_ANOM_RMS_ALPHA    = 'MON_ANOM_RMS_ALPHA'
     MON_ANOM_RMS_WARMUP   = 'MON_ANOM_RMS_WARMUP'
     MON_ANOM_SPEC_GROUP   = 'MON_ANOM_SPEC_GROUP'
-    MON_ANOM_SPEC_DB      = 'MON_ANOM_SPEC_DB'
+    MON_ANOM_SPEC_PCT     = 'MON_ANOM_SPEC_PCT'
     MON_ANOM_SPEC_N       = 'MON_ANOM_SPEC_N'
     MON_ANOM_SPEC_FMIN    = 'MON_ANOM_SPEC_FMIN'
     MON_ANOM_SPEC_FMAX    = 'MON_ANOM_SPEC_FMAX'
-    MON_ANOM_SET_BASELINE = 'MON_ANOM_SET_BASELINE'
-    MON_ANOM_RESET        = 'MON_ANOM_RESET'
+
+    # Fixed-level threshold triggers (independent enable switches; Monitor config tab)
+    MON_ANOM_FIXED_UPPER_ENABLED = 'MON_ANOM_FIXED_UPPER_ENABLED'
+    MON_ANOM_FIXED_UPPER_VALUE   = 'MON_ANOM_FIXED_UPPER_VALUE'
+    MON_ANOM_FIXED_UPPER_UNIT    = 'MON_ANOM_FIXED_UPPER_UNIT'
+    MON_ANOM_FIXED_LOWER_ENABLED = 'MON_ANOM_FIXED_LOWER_ENABLED'
+    MON_ANOM_FIXED_LOWER_VALUE   = 'MON_ANOM_FIXED_LOWER_VALUE'
+    MON_ANOM_FIXED_LOWER_UNIT    = 'MON_ANOM_FIXED_LOWER_UNIT'
+
+    # Post-burst cooldown gate (Monitor config tab)
+    MON_ANOM_COOLDOWN_ENABLED = 'MON_ANOM_COOLDOWN_ENABLED'
+    MON_ANOM_COOLDOWN_S       = 'MON_ANOM_COOLDOWN_S'
 
     # Signal generator dialog inputs
     SIGGEN_ENABLED       = 'SIGGEN_ENABLED'
