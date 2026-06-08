@@ -14,8 +14,9 @@ log = vibechecker.get_logger(__name__)
 class MonitorController:
     """Gate, anomaly detection, and write dispatch for Monitor Mode.
 
-    Recording lifecycle: start(session) / stop().
-    Anomaly detection: arm() / disarm() — independent of recording state.
+    Recording lifecycle: start(session, anomaly_hook) / stop(). The anomaly
+    hook is supplied at session start and active for the whole session — there
+    is no separate arm/disarm step; config alone controls detection.
 
     Called from the GUI thread via ``on_results(results, frame_cache)``
     after each call to ``collector.process_samples()``.
@@ -27,10 +28,10 @@ class MonitorController:
         self._writer:       MonitorWriterThread | None = None
         self._anomaly_hook: AnomalyHook                = NullAnomalyHook()
         self._recording     = False
-        self._armed         = False
         self._start_mono    = 0.0
         self._capture_count = 0
         self._burst_count   = 0
+        self._cooldown_until_mono: float = 0.0
 
         # Burst state
         self._in_burst:             bool      = False
@@ -53,14 +54,15 @@ class MonitorController:
         """True when a session is running (writer thread active)."""
         return self._recording
 
-    @property
-    def is_armed(self) -> bool:
-        """True when anomaly detection is active (implies is_recording)."""
-        return self._armed
-
     def start(self, session: MonitorSession,
               anomaly_hook: AnomalyHook | None = None) -> None:
-        """Start a new recording session. Stops any running session first."""
+        """Start a new recording session. Stops any running session first.
+
+        Anomaly detection is controlled entirely by `anomaly_hook` — pass
+        `None` (or a `NullAnomalyHook`) to record without detection. There is
+        no separate arm/disarm step; the hook built from config at session
+        start is active for the whole session.
+        """
         if self._recording:
             self.stop()
 
@@ -77,12 +79,9 @@ class MonitorController:
         self._burst_results     = []
         self._burst_all_results = []
         self._recording     = True
+        self._cooldown_until_mono = 0.0
 
-        if anomaly_hook is not None:
-            self._anomaly_hook = anomaly_hook
-            self._armed = True
-        else:
-            self._armed = False
+        self._anomaly_hook = anomaly_hook if anomaly_hook is not None else NullAnomalyHook()
 
         log.info(
             f'Monitor recording started: session={session.session_id} '
@@ -94,7 +93,6 @@ class MonitorController:
         if not self._recording:
             return
         self._recording = False
-        self._armed     = False
 
         # Flush any partial burst
         if self._in_burst and self._burst_frames:
@@ -111,22 +109,8 @@ class MonitorController:
         )
 
     # ------------------------------------------------------------------
-    # Public API — arm / disarm (anomaly detection only)
+    # Public API — manual burst trigger
     # ------------------------------------------------------------------
-
-    def arm(self) -> None:
-        """Enable anomaly detection. Noop if not recording."""
-        if not self._recording:
-            return
-        self._armed = True
-        log.info('Monitor anomaly detection armed')
-
-    def disarm(self) -> None:
-        """Disable anomaly detection. Noop if not recording."""
-        if not self._recording:
-            return
-        self._armed = False
-        log.info('Monitor anomaly detection disarmed')
 
     def trigger_burst(self) -> None:
         """Manually force a burst capture immediately. Noop if not recording or mid-burst."""
@@ -150,11 +134,8 @@ class MonitorController:
             self._burst_frames     = []
             self._burst_pretrigger = 0
         self._gate.enter_burst(self._session.burst_duration_s, now, self._session.max_burst_s)
+        self._start_cooldown(now)
         log.info('Monitor burst triggered manually')
-
-    def set_anomaly_hook(self, hook: AnomalyHook) -> None:
-        """Swap the anomaly hook while recording."""
-        self._anomaly_hook = hook
 
     # ------------------------------------------------------------------
     # Main callback
@@ -173,8 +154,13 @@ class MonitorController:
             self._handle_burst_frame(results, frame_cache, now, rel_time)
             return
 
-        # Check anomaly hook only when armed
-        if self._armed:
+        # Skip anomaly detection while a post-burst cooldown is active —
+        # interval captures continue as normal.
+        in_cooldown = (
+            self._session is not None and self._session.cooldown_enabled
+            and now < self._cooldown_until_mono
+        )
+        if not in_cooldown:
             event: AnomalyEvent | None = self._anomaly_hook.on_results(results, frame_cache)
             if event is not None:
                 # Write trigger frame to interval trend before entering burst
@@ -240,8 +226,10 @@ class MonitorController:
         self._in_burst            = True
         self._burst_end_mono      = now + event.burst_duration_s
         self._burst_id            = utc_now.strftime('%Y-%m-%d-%H%M%S')
-        self._burst_trigger_ts    = utc_now.isoformat()
-        self._burst_trigger_rel   = rel_time
+        # Trigger metadata reflects the t=0 frame (anomaly onset), which may
+        # precede `now` by however long the hook's confirmation window took.
+        self._burst_trigger_ts    = event.trigger_time.isoformat()
+        self._burst_trigger_rel   = event.trigger_rel_time
         self._burst_results       = list(results)
         self._burst_all_results   = [list(results)]
 
@@ -251,9 +239,16 @@ class MonitorController:
         self._burst_frames     = [dict(f) for f in pre]
         self._burst_pretrigger = len(self._burst_frames)
 
+        self._start_cooldown(now)
+
         log.warning(
             f'Monitor: anomaly burst triggered on ch{event.channel} — {event.reason}'
         )
+
+    def _start_cooldown(self, now: float) -> None:
+        """Arm the post-burst cooldown gate, if enabled for this session."""
+        if self._session is not None and self._session.cooldown_enabled:
+            self._cooldown_until_mono = now + self._session.cooldown_s
 
     def _handle_burst_frame(self, results: list, frame_cache: deque,
                              now: float, rel_time: float) -> None:
@@ -262,7 +257,7 @@ class MonitorController:
         self._burst_all_results.append(list(results))
 
         # Keep EWMA adapting during burst but suppress retriggers
-        if self._armed:
+        if hasattr(self._anomaly_hook, 'update_baseline'):
             self._anomaly_hook.update_baseline(results)
 
         if now >= self._burst_end_mono:
