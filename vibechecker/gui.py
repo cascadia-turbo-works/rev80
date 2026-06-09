@@ -2934,7 +2934,7 @@ class GUI:
                             dpg.add_text("Device")
                             dpg.add_spacer(width=-1)
                             dpg.add_button(
-                                label=icons.IC['settings'],
+                                label=f'{icons.IC["settings"]}  Setup',
                                 tag=ui.BTN_DEVICE_SETUP,
                                 callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_DEVICE),
                             )
@@ -2971,12 +2971,12 @@ class GUI:
                             dpg.add_text("Channels")
                             dpg.add_spacer(width=-1)
                             dpg.add_button(
-                                label=icons.IC['sensors'],
+                                label=f'{icons.IC["sensors"]}  Sensor',
                                 tag=ui.BTN_SENSOR_SETUP,
                                 callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_SENSORS),
                             )
                             dpg.add_button(
-                                label=icons.IC['settings'],
+                                label=f'{icons.IC["settings"]}  Setup',
                                 tag=ui.BTN_CHANNELS_SETUP,
                                 callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_CHANNELS),
                             )
@@ -2996,7 +2996,7 @@ class GUI:
                             dpg.add_text("Acquisition")
                             dpg.add_spacer(width=-1)
                             dpg.add_button(
-                                label=icons.IC['settings'],
+                                label=f'{icons.IC["settings"]}  Setup',
                                 tag=ui.BTN_SPECTRUM_SETUP,
                                 callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_ACQUISITION),
                             )
@@ -3060,7 +3060,7 @@ class GUI:
                             dpg.add_text("Monitor Mode")
                             dpg.add_spacer(width=-1)
                             dpg.add_button(
-                                label=icons.IC['settings'],
+                                label=f'{icons.IC["settings"]}  Setup',
                                 tag=ui.BTN_MONITOR_SETUP,
                                 callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_MONITOR),
                             )
