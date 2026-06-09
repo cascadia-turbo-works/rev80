@@ -29,7 +29,7 @@ TIME_PLOT_HEIGHT = 300
 
 # Config dialog dimensions — referenced wherever the dialog is built or positioned
 _DLG_CFG_W = 720
-_DLG_CFG_H = 560
+_DLG_CFG_H = 840
 # Field widths inside the config dialog (golden-ratio of dialog width)
 _DLG_FIELD_W = int(_DLG_CFG_W * 0.618)  # ~444 px  — full-width text/combo
 _SREG_LIST_W = 200  # sensor registry list pane
@@ -970,6 +970,10 @@ class GUI:
         if self._was_streaming_before_config:
             self._stop_stream()
 
+        dpg.configure_item(
+            ui.DLG_CONFIG,
+            pos=((WINDOW_WIDTH - _DLG_CFG_W) // 2, (WINDOW_HEIGHT - _DLG_CFG_H) // 2),
+        )
         dpg.show_item(ui.DLG_CONFIG)
         dpg.set_value(ui.CONFIG_TAB_BAR, tab_tag)
         # Always sync spectrum widgets so they reflect current config
@@ -1323,7 +1327,11 @@ class GUI:
         """Open (or refresh) the Monitor Session browser modal."""
         if dpg.does_item_exist(ui.DLG_SESSION_BROWSER):
             self._refresh_session_browser()
-            dpg.configure_item(ui.DLG_SESSION_BROWSER, show=True)
+            dpg.configure_item(
+                ui.DLG_SESSION_BROWSER,
+                pos=((WINDOW_WIDTH - 980) // 2, (WINDOW_HEIGHT - 540) // 2),
+                show=True,
+            )
             return
         self._build_session_browser()
 
@@ -1343,6 +1351,7 @@ class GUI:
             modal=True, show=True,
             tag=ui.DLG_SESSION_BROWSER,
             width=DLG_W, height=DLG_H,
+            pos=((WINDOW_WIDTH - DLG_W) // 2, (WINDOW_HEIGHT - DLG_H) // 2),
             no_resize=False,
         ):
             # ── Source folder row ─────────────────────────────────────
