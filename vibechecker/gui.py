@@ -67,7 +67,7 @@ _CARD_LINE_H = 20  # per text-line height estimate (font + spacing)
 _CARD_BASE_H = 68  # card overhead: padding + title + separator + bottom pad
 _CARD_BTN_H = 28   # single button row height
 _CARD_H_DEVICE = _CARD_BASE_H + _CARD_LINE_H * 5  # disconnected baseline
-_CARD_H_CHANNELS = _CARD_BASE_H + _CARD_LINE_H
+_CARD_H_CHANNELS = _CARD_BASE_H + _CARD_BTN_H + _CARD_LINE_H
 _CARD_H_ACQ = (
     _CARD_BASE_H + _CARD_BTN_H * 6 + _CARD_LINE_H * 10
 )  # Acquisition: toggle+controls+spectrum info box
@@ -2971,14 +2971,16 @@ class GUI:
                             dpg.add_text("Channels")
                             dpg.add_spacer(width=-1)
                             dpg.add_button(
-                                label=f'{icons.IC["sensors"]}  Sensor',
-                                tag=ui.BTN_SENSOR_SETUP,
-                                callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_SENSORS),
-                            )
-                            dpg.add_button(
                                 label=f'{icons.IC["settings"]}  Setup',
                                 tag=ui.BTN_CHANNELS_SETUP,
                                 callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_CHANNELS),
+                            )
+                        with dpg.group(horizontal=True):
+                            dpg.add_button(
+                                label=f'{icons.IC["sensors"]}  Sensor',
+                                tag=ui.BTN_SENSOR_SETUP,
+                                callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_SENSORS),
+                                width=-1,
                             )
                         dpg.add_separator()
                         with dpg.group(tag=ui.CONN_CHANNEL_SUMMARY):
