@@ -42,7 +42,7 @@ A Python desktop application for capturing, analyzing, and recording vibration d
 - Simulated sensor (bearing-defect signal generator) for offline development and CI testing
 - Configurable amplitude modes: RMS, 0-P, P-P
 - Configurable units: acceleration (g, mm/s², in/s²), velocity (mm/s, in/s, mil/s), displacement (mm, in, mil)
-- **Monitor Mode** — interval datalogger: captures frames at a configurable interval (5 s – 2 days), stores all captures in a single session HDF5, anomaly-triggered burst capture (manual trigger; automatic anomaly detection in Phase 2)
+- **Monitor Mode** — interval datalogger: captures frames at a configurable interval (5 s – 2 days) into a single session HDF5; anomaly-triggered burst capture with three independent detection modes (EWMA-RMS broadband, EWMA-Spectral frequency-shape, and fixed-level upper/lower thresholds); configurable post-burst cooldown gate; manual "Record Burst" button
 - **Session browser** — load and browse historical monitor sessions; burst events displayed as vertical markers on the vibration trend
 
 ---
@@ -273,9 +273,9 @@ vibechecker/              Python package
     __init__.py
     session.py            MonitorSession dataclass
     gate.py               IntervalGate scheduler
-    anomaly.py            AnomalyHook protocol + NullAnomalyHook stub
+    anomaly.py            AnomalyHook protocol; Rms/Spectral/FixedThreshold hooks; Composite
     writer.py             MonitorWriterThread (daemon, writes session.h5)
-    controller.py         MonitorController (is_recording / is_armed)
+    controller.py         MonitorController (is_recording; hook supplied at start)
   assets/
     fonts/                CommitMono Nerd Font (gitignored — add locally)
 assets/                   App icon source
@@ -428,11 +428,11 @@ When the GUI is slower than the hardware data rate it skips to the latest frame 
 | `simulation.py` | `SimulatedSensor` (daemon thread) + signal generators: `GenerateTone`, `GenerateNoise`, `GenerateBearingVibration_SpectralMethod`, `GenerateBearingVibration_TemporalMethod` |
 | `gui.py` | `GUI` class — dearpygui three-column layout with manual render loop (`_poll_new_frames`), all config dialogs, spectrum/time/trend plots, file I/O, monitor card, session browser |
 | `monitor/__init__.py` | Re-exports: `MonitorController`, `MonitorSession` |
-| `monitor/session.py` | `MonitorSession` frozen dataclass — session parameters + config snapshots captured at arm time |
+| `monitor/session.py` | `MonitorSession` frozen dataclass — session parameters, config snapshots, and cooldown settings |
 | `monitor/gate.py` | `IntervalGate` — snap-to-grid capture scheduler; burst mode entry/exit; caller-supplied time (unit-testable) |
-| `monitor/anomaly.py` | `AnomalyHook` Protocol; `NullAnomalyHook` (Phase 1 stub); `AnomalyEvent` dataclass |
+| `monitor/anomaly.py` | `AnomalyHook` Protocol; `NullAnomalyHook`; `RmsThresholdHook`; `SpectralThresholdHook`; `FixedThresholdHook`; `CompositeAnomalyHook`; `AnomalyEvent` dataclass |
 | `monitor/writer.py` | `MonitorWriterThread` — daemon thread; appends interval frames to `/monitor/` and burst frames to `/burst/` in `session.h5`; disk-space guard |
-| `monitor/controller.py` | `MonitorController` — owns gate, writer, anomaly hook; `is_recording` / `is_armed` independent flags; `trigger_burst()` for manual burst |
+| `monitor/controller.py` | `MonitorController` — owns gate, writer, anomaly hook; anomaly hook supplied at `start()` and active for the full session; `trigger_burst()` for manual burst |
 
 ---
 
@@ -639,6 +639,73 @@ The default source for `SimulatedSensor` is `GenerateBearingVibration_TemporalMe
 
 ---
 
+## Monitor Mode
+
+Monitor Mode turns vibechecker into a continuous interval datalogger with automatic event capture.
+
+### Interval recording
+
+When monitoring is active, `MonitorController.on_results()` is called after every frame (from the GUI render loop or a headless polling loop). An `IntervalGate` fires at the configured interval and writes the current frame to `/monitor/{N}/` in `session.h5`. Interval captures continue regardless of whether a burst is in progress.
+
+### Burst capture
+
+Any trigger source — automatic anomaly detection or the manual **Record Burst** button — causes the controller to:
+
+1. Snapshot `pre_buffer_s` of raw frames from the ring cache and prepend them to the burst as pre-trigger data.
+2. Capture frames at full rate for `burst_duration_s` seconds, writing to `/burst/{id}/`.
+3. Tag the t=0 frame (anomaly onset, not detection time) in `burst.attrs` as `trigger_timestamp` / `trigger_rel_time`.
+4. Start the cooldown gate to block further automatic triggers for `cooldown_s` seconds.
+
+### Anomaly detection hooks
+
+Three hook types can be used independently or combined via `CompositeAnomalyHook` (configured by the "Hook: RMS / Spectral / Both" selector):
+
+#### `RmsThresholdHook` — broadband EWMA
+
+Maintains a per-channel EWMA baseline of `ChannelResult.overall`. Triggers when:
+
+```
+|current − baseline| / baseline  >  rms_pct / 100
+```
+
+…for `rms_s` seconds of sustained deviation. The baseline adapts continuously during normal operation and during burst playback. A warmup period (`warmup` frames) must elapse before triggering is enabled.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `rms_pct` | 10.0 | % deviation from EWMA baseline |
+| `rms_s` | 3.0 | Seconds signal must stay above threshold (0 = first frame) |
+| `rms_alpha` | 0.97 | EWMA smoothing factor (higher = slower baseline) |
+| `warmup` | 10 | Frames to collect before triggers are enabled |
+
+#### `SpectralThresholdHook` — frequency-shape EWMA
+
+Compares the live PSD against a per-bin EWMA baseline. Triggers when the mean spectral deviation across the monitored frequency band exceeds `spec_pct` for `spec_n` consecutive frames. Useful for detecting new harmonics or bearing-tone shifts that don't change overall amplitude significantly.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `spec_pct` | 50.0 | % mean per-bin deviation to trigger |
+| `spec_n` | 10 | Consecutive frames required |
+| `spec_fmin` / `spec_fmax` | null | Restrict band (null = full spectrum) |
+
+Use **Reset Baseline** (monitor card button) to reseed the EWMA from the current frame after a process change, speed change, or restart.
+
+#### `FixedThresholdHook` — absolute level trigger
+
+Fires immediately (no warmup, no EWMA) when `ChannelResult.overall` crosses a fixed level. Accepts any unit supported by `UNIT_TO_SI` and converts automatically — a threshold in `in/s` works correctly against a channel reporting `mm/s`.
+
+Upper and lower limits are independent. A channel with no sensor/EU assigned (raw `mV`) logs a one-time warning and is silently skipped.
+
+| Parameter | Description |
+|---|---|
+| `fixed_upper_enabled` / `fixed_upper_value` / `fixed_upper_unit` | Trigger when amplitude rises above this level |
+| `fixed_lower_enabled` / `fixed_lower_value` / `fixed_lower_unit` | Trigger when amplitude falls below this level |
+
+#### Cooldown gate
+
+After any burst fires (automatic or manual), the controller optionally blocks further automatic triggers for `cooldown_s` seconds. Interval captures are unaffected. Use this to prevent a sustained fault from generating many overlapping burst files.
+
+---
+
 ## Data Storage
 
 ### Manual saves (v4 format)
@@ -745,15 +812,23 @@ monitor:
   anomaly:
     enabled: true
     hook_type: rms          # rms | spectral | both
-    warmup: 10              # frames before anomaly detection activates
+    warmup: 10              # frames before EWMA detection activates
     rms_pct: 10.0           # % deviation from EWMA baseline to trigger
-    rms_n: 3                # consecutive frames above threshold required
-    rms_alpha: 0.97         # EWMA decay (higher = slower adaptation)
-    spec_pct: 50.0          # % per-bin deviation from EWMA baseline to trigger
-    spec_n: 10
-    spec_alpha: 0.995       # very slow adaptation — spectral baseline is stable
-    spec_fmin: null         # null = no lower frequency limit
-    spec_fmax: null         # null = no upper frequency limit
+    rms_s: 3.0              # seconds signal must stay above threshold before burst fires
+    rms_alpha: 0.97         # EWMA smoothing (higher → slower baseline adaptation)
+    spec_pct: 50.0          # % mean per-bin deviation from EWMA baseline to trigger
+    spec_n: 10              # consecutive frames required for spectral trigger
+    spec_alpha: 0.995       # very slow adaptation — spectral baseline changes slowly
+    spec_fmin: null         # null = full spectrum; set Hz to restrict band
+    spec_fmax: null
+    fixed_upper_enabled: false   # burst when overall amplitude rises above this level
+    fixed_upper_value: 1.0
+    fixed_upper_unit: in/s       # any unit in UNIT_TO_SI; converted automatically
+    fixed_lower_enabled: false   # burst when overall amplitude drops below this level
+    fixed_lower_value: 0.05
+    fixed_lower_unit: in/s
+    cooldown_enabled: false      # block re-triggers for this long after a burst fires
+    cooldown_s: 300.0
 ```
 
 ### `devices/picoscope-defaults.yaml` — channel template
@@ -887,7 +962,8 @@ pytest tests/test_vibechecker.py::test_save
 | `test_picoscope.py` | `FindPicoScope` enumeration logic (mocked driver) |
 | `test_config.py` | YAML persistence, defaults, atomic writes |
 | `test_monitor_gate.py` | `IntervalGate` snap-to-grid, burst entry/exit |
-| `test_monitor_controller.py` | `MonitorController` lifecycle, burst count, HDF5 structure |
+| `test_monitor_anomaly.py` | `RmsThresholdHook` (warmup, streak, t=0 tracking), `SpectralThresholdHook` (EWMA, band masking), `FixedThresholdHook` (unit conversion, mV skip, modality mismatch), `CompositeAnomalyHook` |
+| `test_monitor_controller.py` | `MonitorController` lifecycle, hook wiring, cooldown gating, HDF5 structure |
 | `test_monitor_session_load.py` | Full write→load→browse integration: interval frames, burst frames, trend reconstruction, NaN regression guard |
 
 Hardware-specific tests skip automatically when no PicoScope is detected.
