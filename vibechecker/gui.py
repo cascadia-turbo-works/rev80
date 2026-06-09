@@ -1329,7 +1329,7 @@ class GUI:
             self._refresh_session_browser()
             dpg.configure_item(
                 ui.DLG_SESSION_BROWSER,
-                pos=((WINDOW_WIDTH - 980) // 2, (WINDOW_HEIGHT - 540) // 2),
+                pos=((WINDOW_WIDTH - 980) // 2, (WINDOW_HEIGHT - 594) // 2),
                 show=True,
             )
             return
@@ -1337,7 +1337,7 @@ class GUI:
 
     def _build_session_browser(self) -> None:
         """Build the session browser modal — session table + burst table."""
-        DLG_W, DLG_H = 980, 540
+        DLG_W, DLG_H = 980, 594
         ROW_H = DLG_H - 130
 
         _tbl_kw = dict(
