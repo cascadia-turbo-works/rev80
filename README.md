@@ -290,7 +290,7 @@ tests/                    pytest suite
   test_monitor_index.py
   test_monitor_session_load.py   full write→load→browse integration tests
 vibechecker.spec          PyInstaller build spec
-build.sh / build.bat      Full build pipeline
+build.sh                  Full build pipeline (run from Git Bash)
 ```
 
 ### Replacing the app icon
@@ -328,8 +328,7 @@ pip install -e ".[dev]"
 
 ```bash
 # Full pipeline: collect DLLs → PyInstaller → Inno Setup
-./build.sh          # Git Bash
-build.bat           # cmd.exe / PowerShell
+./build.sh
 
 # Individual steps
 ./build.sh dlls         # collect PicoScope DLLs into drivers/ only
