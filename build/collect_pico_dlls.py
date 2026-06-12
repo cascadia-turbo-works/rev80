@@ -51,14 +51,20 @@ def _check_platform() -> None:
         sys.exit('Must be run with 64-bit Python (PicoSDK DLLs are 64-bit only).')
 
 
-def _probe_registry() -> list[str]:
-    """Return additional SDK lib paths found in the Windows registry."""
+def _probe_registry() -> tuple[list[str], bool]:
+    """Return (sdk_lib_paths, registry_key_found).
+
+    registry_key_found is True when the PicoSDK installer has written its
+    registry entry, even if the lib path doesn't exist yet (pending reboot).
+    """
     paths: list[str] = []
+    found_in_registry = False
     try:
         import winreg
         for key_path, value_name in _REG_KEYS:
             try:
                 with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as key:
+                    found_in_registry = True
                     install_path, _ = winreg.QueryValueEx(key, value_name)
                     candidate = str(Path(install_path) / 'lib')
                     if candidate not in paths:
@@ -67,7 +73,7 @@ def _probe_registry() -> list[str]:
                 pass
     except ImportError:
         pass  # winreg not available (non-Windows)
-    return paths
+    return paths, found_in_registry
 
 
 def _find_dll(dll_name: str, search_dirs: list[str]) -> Path | None:
@@ -103,7 +109,8 @@ def main() -> None:
     _check_platform()
 
     # Build ordered search path: registry first, then well-known defaults
-    search_dirs = _probe_registry() + PICO_SDK_CANDIDATES
+    reg_paths, sdk_in_registry = _probe_registry()
+    search_dirs = reg_paths + PICO_SDK_CANDIDATES
     print(f'Searching for DLLs in: {search_dirs}')
 
     DRIVERS_DIR.mkdir(parents=True, exist_ok=True)
@@ -125,10 +132,16 @@ def main() -> None:
         print(f'  Copied {dll_name}: {src} → {dst}')
 
     if missing:
+        if sdk_in_registry:
+            sys.exit(
+                f'ERROR: PicoSDK is registered but its DLLs are not yet visible: {missing}\n'
+                'The installer requires a reboot to complete driver registration.\n'
+                'Please restart Windows and re-run the build.'
+            )
         sys.exit(
             f'ERROR: Could not locate the following DLLs: {missing}\n'
-            'Install PicoSDK from https://www.picotech.com/downloads\n'
-            'and re-run this script.'
+            'Install PicoSDK from https://www.picotech.com/downloads,\n'
+            'restart Windows, then re-run the build.'
         )
 
     print(f'\nAll DLLs collected to {DRIVERS_DIR}/')

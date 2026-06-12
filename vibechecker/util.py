@@ -213,6 +213,57 @@ class UI_Elements:
     CONFIG_TAB_SENSORS   = 'CONFIG_TAB_SENSORS'
     CONFIG_TAB_ACQUISITION = 'CONFIG_TAB_ACQUISITION'
     CONFIG_TAB_SIGGEN    = 'CONFIG_TAB_SIGGEN'
+    CONFIG_TAB_MONITOR   = 'CONFIG_TAB_MONITOR'
+
+    # Monitor Mode setup button + card (left panel)
+    BTN_MONITOR_SETUP    = 'BTN_MONITOR_SETUP'
+    BTN_MONITOR_BROWSE   = 'BTN_MONITOR_BROWSE'
+    MONITOR_BURST_BTN    = 'MONITOR_BURST_BTN'
+    MONITOR_BURST_STATUS = 'MONITOR_BURST_STATUS'   # drawlist
+    MONITOR_BURST_RECT   = 'MONITOR_BURST_RECT'     # rectangle inside drawlist
+    MONITOR_BURST_TEXT   = 'MONITOR_BURST_TEXT'     # "Xs remaining" text
+    PLT_TREND_BURST_VLINES = 'PLT_TREND_BURST_VLINES'  # vline_series on trend plot
+    DLG_SESSION_BROWSER  = 'DLG_SESSION_BROWSER'
+    MONITOR_CARD         = 'MONITOR_CARD'
+    MONITOR_RECORD_BTN   = 'MONITOR_RECORD_BTN'
+    MONITOR_RESET_BTN    = 'MONITOR_RESET_BTN'
+    MONITOR_STATUS_TEXT  = 'MONITOR_STATUS_TEXT'
+
+    # Monitor config dialog inputs
+    MON_DLG_INTERVAL     = 'MON_DLG_INTERVAL'
+    MON_DLG_PRE_BUFFER   = 'MON_DLG_PRE_BUFFER'
+    MON_DLG_BURST_DUR    = 'MON_DLG_BURST_DUR'
+    MON_DLG_OUTPUT_DIR   = 'MON_DLG_OUTPUT_DIR'
+    MON_DLG_COMPRESS     = 'MON_DLG_COMPRESS'
+    MON_DLG_ESTIMATE     = 'MON_DLG_ESTIMATE'
+
+    # Anomaly detection config (Monitor config tab) — controls the EWMA-based
+    # RMS / Spectral hooks. Fixed-level and cooldown triggers below have their
+    # own independent enable switches.
+    MON_ANOM_ENABLED      = 'MON_ANOM_ENABLED'
+    MON_ANOM_HOOK         = 'MON_ANOM_HOOK'
+    MON_ANOM_RMS_GROUP    = 'MON_ANOM_RMS_GROUP'
+    MON_ANOM_RMS_PCT      = 'MON_ANOM_RMS_PCT'
+    MON_ANOM_RMS_S        = 'MON_ANOM_RMS_S'
+    MON_ANOM_RMS_ALPHA    = 'MON_ANOM_RMS_ALPHA'
+    MON_ANOM_RMS_WARMUP   = 'MON_ANOM_RMS_WARMUP'
+    MON_ANOM_SPEC_GROUP   = 'MON_ANOM_SPEC_GROUP'
+    MON_ANOM_SPEC_PCT     = 'MON_ANOM_SPEC_PCT'
+    MON_ANOM_SPEC_N       = 'MON_ANOM_SPEC_N'
+    MON_ANOM_SPEC_FMIN    = 'MON_ANOM_SPEC_FMIN'
+    MON_ANOM_SPEC_FMAX    = 'MON_ANOM_SPEC_FMAX'
+
+    # Fixed-level threshold triggers (independent enable switches; Monitor config tab)
+    MON_ANOM_FIXED_UPPER_ENABLED = 'MON_ANOM_FIXED_UPPER_ENABLED'
+    MON_ANOM_FIXED_UPPER_VALUE   = 'MON_ANOM_FIXED_UPPER_VALUE'
+    MON_ANOM_FIXED_UPPER_UNIT    = 'MON_ANOM_FIXED_UPPER_UNIT'
+    MON_ANOM_FIXED_LOWER_ENABLED = 'MON_ANOM_FIXED_LOWER_ENABLED'
+    MON_ANOM_FIXED_LOWER_VALUE   = 'MON_ANOM_FIXED_LOWER_VALUE'
+    MON_ANOM_FIXED_LOWER_UNIT    = 'MON_ANOM_FIXED_LOWER_UNIT'
+
+    # Post-burst cooldown gate (Monitor config tab)
+    MON_ANOM_COOLDOWN_ENABLED = 'MON_ANOM_COOLDOWN_ENABLED'
+    MON_ANOM_COOLDOWN_S       = 'MON_ANOM_COOLDOWN_S'
 
     # Signal generator dialog inputs
     SIGGEN_ENABLED       = 'SIGGEN_ENABLED'
@@ -357,3 +408,17 @@ class UI_Elements:
     @staticmethod
     def plt_trend_series(ch: int) -> str:
         return f'PLT_TREND_CH{ch}'
+
+
+# Monitor Mode capture interval presets (seconds → display label)
+MONITOR_INTERVAL_PRESETS: dict[int, str] = {
+    5:      '5 s',
+    30:     '30 s',
+    60:     '1 min',
+    300:    '5 min',
+    900:    '15 min',
+    3600:   '1 h',
+    21600:  '6 h',
+    86400:  '1 day',
+    172800: '2 days',
+}

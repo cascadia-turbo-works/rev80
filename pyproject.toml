@@ -11,7 +11,6 @@ dependencies = [
     "numpy",
     "scipy",
     "pandas",
-    "dearpygui==2.0.0",
     "matplotlib",
     "pyyaml",
     "h5py",
@@ -19,7 +18,12 @@ dependencies = [
     "picosdk @ git+https://github.com/picotech/picosdk-python-wrappers.git@5d91a11b67a2c2ff9d6371d459e05e873106a2a3"
 ]
 
+[project.scripts]
+vibechecker-headless = "vibechecker.headless:main"
+vibechecker = "vibechecker.__main__:main"
+
 [project.optional-dependencies]
+gui = ["dearpygui==2.0.0"]
 dev = ["pytest", "ipykernel", "pyinstaller", "ruff"]
 
 [tool.setuptools.packages.find]

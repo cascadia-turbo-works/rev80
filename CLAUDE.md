@@ -129,11 +129,7 @@ Per-device YAML at `~/.config/vibechecker/devices/{sanitized_serial}.yaml` (Linu
 ## Build / packaging
 
 ```bash
-# Linux build (Git Bash on Windows for .bat equivalent)
-./build.sh
-
-# Windows
-build.bat
+./build.sh   # run from Git Bash (Windows or Linux)
 ```
 
 Build pipeline: collect PicoSDK DLLs → PyInstaller (`vibechecker.spec`, one-dir bundle) → Inno Setup installer (`installer/vibechecker.iss`, non-admin install).

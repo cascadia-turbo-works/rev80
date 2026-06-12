@@ -7,6 +7,7 @@ A Python desktop application for capturing, analyzing, and recording vibration d
 ## Table of Contents
 
 - [Features](#features)
+- [CLI Reference](#cli-reference)
 - [Installing on Windows](#installing-on-windows)
 - [Installing from Source (any OS)](#installing-from-source-any-os)
 - [Contributing](#contributing)
@@ -35,12 +36,109 @@ A Python desktop application for capturing, analyzing, and recording vibration d
 - Per-channel 4th-order Butterworth highpass and lowpass filters
 - Configurable IEPE sensor library: sensitivity (mV/EU), modality, engineering units
 - PicoScope 4000A built-in signal generator for excitation testing
-- HDF5 file save/load for post-processing and archiving
+- HDF5 file save/load for post-processing and archiving (v4 format)
 - Configurable frame cache depth (default 32 frames) with backward browse
 - Trend plot: overall vibration amplitude over time per channel
 - Simulated sensor (bearing-defect signal generator) for offline development and CI testing
 - Configurable amplitude modes: RMS, 0-P, P-P
 - Configurable units: acceleration (g, mm/s², in/s²), velocity (mm/s, in/s, mil/s), displacement (mm, in, mil)
+- **Monitor Mode** — interval datalogger: captures frames at a configurable interval (5 s – 2 days) into a single session HDF5; anomaly-triggered burst capture with three independent detection modes (EWMA-RMS broadband, EWMA-Spectral frequency-shape, and fixed-level upper/lower thresholds); configurable post-burst cooldown gate; manual "Record Burst" button
+- **Session browser** — load and browse historical monitor sessions; burst events displayed as vertical markers on the vibration trend
+
+---
+
+## CLI Reference
+
+### GUI mode
+
+```bash
+vibechecker                                          # launch GUI
+vibechecker --from-file path/to/file.h5             # load measurement on startup
+vibechecker --from-file path/to/session_dir/        # load monitor session on startup
+vibechecker --init-config                            # seed config files and exit
+vibechecker --debug                                  # verbose logging
+```
+
+`--from-file` accepts a v4 single-measurement `.h5` file or a v5 monitor session directory (containing `session.h5`). The GUI opens, displays the data immediately, and the session browser and file browser remain fully functional.
+
+### Headless mode
+
+```bash
+vibechecker-headless [options]
+# or equivalently:
+python -m vibechecker --headless [options]
+```
+
+**Before first use on a new machine, seed the config directory:**
+
+```bash
+vibechecker-headless --init-config
+```
+
+This writes `acquisition.yaml` and `devices/picoscope-defaults.yaml` to `~/.config/vibechecker/` so you can edit them before connecting hardware.
+
+**Info commands** (return immediately, no hardware or heavy imports):
+
+| Command | Description |
+|---|---|
+| `--init-config` | Create default config files and list them |
+| `--list-devices` | Enumerate connected PicoScope devices |
+| `--list-sensors` | Show the IEPE sensor library |
+| `--edit-config` | Open `acquisition.yaml` in `$EDITOR` |
+
+**Session options:**
+
+| Option | Default | Description |
+|---|---|---|
+| `--interval SECS` | 600 | Capture interval in seconds |
+| `--pre-buffer SECS` | 30 | Pre-burst buffer duration |
+| `--burst-duration SECS` | 120 | Burst capture duration |
+| `--output DIR` | `DEVDATA/monitor/` | Output root directory |
+| `--no-compress` | — | Disable gzip compression |
+| `--start-now` | — | Skip the pre-start confirmation prompt |
+
+**Acquisition options:**
+
+| Option | Default | Description |
+|---|---|---|
+| `--device SERIAL` | auto-detect | PicoScope serial number, or `sim` |
+| `--channels N [N ...]` | from device config | Channel indices to enable (persisted to device config) |
+| `--maxfreq HZ` | from `acquisition.yaml` | Max analysis frequency override |
+| `--binsize HZ` | from `acquisition.yaml` | Frequency resolution override |
+| `--debug` | — | Verbose logging to stderr |
+
+**First-run device config:** On the first run with a new PicoScope, headless generates
+`devices/picoscope-<model>-<SN>.yaml` from the defaults template before the confirmation
+prompt. Edit it to set channel coupling, voltage range, and sensor assignments, then restart.
+
+**Channel persistence:** `--channels 0 1` updates the `enabled` flag in the saved device
+config so the setting is sticky across restarts — you do not need to repeat the flag.
+
+**Confirmation gate:** Before connecting, headless prints a session summary (device, channels,
+sample rate, monitor interval, anomaly config, config file paths) and waits for Enter. Use
+`--start-now` to bypass this for unattended use (systemd, cron, scripts).
+
+**Example workflows:**
+
+```bash
+# First time on a new Pi — seed config, connect scope, generate device config
+vibechecker-headless --init-config
+vibechecker-headless --list-devices
+vibechecker-headless                          # generates device config, shows summary
+
+# Edit settings, then start unattended
+nano ~/.config/vibechecker/acquisition.yaml
+nano ~/.config/vibechecker/devices/picoscope-4424A-JY123.yaml
+vibechecker-headless --start-now
+
+# One-liner with explicit overrides (changes persisted to device config)
+vibechecker-headless --channels 0 1 --interval 300 --start-now
+
+# Simulated sensor — offline testing, no hardware
+vibechecker-headless --device sim --interval 10 --start-now
+```
+
+Writes a v5 `session.h5` file loadable by the GUI session browser or `--from-file`. Clean shutdown on `Ctrl+C` or `SIGTERM` (suitable for systemd `Restart=on-failure`).
 
 ---
 
@@ -83,13 +181,60 @@ Works on Windows, Linux, and macOS. Requires Python 3.10+.
 3. Run the app:
 
    ```bash
+   # GUI (default)
    python -m vibechecker
+
+   # GUI — open directly on a saved measurement or monitor session
+   python -m vibechecker --from-file DEVDATA/my_run.h5
+   python -m vibechecker --from-file DEVDATA/monitor/2026-06-02-130000/
+
+   # Headless interval datalogger (no display required)
+   vibechecker-headless --init-config              # seed config files first
+   vibechecker-headless                            # auto-detect scope, show summary
+   vibechecker-headless --device sim --interval 10 --start-now  # offline test
 
    # With debug logging to console
    python -m vibechecker --debug
    ```
 
-**Runtime dependencies:** `numpy`, `scipy`, `dearpygui==2.0.0`, `h5py`, `pyyaml`, `picosdk`
+**Runtime dependencies:** `numpy`, `scipy`, `dearpygui==2.0.0`, `h5py`, `pyyaml`, `plyer`, `picosdk`
+
+**Headless (no display) usage:**
+
+```bash
+# Seed config on a fresh install
+vibechecker-headless --init-config
+
+# Auto-detect PicoScope — shows summary, waits for Enter
+vibechecker-headless
+
+# Fully explicit, skip prompt (suitable for scripts/systemd)
+vibechecker-headless \
+  --interval 300 \
+  --pre-buffer 30 \
+  --burst-duration 120 \
+  --output /mnt/nas/vibration \
+  --channels 0 1 \
+  --maxfreq 1000 \
+  --binsize 1 \
+  --start-now
+
+# Simulated sensor (no hardware)
+vibechecker-headless --device sim --interval 10 --start-now
+```
+
+Sessions written by the headless mode are identical v5 HDF5 files and can be loaded in the GUI:
+
+```bash
+# Open GUI on a specific session directory
+python -m vibechecker --from-file /mnt/nas/vibration/2026-06-02-130000/
+
+# Or point at the session.h5 directly
+python -m vibechecker --from-file /mnt/nas/vibration/2026-06-02-130000/session.h5
+
+# Or a regular single-measurement save
+python -m vibechecker --from-file DEVDATA/my_measurement.h5
+```
 
 The `picosdk` package requires the PicoScope 4000A driver (`ps4000a.dll` / `libps4000a.so`) to be present on the system for hardware use. The app will start without it and show a "driver not found" notice in the device dialog — the simulated sensor is still available.
 
@@ -120,20 +265,32 @@ python -m vibechecker
 ### Project layout
 
 ```
-vibechecker/          Python package
-  _paths.py           Runtime-safe path resolution (dev vs frozen)
-  _pico_loader.py     Windows DLL search path setup for frozen builds
-  logging.yaml        Logging configuration (bundled with package)
-assets/               App icon source
-  vibechecker_icon.svg  Source artwork — edit this to change the icon
-  make_icons.sh         Regenerates vibechecker.ico from SVG via Inkscape + ImageMagick
-  vibechecker.ico       Multi-resolution icon used by installer and exe
-drivers/              PicoScope DLLs (Windows build only, not committed)
-installer/            Inno Setup script
-tests/                pytest suite
-vibechecker.spec      PyInstaller build spec
-build.sh              Full build pipeline (Git Bash on Windows)
-build.bat             Full build pipeline (cmd.exe on Windows)
+vibechecker/              Python package
+  _paths.py               Runtime-safe path resolution (dev vs frozen)
+  _pico_loader.py         Windows DLL search path setup for frozen builds
+  logging.yaml            Logging configuration (bundled with package)
+  monitor/                Monitor Mode package
+    __init__.py
+    session.py            MonitorSession dataclass
+    gate.py               IntervalGate scheduler
+    anomaly.py            AnomalyHook protocol; Rms/Spectral/FixedThreshold hooks; Composite
+    writer.py             MonitorWriterThread (daemon, writes session.h5)
+    controller.py         MonitorController (is_recording; hook supplied at start)
+  assets/
+    fonts/                CommitMono Nerd Font (gitignored — add locally)
+assets/                   App icon source
+  vibechecker_icon.svg    Source artwork
+  make_icons.sh           Regenerates vibechecker.ico via Inkscape + ImageMagick
+  vibechecker.ico         Multi-resolution icon used by installer and exe
+drivers/                  PicoScope DLLs (Windows build only, not committed)
+installer/                Inno Setup script
+tests/                    pytest suite
+  test_monitor_controller.py
+  test_monitor_gate.py
+  test_monitor_index.py
+  test_monitor_session_load.py   full write→load→browse integration tests
+vibechecker.spec          PyInstaller build spec
+build.sh                  Full build pipeline (run from Git Bash)
 ```
 
 ### Replacing the app icon
@@ -171,8 +328,7 @@ pip install -e ".[dev]"
 
 ```bash
 # Full pipeline: collect DLLs → PyInstaller → Inno Setup
-./build.sh          # Git Bash
-build.bat           # cmd.exe / PowerShell
+./build.sh
 
 # Individual steps
 ./build.sh dlls         # collect PicoScope DLLs into drivers/ only
@@ -198,11 +354,11 @@ build.bat           # cmd.exe / PowerShell
 
 ## Architecture
 
-The app is a linear pipeline. The hardware thread and the GUI render loop are decoupled via a `threading.Event` — the collector never calls into DPG directly.
+The pipeline is strictly layered. The hardware thread and the GUI render loop are decoupled via a `threading.Event` — the collector never imports or calls into DPG. All DSP (Welch FFT, filtering, integration) lives in `collector.py`; `gui.py` is a pure presentation layer that consumes pre-computed `ChannelResult` objects.
 
 ```text
-  Hardware thread                           Main thread
-  ─────────────────                         ───────────────────
+  Hardware thread                           Main (GUI) thread
+  ─────────────────                         ─────────────────────────────────
 
 ┌────────────────────────────┐
 │  PicoScopeStream           │
@@ -211,32 +367,45 @@ The app is a linear pipeline. The hardware thread and the GUI render loop are de
 │  → ADC → mV → callback     │
 └─────────────┬──────────────┘
               │ dict: {status, rel_time,
-              │  timestamp, unit, channels,
-              │  data, overflow_mask}
+              │  timestamp, channels, data}
               ▼
 ┌────────────────────────────┐
 │  DataCollector             │
+│  receive_data():           │
 │  → mV → EU (ScopeSensor)  │
 │  → Butterworth HP + LP    │
 │  → VibeSample per channel  │
 │  → frame_cache.append()   │
-│  → new_frame_event.set()  │─ ─ ─ ─ ─ ─ ─▶┌────────────────────────────┐
-└────────────────────────────┘               │  GUI render loop            │
-                                             │  _poll_new_frames():         │
-                                             │    if event set:            │
-                                             │      grab frame_cache[-1]  │
-                                             │      process_samples()      │
-                                             │      _display_frame()       │
-                                             └─────────────┬──────────────┘
-                                                           │ (on save)
-                                                           ▼
-                                             ┌────────────────────────────┐
+│  → new_frame_event.set()  │─ ─ ─ ─ ─ ─ ─▶┌──────────────────────────────┐
+└────────────────────────────┘               │  GUI render loop              │
+                                             │  _poll_new_frames():          │
+                                             │    if event set:              │
+                                             │      process_samples()   ←DSP │
+                                             │        Welch PSD              │
+                                             │        integration (mV→EU)    │
+                                             │        peak detection         │
+                                             │      → ChannelResult[]        │
+                                             │      _display_frame()         │
+                                             │        update DPG plots       │
+                                             │      monitor.on_results()─────┼──▶┌────────────────────┐
+                                             └─────────────┬────────────────┘   │ MonitorController  │
+                                                           │                    │ IntervalGate       │
+                                                           │ (on save)          │ MonitorWriterThread│
+                                                           ▼                    │ → session.h5       │
+                                             ┌────────────────────────────┐    └────────────────────┘
                                              │  HDF5 files in DEVDATA/    │
                                              │  save_data() / load_data() │
+                                             │  monitor/{id}/session.h5   │
                                              └────────────────────────────┘
 ```
 
-When the GUI is slower than the hardware data rate, it skips to the latest frame — all earlier frames remain in the ring cache (configurable depth, default 32 frames) for browsing. The hardware thread is never blocked by GUI rendering.
+**Decoupling properties:**
+- `collector.py`, `monitor/`, `sample.py`, `picoscope.py` — zero DPG imports. Any event loop can drive them.
+- `new_frame_event` is a `threading.Event` — a stdlib primitive with no GUI dependency.
+- `MonitorWriterThread` runs as a daemon thread independent of both the hardware thread and GUI.
+- A headless process can replace the GUI by polling `new_frame_event`, calling `process_samples()`, and passing results to `MonitorController` — approximately 50 lines.
+
+When the GUI is slower than the hardware data rate it skips to the latest frame — earlier frames remain in the ring cache (default 32 frames) for browsing. The hardware thread is never blocked by rendering.
 
 ---
 
@@ -246,16 +415,23 @@ When the GUI is slower than the hardware data rate, it skips to the latest frame
 | --- | --- |
 | `__main__.py` | Entry point — logging setup, `GUI` instantiation, main loop, cleanup |
 | `logger.py` | YAML-configured logging (`logging.yaml`); writes to `log/`; global exception hook |
-| `util.py` | Constants (`MAXFREQ_PRESETS`, `BINSIZE_PRESETS`, `UNITS`, `AMPLITUDE_MODES`), unit taxonomy and SI conversion, integration order helpers, `UI_Elements` DPG tag registry, exceptions |
+| `util.py` | Constants (`MAXFREQ_PRESETS`, `BINSIZE_PRESETS`, `UNITS`, `AMPLITUDE_MODES`, `MONITOR_INTERVAL_PRESETS`), unit taxonomy and SI conversion, integration order helpers, `UI_Elements` DPG tag registry |
+| `icons.py` | CommitMono Nerd Font (Codicons) registry; `load()` registers font with DPG; `IC` dict maps icon names to `\uXXXX` codepoints |
 | `sensor.py` | `VibeSensor` dataclass — device metadata; `find()` enumerates hardware PicoScopes only; `simulated()` returns a test sensor; `connect()` returns the appropriate stream |
 | `picoscope.py` | `FindPicoScope()` — enumerates PS4000A units; `PicoScopeStream` — polling thread, ADC→mV, overflow detection, watchdog recovery, signal generator setup |
 | `scope_sensor.py` | `ScopeSensor` dataclass — IEPE sensor metadata: name, sensitivity (mV/EU), engineering units, amplitude mode, UUID |
-| `scope_sensor_registry.py` | `ScopeSensorRegistry` — YAML-backed CRUD for user sensor library and per-channel assignments; persists signal generator config |
-| `sample.py` | `AcquisitionSettings` — spectrum, filter, and cache config with derived properties; `VibeSample` — single-channel time-domain block with cached PSD; `ChannelResult` — frozen display-ready result |
-| `config.py` | OS-aware config directory; per-device YAML persistence (channels, signal generator, acquisition settings); atomic writes; fallback to built-in defaults |
-| `collector.py` | `DataCollector` — multi-channel acquisition state machine: stream lifecycle, per-channel filter application, configurable frame cache (default 32 frames), `new_frame_event` signal for GUI, trend accumulation, HDF5 save/load |
+| `scope_sensor_registry.py` | `ScopeSensorRegistry` — YAML-backed CRUD for user sensor library and per-channel assignments |
+| `sample.py` | `AcquisitionSettings` — spectrum, filter, and cache config with derived properties; `VibeSample` — single-channel time-domain block; `ChannelResult` — frozen display-ready result from `process_sample()` |
+| `config.py` | OS-aware config directory; per-device YAML persistence (channels, acquisition settings, monitor defaults); atomic writes; fallback to built-in defaults |
+| `collector.py` | `DataCollector` — multi-channel acquisition state machine: stream lifecycle, per-channel Butterworth filtering, mV→EU conversion, frame ring cache, `new_frame_event` signal, DSP via `process_sample()` / `process_samples()`, trend accumulation, HDF5 save/load, monitor session loaders |
 | `simulation.py` | `SimulatedSensor` (daemon thread) + signal generators: `GenerateTone`, `GenerateNoise`, `GenerateBearingVibration_SpectralMethod`, `GenerateBearingVibration_TemporalMethod` |
-| `gui.py` | `GUI` class — dearpygui three-column layout with manual render loop (`_poll_new_frames`), channel config panel, sensor library, spectrum and time-domain plots, trend plots, file I/O |
+| `gui.py` | `GUI` class — dearpygui three-column layout with manual render loop (`_poll_new_frames`), all config dialogs, spectrum/time/trend plots, file I/O, monitor card, session browser |
+| `monitor/__init__.py` | Re-exports: `MonitorController`, `MonitorSession` |
+| `monitor/session.py` | `MonitorSession` frozen dataclass — session parameters, config snapshots, and cooldown settings |
+| `monitor/gate.py` | `IntervalGate` — snap-to-grid capture scheduler; burst mode entry/exit; caller-supplied time (unit-testable) |
+| `monitor/anomaly.py` | `AnomalyHook` Protocol; `NullAnomalyHook`; `RmsThresholdHook`; `SpectralThresholdHook`; `FixedThresholdHook`; `CompositeAnomalyHook`; `AnomalyEvent` dataclass |
+| `monitor/writer.py` | `MonitorWriterThread` — daemon thread; appends interval frames to `/monitor/` and burst frames to `/burst/` in `session.h5`; disk-space guard |
+| `monitor/controller.py` | `MonitorController` — owns gate, writer, anomaly hook; anomaly hook supplied at `start()` and active for the full session; `trigger_burst()` for manual burst |
 
 ---
 
@@ -462,85 +638,272 @@ The default source for `SimulatedSensor` is `GenerateBearingVibration_TemporalMe
 
 ---
 
-## Data Storage
+## Monitor Mode
 
-Samples are saved as HDF5 (`.h5`) files in the `DEVDATA/` directory. The multi-channel layout is:
+Monitor Mode turns vibechecker into a continuous interval datalogger with automatic event capture.
+
+### Interval recording
+
+When monitoring is active, `MonitorController.on_results()` is called after every frame (from the GUI render loop or a headless polling loop). An `IntervalGate` fires at the configured interval and writes the current frame to `/monitor/{N}/` in `session.h5`. Interval captures continue regardless of whether a burst is in progress.
+
+### Burst capture
+
+Any trigger source — automatic anomaly detection or the manual **Record Burst** button — causes the controller to:
+
+1. Snapshot `pre_buffer_s` of raw frames from the ring cache and prepend them to the burst as pre-trigger data.
+2. Capture frames at full rate for `burst_duration_s` seconds, writing to `/burst/{id}/`.
+3. Tag the t=0 frame (anomaly onset, not detection time) in `burst.attrs` as `trigger_timestamp` / `trigger_rel_time`.
+4. Start the cooldown gate to block further automatic triggers for `cooldown_s` seconds.
+
+### Anomaly detection hooks
+
+Three hook types can be used independently or combined via `CompositeAnomalyHook` (configured by the "Hook: RMS / Spectral / Both" selector):
+
+#### `RmsThresholdHook` — broadband EWMA
+
+Maintains a per-channel EWMA baseline of `ChannelResult.overall`. Triggers when:
 
 ```
-/frames/{i}/
-    meta/
-        timestamp, rel_time, samplerate, status
-    channels/{ch}/
-        data, unit, modality, coupling
-/trend/{ch}/
-    rel_times, overall
+|current − baseline| / baseline  >  rms_pct / 100
+```
+
+…for `rms_s` seconds of sustained deviation. The baseline adapts continuously during normal operation and during burst playback. A warmup period (`warmup` frames) must elapse before triggering is enabled.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `rms_pct` | 10.0 | % deviation from EWMA baseline |
+| `rms_s` | 3.0 | Seconds signal must stay above threshold (0 = first frame) |
+| `rms_alpha` | 0.97 | EWMA smoothing factor (higher = slower baseline) |
+| `warmup` | 10 | Frames to collect before triggers are enabled |
+
+#### `SpectralThresholdHook` — frequency-shape EWMA
+
+Compares the live PSD against a per-bin EWMA baseline. Triggers when the mean spectral deviation across the monitored frequency band exceeds `spec_pct` for `spec_n` consecutive frames. Useful for detecting new harmonics or bearing-tone shifts that don't change overall amplitude significantly.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `spec_pct` | 50.0 | % mean per-bin deviation to trigger |
+| `spec_n` | 10 | Consecutive frames required |
+| `spec_fmin` / `spec_fmax` | null | Restrict band (null = full spectrum) |
+
+Use **Reset Baseline** (monitor card button) to reseed the EWMA from the current frame after a process change, speed change, or restart.
+
+#### `FixedThresholdHook` — absolute level trigger
+
+Fires immediately (no warmup, no EWMA) when `ChannelResult.overall` crosses a fixed level. Accepts any unit supported by `UNIT_TO_SI` and converts automatically — a threshold in `in/s` works correctly against a channel reporting `mm/s`.
+
+Upper and lower limits are independent. A channel with no sensor/EU assigned (raw `mV`) logs a one-time warning and is silently skipped.
+
+| Parameter | Description |
+|---|---|
+| `fixed_upper_enabled` / `fixed_upper_value` / `fixed_upper_unit` | Trigger when amplitude rises above this level |
+| `fixed_lower_enabled` / `fixed_lower_value` / `fixed_lower_unit` | Trigger when amplitude falls below this level |
+
+#### Cooldown gate
+
+After any burst fires (automatic or manual), the controller optionally blocks further automatic triggers for `cooldown_s` seconds. Interval captures are unaffected. Use this to prevent a sustained fault from generating many overlapping burst files.
+
+---
+
+## Data Storage
+
+### Manual saves (v4 format)
+
+Single-measurement saves written by **File → Save** or `DataCollector.save_data()`:
+
+```
+DEVDATA/YYYY-MM-DD-HHMMSS.h5
+  /metadata/
+    .attrs              version=4, notes
+    acquisition/        AcquisitionSettings fields
+    scope_sensors/      sensor library snapshot
+    channels/{ch}/      per-channel config
+  /frames/{i}/
+    .attrs              timestamp, rel_time, samplerate, status
+    {ch}/data           (blocksize,) float64 mV, gzip-compressed
+  /trend/{ch}/
+    rel_times, orders   (M,5) integration orders matrix
 ```
 
 ```python
-collector.save_data("DEVDATA/my_run")
-# → writes DEVDATA/my_run_2024-01-15T14-32-00.h5
-#   (colons replaced by hyphens for FAT32 compatibility)
+collector.save_data(Path("DEVDATA/my_run.h5"))
+collector.load_data(Path("DEVDATA/my_run.h5"))
+```
 
-collector.load_data("DEVDATA/my_run_2024-01-15T14-32-00.h5")
+### Monitor sessions (v5 format)
+
+Monitor Mode writes one `session.h5` per session, appending frames as the interval gate fires:
+
+```
+DEVDATA/monitor/{session_id}/session.h5
+  /metadata/
+    .attrs              file_version=5, session_id, start_time, interval_s
+    acquisition/        AcquisitionSettings snapshot at arm time
+    scope_sensors/      sensor library at arm time
+    channels/{ch}/      per-channel config at arm time
+  /monitor/{N}/         one group per interval gate firing (N=0,1,2,…)
+    .attrs              timestamp, rel_time, samplerate, status,
+                        overall_json, peaks_json
+    {ch}/data           (blocksize,) float64 mV, gzip-compressed
+  /burst/{burst_id}/    one group per burst event
+    .attrs              trigger_type, trigger_timestamp, trigger_rel_time,
+                        burst_duration_s, max_overall_json, n_frames,
+                        n_pretrigger_frames
+    {frame_index}/
+      .attrs            timestamp, rel_time, is_pretrigger, overall_json
+      {ch}/data
+  /burst.attrs          burst_list — JSON array of burst summaries
+```
+
+`session_id = "YYYY-MM-DD-HHMMSS"` (UTC). Loaded via the session browser or:
+
+```python
+collector.load_monitor_session(session_h5)
+collector.load_monitor_burst(session_h5, burst_id)
 ```
 
 ---
 
 ## Configuration and Persistence
 
-Config is persisted in the OS-specific config directory:
+Config lives in the OS-specific config directory:
 - **Linux/macOS:** `$XDG_CONFIG_HOME/vibechecker/` (default: `~/.config/vibechecker/`)
 - **Windows:** `%APPDATA%\vibechecker\`
 
-### Per-device configuration
+Run `vibechecker --init-config` (or `vibechecker-headless --init-config`) to create the
+directory and seed all default files. The layout is:
 
-Device-specific settings are stored in `devices/{sanitized_serial}.yaml` when the device is disconnected or via explicit GUI action:
+```
+~/.config/vibechecker/
+  acquisition.yaml                       # acquisition + monitor settings (instance-wide)
+  scope_sensors.yaml                     # IEPE sensor library (shared across all devices)
+  devices/
+    picoscope-defaults.yaml              # channel template applied to new devices
+    picoscope-4424A-JY123.yaml           # per-device channel + siggen config
+```
+
+### `acquisition.yaml` — instance-wide settings
+
+Acquisition and monitor settings are shared across all scopes on this machine. Edit this
+file to change capture intervals, anomaly thresholds, filter settings, etc.
+
+```yaml
+acquisition:
+  maxfreq: 1000.0           # Hz — drives sample rate (samplerate = nextpow2(2 × maxfreq))
+  binsize: 1.0              # Hz — drives FFT block size
+  fft_window: hann
+  welch_overlap: 0.5
+  highpass_enabled: true
+  highpass_fc: 10.0         # Hz
+  lowpass_enabled: false
+  lowpass_fc: 1000.0        # Hz
+  trend_max_points: 5000
+  cache_frames: 15
+
+monitor:
+  interval_s: 600           # seconds between interval captures
+  pre_burst_s: 30           # seconds of pre-trigger data saved with each burst
+  burst_duration_s: 120     # seconds of post-trigger burst capture
+  max_burst_s: 600          # maximum burst length even if anomaly keeps retriggering
+  output_dir: null          # null → DEVDATA/monitor/
+  compression: gzip
+  compression_level: 4
+  anomaly:
+    enabled: true
+    hook_type: rms          # rms | spectral | both
+    warmup: 10              # frames before EWMA detection activates
+    rms_pct: 10.0           # % deviation from EWMA baseline to trigger
+    rms_s: 3.0              # seconds signal must stay above threshold before burst fires
+    rms_alpha: 0.97         # EWMA smoothing (higher → slower baseline adaptation)
+    spec_pct: 50.0          # % mean per-bin deviation from EWMA baseline to trigger
+    spec_n: 10              # consecutive frames required for spectral trigger
+    spec_alpha: 0.995       # very slow adaptation — spectral baseline changes slowly
+    spec_fmin: null         # null = full spectrum; set Hz to restrict band
+    spec_fmax: null
+    fixed_upper_enabled: false   # burst when overall amplitude rises above this level
+    fixed_upper_value: 1.0
+    fixed_upper_unit: in/s       # any unit in UNIT_TO_SI; converted automatically
+    fixed_lower_enabled: false   # burst when overall amplitude drops below this level
+    fixed_lower_value: 0.05
+    fixed_lower_unit: in/s
+    cooldown_enabled: false      # block re-triggers for this long after a burst fires
+    cooldown_s: 300.0
+```
+
+### `devices/picoscope-defaults.yaml` — channel template
+
+Applied to every channel when a new device is seen for the first time. Edit this before
+connecting a new scope to set your preferred defaults site-wide:
+
+```yaml
+channel:
+  enabled: false            # only channel 0 is enabled on new devices
+  sensor_id: null
+  voltage_range: 6          # PS4000A range index (6 = ±1 V)
+  coupling: AC
+  channel_name: null        # null → defaults to 'Ch A', 'Ch B', …
+  target_unit: null         # null → use sensor engineering units
+  amplitude_mode: 0-P
+
+siggen:
+  enabled: false
+  wave_type: PS4000A_SINE
+  freq_hz: 1000.0
+  pktopk_uv: 1000000        # 1 V pk-pk
+  offset_uv: 0
+```
+
+### `devices/picoscope-<model>-<SN>.yaml` — per-device channel config
+
+Channel coupling, voltage range, sensor assignments, and signal generator settings for a
+specific scope. Generated automatically on first connection; edit to customise each channel.
 
 ```yaml
 channels:
   0:
     enabled: true
-    sensor_id: <uuid>           # reference to global sensor library
-    voltage_range: 7            # PS4000A range index
+    sensor_id: <uuid>       # from scope_sensors.yaml
+    voltage_range: 6        # ±1 V
     coupling: AC
-acquisition:
-  maxfreq: 2000.0               # Hz
-  binsize: 2.0                  # Hz
-  cache_frames: 32              # configurable ring buffer depth
-  fft_window: hann
-  welch_overlap: 0.5
-  highpass_enabled: true
-  highpass_fc: 10.0             # Hz
-  lowpass_enabled: false
-  lowpass_fc: 1000.0            # Hz
-  trend_max_points: 500
-siggen:                          # optional signal generator config
-  enabled: true
+    channel_name: Motor NDE
+    target_unit: in/s
+    amplitude_mode: 0-P
+  1:
+    enabled: false
+    sensor_id: null
+    voltage_range: 6
+    coupling: AC
+    channel_name: null
+    target_unit: null
+    amplitude_mode: 0-P
+siggen:
+  enabled: false
   wave_type: PS4000A_SINE
-  freq_hz: 100.0
-  pktopk_uv: 500000
+  freq_hz: 1000.0
+  pktopk_uv: 1000000
   offset_uv: 0
 ```
 
-Unknown device? Falls back to `devices/default.yaml` template, then built-in defaults. When reconnecting, the device's saved config is restored.
+### `scope_sensors.yaml` — global IEPE sensor library
 
-### Global sensor library
-
-User-defined IEPE sensors are stored in `scope_sensors.yaml` as a list of `ScopeSensor` dicts:
+User-defined IEPE sensors shared across all devices. Add entries here to make sensors
+available for assignment in the GUI Channel Config panel or headless config:
 
 ```yaml
 - id: <uuid>
   name: PCB 352C33 Ch1
-  sensitivity_mv_per_eu: 10.2   # mV/g, mV/(mm/s), etc.
-  engineering_units: g          # acceleration modality
-  target_unit: in/s             # display unit override (optional)
+  sensitivity_mv_per_eu: 10.2   # mV per engineering unit
+  engineering_units: g
+  target_unit: in/s             # optional display unit override
 ```
 
-Managed via `ScopeSensorRegistry` — provides CRUD operations and per-channel assignment persistence.
+Managed via `ScopeSensorRegistry` — provides CRUD operations. When a sensor is assigned to
+a channel, `DataCollector` divides incoming mV by `sensitivity` to produce engineering units.
 
 ### Logging
 
-Logging is configured via `vibechecker/logging.yaml`. In development, log files are written to `log/`. In a frozen Windows build, logs are written to `~/Documents/vibechecker/logs/`.
+Logging is configured via `vibechecker/logging.yaml`. In development, log files are written
+to `log/`. In a frozen Windows build, logs go to `~/Documents/vibechecker/logs/`.
 
 ---
 
@@ -573,21 +936,34 @@ The PicoScope 4000A driver (`ps4000a.dll` on Windows, `libps4000a.so` on Linux) 
 
 ## Testing
 
-Tests use `VibeSensor.simulated()` directly and run without physical hardware.
+Tests use `VibeSensor.simulated()` and synthetic data — no hardware required. The full suite runs in ~50 s.
 
 ```bash
-# Run all tests
+# Run all tests (no hardware)
 pytest tests/
 
+# Skip hardware-dependent tests explicitly
+pytest tests/ -k "not hardware and not siggen"
+
 # Single file
-pytest tests/test_sample.py
+pytest tests/test_monitor_session_load.py
 
 # Single test
 pytest tests/test_vibechecker.py::test_save
-
-# Filter by keyword
-pytest tests/ -k "stream"
 ```
 
-Hardware-specific tests in `tests/test_picoscope_hw.py` skip automatically when no PicoScope is detected (`VibeSensor.find()` returns empty).
+| Test file | Coverage |
+|---|---|
+| `test_sample.py` | `AcquisitionSettings`, `VibeSample`, `ChannelResult` |
+| `test_vibechecker.py` | `DataCollector` stream lifecycle, save/load, trend |
+| `test_acquisition_settings.py` | Derived properties, setter validation |
+| `test_scope_sensor.py` | Sensor calibration pipeline, mV→EU scaling |
+| `test_picoscope.py` | `FindPicoScope` enumeration logic (mocked driver) |
+| `test_config.py` | YAML persistence, defaults, atomic writes |
+| `test_monitor_gate.py` | `IntervalGate` snap-to-grid, burst entry/exit |
+| `test_monitor_anomaly.py` | `RmsThresholdHook` (warmup, streak, t=0 tracking), `SpectralThresholdHook` (EWMA, band masking), `FixedThresholdHook` (unit conversion, mV skip, modality mismatch), `CompositeAnomalyHook` |
+| `test_monitor_controller.py` | `MonitorController` lifecycle, hook wiring, cooldown gating, HDF5 structure |
+| `test_monitor_session_load.py` | Full write→load→browse integration: interval frames, burst frames, trend reconstruction, NaN regression guard |
+
+Hardware-specific tests skip automatically when no PicoScope is detected.
 
