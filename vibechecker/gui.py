@@ -8,6 +8,7 @@ import numpy as np
 
 import vibechecker
 import vibechecker.config as _cfg
+import vibechecker.icons as icons
 from vibechecker.sample import AcquisitionSettings
 from vibechecker.scope_sensor import ScopeSensor
 from vibechecker.scope_sensor_registry import ScopeSensorRegistry
@@ -28,7 +29,7 @@ TIME_PLOT_HEIGHT = 300
 
 # Config dialog dimensions — referenced wherever the dialog is built or positioned
 _DLG_CFG_W = 720
-_DLG_CFG_H = 560
+_DLG_CFG_H = 840
 # Field widths inside the config dialog (golden-ratio of dialog width)
 _DLG_FIELD_W = int(_DLG_CFG_W * 0.618)  # ~444 px  — full-width text/combo
 _SREG_LIST_W = 200  # sensor registry list pane
@@ -58,19 +59,20 @@ _BTN_HALF = (CONTROLS_WIDTH - 30) // 2
 
 # Left-panel card heights.  DPG child_window has no shrink-to-content mode:
 # autosize_y=True fills the parent rather than the content.  Heights must be
-# fixed or dynamically updated.  Estimates based on DPG default style metrics:
-#   text line ≈ 17 px (13 px font + 4 px ItemSpacing.y)
-#   button    ≈ 25 px (21 px frame + 4 px spacing)
-#   card base ≈ 40 px (top/bottom WindowPadding + title + separator)
-_CARD_LINE_H = 17  # per text-line height estimate (font + spacing)
-_CARD_BASE_H = 60  # card overhead: padding + title + separator + bottom pad
-_CARD_BTN_H = 25  # single button row height
+# fixed or dynamically updated.  Estimates based on DPG style metrics with 16px font:
+#   text line ≈ 20 px (16 px font + 4 px ItemSpacing.y)
+#   button    ≈ 28 px (24 px frame + 4 px spacing)
+#   card base ≈ 68 px (top/bottom WindowPadding + title + separator)
+_CARD_LINE_H = 20  # per text-line height estimate (font + spacing)
+_CARD_BASE_H = 68  # card overhead: padding + title + separator + bottom pad
+_CARD_BTN_H = 28   # single button row height
 _CARD_H_DEVICE = _CARD_BASE_H + _CARD_LINE_H * 5  # disconnected baseline
-_CARD_H_CHANNELS = _CARD_BASE_H + _CARD_LINE_H
+_CARD_H_CHANNELS = _CARD_BASE_H + _CARD_BTN_H + _CARD_LINE_H
 _CARD_H_ACQ = (
     _CARD_BASE_H + _CARD_BTN_H * 6 + _CARD_LINE_H * 10
-)  # Acquisition: 400 fixed — toggle+controls+spectrum info box
-_CARD_H_FILE = _CARD_BASE_H + _CARD_BTN_H + 125  # ≈ 252 (notes field)
+)  # Acquisition: toggle+controls+spectrum info box
+_CARD_H_FILE = _CARD_BASE_H + _CARD_LINE_H + 105  # notes field only (Save/Load in header)
+_CARD_H_MONITOR = _CARD_BASE_H + _CARD_BTN_H * 4 + _CARD_LINE_H * 5  # Monitor+Reset+RecordBurst+Load + status+burst indicator
 
 
 def _c(key: str, alpha: int = 255) -> tuple:
@@ -140,6 +142,15 @@ class GUI:
         self.found_sensors: list = []
         self._autoscale_pending: bool = False  # True → autoscale on next frame
         self._was_streaming_before_config: bool = False  # stream state when config opened
+        self._monitor: vibechecker.MonitorController | None = None
+        self._session_browser_sessions: list = []
+        self._sb_session_sel_ids: list = []   # selectable item IDs for single-select
+        self._sb_burst_sel_ids:   list = []
+        self._session_browser_rows: list = []
+        self._session_browser_burst_list: list = []
+        self._session_browser_selected_capture: int | None = None
+        self._session_browser_selected_burst: str | None = None
+        self._session_browser_selected_session_dir = None
 
     # ------------------------------------------------------------------
     # Status indicator helpers
@@ -165,8 +176,12 @@ class GUI:
     def _set_stream_status(self, state: str):
         """Update the toggle button color and label: 'active'|'waiting'|'idle'."""
         if dpg.does_item_exist(ui.ACQ_TOGGLE):
-            label_map = {"active": "Running", "waiting": "Waiting", "idle": "Stopped"}
-            dpg.set_item_label(ui.ACQ_TOGGLE, label_map.get(state, "Stopped"))
+            label_map = {
+                "active":  f'{icons.IC["stop"]}  Running',
+                "waiting": f'{icons.IC["stop"]}  Waiting',
+                "idle":    f'{icons.IC["play_arrow"]}  Stopped',
+            }
+            dpg.set_item_label(ui.ACQ_TOGGLE, label_map.get(state, f'{icons.IC["play_arrow"]}  Stopped'))
             theme = self._toggle_themes.get(state)
             if theme:
                 dpg.bind_item_theme(ui.ACQ_TOGGLE, theme)
@@ -223,8 +238,7 @@ class GUI:
 
         if len(groups) > 2:
             log.warning(
-                "More than 2 unique output units configured %s; "
-                "only the first 2 will have dedicated axes.",
+                "More than 2 unique output units configured %s; only the first 2 will have dedicated axes.",
                 [g[0] for g in groups],
             )
             # Absorb excess channels into group 1
@@ -237,9 +251,7 @@ class GUI:
             dpg.hide_item(ui.PLT_SAMPLE_AX_ACCEL_2)
             dpg.hide_item(ui.PLT_TREND_AX_OVERALL_2)
             for ch in self.collector.config.enabled_channels:
-                self._reassign_series_to_axis(
-                    ch, ui.PLT_FREQ_AX_ACCEL, ui.PLT_SAMPLE_AX_ACCEL, ui.PLT_TREND_AX_OVERALL
-                )
+                self._reassign_series_to_axis(ch, ui.PLT_FREQ_AX_ACCEL, ui.PLT_SAMPLE_AX_ACCEL, ui.PLT_TREND_AX_OVERALL)
             unit = groups[0][0] if groups else "mV"
             chs = groups[0][1] if groups else []
             mode = self._get_amplitude_mode(chs[0]) if chs else "0-P"
@@ -256,13 +268,9 @@ class GUI:
             dpg.show_item(ui.PLT_SAMPLE_AX_ACCEL_2)
             dpg.show_item(ui.PLT_TREND_AX_OVERALL_2)
             for ch in groups[0][1]:
-                self._reassign_series_to_axis(
-                    ch, ui.PLT_FREQ_AX_ACCEL, ui.PLT_SAMPLE_AX_ACCEL, ui.PLT_TREND_AX_OVERALL
-                )
+                self._reassign_series_to_axis(ch, ui.PLT_FREQ_AX_ACCEL, ui.PLT_SAMPLE_AX_ACCEL, ui.PLT_TREND_AX_OVERALL)
             for ch in groups[1][1]:
-                self._reassign_series_to_axis(
-                    ch, ui.PLT_FREQ_AX_2, ui.PLT_SAMPLE_AX_ACCEL_2, ui.PLT_TREND_AX_OVERALL_2
-                )
+                self._reassign_series_to_axis(ch, ui.PLT_FREQ_AX_2, ui.PLT_SAMPLE_AX_ACCEL_2, ui.PLT_TREND_AX_OVERALL_2)
             dpg.set_item_label(ui.PLT_FREQ_AX_ACCEL, self._freq_axis_label(groups[0][0], groups[0][1]))
             dpg.set_item_label(ui.PLT_SAMPLE_AX_ACCEL, f"Amplitude, {groups[0][0]}")
             dpg.set_item_label(ui.PLT_FREQ_AX_2, self._freq_axis_label(groups[1][0], groups[1][1]))
@@ -324,7 +332,6 @@ class GUI:
         """Return amplitude mode: channel config → default '0-P'."""
         return self.collector.config.amplitude_mode_for(ch) or "0-P"
 
-
     def _update_time_plot(self, result: vibechecker.ChannelResult, ch: int):
         if not dpg.does_item_exist(ui.plt_time_series(ch)):
             return
@@ -347,10 +354,12 @@ class GUI:
             dpg.set_value(ui.plt_freq_peaks(ch), [freq[top_peaks].tolist(), spectrum[top_peaks].tolist()])
             amp_mode = self._get_amplitude_mode(ch)
             cols = ["Frequency (Hz)", f"Amp., {result.unit} {amp_mode}"]
-            rows = list(zip(
-                np.round(freq[top_peaks], 2).tolist(),
-                np.round(spectrum[top_peaks], 6).tolist(),
-            ))
+            rows = list(
+                zip(
+                    np.round(freq[top_peaks], 2).tolist(),
+                    np.round(spectrum[top_peaks], 6).tolist(),
+                )
+            )
             self._update_fft_peaks_table(cols, rows, ch)
         else:
             dpg.set_value(ui.plt_freq_peaks(ch), [[], []])
@@ -451,9 +460,13 @@ class GUI:
 
         if dpg.does_item_exist(ui.CH_WARNINGS_SECTION):
             dpg.configure_item(
-                ui.CH_WARNINGS_SECTION, show=bool(n_overflow),
+                ui.CH_WARNINGS_SECTION,
+                show=bool(n_overflow),
                 height=_CARD_BASE_H + n_overflow * _CARD_LINE_H,
             )
+
+        if self._monitor is not None and self._monitor.is_recording:
+            self._monitor.on_results(results, self.collector.data["frame_cache"])
 
         self._update_trend_plot()
         self._update_browse_label()
@@ -485,6 +498,8 @@ class GUI:
             return
         self.collector.new_frame_event.clear()
         self._display_frame()
+        if self._monitor is not None and self._monitor.is_recording:
+            self._update_monitor_card()
 
     def _redraw(self, sender=None, data=None):
         if not self.collector.is_streaming:
@@ -654,7 +669,11 @@ class GUI:
         acq_time = blocksize / samplerate
         mem_bytes = blocksize * 8
 
-        cache_frames = int(dpg.get_value(ui.ACQ_DLG_CACHE_FRAMES)) if dpg.does_item_exist(ui.ACQ_DLG_CACHE_FRAMES) else self.collector.config.cache_frames
+        cache_frames = (
+            int(dpg.get_value(ui.ACQ_DLG_CACHE_FRAMES))
+            if dpg.does_item_exist(ui.ACQ_DLG_CACHE_FRAMES)
+            else self.collector.config.cache_frames
+        )
         n_enabled = max(1, len(self.collector.config.enabled_channels))
         rec_window = acq_time * cache_frames
         total_mem = mem_bytes * n_enabled * cache_frames
@@ -717,6 +736,7 @@ class GUI:
             self._status_timer.cancel()
             self._status_timer = None
         self._set_stream_status("idle")
+        self._update_monitor_card()
 
     def _collect_sample(self, sender=None, data=None):
         if self.collector.stream is None:
@@ -784,15 +804,19 @@ class GUI:
             if dpg.does_item_exist(ax):
                 dpg.fit_axis_data(ax)
 
-        # Trend X: fit to current data extent
+        # Trend X: fit to current data extent, excluding NaN/inf
+        import math as _math
         all_times: list[float] = []
         for ch in self.collector.config.enabled_channels:
             td = self.collector.trend.get(ch, {})
             rt = td.get("rel_times")
             if rt is not None and len(rt) > 0:
-                all_times.extend(rt.tolist())
+                all_times.extend(t for t in rt.tolist() if _math.isfinite(t))
         if all_times and dpg.does_item_exist(ui.PLT_TREND_AX_TIME):
-            dpg.set_axis_limits(ui.PLT_TREND_AX_TIME, 0.0, max(all_times) * 1.5)
+            t_min = min(all_times)
+            t_max = max(all_times)
+            pad = max((t_max - t_min) * 0.1, 0.5)
+            dpg.set_axis_limits(ui.PLT_TREND_AX_TIME, t_min - pad, t_max + pad)
         elif dpg.does_item_exist(ui.PLT_TREND_AX_TIME):
             dpg.fit_axis_data(ui.PLT_TREND_AX_TIME)
 
@@ -946,6 +970,10 @@ class GUI:
         if self._was_streaming_before_config:
             self._stop_stream()
 
+        dpg.configure_item(
+            ui.DLG_CONFIG,
+            pos=((WINDOW_WIDTH - _DLG_CFG_W) // 2, (WINDOW_HEIGHT - _DLG_CFG_H) // 2),
+        )
         dpg.show_item(ui.DLG_CONFIG)
         dpg.set_value(ui.CONFIG_TAB_BAR, tab_tag)
         # Always sync spectrum widgets so they reflect current config
@@ -959,6 +987,8 @@ class GUI:
             self._init_sensor_registry_tab()
         elif tab_tag == ui.CONFIG_TAB_SIGGEN:
             self._populate_siggen_tab()
+        elif tab_tag == ui.CONFIG_TAB_MONITOR:
+            self._populate_monitor_tab()
 
     def _start_device_discovery(self, sender=None, data=None):
         """Clear device list, show placeholder, then discover in a background thread."""
@@ -1020,7 +1050,7 @@ class GUI:
             for ch in range(_MAX_CHANNELS):
                 self._remove_channel_series(ch)
             self.collector.reset_channel_config(sensor.num_channels)
-            device_cfg = _cfg.load_device_config(sensor.serial_number)
+            device_cfg = _cfg.load_device_config(sensor.model_name, sensor.serial_number)
             self._restore_channel_assignments(device_cfg)
             self.collector.reconnect_stream()
             self._set_device_status("connected")
@@ -1208,7 +1238,7 @@ class GUI:
                 for _ch in range(_MAX_CHANNELS):
                     self._remove_channel_series(_ch)
                 self.collector.reset_channel_config(sensor.num_channels)
-                device_cfg = _cfg.load_device_config(sensor.serial_number)
+                device_cfg = _cfg.load_device_config(sensor.model_name, sensor.serial_number)
                 self._restore_channel_assignments(device_cfg)
                 self.collector.reconnect_stream()
                 self._set_device_status("connected")
@@ -1289,6 +1319,345 @@ class GUI:
                         if dpg.does_item_exist(t):
                             dpg.hide_item(t)
 
+    # ------------------------------------------------------------------
+    # Session Browser
+    # ------------------------------------------------------------------
+
+    def _open_session_browser(self, sender=None, data=None) -> None:
+        """Open (or refresh) the Monitor Session browser modal."""
+        if dpg.does_item_exist(ui.DLG_SESSION_BROWSER):
+            self._refresh_session_browser()
+            dpg.configure_item(
+                ui.DLG_SESSION_BROWSER,
+                pos=((WINDOW_WIDTH - 980) // 2, (WINDOW_HEIGHT - 594) // 2),
+                show=True,
+            )
+            return
+        self._build_session_browser()
+
+    def _build_session_browser(self) -> None:
+        """Build the session browser modal — session table + burst table."""
+        DLG_W, DLG_H = 980, 594
+        ROW_H = DLG_H - 130
+
+        _tbl_kw = dict(
+            header_row=True, row_background=True,
+            borders_innerV=True, borders_outerH=True, borders_outerV=True,
+            scrollY=True, freeze_rows=1, height=-1,
+        )
+
+        with dpg.window(
+            label="Load Monitor Session",
+            modal=True, show=True,
+            tag=ui.DLG_SESSION_BROWSER,
+            width=DLG_W, height=DLG_H,
+            pos=((WINDOW_WIDTH - DLG_W) // 2, (WINDOW_HEIGHT - DLG_H) // 2),
+            no_resize=False,
+        ):
+            # ── Source folder row ─────────────────────────────────────
+            dpg.add_text("Session folder")
+            with dpg.group(horizontal=True):
+                dpg.add_input_text(
+                    tag='_SB_FOLDER',
+                    default_value=str(vibechecker.data_dir() / 'monitor'),
+                    width=-90,
+                    hint="Path to monitor sessions folder",
+                )
+                dpg.add_button(
+                    label=icons.IC['folder_open'],
+                    width=80,
+                    callback=self._on_session_browser_pick_folder,
+                )
+            dpg.add_spacer(height=6)
+
+            # ── Two-column table area ─────────────────────────────────
+            with dpg.group(horizontal=True):
+                # ── Sessions table ────────────────────────────────────
+                with dpg.child_window(width=520, height=ROW_H, border=True):
+                    dpg.add_text("Sessions  (click to load)", color=_c("ON_SURFACE"))
+                    dpg.add_separator()
+                    with dpg.table(tag='_SB_SESSION_TABLE', **_tbl_kw):
+                        dpg.add_table_column(label="Date",     width_fixed=True, init_width_or_weight=90)
+                        dpg.add_table_column(label="Time",     width_fixed=True, init_width_or_weight=70)
+                        dpg.add_table_column(label="Ch",       width_fixed=True, init_width_or_weight=30)
+                        dpg.add_table_column(label="Captures", width_fixed=True, init_width_or_weight=70)
+                        dpg.add_table_column(label="Bursts",   width_fixed=True, init_width_or_weight=55)
+
+                dpg.add_spacer(width=6)
+
+                # ── Bursts table ──────────────────────────────────────
+                with dpg.child_window(width=-1, height=ROW_H, border=True):
+                    dpg.add_text("Bursts  (click to load)", color=_c("ON_SURFACE"))
+                    dpg.add_separator()
+                    with dpg.table(tag='_SB_BURST_TABLE', **_tbl_kw):
+                        dpg.add_table_column(label="Date",        width_fixed=True, init_width_or_weight=90)
+                        dpg.add_table_column(label="Time",        width_fixed=True, init_width_or_weight=70)
+                        dpg.add_table_column(label="Max Overall", width_fixed=True, init_width_or_weight=110)
+
+            # ── Bottom bar ────────────────────────────────────────────
+            dpg.add_spacer(height=8)
+            with dpg.group(horizontal=True):
+                dpg.add_button(
+                    label=f'{icons.IC["refresh"]}  Refresh',
+                    callback=self._refresh_session_browser,
+                    width=100, height=28,
+                )
+                dpg.add_spacer(width=-1)
+                dpg.add_button(
+                    label=f'{icons.IC["close"]}  Close',
+                    callback=lambda: dpg.configure_item(ui.DLG_SESSION_BROWSER, show=False),
+                    width=90, height=28,
+                )
+
+        self._refresh_session_browser()
+
+    def _scan_session_dirs(self) -> list:
+        """Return session metadata dicts sorted newest-first.
+
+        Each entry: {session_id, session_dir, session_h5,
+                     date, time, n_channels, n_captures, n_bursts}
+        Reads the folder from the _SB_FOLDER widget if it exists, else default.
+        """
+        import h5py, json as _json
+        if dpg.does_item_exist('_SB_FOLDER'):
+            folder_str = dpg.get_value('_SB_FOLDER').strip()
+            monitor_root = Path(folder_str) if folder_str else vibechecker.data_dir() / 'monitor'
+        else:
+            monitor_root = vibechecker.data_dir() / 'monitor'
+
+        sessions = []
+        if not monitor_root.exists():
+            return sessions
+        try:
+            dirs = sorted(
+                [d for d in monitor_root.iterdir() if d.is_dir()],
+                key=lambda d: d.name, reverse=True,
+            )
+        except OSError as exc:
+            log.error(f'session browser: cannot list {monitor_root}: {exc}')
+            return sessions
+
+        for d in dirs:
+            h5 = d / 'session.h5'
+            if not h5.exists():
+                continue
+            try:
+                with h5py.File(str(h5), 'r') as f:
+                    meta = f.get('metadata', {})
+                    start_time = str(meta.attrs.get('start_time', d.name) if meta else d.name)
+                    # Parse date / time from ISO timestamp
+                    if 'T' in start_time:
+                        dt_part = start_time[:19]
+                        date_s, time_s = dt_part[:10], dt_part[11:19]
+                    else:
+                        date_s, time_s = start_time[:10], start_time[11:19]
+                    n_channels  = len(f.get('metadata/channels', {}))
+                    n_captures  = len(f.get('monitor', {}))
+                    burst_raw   = f['burst'].attrs.get('burst_list', '[]') if 'burst' in f else '[]'
+                    if isinstance(burst_raw, bytes):
+                        burst_raw = burst_raw.decode()
+                    n_bursts    = len(_json.loads(burst_raw) if burst_raw else [])
+            except Exception as exc:
+                log.warning(f'session browser: skipping {h5}: {exc}')
+                continue
+            sessions.append({
+                'session_id': d.name,
+                'session_dir': d,
+                'session_h5': h5,
+                'date': date_s,
+                'time': time_s,
+                'n_channels': n_channels,
+                'n_captures': n_captures,
+                'n_bursts': n_bursts,
+            })
+
+        self._session_browser_sessions = sessions
+        return sessions
+
+    def _on_session_list_select(self, sender=None, data=None, user_data=None) -> None:
+        """Load all interval frames from the selected session; populate burst table."""
+        import h5py, json
+        # user_data carries the session dict when called from table row selectable
+        entry = user_data
+        if entry is None:
+            return
+        # Single-select: deselect all other rows, keep only the clicked one active
+        for sel_id in self._sb_session_sel_ids:
+            if dpg.does_item_exist(sel_id):
+                dpg.set_value(sel_id, sel_id == sender)
+        self._sb_burst_sel_ids.clear()
+        session_dir = entry['session_dir']
+        session_h5  = entry['session_h5']
+        self._session_browser_selected_session_dir = session_dir
+
+        # Clear stale plot series before loading (prevents color cycle accumulation)
+        for ch in range(_MAX_CHANNELS):
+            self._remove_channel_series(ch)
+        if dpg.does_item_exist(ui.PLT_TREND_CURSOR):
+            dpg.delete_item(ui.PLT_TREND_CURSOR)
+
+        # Load all interval frames immediately; guard against corrupt/old H5 files
+        try:
+            self.collector.load_monitor_session(session_h5)
+        except Exception as exc:
+            log.error(f'session browser: failed to load session {session_h5}: {exc}')
+
+        # Re-add series and sync display state — mirrors _on_load_file post-load steps
+        for ch in sorted(self.collector.config.enabled_channels):
+            self._add_channel_series(ch)
+        self._update_axis_assignment()
+        self._update_results_section_visibility()
+
+        self._autoscale_plots()
+
+        # Populate burst listbox
+        burst_list: list = []
+        try:
+            with h5py.File(str(session_h5), 'r') as f:
+                if 'burst' in f:
+                    raw = f['burst'].attrs.get('burst_list', '[]')
+                    if isinstance(raw, bytes):
+                        raw = raw.decode()
+                    burst_list = json.loads(raw) if raw else []
+        except Exception as exc:
+            log.warning(f'session browser: cannot read bursts from {session_h5}: {exc}')
+
+        self._session_browser_burst_list = burst_list
+
+        # Rebuild burst table rows
+        self._sb_burst_sel_ids.clear()
+        if dpg.does_item_exist('_SB_BURST_TABLE'):
+            for child in (dpg.get_item_children('_SB_BURST_TABLE', slot=1) or []):
+                dpg.delete_item(child)
+            for b in burst_list:
+                if not isinstance(b, dict):
+                    continue
+                ts = b.get('timestamp', '')
+                date_s, time_s = ts[:10], ts[11:19] if 'T' in ts or len(ts) > 10 else (ts[:10], '')
+                try:
+                    max_ov = json.loads(b.get('max_overall_json', '{}'))
+                    max_val = max((float(v) for v in max_ov.values()), default=0.0)
+                    max_str = f'{max_val:.4f}'
+                except Exception:
+                    max_str = '-'
+                with dpg.table_row(parent='_SB_BURST_TABLE'):
+                    sel_id = dpg.add_selectable(
+                        label=date_s,
+                        span_columns=True,
+                        callback=self._on_burst_list_select,
+                        user_data=b,
+                    )
+                    self._sb_burst_sel_ids.append(sel_id)
+                    dpg.add_text(time_s)
+                    dpg.add_text(max_str)
+
+        # Draw vertical lines on trend plot at burst trigger times
+        burst_rel_times = [
+            float(b['rel_time']) for b in burst_list
+            if isinstance(b, dict) and 'rel_time' in b
+        ]
+        try:
+            if dpg.does_item_exist(ui.PLT_TREND_AX_OVERALL):
+                if dpg.does_item_exist(ui.PLT_TREND_BURST_VLINES):
+                    dpg.delete_item(ui.PLT_TREND_BURST_VLINES)
+                if burst_rel_times:
+                    dpg.add_inf_line_series(
+                        burst_rel_times,
+                        parent=ui.PLT_TREND_AX_OVERALL,
+                        tag=ui.PLT_TREND_BURST_VLINES,
+                        label='Burst',
+                    )
+        except Exception as exc:
+            log.warning(f'session browser: failed to draw burst vlines: {exc}')
+
+    def _on_burst_list_select(self, sender=None, data=None, user_data=None) -> None:
+        """Load all frames from the selected burst event."""
+        burst = user_data
+        if not burst:
+            return
+        # Single-select: deselect all other burst rows
+        for sel_id in self._sb_burst_sel_ids:
+            if dpg.does_item_exist(sel_id):
+                dpg.set_value(sel_id, sel_id == sender)
+        burst_id = burst.get('burst_id', '')
+        session_dir = self._session_browser_selected_session_dir
+        if not burst_id or session_dir is None:
+            return
+        session_h5 = Path(str(session_dir)) / 'session.h5'
+        # Remove session vlines — burst view is independent, trend rebased to trigger=0
+        try:
+            if dpg.does_item_exist(ui.PLT_TREND_BURST_VLINES):
+                dpg.delete_item(ui.PLT_TREND_BURST_VLINES)
+        except Exception:
+            pass
+
+        for ch in range(_MAX_CHANNELS):
+            self._remove_channel_series(ch)
+        if dpg.does_item_exist(ui.PLT_TREND_CURSOR):
+            dpg.delete_item(ui.PLT_TREND_CURSOR)
+
+        try:
+            self.collector.load_monitor_burst(session_h5, burst_id)
+        except Exception as exc:
+            log.error(f'session browser: failed to load burst {burst_id} from {session_h5}: {exc}')
+
+        for ch in sorted(self.collector.config.enabled_channels):
+            self._add_channel_series(ch)
+        self._update_axis_assignment()
+        self._update_results_section_visibility()
+
+        self._autoscale_plots()
+
+    def _on_session_browser_pick_folder(self, sender=None, data=None) -> None:
+        """Open the platform-native folder picker; update the session folder input."""
+        try:
+            from plyer import filechooser
+            result = filechooser.choose_dir(
+                title="Select monitor sessions folder",
+                path=str(vibechecker.data_dir() / 'monitor'),
+            )
+            if result:
+                if dpg.does_item_exist('_SB_FOLDER'):
+                    dpg.set_value('_SB_FOLDER', str(result[0]))
+                self._refresh_session_browser()
+        except NotImplementedError:
+            log.warning('session browser: folder picker not supported on this platform')
+        except Exception as exc:
+            log.error(f'session browser: folder picker failed: {exc}')
+
+    def _refresh_session_browser(self) -> None:
+        sessions = self._scan_session_dirs()
+
+        # Rebuild session table
+        self._sb_session_sel_ids.clear()
+        if dpg.does_item_exist('_SB_SESSION_TABLE'):
+            for child in (dpg.get_item_children('_SB_SESSION_TABLE', slot=1) or []):
+                dpg.delete_item(child)
+            for s in sessions:
+                with dpg.table_row(parent='_SB_SESSION_TABLE'):
+                    sel_id = dpg.add_selectable(
+                        label=s['date'],
+                        span_columns=True,
+                        callback=self._on_session_list_select,
+                        user_data=s,
+                    )
+                    self._sb_session_sel_ids.append(sel_id)
+                    dpg.add_text(s['time'])
+                    dpg.add_text(str(s['n_channels']))
+                    dpg.add_text(str(s['n_captures']))
+                    dpg.add_text(str(s['n_bursts']))
+
+        # Clear burst table until a session is selected
+        if dpg.does_item_exist('_SB_BURST_TABLE'):
+            for child in (dpg.get_item_children('_SB_BURST_TABLE', slot=1) or []):
+                dpg.delete_item(child)
+
+        # Auto-select newest session
+        if sessions:
+            self._on_session_list_select(user_data=sessions[0])
+
+    # ------------------------------------------------------------------
+
     def _on_config_close(self, sender=None, data=None):
         """Apply all tab settings, do a single reconnect, then hide the dialog.
 
@@ -1332,6 +1701,7 @@ class GUI:
         else:
             self.collector.reprocess_last_block()
 
+        self._save_monitor_config()
         self._was_streaming_before_config = False
         dpg.hide_item(ui.DLG_CONFIG)
 
@@ -1437,6 +1807,406 @@ class GUI:
             dpg.set_value(ui.SIGGEN_FREQ_HZ, float(cfg.get("freq_hz", 1000.0)))
             dpg.set_value(ui.SIGGEN_PKTOPK_MV, float(cfg.get("pktopk_uv", 0)) / 1000.0)
             dpg.set_value(ui.SIGGEN_OFFSET_MV, float(cfg.get("offset_uv", 0)) / 1000.0)
+
+    # ------------------------------------------------------------------
+    # Monitor Mode
+    # ------------------------------------------------------------------
+
+    def _populate_monitor_tab(self):
+        """Sync Monitor config tab widgets from acquisition.yaml."""
+        if not dpg.does_item_exist(ui.MON_DLG_INTERVAL):
+            return
+        mon = _cfg.load_acquisition_config().get("monitor", {})
+        interval_s = float(mon.get("interval_s", 600))
+        pre_buf_s = float(mon.get("pre_burst_s", 30))
+        burst_dur_s = float(mon.get("burst_duration_s", 120))
+        out_dir = mon.get("output_dir") or ""
+        compress = mon.get("compression", "gzip") == "gzip"
+
+        interval_label = vibechecker.MONITOR_INTERVAL_PRESETS.get(
+            int(interval_s),
+            vibechecker.MONITOR_INTERVAL_PRESETS[3600],
+        )
+        dpg.set_value(ui.MON_DLG_INTERVAL, interval_label)
+        dpg.set_value(ui.MON_DLG_PRE_BUFFER, pre_buf_s)
+        dpg.set_value(ui.MON_DLG_BURST_DUR, burst_dur_s)
+        dpg.set_value(ui.MON_DLG_OUTPUT_DIR, str(out_dir))
+        dpg.set_value(ui.MON_DLG_COMPRESS, compress)
+        self._on_monitor_config_change()
+
+        # Restore anomaly settings
+        anom = mon.get("anomaly", {})
+        def _sv(tag, val):
+            if dpg.does_item_exist(tag):
+                dpg.set_value(tag, val)
+        _sv(ui.MON_ANOM_ENABLED,   bool(anom.get("enabled",    False)))
+        _sv(ui.MON_ANOM_HOOK,      str(anom.get("hook_type",  "RMS")))
+        _sv(ui.MON_ANOM_RMS_PCT,   float(anom.get("rms_pct",   10.0)))
+        _sv(ui.MON_ANOM_RMS_S,     float(anom.get("rms_s",     3.0)))
+        _sv(ui.MON_ANOM_RMS_ALPHA, float(anom.get("rms_alpha", 0.97)))
+        _sv(ui.MON_ANOM_RMS_WARMUP,int(anom.get("warmup",      10)))
+        _sv(ui.MON_ANOM_SPEC_PCT,  float(anom.get("spec_pct",  50.0)))
+        _sv(ui.MON_ANOM_SPEC_N,    int(anom.get("spec_n",      10)))
+        _sv(ui.MON_ANOM_SPEC_FMIN, float(anom.get("spec_fmin") or 0.0))
+        _sv(ui.MON_ANOM_SPEC_FMAX, float(anom.get("spec_fmax") or 0.0))
+
+        _sv(ui.MON_ANOM_FIXED_UPPER_ENABLED, bool(anom.get("fixed_upper_enabled", False)))
+        _sv(ui.MON_ANOM_FIXED_UPPER_VALUE,   float(anom.get("fixed_upper_value",  1.0)))
+        _sv(ui.MON_ANOM_FIXED_UPPER_UNIT,    str(anom.get("fixed_upper_unit",     "in/s")))
+        _sv(ui.MON_ANOM_FIXED_LOWER_ENABLED, bool(anom.get("fixed_lower_enabled", False)))
+        _sv(ui.MON_ANOM_FIXED_LOWER_VALUE,   float(anom.get("fixed_lower_value",  0.05)))
+        _sv(ui.MON_ANOM_FIXED_LOWER_UNIT,    str(anom.get("fixed_lower_unit",     "in/s")))
+
+        _sv(ui.MON_ANOM_COOLDOWN_ENABLED, bool(anom.get("cooldown_enabled", False)))
+        _sv(ui.MON_ANOM_COOLDOWN_S,       float(anom.get("cooldown_s",      300.0)))
+
+        self._on_anom_config_change()
+
+    def _save_monitor_config(self) -> None:
+        """Persist monitor + anomaly config to acquisition.yaml."""
+        def _get(tag, default):
+            return dpg.get_value(tag) if dpg.does_item_exist(tag) else default
+
+        interval_label = _get(ui.MON_DLG_INTERVAL, "1 h")
+        interval_s = next(
+            (k for k, v in vibechecker.MONITOR_INTERVAL_PRESETS.items() if v == interval_label),
+            3600,
+        )
+        acq_cfg = _cfg.load_acquisition_config()
+        acq_cfg['monitor'] = {
+            'interval_s':        float(interval_s),
+            'pre_burst_s':       float(_get(ui.MON_DLG_PRE_BUFFER,  30.0)),
+            'burst_duration_s':  float(_get(ui.MON_DLG_BURST_DUR,   120.0)),
+            'max_burst_s':       600.0,
+            'output_dir':        str(_get(ui.MON_DLG_OUTPUT_DIR, '')).strip() or None,
+            'compression':       'gzip' if _get(ui.MON_DLG_COMPRESS, True) else 'none',
+            'compression_level': 4,
+            'anomaly': {
+                'enabled':       bool(_get(ui.MON_ANOM_ENABLED,    False)),
+                'hook_type':     str(_get(ui.MON_ANOM_HOOK,        'RMS')),
+                'rms_pct':       float(_get(ui.MON_ANOM_RMS_PCT,   10.0)),
+                'rms_s':         float(_get(ui.MON_ANOM_RMS_S,     3.0)),
+                'rms_alpha':     float(_get(ui.MON_ANOM_RMS_ALPHA, 0.97)),
+                'warmup':        int(_get(ui.MON_ANOM_RMS_WARMUP,  10)),
+                'spec_pct':      float(_get(ui.MON_ANOM_SPEC_PCT,  50.0)),
+                'spec_n':        int(_get(ui.MON_ANOM_SPEC_N,      10)),
+                'spec_fmin':     _get(ui.MON_ANOM_SPEC_FMIN, None) or None,
+                'spec_fmax':     _get(ui.MON_ANOM_SPEC_FMAX, None) or None,
+                'cooldown_enabled':    bool(_get(ui.MON_ANOM_COOLDOWN_ENABLED, False)),
+                'cooldown_s':          float(_get(ui.MON_ANOM_COOLDOWN_S,      300.0)),
+                'fixed_upper_enabled': bool(_get(ui.MON_ANOM_FIXED_UPPER_ENABLED, False)),
+                'fixed_upper_value':   float(_get(ui.MON_ANOM_FIXED_UPPER_VALUE,  1.0)),
+                'fixed_upper_unit':    str(_get(ui.MON_ANOM_FIXED_UPPER_UNIT,     'in/s')),
+                'fixed_lower_enabled': bool(_get(ui.MON_ANOM_FIXED_LOWER_ENABLED, False)),
+                'fixed_lower_value':   float(_get(ui.MON_ANOM_FIXED_LOWER_VALUE,  0.05)),
+                'fixed_lower_unit':    str(_get(ui.MON_ANOM_FIXED_LOWER_UNIT,     'in/s')),
+            },
+        }
+        _cfg.save_acquisition_config(acq_cfg)
+        log.debug("Monitor config saved to acquisition.yaml")
+
+    def _on_monitor_config_change(self, sender=None, data=None):
+        """Update the storage estimate label when Monitor config widgets change."""
+        if not dpg.does_item_exist(ui.MON_DLG_ESTIMATE):
+            return
+        interval_label = dpg.get_value(ui.MON_DLG_INTERVAL) if dpg.does_item_exist(ui.MON_DLG_INTERVAL) else "1 h"
+        interval_s = next(
+            (k for k, v in vibechecker.MONITOR_INTERVAL_PRESETS.items() if v == interval_label),
+            3600,
+        )
+        burst_dur_s = float(dpg.get_value(ui.MON_DLG_BURST_DUR)) if dpg.does_item_exist(ui.MON_DLG_BURST_DUR) else 60.0
+
+        cfg = self.collector.config
+        block_s = cfg.blocksize / cfg.samplerate if cfg.samplerate else 1.0
+        block_bytes = cfg.blocksize * len(cfg.enabled_channels) * 8  # float64
+        compressed = block_bytes * 0.5  # gzip ~50% compression
+
+        # Interval logger: one capture per interval
+        per_year = (365 * 24 * 3600 / interval_s) * compressed
+        if per_year >= 1e9:
+            interval_est = f"~{per_year / 1e9:.1f} GiB/year"
+        else:
+            interval_est = f"~{per_year / 1e6:.0f} MiB/year"
+        if per_year > 50e9:
+            interval_est += "  (exceeds 50 GiB)"
+
+        # Per burst: frames captured during burst duration
+        burst_frames = max(1, int(burst_dur_s / block_s)) if block_s > 0 else 1
+        burst_bytes = burst_frames * compressed
+        if burst_bytes >= 1e6:
+            burst_est = f"~{burst_bytes / 1e6:.1f} MiB/burst"
+        else:
+            burst_est = f"~{burst_bytes / 1e3:.0f} KiB/burst"
+
+        estimate = f"Interval: {interval_est}\nBurst: {burst_est}"
+        dpg.set_value(ui.MON_DLG_ESTIMATE, estimate)
+
+    def _on_record_toggle(self, sender=None, data=None):
+        if self._monitor is not None and self._monitor.is_recording:
+            self._stop_recording()
+        else:
+            self._start_recording()
+
+    def _start_recording(self):
+        """Start streaming (if not running) and start monitor session."""
+        from datetime import datetime, timezone
+
+        # Start streaming if needed
+        if not self.collector.is_streaming:
+            self._toggle_acquisition()
+
+        # Abort if the stream failed to start (no device connected / stream is None)
+        if not self.collector.is_streaming:
+            log.warning("Monitor: cannot start — connect a device first")
+            if dpg.does_item_exist(ui.MONITOR_STATUS_TEXT):
+                dpg.set_value(ui.MONITOR_STATUS_TEXT, "No device connected")
+            return
+
+        # Read dialog config (fall back to defaults when dialog hasn't been opened)
+        interval_label = dpg.get_value(ui.MON_DLG_INTERVAL) if dpg.does_item_exist(ui.MON_DLG_INTERVAL) else "1 h"
+        interval_s = next(
+            (k for k, v in vibechecker.MONITOR_INTERVAL_PRESETS.items() if v == interval_label),
+            3600,
+        )
+        pre_buf_s = float(dpg.get_value(ui.MON_DLG_PRE_BUFFER)) if dpg.does_item_exist(ui.MON_DLG_PRE_BUFFER) else 60.0
+        burst_dur = float(dpg.get_value(ui.MON_DLG_BURST_DUR)) if dpg.does_item_exist(ui.MON_DLG_BURST_DUR) else 60.0
+        out_dir_s = dpg.get_value(ui.MON_DLG_OUTPUT_DIR).strip() if dpg.does_item_exist(ui.MON_DLG_OUTPUT_DIR) else ""
+        compress = dpg.get_value(ui.MON_DLG_COMPRESS) if dpg.does_item_exist(ui.MON_DLG_COMPRESS) else True
+
+        cooldown_enabled = bool(dpg.get_value(ui.MON_ANOM_COOLDOWN_ENABLED)) if dpg.does_item_exist(ui.MON_ANOM_COOLDOWN_ENABLED) else False
+        cooldown_s       = float(dpg.get_value(ui.MON_ANOM_COOLDOWN_S)) if dpg.does_item_exist(ui.MON_ANOM_COOLDOWN_S) else 0.0
+
+        cfg = self.collector.config
+        block_s = cfg.blocksize / cfg.samplerate
+        pre_buffer_n = max(1, int(pre_buf_s / block_s)) if block_s > 0 else 1
+
+        now_utc = datetime.now(timezone.utc)
+        session_id = now_utc.strftime('%Y-%m-%d-%H%M%S')
+
+        if out_dir_s:
+            output_dir = Path(out_dir_s) / session_id
+        else:
+            output_dir = vibechecker.data_dir() / "monitor" / session_id
+
+        # Build config snapshots for embedding in every capture file
+        acq_snapshot = cfg.to_dict()
+        ch_snapshot: dict = {}
+        for ch in cfg.enabled_channels:
+            sc = self.collector.scope_sensors.get(ch)
+            ch_snapshot[str(ch)] = {
+                'name':           cfg.name_for(ch),
+                'unit':           'mV',
+                'coupling':       cfg.coupling_for(ch),
+                'voltage_range':  cfg.voltage_range_for(ch),
+                'scope_sensor_id': sc.id if sc else '',
+                'target_unit':    cfg.target_unit_for(ch),
+                'amplitude_mode': cfg.amplitude_mode_for(ch),
+            }
+        seen: set = set()
+        sensor_snapshot: dict = {}
+        for sc in self.collector.scope_sensors.values():
+            if sc.id not in seen:
+                seen.add(sc.id)
+                sensor_snapshot[sc.id] = sc.to_dict()
+
+        session = vibechecker.MonitorSession(
+            session_id=session_id,
+            start_time=now_utc,
+            interval_s=float(interval_s),
+            pre_buffer_frames=pre_buffer_n,
+            burst_duration_s=burst_dur,
+            max_burst_s=600.0,
+            session_dir=output_dir,
+            compression="gzip" if compress else "none",
+            compression_level=4,
+            cooldown_enabled=cooldown_enabled,
+            cooldown_s=cooldown_s,
+            acq_snapshot=acq_snapshot,
+            channel_snapshot=ch_snapshot,
+            sensor_snapshot=sensor_snapshot,
+        )
+
+        # Enlarge frame cache to hold pre-trigger frames
+        self.collector.resize_frame_cache(max(self.collector.config.cache_frames, pre_buffer_n))
+
+        if self._monitor is None:
+            self._monitor = vibechecker.MonitorController()
+        anomaly_hook = self._build_anomaly_hook(pre_buffer_s=pre_buf_s)
+        self._monitor.start(session, anomaly_hook=anomaly_hook)
+
+        self._update_monitor_card()
+        # Disable config setup buttons while recording
+        for btn in (ui.BTN_DEVICE_SETUP, ui.BTN_CHANNELS_SETUP,
+                    ui.BTN_SPECTRUM_SETUP, ui.BTN_SENSOR_SETUP, ui.BTN_MONITOR_SETUP):
+            if dpg.does_item_exist(btn):
+                dpg.configure_item(btn, enabled=False)
+
+    def _stop_recording(self):
+        """Stop the monitor session; leave streaming running."""
+        if self._monitor is not None:
+            self._monitor.stop()
+        self.collector.resize_frame_cache(self.collector.config.cache_frames)
+        self._update_monitor_card()
+        for btn in (ui.BTN_DEVICE_SETUP, ui.BTN_CHANNELS_SETUP,
+                    ui.BTN_SPECTRUM_SETUP, ui.BTN_SENSOR_SETUP, ui.BTN_MONITOR_SETUP):
+            if dpg.does_item_exist(btn):
+                dpg.configure_item(btn, enabled=True)
+
+    def _on_anom_config_change(self, sender=None, data=None) -> None:
+        """Show/hide RMS/Spectral settings groups based on hook selection."""
+        if not dpg.does_item_exist(ui.MON_ANOM_HOOK):
+            return
+        hook = dpg.get_value(ui.MON_ANOM_HOOK)
+        if dpg.does_item_exist(ui.MON_ANOM_RMS_GROUP):
+            dpg.configure_item(ui.MON_ANOM_RMS_GROUP,  show=hook in ('RMS',  'Both'))
+        if dpg.does_item_exist(ui.MON_ANOM_SPEC_GROUP):
+            dpg.configure_item(ui.MON_ANOM_SPEC_GROUP, show=hook in ('Spectral', 'Both'))
+
+    def _build_anomaly_hook(self, pre_buffer_s: float | None = None):
+        """Read anomaly config widgets and return a configured hook.
+
+        Built once at session start from the config dialog (or saved config
+        defaults if the dialog was never opened) — the hook is then active for
+        the whole session; there is no separate arm/disarm step.
+        """
+        from vibechecker.monitor.anomaly import (
+            RmsThresholdHook, SpectralThresholdHook, FixedThresholdHook,
+            CompositeAnomalyHook, NullAnomalyHook,
+        )
+        def _get(tag, default):
+            return dpg.get_value(tag) if dpg.does_item_exist(tag) else default
+
+        burst_dur = float(_get(ui.MON_DLG_BURST_DUR, 60.0))
+        if pre_buffer_s is None:
+            pre_buffer_s = float(_get(ui.MON_DLG_PRE_BUFFER, 60.0))
+
+        hooks = []
+
+        # ── EWMA-based hooks (RMS / Spectral) — gated by the main Enable switch
+        if _get(ui.MON_ANOM_ENABLED, False):
+            hook_type = str(_get(ui.MON_ANOM_HOOK, 'RMS'))
+            warmup    = int(_get(ui.MON_ANOM_RMS_WARMUP, 30))
+
+            if hook_type in ('RMS', 'Both'):
+                period = self.collector.config.acquisition_period
+                rms_s  = float(_get(ui.MON_ANOM_RMS_S, 3.0))
+                consecutive_n = max(1, round(rms_s / period) + 1) if period > 0 else 1
+                if rms_s > 0.25 * pre_buffer_s:
+                    log.warning(
+                        "Monitor anomaly: RMS sustained time %.3gs exceeds 25%% of the "
+                        "pre-trigger buffer (%.3gs) — the t=0 frame will eat into the "
+                        "pre-anomaly context captured in each burst",
+                        rms_s, pre_buffer_s,
+                    )
+                hooks.append(RmsThresholdHook(
+                    rms_threshold_pct    = float(_get(ui.MON_ANOM_RMS_PCT,    10.0)),
+                    consecutive_n        = consecutive_n,
+                    baseline_alpha       = float(_get(ui.MON_ANOM_RMS_ALPHA,  0.97)),
+                    min_baseline_samples = warmup,
+                    burst_duration_s     = burst_dur,
+                ))
+
+            if hook_type in ('Spectral', 'Both'):
+                fmin_v = float(_get(ui.MON_ANOM_SPEC_FMIN, 0.0))
+                fmax_v = float(_get(ui.MON_ANOM_SPEC_FMAX, 0.0))
+                hooks.append(SpectralThresholdHook(
+                    spectral_threshold_pct = float(_get(ui.MON_ANOM_SPEC_PCT, 50.0)),
+                    consecutive_n          = int(_get(ui.MON_ANOM_SPEC_N,     3)),
+                    min_baseline_samples   = warmup,
+                    fmin                   = fmin_v if fmin_v > 0 else None,
+                    fmax                   = fmax_v if fmax_v > 0 else None,
+                    burst_duration_s       = burst_dur,
+                ))
+
+        # ── Fixed-level threshold trigger — independent enable switches
+        upper_on = bool(_get(ui.MON_ANOM_FIXED_UPPER_ENABLED, False))
+        lower_on = bool(_get(ui.MON_ANOM_FIXED_LOWER_ENABLED, False))
+        if upper_on or lower_on:
+            hooks.append(FixedThresholdHook(
+                upper_limit = float(_get(ui.MON_ANOM_FIXED_UPPER_VALUE, 1.0))  if upper_on else None,
+                upper_unit  = str(_get(ui.MON_ANOM_FIXED_UPPER_UNIT,    'in/s')),
+                lower_limit = float(_get(ui.MON_ANOM_FIXED_LOWER_VALUE, 0.05)) if lower_on else None,
+                lower_unit  = str(_get(ui.MON_ANOM_FIXED_LOWER_UNIT,    'in/s')),
+                burst_duration_s = burst_dur,
+            ))
+
+        if not hooks:
+            return NullAnomalyHook()
+        if len(hooks) == 1:
+            return hooks[0]
+        return CompositeAnomalyHook(hooks)
+
+    def _on_reset_baseline(self, sender=None, data=None) -> None:
+        """Clear EWMA baseline data on the active anomaly hook(s) and restart warmup.
+
+        Available from the Monitor card while recording — the config dialog is
+        locked out during a session, but baselines may need recalibrating
+        mid-run (e.g. after a maintenance event changes the "normal" level).
+        """
+        if self._monitor is None or not self._monitor.is_recording:
+            return
+        hook = self._monitor._anomaly_hook
+        if hasattr(hook, 'reset_baseline'):
+            hook.reset_baseline()
+        log.info("Anomaly baseline reset — re-calibrating from next frame")
+
+    def _on_manual_burst(self, sender=None, data=None):
+        if self._monitor is None or not self._monitor.is_recording:
+            return
+        self._monitor.trigger_burst()
+
+    def _update_monitor_card(self):
+        """Refresh the Monitor card labels and status text from controller state."""
+        if not dpg.does_item_exist(ui.MONITOR_RECORD_BTN):
+            return
+        if self._monitor is not None and self._monitor.is_recording:
+            snap = self._monitor.status_snapshot()
+            h, rem = divmod(int(snap['elapsed_s']), 3600)
+            m, s = divmod(rem, 60)
+            captures = snap['capture_count']
+            bursts = snap.get('burst_count', 0)
+            nxt = snap['next_capture_s']
+            err = snap.get('error')
+            status = (f"REC  {h:02d}:{m:02d}:{s:02d}\n"
+                      f"Captures: {captures}  Bursts: {bursts}\n"
+                      f"Next: {nxt:.0f}s")
+            if err:
+                status += f"\nERR: {err[:40]}"
+            session_id = self._monitor._session.session_id if self._monitor._session else ''
+            status += f"\n{session_id}"
+            dpg.set_item_label(ui.MONITOR_RECORD_BTN, f'{icons.IC["disarm"]}  Stop')
+            dpg.configure_item(ui.MONITOR_RECORD_BTN, enabled=True)
+            dpg.set_value(ui.MONITOR_STATUS_TEXT, status)
+            if dpg.does_item_exist(ui.MONITOR_RESET_BTN):
+                dpg.configure_item(ui.MONITOR_RESET_BTN, enabled=True)
+            if dpg.does_item_exist(ui.MONITOR_BURST_BTN):
+                dpg.configure_item(ui.MONITOR_BURST_BTN, enabled=not snap.get('is_in_burst', False))
+            # Burst indicator
+            if snap.get('is_in_burst', False):
+                remaining = snap.get('burst_remaining_s', 0.0)
+                if dpg.does_item_exist(ui.MONITOR_BURST_RECT):
+                    dpg.configure_item(ui.MONITOR_BURST_RECT, fill=_c("YELLOW"))
+                if dpg.does_item_exist(ui.MONITOR_BURST_TEXT):
+                    dpg.set_value(ui.MONITOR_BURST_TEXT, f'Burst: {remaining:.0f}s remaining')
+            else:
+                if dpg.does_item_exist(ui.MONITOR_BURST_RECT):
+                    dpg.configure_item(ui.MONITOR_BURST_RECT, fill=_c("GREEN"))
+                if dpg.does_item_exist(ui.MONITOR_BURST_TEXT):
+                    dpg.set_value(ui.MONITOR_BURST_TEXT, 'Ready')
+        else:
+            dpg.set_item_label(ui.MONITOR_RECORD_BTN, f'{icons.IC["record"]}  Monitor')
+            if not self.collector.is_streaming:
+                dpg.set_value(ui.MONITOR_STATUS_TEXT, 'Start stream to record')
+            else:
+                dpg.set_value(ui.MONITOR_STATUS_TEXT, 'Stopped')
+            if dpg.does_item_exist(ui.MONITOR_RESET_BTN):
+                dpg.configure_item(ui.MONITOR_RESET_BTN, enabled=False)
+            if dpg.does_item_exist(ui.MONITOR_BURST_BTN):
+                dpg.configure_item(ui.MONITOR_BURST_BTN, enabled=False)
+            if dpg.does_item_exist(ui.MONITOR_BURST_RECT):
+                dpg.configure_item(ui.MONITOR_BURST_RECT, fill=_c("GREEN"))
+            if dpg.does_item_exist(ui.MONITOR_BURST_TEXT):
+                dpg.set_value(ui.MONITOR_BURST_TEXT, 'Ready')
 
     # ------------------------------------------------------------------
     # Sensor Registry Dialog
@@ -1556,12 +2326,14 @@ class GUI:
             }
             for c in range(self._num_channels)
         }
-        device_cfg = {
-            "channels": channels,
-            "siggen": self.collector.siggen_config,
-            "acquisition": self.collector.config.to_dict(),
-        }
-        _cfg.save_device_config(self.collector.sensor.serial_number, device_cfg)
+        _cfg.save_device_config(
+            self.collector.sensor.model_name,
+            self.collector.sensor.serial_number,
+            {"channels": channels, "siggen": self.collector.siggen_config},
+        )
+        acq_cfg = _cfg.load_acquisition_config()
+        acq_cfg['acquisition'] = self.collector.config.to_dict()
+        _cfg.save_acquisition_config(acq_cfg)
 
     def _on_channel_enable_change(self, ch: int):
         if not dpg.does_item_exist(ui.scope_ch_enabled(ch)):
@@ -1660,16 +2432,19 @@ class GUI:
 
     def _restore_channel_assignments(self, device_cfg: dict | None = None):
         """Apply saved channel assignments, siggen, and acquisition config to the collector."""
-        if device_cfg is None:
-            if self.collector.sensor is not None:
-                device_cfg = _cfg.load_device_config(self.collector.sensor.serial_number)
-            else:
-                device_cfg = _cfg.load_device_config("__default__")
-
-        # Restore acquisition settings wholesale; channel-specific dicts applied below
-        acq_dict = device_cfg.get("acquisition", {})
+        # Acquisition settings always come from acquisition.yaml (instance-wide).
+        acq_dict = _cfg.load_acquisition_config().get("acquisition", {})
         if acq_dict:
             self.collector.config = AcquisitionSettings.from_dict(acq_dict)
+
+        if device_cfg is None:
+            if self.collector.sensor is not None:
+                device_cfg = _cfg.load_device_config(
+                    self.collector.sensor.model_name,
+                    self.collector.sensor.serial_number,
+                )
+            else:
+                device_cfg = {}
 
         # Restore siggen
         siggen = device_cfg.get("siggen")
@@ -1728,6 +2503,7 @@ class GUI:
 
     def _create_gui(self):
         dpg.create_context()
+        dpg.bind_font(icons.load())
 
         # ── Unified Config Dialog (Device / Sensors / Acquisition tabs) ───
         with dpg.window(
@@ -1742,6 +2518,10 @@ class GUI:
             no_scroll_with_mouse=True,
         ):
             with dpg.child_window(height=-_DLG_CLOSE_H, no_scrollbar=True, border=False):
+                def _tip(target, text):
+                    with dpg.tooltip(parent=target):
+                        dpg.add_text(text, wrap=320)
+
                 with dpg.tab_bar(tag=ui.CONFIG_TAB_BAR):
                     # ── Device tab ─────────────────────────────────────────
                     with dpg.tab(label="Device", tag=ui.CONFIG_TAB_DEVICE):
@@ -1749,7 +2529,7 @@ class GUI:
                             with dpg.group(horizontal=True):
                                 dpg.add_text("Detected Devices")
                                 dpg.add_spacer(width=_DLG_DEVICE_TAB_SPACER)
-                                dpg.add_button(label="Refresh", small=True, callback=self._start_device_discovery)
+                                dpg.add_button(label=icons.IC['refresh'], small=True, callback=self._start_device_discovery)
                             with dpg.group(tag=ui.DEVSETUP_DEVICE_LIST_GROUP):
                                 pass
 
@@ -1777,19 +2557,26 @@ class GUI:
                                     dpg.add_separator()
                                     with dpg.group(horizontal=True):
                                         dpg.add_button(
-                                            label="Add",
+                                            label=f'{icons.IC["add"]} Add',
                                             tag=ui.SCOPE_REGISTRY_ADD,
                                             callback=self._on_registry_add,
                                             width=_SREG_BTN_W,
                                         )
                                         dpg.add_button(
-                                            label="Delete",
+                                            label=f'{icons.IC["delete"]} Delete',
                                             tag=ui.SCOPE_REGISTRY_DELETE,
                                             callback=self._on_registry_delete,
                                             width=-1,
                                         )
                                 with dpg.child_window(autosize_x=True, height=-1):
-                                    dpg.add_text("Sensor Configuration")
+                                    _sens_hdr = dpg.add_text("Sensor Configuration  (?)")
+                                    _tip(_sens_hdr,
+                                         "Source EU is the engineering unit the sensor produces "
+                                         "(e.g. g, mm/s, in/s). "
+                                         "Sensitivity is the charge-amp output voltage per EU, "
+                                         "from the sensor calibration certificate (e.g. 100 mV/g). "
+                                         "These values are used to scale raw scope voltage into "
+                                         "physical units.")
                                     dpg.add_input_text(label="Name", tag=ui.SREG_FIELD_NAME, width=_SREG_FIELD_W)
                                     dpg.add_combo(
                                         label="Source EU",
@@ -1823,7 +2610,12 @@ class GUI:
 
                             # Control: Freq. Resolution
                             dpg.add_separator()
-                            dpg.add_text("Acqusition Sample Count")
+                            _acq_n_hdr = dpg.add_text("Acquisition Sample Count  (?)")
+                            _tip(_acq_n_hdr,
+                                 "Freq. Resolution sets the spectral bin width (Hz/line). "
+                                 "Finer resolution means more samples per block, which increases "
+                                 "acquisition time and memory per frame. "
+                                 "The derived 'Acq. Time' shows how long each block takes to fill.")
                             dpg.add_combo(
                                 label="Freq. Resolution",
                                 tag=ui.ACQ_DLG_BINSIZE,
@@ -1837,7 +2629,7 @@ class GUI:
                             )
                             # Derived: Acquisition Time
                             dpg.add_input_text(label="Acq. Time", tag=ui.ACQ_DLG_ACQ_TIME, readonly=True, width=_w)
-                            
+
                             dpg.add_separator()
                             dpg.add_text("Signal Conditioning")
                             # Control: Highpass filter
@@ -1871,9 +2663,17 @@ class GUI:
                             dpg.add_input_text(label="Memory", tag=ui.ACQ_DLG_MEMORY, readonly=True, width=_w)
 
                             dpg.add_separator()
-                            dpg.add_text("FFT Conditioning")
+                            _fft_hdr = dpg.add_text("FFT Conditioning  (?)")
+                            _tip(_fft_hdr,
+                                 "Welch Overlap: fraction of data shared between adjacent FFT "
+                                 "segments. 50% is typical — higher overlap smooths the spectrum "
+                                 "at the cost of correlated estimates.\n\n"
+                                 "Window: shape applied to each segment before FFT. Hann is a "
+                                 "good general-purpose choice. Flat-top improves amplitude "
+                                 "accuracy for calibration; Blackman-Harris reduces sidelobes "
+                                 "for closely-spaced peaks.")
                             # Control: Welch % Overlap
-                            dpg.add_input_float(
+                            _welch_w = dpg.add_input_float(
                                 label="Welch Overlap %",
                                 tag=ui.ACQ_DLG_OVERLAP,
                                 default_value=50.0,
@@ -1893,7 +2693,11 @@ class GUI:
                     # ── Signal Generator tab ────────────────────────────────
                     with dpg.tab(label="Generate", tag=ui.CONFIG_TAB_SIGGEN):
                         with dpg.child_window(autosize_x=True, height=-1):
-                            dpg.add_text("PicoScope Signal Generator")
+                            _sg_hdr = dpg.add_text("PicoScope Signal Generator  (?)")
+                            _tip(_sg_hdr,
+                                 "Built-in AWG on the PicoScope's front-panel BNC output. "
+                                 "Use for sensor check-out, resonance excitation, or shaker drive. "
+                                 "Hardware only — has no effect in simulation mode.")
                             dpg.add_separator()
                             dpg.add_checkbox(
                                 label="Enable signal generator", tag=ui.SIGGEN_ENABLED, default_value=False
@@ -1930,11 +2734,167 @@ class GUI:
                                 max_value=2000.0,
                                 width=_DLG_SIGGEN_W,
                             )
+
+                    # ── Monitor tab ─────────────────────────────────────────
+                    with dpg.tab(label="Monitor", tag=ui.CONFIG_TAB_MONITOR):
+                        with dpg.child_window(autosize_x=True, height=-1):
+                            _mon_w = 220
+                            dpg.add_text("Interval Datalogger")
+                            dpg.add_separator()
+                            dpg.add_combo(
+                                label="Capture interval",
+                                tag=ui.MON_DLG_INTERVAL,
+                                items=list(vibechecker.MONITOR_INTERVAL_PRESETS.values()),
+                                default_value="1 h",
+                                width=_mon_w,
+                                callback=self._on_monitor_config_change,
+                            )
+                            _pretrig_w = dpg.add_input_float(
+                                label="Pre-trigger buffer (s)",
+                                tag=ui.MON_DLG_PRE_BUFFER,
+                                default_value=60.0,
+                                min_value=0.0,
+                                max_value=3600.0,
+                                width=_mon_w,
+                                callback=self._on_monitor_config_change,
+                            )
+                            _tip(_pretrig_w,
+                                 "Raw data captured before the trigger timestamp and prepended "
+                                 "to each burst. Drawn from the ring cache — lets you see the "
+                                 "run-up to an event. Must be less than the ring cache duration "
+                                 "(Cache Frames × Acq. Time in the Acquisition tab).")
+                            dpg.add_input_float(
+                                label="Burst duration (s)",
+                                tag=ui.MON_DLG_BURST_DUR,
+                                default_value=60.0,
+                                min_value=1.0,
+                                max_value=600.0,
+                                width=_mon_w,
+                                callback=self._on_monitor_config_change,
+                            )
                             dpg.add_spacer(height=6)
-                            dpg.add_text("Note: Only active on PicoScope hardware.", color=_c("ON_SURFACE"))
+                            dpg.add_separator()
+                            dpg.add_text("Output directory", color=_c("ON_SURFACE"))
+                            dpg.add_input_text(
+                                tag=ui.MON_DLG_OUTPUT_DIR,
+                                default_value="",
+                                hint="Default: DEVDATA/monitor/",
+                                width=-1,
+                                callback=self._on_monitor_config_change,
+                            )
+                            dpg.add_spacer(height=4)
+                            dpg.add_checkbox(
+                                label="gzip compression",
+                                tag=ui.MON_DLG_COMPRESS,
+                                default_value=True,
+                                callback=self._on_monitor_config_change,
+                            )
+                            dpg.add_spacer(height=6)
+                            dpg.add_separator()
+                            dpg.add_text("", tag=ui.MON_DLG_ESTIMATE, color=_c("ON_SURFACE"))
+
+                            # ── Anomaly Detection ───────────────────────
+                            dpg.add_spacer(height=8)
+                            dpg.add_separator()
+                            _anom_hdr = dpg.add_text("Anomaly Detection  (?)")
+                            _tip(_anom_hdr,
+                                 "Automatically triggers a burst capture when live vibration "
+                                 "deviates from a self-calibrating baseline.\n\n"
+                                 "RMS: tracks overall amplitude via an exponential moving average "
+                                 "and fires when it shifts by more than Threshold %.\n\n"
+                                 "Spectral: tracks the full frequency-domain shape and fires when "
+                                 "the mean spectral deviation exceeds the threshold — useful for "
+                                 "detecting changes in specific harmonics or bearing tones.")
+                            dpg.add_checkbox(
+                                label="Enable",
+                                tag=ui.MON_ANOM_ENABLED,
+                                default_value=False,
+                                callback=self._on_anom_config_change,
+                            )
+                            _hook_combo = dpg.add_combo(
+                                label="Hook",
+                                items=["RMS", "Spectral", "Both"],
+                                tag=ui.MON_ANOM_HOOK,
+                                default_value="RMS",
+                                callback=self._on_anom_config_change,
+                                width=_mon_w,
+                            )
+                            _tip(_hook_combo,
+                                 "RMS: monitors overall vibration level. "
+                                 "Spectral: monitors the frequency-domain shape. "
+                                 "Both: either detector can trigger a burst independently.")
+
+                            with dpg.group(tag=ui.MON_ANOM_RMS_GROUP):
+                                dpg.add_text("RMS settings", color=_c("ON_SURFACE"))
+                                dpg.add_input_float(label="Threshold %",    tag=ui.MON_ANOM_RMS_PCT,   default_value=10.0, min_value=1.0,  max_value=100.0, step=1.0,  width=_mon_w)
+                                _rms_s_w = dpg.add_input_float(label="Sustained (s)",  tag=ui.MON_ANOM_RMS_S,     default_value=3.0,  min_value=0.0,  max_value=3600.0, step=1.0, width=_mon_w,
+                                                    callback=self._on_anom_config_change)
+                                _tip(_rms_s_w,
+                                     "Signal must remain above threshold for this many seconds "
+                                     "before a burst is triggered. Filters momentary spikes. "
+                                     "Set to 0 to trigger on the first anomalous frame.")
+                                _alpha_w = dpg.add_input_float(label="EWMA alpha",     tag=ui.MON_ANOM_RMS_ALPHA, default_value=0.97, min_value=0.5,  max_value=0.999, step=0.01, format="%.3f", width=_mon_w)
+                                _tip(_alpha_w,
+                                     "Exponential smoothing factor for the baseline. "
+                                     "Higher values (→ 1.0) make the baseline adapt more slowly — "
+                                     "better for detecting sustained changes while ignoring brief transients. "
+                                     "Lower values track faster but may miss slow drift.")
+                                _warmup_w = dpg.add_input_int(  label="Warmup frames",  tag=ui.MON_ANOM_RMS_WARMUP,default_value=30,   min_value=5,    max_value=500,   width=_mon_w)
+                                _tip(_warmup_w,
+                                     "Number of frames collected to build the initial baseline "
+                                     "before anomaly detection activates. Increase if the machine "
+                                     "takes a while to reach steady-state after startup.")
+
+                            with dpg.group(tag=ui.MON_ANOM_SPEC_GROUP, show=False):
+                                _spec_hdr = dpg.add_text("Spectral settings  (?)", color=_c("ON_SURFACE"))
+                                _tip(_spec_hdr,
+                                     "Compares the live PSD against a learned spectral baseline. "
+                                     "Triggers when the mean deviation across the monitored band "
+                                     "exceeds Threshold % for Consecutive N frames. "
+                                     "Useful for detecting new harmonics or changes in bearing tones "
+                                     "that don't shift overall level much.")
+                                dpg.add_input_float(label="Threshold %",     tag=ui.MON_ANOM_SPEC_PCT,  default_value=50.0, min_value=1.0, max_value=500.0, step=1.0,  width=_mon_w)
+                                dpg.add_input_int(  label="Consecutive N",   tag=ui.MON_ANOM_SPEC_N,    default_value=3,   min_value=1,   max_value=20,   width=_mon_w)
+                                dpg.add_input_float(label="Freq min (Hz)",   tag=ui.MON_ANOM_SPEC_FMIN, default_value=0.0, min_value=0.0, step=10.0,      width=_mon_w)
+                                dpg.add_input_float(label="Freq max (0=all)",tag=ui.MON_ANOM_SPEC_FMAX, default_value=0.0, min_value=0.0, step=10.0,      width=_mon_w)
+
+                            # ── Fixed Level Trigger ─────────────────────
+                            dpg.add_spacer(height=8)
+                            dpg.add_separator()
+                            _fixed_hdr = dpg.add_text("Fixed Level Trigger  (?)")
+                            _tip(_fixed_hdr,
+                                 "Fires immediately on a fixed overall-amplitude level — "
+                                 "no baseline or warmup. Channels without a sensor/EU "
+                                 "assigned cannot be evaluated.")
+                            _unit_items = sorted(UNIT_TO_SI.keys())
+                            with dpg.group(horizontal=True):
+                                _upper_chk = dpg.add_checkbox(label="Upper limit", tag=ui.MON_ANOM_FIXED_UPPER_ENABLED, default_value=False)
+                                dpg.add_input_float(tag=ui.MON_ANOM_FIXED_UPPER_VALUE, default_value=1.0, step=0.0, width=90)
+                                dpg.add_combo(tag=ui.MON_ANOM_FIXED_UPPER_UNIT, items=_unit_items, default_value='in/s', width=80)
+                            _tip(_upper_chk, "Burst when overall vibration rises above this level.")
+                            with dpg.group(horizontal=True):
+                                _lower_chk = dpg.add_checkbox(label="Lower limit", tag=ui.MON_ANOM_FIXED_LOWER_ENABLED, default_value=False)
+                                dpg.add_input_float(tag=ui.MON_ANOM_FIXED_LOWER_VALUE, default_value=0.05, step=0.0, width=90)
+                                dpg.add_combo(tag=ui.MON_ANOM_FIXED_LOWER_UNIT, items=_unit_items, default_value='in/s', width=80)
+                            _tip(_lower_chk, "Burst when overall vibration drops below this level.")
+
+                            # ── Cooldown ────────────────────────────────
+                            dpg.add_spacer(height=8)
+                            dpg.add_separator()
+                            _cooldown_hdr = dpg.add_text("Cooldown  (?)")
+                            _tip(_cooldown_hdr,
+                                 "Blocks further anomaly-triggered bursts for this long "
+                                 "after one fires — keeps long events from cluttering "
+                                 "the session with overlapping captures.")
+                            dpg.add_checkbox(label="Enable", tag=ui.MON_ANOM_COOLDOWN_ENABLED, default_value=False)
+                            dpg.add_input_float(
+                                label="Cooldown period (s)", tag=ui.MON_ANOM_COOLDOWN_S,
+                                default_value=300.0, min_value=0.0, max_value=86400.0,
+                                step=10.0, width=_mon_w,
+                            )
 
             dpg.add_separator()
-            dpg.add_button(label="Close", callback=self._on_config_close, width=-1)
+            dpg.add_button(label=f'{icons.IC["close"]}  Close', callback=self._on_config_close, width=-1)
 
         # ── Section container theme (slightly lighter than window background) ──
         _sect_bg = vibechecker.hex_to_rgba(vibechecker.THEME_COLORS["SURFACE"])
@@ -1965,42 +2925,19 @@ class GUI:
             with dpg.group(horizontal=True):
                 # ── Controls column (left) ────────────────────────────
                 with dpg.child_window(width=CONTROLS_WIDTH, autosize_y=True):
-                    dpg.add_button(
-                        label="Device Setup",
-                        tag=ui.BTN_DEVICE_SETUP,
-                        callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_DEVICE),
-                        width=-1,
-                    )
-                    dpg.add_button(
-                        label="Channel Setup",
-                        tag=ui.BTN_CHANNELS_SETUP,
-                        callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_CHANNELS),
-                        width=-1,
-                    )
-                    dpg.add_button(
-                        label="Sensor Setup",
-                        tag=ui.BTN_SENSOR_SETUP,
-                        callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_SENSORS),
-                        width=-1,
-                    )
-                    dpg.add_button(
-                        label="Acquisition Setup",
-                        tag=ui.BTN_SPECTRUM_SETUP,
-                        callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_ACQUISITION),
-                        width=-1,
-                    )
-                    dpg.add_button(
-                        label="Signal Generator",
-                        tag=ui.BTN_SIGGEN_SETUP,
-                        callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_SIGGEN),
-                        width=-1,
-                    )
                     # ── Device ───────────────────────────────────────
-                    with dpg.child_window(
-                        border=True, autosize_x=True, height=_CARD_H_DEVICE, no_scrollbar=True
-                    ) as _s1:
+                    with dpg.child_window(border=True, width=-1, height=_CARD_H_DEVICE, no_scrollbar=True) as _s1:
                         dpg.bind_item_theme(_s1, self._sect_theme)
-                        dpg.add_text("Device")
+                        with dpg.group(horizontal=True):
+                            dpg.add_text(icons.IC['developer_board'])
+                            dpg.add_spacer(width=4)
+                            dpg.add_text("Device")
+                            dpg.add_spacer(width=-1)
+                            dpg.add_button(
+                                label=f'{icons.IC["settings"]}  Setup',
+                                tag=ui.BTN_DEVICE_SETUP,
+                                callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_DEVICE),
+                            )
                         dpg.add_separator()
                         with dpg.group(horizontal=True):
                             with dpg.drawlist(width=16, height=16, tag=ui.DEVICE_STATUS):
@@ -2022,13 +2959,29 @@ class GUI:
                     # ── Channels ─────────────────────────────────────
                     with dpg.child_window(
                         border=True,
-                        autosize_x=True,
+                        width=-1,
                         height=_CARD_H_CHANNELS,
                         no_scrollbar=True,
                         tag=ui.CHANNELS_CARD,
                     ) as _s_ch:
                         dpg.bind_item_theme(_s_ch, self._sect_theme)
-                        dpg.add_text("Channels")
+                        with dpg.group(horizontal=True):
+                            dpg.add_text(icons.IC['channels'])
+                            dpg.add_spacer(width=4)
+                            dpg.add_text("Channels")
+                            dpg.add_spacer(width=-1)
+                            dpg.add_button(
+                                label=f'{icons.IC["settings"]}  Setup',
+                                tag=ui.BTN_CHANNELS_SETUP,
+                                callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_CHANNELS),
+                            )
+                        with dpg.group(horizontal=True):
+                            dpg.add_button(
+                                label=f'{icons.IC["sensors"]}  Sensor',
+                                tag=ui.BTN_SENSOR_SETUP,
+                                callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_SENSORS),
+                                width=-1,
+                            )
                         dpg.add_separator()
                         with dpg.group(tag=ui.CONN_CHANNEL_SUMMARY):
                             pass
@@ -2037,38 +2990,48 @@ class GUI:
                     dpg.add_spacer(height=6)
 
                     # ── Acquisition (stream control + spectrum info) ──
-                    with dpg.child_window(border=True, autosize_x=True, height=_CARD_H_ACQ, no_scrollbar=True) as _s2:
+                    with dpg.child_window(border=True, width=-1, height=_CARD_H_ACQ, no_scrollbar=True) as _s2:
                         dpg.bind_item_theme(_s2, self._sect_theme)
-                        dpg.add_text("Acquisition")
+                        with dpg.group(horizontal=True):
+                            dpg.add_text(icons.IC['acquisition'])
+                            dpg.add_spacer(width=4)
+                            dpg.add_text("Acquisition")
+                            dpg.add_spacer(width=-1)
+                            dpg.add_button(
+                                label=f'{icons.IC["settings"]}  Setup',
+                                tag=ui.BTN_SPECTRUM_SETUP,
+                                callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_ACQUISITION),
+                            )
                         dpg.add_separator()
                         dpg.add_button(
-                            label="Stopped", tag=ui.ACQ_TOGGLE, callback=self._toggle_acquisition, width=-1, height=40
+                            label=f'{icons.IC["play_arrow"]}  Stopped', tag=ui.ACQ_TOGGLE,
+                            callback=self._toggle_acquisition, width=-1, height=40,
                         )
                         dpg.add_spacer(height=2)
-                        dpg.add_button(label="Single", tag=ui.ACQ_SINGLE, callback=self._collect_sample, width=-1)
+                        dpg.add_button(label=f'{icons.IC["photo_camera"]}  Single', tag=ui.ACQ_SINGLE, callback=self._collect_sample, width=-1)
                         dpg.add_button(
-                            label="Autoscale", tag=ui.ACQ_AUTOSCALE, callback=self._autoscale_plots, width=-1
+                            label=f'{icons.IC["fit_screen"]}  Autoscale', tag=ui.ACQ_AUTOSCALE, callback=self._autoscale_plots, width=-1
                         )
                         with dpg.group(horizontal=True):
                             dpg.add_button(
-                                label="Clear Cache", tag=ui.ACQ_CLEAR_CACHE, callback=self._clear_cache, width=-1
+                                label=f'{icons.IC["delete_sweep"]}  Clear Cache', tag=ui.ACQ_CLEAR_CACHE, callback=self._clear_cache, width=-1
                             )
                         dpg.add_spacer(height=4)
                         dpg.add_separator()
                         dpg.add_text("Browse Waveforms", color=_c("ON_SURFACE"))
                         with dpg.group(horizontal=True):
                             dpg.add_button(
-                                label="<<", tag=ui.ACQ_BROWSE_FIRST, callback=self._on_browse, width=28, enabled=False
+                                label=icons.IC['first_page'], tag=ui.ACQ_BROWSE_FIRST, callback=self._on_browse, width=28, enabled=False
                             )
                             dpg.add_button(
-                                label="<", tag=ui.ACQ_BROWSE_PREV, callback=self._on_browse, width=28, enabled=False
+                                label=icons.IC['navigate_before'], tag=ui.ACQ_BROWSE_PREV, callback=self._on_browse, width=28, enabled=False
                             )
                             dpg.add_text("No frames", tag=ui.ACQ_BROWSE_LABEL)
                             dpg.add_button(
-                                label=">", tag=ui.ACQ_BROWSE_NEXT, callback=self._on_browse, width=28, enabled=False
+                                label=icons.IC['navigate_next'], tag=ui.ACQ_BROWSE_NEXT, callback=self._on_browse, width=28, enabled=False
                             )
                             dpg.add_button(
-                                label=">>", tag=ui.ACQ_BROWSE_LAST, callback=self._on_browse, width=28, enabled=False
+                                label=icons.IC['last_page'], tag=ui.ACQ_BROWSE_LAST, callback=self._on_browse, width=28, enabled=False
                             )
                         dpg.add_spacer(height=6)
                         dpg.add_separator()
@@ -2084,10 +3047,85 @@ class GUI:
 
                     dpg.add_spacer(height=6)
 
-                    # ── File Handling ─────────────────────────────────
-                    with dpg.child_window(border=True, autosize_x=True, height=_CARD_H_FILE, no_scrollbar=True) as _s4:
+                    # ── Monitor Mode ──────────────────────────────────
+                    with dpg.child_window(
+                        border=True,
+                        width=-1,
+                        height=_CARD_H_MONITOR,
+                        no_scrollbar=True,
+                        tag=ui.MONITOR_CARD,
+                    ) as _s_mon:
+                        dpg.bind_item_theme(_s_mon, self._sect_theme)
+                        with dpg.group(horizontal=True):
+                            dpg.add_text(icons.IC['monitor_heart'])
+                            dpg.add_spacer(width=4)
+                            dpg.add_text("Monitor Mode")
+                            dpg.add_spacer(width=-1)
+                            dpg.add_button(
+                                label=f'{icons.IC["settings"]}  Setup',
+                                tag=ui.BTN_MONITOR_SETUP,
+                                callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_MONITOR),
+                            )
+                        dpg.add_separator()
+                        dpg.add_button(
+                            label=f'{icons.IC["record"]}  Monitor',
+                            tag=ui.MONITOR_RECORD_BTN,
+                            callback=self._on_record_toggle,
+                            width=-1,
+                            height=32,
+                        )
+                        dpg.add_spacer(height=2)
+                        dpg.add_button(
+                            label=f'{icons.IC["refresh"]}  Reset Baseline',
+                            tag=ui.MONITOR_RESET_BTN,
+                            callback=self._on_reset_baseline,
+                            width=-1,
+                            enabled=False,
+                        )
+                        dpg.add_button(
+                            label=f'{icons.IC["photo_camera"]}  Record Burst',
+                            tag=ui.MONITOR_BURST_BTN,
+                            callback=self._on_manual_burst,
+                            width=-1,
+                            enabled=False,
+                        )
+                        dpg.add_spacer(height=2)
+                        dpg.add_text("Start stream to record", tag=ui.MONITOR_STATUS_TEXT, color=_c("ON_SURFACE"))
+                        dpg.add_spacer(height=4)
+                        with dpg.group(horizontal=True):
+                            with dpg.drawlist(width=16, height=16, tag=ui.MONITOR_BURST_STATUS):
+                                dpg.draw_rectangle(
+                                    pmin=(1, 1), pmax=(15, 15),
+                                    fill=_c("GREEN"),
+                                    color=(0, 0, 0, 0),
+                                    rounding=3,
+                                    tag=ui.MONITOR_BURST_RECT,
+                                )
+                            dpg.add_text("Ready", tag=ui.MONITOR_BURST_TEXT, color=_c("ON_SURFACE"))
+                        dpg.add_spacer(height=4)
+                        dpg.add_button(
+                            label=f'{icons.IC["folder_open"]}  Load Session',
+                            tag=ui.BTN_MONITOR_BROWSE,
+                            callback=self._open_session_browser,
+                            width=-1,
+                        )
+
+                    dpg.add_spacer(height=6)
+
+                    # ── File ──────────────────────────────────────────
+                    with dpg.child_window(border=True, width=-1, height=_CARD_H_FILE, no_scrollbar=True) as _s4:
                         dpg.bind_item_theme(_s4, self._sect_theme)
-                        dpg.add_text("File Handling")
+                        with dpg.group(horizontal=True):
+                            dpg.add_text(icons.IC['folder'])
+                            dpg.add_spacer(width=4)
+                            dpg.add_text("File")
+                            dpg.add_spacer(width=-1)
+                            dpg.add_button(
+                                label=f'{icons.IC["save"]} Save', tag=ui.FILE_SAVE, callback=self._on_save_click
+                            )
+                            dpg.add_button(
+                                label=f'{icons.IC["folder_open"]} Load', tag=ui.FILE_LOAD, callback=self._on_load_click
+                            )
                         dpg.add_separator()
                         dpg.add_text("Measurement Notes", color=_c("ON_SURFACE"))
                         dpg.add_input_text(
@@ -2097,15 +3135,6 @@ class GUI:
                             height=90,
                             hint="Worksite, machine, sensor location…",
                         )
-                        dpg.add_spacer(height=4)
-                        dpg.add_separator()
-                        with dpg.group(horizontal=True):
-                            dpg.add_button(
-                                label="Save", tag=ui.FILE_SAVE, callback=self._on_save_click, width=_BTN_HALF
-                            )
-                            dpg.add_button(
-                                label="Load", tag=ui.FILE_LOAD, callback=self._on_load_click, width=_BTN_HALF
-                            )
 
                 # ── Main column (center — plots) ──────────────────────
                 with dpg.child_window(width=-RESULTS_WIDTH, autosize_y=True, no_scrollbar=True):
@@ -2251,21 +3280,34 @@ class GUI:
             dpg.add_key_press_handler(callback=self._on_key_press)
 
     def _on_key_press(self, sender, app_data) -> None:
-        key  = app_data
+        key = app_data
         ctrl = dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)
 
-        if ctrl:
-            if   key == dpg.mvKey_A: self._autoscale_plots()
-            elif key == dpg.mvKey_K: self._toggle_acquisition()
-            elif key == dpg.mvKey_S: self._on_save_click()
-            elif key == dpg.mvKey_O: self._on_load_click()
-            elif key == dpg.mvKey_Q: dpg.stop_dearpygui()
+        if key == dpg.mvKey_Escape:
+            # Close whichever modal is currently visible
+            if dpg.does_item_exist(ui.DLG_SESSION_BROWSER) and dpg.is_item_shown(ui.DLG_SESSION_BROWSER):
+                dpg.configure_item(ui.DLG_SESSION_BROWSER, show=False)
+            elif dpg.does_item_exist(ui.DLG_CONFIG) and dpg.is_item_shown(ui.DLG_CONFIG):
+                self._on_config_close()
+        elif ctrl:
+            if key == dpg.mvKey_A:
+                self._autoscale_plots()
+            elif key == dpg.mvKey_K:
+                self._toggle_acquisition()
+            elif key == dpg.mvKey_S:
+                self._on_save_click()
+            elif key == dpg.mvKey_O:
+                self._on_load_click()
+            elif key == dpg.mvKey_Q:
+                dpg.stop_dearpygui()
         elif not self.collector.is_streaming:
-            if   key == dpg.mvKey_Left:  self.collector.browse_frame(+1)
-            elif key == dpg.mvKey_Right: self.collector.browse_frame(-1)
+            if key == dpg.mvKey_Left:
+                self.collector.browse_frame(+1)
+            elif key == dpg.mvKey_Right:
+                self.collector.browse_frame(-1)
 
     def initialize(self):
-        _cfg.ensure_default_config()
+        _cfg.ensure_config_dir()
         self._create_gui()
         self._setup_keyboard_handlers()
         self._update_spectrum_info()
@@ -2281,14 +3323,68 @@ class GUI:
         #       is stable (see _on_config_close TODO above).
         # self._open_config_dialog(ui.CONFIG_TAB_DEVICE)
 
-    def run(self):
+    def _load_from_path(self, path_str: str) -> None:
+        """Load an h5 file (v4 measurement or v5 monitor session) by path.
+
+        Detects the file type from the HDF5 structure and routes to the
+        appropriate loader.  Called after the first render frame so all
+        DPG plot series exist.
+        """
+        import h5py
+        p = Path(path_str.strip())
+        if not p.exists():
+            log.error(f"--from-file: path does not exist: {p}")
+            return
+        # Resolve a session directory to its session.h5
+        if p.is_dir():
+            candidate = p / "session.h5"
+            if candidate.exists():
+                p = candidate
+            else:
+                log.error(f"--from-file: directory has no session.h5: {p}")
+                return
+        try:
+            with h5py.File(str(p), "r") as f:
+                is_monitor = "monitor" in f
+        except Exception as exc:
+            log.error(f"--from-file: cannot open {p}: {exc}")
+            return
+
+        log.info(f"--from-file: loading {'monitor session' if is_monitor else 'measurement'} {p}")
+        if is_monitor:
+            for ch in range(_MAX_CHANNELS):
+                self._remove_channel_series(ch)
+            if dpg.does_item_exist(ui.PLT_TREND_CURSOR):
+                dpg.delete_item(ui.PLT_TREND_CURSOR)
+            try:
+                self.collector.load_monitor_session(p)
+            except Exception as exc:
+                log.error(f"--from-file: load_monitor_session failed: {exc}")
+                return
+            for ch in sorted(self.collector.config.enabled_channels):
+                self._add_channel_series(ch)
+            self._update_axis_assignment()
+            self._update_results_section_visibility()
+            self._autoscale_plots()
+        else:
+            self._on_load_file(p)
+
+    def run(self, initial_file: str | None = None, autodetect: bool = True):
         log.info("Launch app window")
         dpg.create_viewport(title="Vibe Logger", width=WINDOW_WIDTH, height=WINDOW_HEIGHT)
         dpg.show_viewport()
         dpg.set_primary_window(ui.PRIMARY_WINDOW, True)
-        threading.Thread(target=self._autoconnect, daemon=True).start()
+        if autodetect:
+            threading.Thread(target=self._autoconnect, daemon=True).start()
         log.info("Start DPG backend")
+        _loaded = not initial_file   # False = load pending after first frame
         while dpg.is_dearpygui_running():
+            if not _loaded:
+                # Defer one frame so all DPG series are fully initialised
+                dpg.render_dearpygui_frame()
+                self._load_from_path(initial_file)
+                _loaded = True
+                continue
             self._poll_new_frames()
             dpg.render_dearpygui_frame()
 

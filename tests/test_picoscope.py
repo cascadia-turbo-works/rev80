@@ -17,7 +17,7 @@ import pytest
 
 import vibechecker as vc
 import vibechecker.picoscope as pico_module
-from vibechecker.picoscope import PicoScopeStream, _DRIVER_BUFFER_SAMPLES, _channels_for_model
+from vibechecker.picoscope import PicoScopeStream, _DRIVER_BUFFER_SAMPLES
 
 
 # ---------------------------------------------------------------------------
@@ -59,34 +59,6 @@ def _fill_driver_buffers(stream, value=0, n=None):
     for ch in stream._enabled_channels:
         buf = np.full(max(size, _DRIVER_BUFFER_SAMPLES), value, dtype=np.int16)
         stream._driver_buffers[ch] = buf
-
-
-# ---------------------------------------------------------------------------
-# _channels_for_model
-# ---------------------------------------------------------------------------
-
-class TestChannelsForModel:
-
-    def test_4824a_returns_8(self):
-        assert _channels_for_model('4824A') == 8
-
-    def test_4824_returns_8(self):
-        assert _channels_for_model('4824') == 8
-
-    def test_4461_returns_4(self):
-        assert _channels_for_model('4461') == 4
-
-    def test_4444_returns_4(self):
-        assert _channels_for_model('4444') == 4
-
-    def test_4262_returns_2(self):
-        assert _channels_for_model('4262') == 2
-
-    def test_unknown_returns_2(self):
-        assert _channels_for_model('9999X') == 2
-
-    def test_case_insensitive(self):
-        assert _channels_for_model('4824a') == 8
 
 
 # ---------------------------------------------------------------------------
@@ -133,8 +105,15 @@ class TestFindPicoScope:
                 buf.value = b'CMY12/345'
             return 0
 
+        def fake_set_channel_4ch(handle, ch, enabled, coupling, rng, offset):
+            ch_num = ch.value if hasattr(ch, 'value') else int(ch)
+            return 0 if ch_num < 4 else 1  # PICO_OK for ch A-D, fail for ch E+
+
+        monkeypatch.setattr(pico_module.ps, 'ps4000aEnumerateUnits',
+                            lambda count, buf, buf_len: 1)  # non-zero → use fallback path
         monkeypatch.setattr(pico_module.ps, 'ps4000aOpenUnit', fake_open)
         monkeypatch.setattr(pico_module.ps, 'ps4000aGetUnitInfo', fake_get_info)
+        monkeypatch.setattr(pico_module.ps, 'ps4000aSetChannel', fake_set_channel_4ch)
         monkeypatch.setattr(pico_module.ps, 'ps4000aCloseUnit', lambda h: 0)
         monkeypatch.setattr(pico_module, 'assert_pico_ok', lambda s: None)
 
@@ -165,8 +144,11 @@ class TestFindPicoScope:
                 buf.value = b'AB123/456'
             return 0
 
+        monkeypatch.setattr(pico_module.ps, 'ps4000aEnumerateUnits',
+                            lambda count, buf, buf_len: 1)  # non-zero → use fallback path
         monkeypatch.setattr(pico_module.ps, 'ps4000aOpenUnit', fake_open)
         monkeypatch.setattr(pico_module.ps, 'ps4000aGetUnitInfo', fake_get_info)
+        monkeypatch.setattr(pico_module.ps, 'ps4000aSetChannel', lambda h, ch, e, c, r, o: 0)  # all 8 ok
         monkeypatch.setattr(pico_module.ps, 'ps4000aCloseUnit', lambda h: 0)
         monkeypatch.setattr(pico_module, 'assert_pico_ok', lambda s: None)
 

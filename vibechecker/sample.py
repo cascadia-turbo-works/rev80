@@ -71,21 +71,22 @@ class AcquisitionSettings:
         return c
 
     def to_dict(self) -> dict:
-        """Serialise user-facing fields to the 'acquisition' section of a device config."""
+        """Serialise acquisition parameters to the 'acquisition' section of a device config.
+
+        Per-channel fields (names, target_units, amplitude_modes, couplings, voltage_ranges)
+        are stored in the 'channels' config section, not here.
+        """
         return {
-            'maxfreq':              self._fm,
-            'binsize':              self._df,
-            'fft_window':           self.fft_window,
-            'welch_overlap':        self.welch_overlap,
-            'highpass_enabled':     self.highpass_enabled,
-            'highpass_fc':          self.highpass_fc,
-            'lowpass_enabled':      self.lowpass_enabled,
-            'lowpass_fc':           self.lowpass_fc,
-            'trend_max_points':     self.trend_max_points,
-            'cache_frames':            self.cache_frames,
-            'channel_names':           dict(self.channel_names),
-            'channel_target_units':    dict(self.channel_target_units),
-            'channel_amplitude_modes': dict(self.channel_amplitude_modes),
+            'maxfreq':          self._fm,
+            'binsize':          self._df,
+            'fft_window':       self.fft_window,
+            'welch_overlap':    self.welch_overlap,
+            'highpass_enabled': self.highpass_enabled,
+            'highpass_fc':      self.highpass_fc,
+            'lowpass_enabled':  self.lowpass_enabled,
+            'lowpass_fc':       self.lowpass_fc,
+            'trend_max_points': self.trend_max_points,
+            'cache_frames':     self.cache_frames,
         }
 
     @classmethod
@@ -105,9 +106,6 @@ class AcquisitionSettings:
         if 'lowpass_fc'       in d: obj.lowpass_fc       = float(d['lowpass_fc'])      # noqa: E701
         if 'trend_max_points' in d: obj.trend_max_points = int(d['trend_max_points'])  # noqa: E701
         if 'cache_frames'     in d: obj.cache_frames     = int(d['cache_frames'])           # noqa: E701
-        if 'channel_names'           in d: obj.channel_names           = {int(k): str(v) for k, v in d['channel_names'].items()}
-        if 'channel_target_units'    in d: obj.channel_target_units    = {int(k): str(v) for k, v in d['channel_target_units'].items()}
-        if 'channel_amplitude_modes' in d: obj.channel_amplitude_modes = {int(k): str(v) for k, v in d['channel_amplitude_modes'].items()}
         return obj
 
     # ── Derived values ───────────────────────────────────────────────

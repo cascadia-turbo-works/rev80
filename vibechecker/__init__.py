@@ -24,4 +24,8 @@ from vibechecker.scope_sensor_registry import ScopeSensorRegistry  # noqa: F401
 from vibechecker.sensor import VibeSensor  # noqa: F401
 from vibechecker.simulation import GenerateTone, SimulatedSensor  # noqa: F401
 from vibechecker.collector import DataCollector  # noqa: F401
-from vibechecker.gui import GUI  # noqa: F401
+try:
+    from vibechecker.gui import GUI  # noqa: F401
+except ModuleNotFoundError:
+    pass  # dearpygui not installed — headless mode only
+from vibechecker.monitor import MonitorController, MonitorSession  # noqa: F401
