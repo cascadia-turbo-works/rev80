@@ -35,8 +35,8 @@ OutputBaseFilename=VibecheckerSetup-{#AppVersion}
 SetupIconFile={#AppIcon}
 Compression=lzma2/ultra64
 SolidCompression=yes
-ArchitecturesInstallIn64BitMode=x64
-ArchitecturesAllowed=x64
+ArchitecturesInstallIn64BitMode=x64compatible
+ArchitecturesAllowed=x64compatible
 ; Require Windows 10 (build 1809+) — needed for modern DearPyGui renderer
 MinVersion=10.0.17763
 WizardStyle=modern

@@ -16,6 +16,13 @@
 set -euo pipefail
 
 STEP="${1:-all}"
+# Pass --clean to force a full PyInstaller cache wipe (slow but safe after
+# adding new dependencies or if the build cache seems corrupt):
+#   ./build.sh all clean
+PYINSTALLER_CLEAN=""
+for arg in "$@"; do
+    [[ "$arg" == "clean" ]] && PYINSTALLER_CLEAN="--clean"
+done
 
 # Locate iscc.exe — try PATH first, then common install locations.
 # $LOCALAPPDATA is a Windows-style path in Git Bash; convert with cygpath.
@@ -88,7 +95,7 @@ if [[ "$STEP" == "all" || "$STEP" == "pyinstaller" ]]; then
         rm -rf dist/vibechecker
     fi
 
-    python -m PyInstaller vibechecker.spec --noconfirm --clean
+    python -m PyInstaller vibechecker.spec --noconfirm $PYINSTALLER_CLEAN
     echo
 fi
 
