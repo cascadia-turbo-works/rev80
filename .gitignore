@@ -1,6 +1,6 @@
 # ── Fonts (not tracked — place CommitMonoNerdFont-Regular.otf in
-#    vibechecker/assets/fonts/ on each dev machine) ───────────────────────────
-vibechecker/assets/fonts/
+#    assets/fonts/ on each dev machine) ───────────────────────────────────────
+assets/fonts/
 
 # ── Data ──────────────────────────────────────────────────────────────────────
 DEVDATA/
