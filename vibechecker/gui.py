@@ -1418,7 +1418,8 @@ class GUI:
                      date, time, n_channels, n_captures, n_bursts}
         Reads the folder from the _SB_FOLDER widget if it exists, else default.
         """
-        import h5py, json as _json
+        import h5py
+        import json as _json
         if dpg.does_item_exist('_SB_FOLDER'):
             folder_str = dpg.get_value('_SB_FOLDER').strip()
             monitor_root = Path(folder_str) if folder_str else vibechecker.data_dir() / 'monitor'
@@ -1476,7 +1477,8 @@ class GUI:
 
     def _on_session_list_select(self, sender=None, data=None, user_data=None) -> None:
         """Load all interval frames from the selected session; populate burst table."""
-        import h5py, json
+        import h5py
+        import json
         # user_data carries the session dict when called from table row selectable
         entry = user_data
         if entry is None:
