@@ -20,10 +20,13 @@ Quick info commands (return immediately, no hardware required):
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 
 # All heavy imports (vibechecker, numpy, scipy, …) are deferred into run() and
 # the info-command helpers so that --help and the info flags return instantly.
+
+log = logging.getLogger(__name__)
 
 
 # ── Info commands ──────────────────────────────────────────────────────────────
@@ -211,8 +214,6 @@ def _apply_overrides(config, args) -> None:
 # ── Session summary ────────────────────────────────────────────────────────────
 
 def _print_session_summary(sensor, config, args, mon_cfg, anom_cfg, device_path) -> None:
-    from pathlib import Path
-    import vibechecker
     from vibechecker.config import acquisition_config_path
 
     interval_s    = args.interval
@@ -232,14 +233,14 @@ def _print_session_summary(sensor, config, args, mon_cfg, anom_cfg, device_path)
     hook_type    = anom_cfg.get("hook_type", "rms").upper()
 
     print(f"\n{'─' * 54}")
-    print(f"  vibechecker headless")
+    print("  vibechecker headless")
     print(f"{'─' * 54}")
     print(f"  Device      {sensor.model_name}  s/n {sensor.serial_number}")
     print(f"  Channels    {ch_labels or '(none)'}")
     print(f"  Sample rate {config.samplerate} Hz   block {config.blocksize}   "
           f"resolution {config.binsize:.3g} Hz")
     print()
-    print(f"  Monitor")
+    print("  Monitor")
     print(f"    Interval  {interval_str}  ({interval_s:.0f}s)")
     print(f"    Pre-burst {pre_burst_s:.0f}s   Burst {burst_dur_s:.0f}s  "
           f"max {mon_cfg.get('max_burst_s', 600):.0f}s")
@@ -256,9 +257,9 @@ def _print_session_summary(sensor, config, args, mon_cfg, anom_cfg, device_path)
             print(f"    Anomaly   Spectral  threshold={anom_cfg.get('spec_pct', 50):.4g}%  "
                   f"n={anom_cfg.get('spec_n', 10)}  {band}  warmup={warmup}")
     else:
-        print(f"    Anomaly   disabled")
+        print("    Anomaly   disabled")
     print()
-    print(f"  Config files")
+    print("  Config files")
     print(f"    Acquisition  {acquisition_config_path()}")
     print(f"    Device       {device_path}")
     print(f"{'─' * 54}\n")
@@ -413,7 +414,7 @@ def run(args: argparse.Namespace) -> int:
     monitor.start(session, anomaly_hook=anomaly_hook)
 
     print(f"Session {session_id} — recording to {session.session_dir}")
-    print(f"  t + Enter: manual burst   Ctrl+C: stop\n")
+    print("  t + Enter: manual burst   Ctrl+C: stop\n")
 
     # ── Keyboard input thread ─────────────────────────────────────────────────
     def _kbd_loop():
@@ -513,7 +514,7 @@ def run(args: argparse.Namespace) -> int:
     collector.stop_stream()
 
     snap = monitor.status_snapshot()
-    print(f"\nSession complete.")
+    print("\nSession complete.")
     print(f"  Captures : {snap['capture_count']}")
     print(f"  Bursts   : {snap['burst_count']}")
     print(f"  File     : {session.session_h5}")
