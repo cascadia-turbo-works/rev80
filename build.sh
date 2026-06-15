@@ -79,7 +79,7 @@ if [[ "$STEP" == "all" || "$STEP" == "pyinstaller" ]]; then
         rm -rf dist/vibechecker
     fi
 
-    pyinstaller vibechecker.spec --noconfirm --clean
+    python -m PyInstaller vibechecker.spec --noconfirm --clean
     echo
 fi
 
