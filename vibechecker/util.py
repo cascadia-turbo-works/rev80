@@ -32,6 +32,7 @@ THEME_COLORS: dict = {
     'SURFACE':       '#2A2A3E',
     'ON_SURFACE':    '#C8C8D8',
     'BORDER':        '#48485C',
+    'MUTED':         '#787890',
 }
 
 
