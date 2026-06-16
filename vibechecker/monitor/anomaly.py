@@ -1,4 +1,5 @@
 import logging
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Protocol, runtime_checkable
@@ -8,6 +9,16 @@ import numpy as np
 from vibechecker.util import UNIT_TO_SI, modality_of
 
 log = logging.getLogger(__name__)
+
+
+def ewma_alpha_from_time(ewma_time_s: float, dt: float) -> float:
+    """Convert EWMA time constant τ (s) to alpha given block period dt (s).
+
+    alpha = exp(-dt / τ).  At τ=30s, dt=1s → alpha≈0.967.
+    """
+    if ewma_time_s <= 0 or dt <= 0:
+        raise ValueError(f"ewma_time_s and dt must be positive (got {ewma_time_s}, {dt})")
+    return math.exp(-dt / ewma_time_s)
 
 
 @dataclass(frozen=True)
