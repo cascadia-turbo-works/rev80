@@ -46,6 +46,19 @@ def _compute_overall_peaks(results: list) -> tuple[str, str]:
     return json.dumps(overall), json.dumps(peaks)
 
 
+def _compute_overall_orders(ch_samples: dict) -> str:
+    """Return JSON {ch: [5 floats]} of raw-mV overalls by integration order (-2..+2).
+
+    Reads VibeSample.overall_ampl_by_integration_order, which is populated by
+    DataCollector.process_sample() before on_results() is called.
+    """
+    orders: dict[str, list] = {}
+    for ch, sample in ch_samples.items():
+        vec = sample.overall_ampl_by_integration_order
+        orders[str(ch)] = [float(v) for v in vec]
+    return json.dumps(orders)
+
+
 class MonitorWriterThread:
     """Daemon thread that accumulates monitor captures into a single session.h5."""
 
@@ -216,12 +229,14 @@ class MonitorWriterThread:
             ch_samples  = {k: v for k, v in first_frame.items() if isinstance(k, int)}
             first_sample = next(iter(ch_samples.values()), None)
 
-            gate_grp.attrs['timestamp']    = timestamp_str
-            gate_grp.attrs['rel_time']     = rel_time
-            gate_grp.attrs['samplerate']   = int(first_sample.samplerate) if first_sample else 0
-            gate_grp.attrs['status']       = str(first_sample.status) if first_sample else ''
-            gate_grp.attrs['overall_json'] = overall_json
-            gate_grp.attrs['peaks_json']   = peaks_json
+            gate_grp.attrs['timestamp']          = timestamp_str
+            gate_grp.attrs['rel_time']           = rel_time
+            gate_grp.attrs['samplerate']         = int(first_sample.samplerate) if first_sample else 0
+            gate_grp.attrs['status']             = str(first_sample.status) if first_sample else ''
+            gate_grp.attrs['overall_json']       = overall_json
+            gate_grp.attrs['peaks_json']         = peaks_json
+            if ch_samples:
+                gate_grp.attrs['overall_orders_json'] = _compute_overall_orders(ch_samples)
 
             for ch, sample in sorted(ch_samples.items()):
                 _write_channel_group(

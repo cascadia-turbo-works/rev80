@@ -877,8 +877,9 @@ class DataCollector:
         self._loaded_scope_sensors = {}
 
         import json as _json
-        trend_rel_times: dict[int, list] = {}
-        trend_overalls:  dict[int, list] = {}
+        trend_rel_times:  dict[int, list] = {}
+        trend_raw_orders: dict[int, list] = {}  # new files: list of [5 floats] per point
+        trend_overalls:   dict[int, list] = {}  # old files: list of scalar per point (needs backscale)
 
         with h5py.File(session_h5, "r") as f:
             version  = self._restore_metadata(f)
@@ -894,53 +895,62 @@ class DataCollector:
                 grp = mon_grp[key]
                 frame = self._read_frame_group(grp, ch_units, version)
                 self.data["frame_cache"].append(frame)
-                # Collect stored overall values for trend reconstruction
                 rel_t = float(grp.attrs.get("rel_time", 0.0))
+                # Prefer overall_orders_json (new files: raw mV, all 5 orders)
                 try:
-                    overall = _json.loads(grp.attrs.get("overall_json", "{}"))
+                    raw_orders = _json.loads(grp.attrs.get("overall_orders_json", "{}"))
                 except Exception:
-                    overall = {}
-                for ch_str, val in overall.items():
-                    ch = int(ch_str)
-                    trend_rel_times.setdefault(ch, []).append(rel_t)
-                    trend_overalls.setdefault(ch, []).append(float(val))
+                    raw_orders = {}
+                if raw_orders:
+                    for ch_str, orders_vec in raw_orders.items():
+                        ch = int(ch_str)
+                        trend_rel_times.setdefault(ch, []).append(rel_t)
+                        trend_raw_orders.setdefault(ch, []).append(orders_vec)
+                else:
+                    # Old file: fall back to target-unit scalar + backscaling
+                    try:
+                        overall = _json.loads(grp.attrs.get("overall_json", "{}"))
+                    except Exception:
+                        overall = {}
+                    for ch_str, val in overall.items():
+                        ch = int(ch_str)
+                        trend_rel_times.setdefault(ch, []).append(rel_t)
+                        trend_overalls.setdefault(ch, []).append(float(val))
 
         n = len(self.data["frame_cache"])
         log.debug(f"Loaded {n} monitor frames from {session_h5}")
         self._post_load()  # clears trend, reprocesses last frame
 
-        # Rebuild trend from stored overall_json — overwrites the single point
-        # added by reprocess_last_block() with the full session history.
-        #
-        # overall_json values are in the TARGET unit recorded at capture time,
-        # not raw mV.  get_trend_for_display() expects orders[:,col] in raw mV
-        # (same as overall_ampl_by_integration_order), so we back-scale each
-        # channel's values and place them in the correct column.
+        # Rebuild trend — overwrites the single point added by reprocess_last_block()
+        # with the full session history.
         from vibechecker.util import UNIT_TO_SI, AMPLITUDE_SCALE, integration_steps
         for ch, rel_times in trend_rel_times.items():
-            overalls    = np.array(trend_overalls[ch])
-            sensor_cfg  = self._loaded_channel_sensor_configs.get(ch, {})
-            sensor_eu   = sensor_cfg.get('engineering_units', 'mV')
-            sensitivity = float(sensor_cfg.get('sensitivity', 1.0))
-            rec_tgt     = self.config.channel_target_units.get(ch, sensor_eu) or sensor_eu
-            amp_mode    = self.config.channel_amplitude_modes.get(ch, '0-P') or '0-P'
-
-            n_steps   = integration_steps(sensor_eu, rec_tgt)
-            col       = max(0, min(4, n_steps + 2))
-            src_si    = UNIT_TO_SI.get(sensor_eu, 1.0)
-            tgt_si    = UNIT_TO_SI.get(rec_tgt,   1.0)
-            amp_f     = AMPLITUDE_SCALE.get(amp_mode, 1.0)
-            scale     = src_si / tgt_si / sensitivity
-
-            orders           = np.zeros((len(overalls), 5))
-            # Reverse the display scaling so get_trend_for_display re-applies it correctly
-            orders[:, col]   = overalls / (scale * amp_f) if (scale * amp_f) != 0 else overalls
-            self.trend[ch]   = {
-                "rel_times": np.array(rel_times),
-                "orders":    orders,
-            }
+            if ch in trend_raw_orders:
+                # New files: overall_orders_json stores raw mV for all 5 integration orders.
+                # Shape (N, 5) — no scaling needed, matches get_trend_for_display() expectation.
+                orders = np.array(trend_raw_orders[ch])
+                self.trend[ch] = {"rel_times": np.array(rel_times), "orders": orders}
+            elif ch in trend_overalls:
+                # Old files: overall_json stored target-unit scalars.  Back-scale to raw mV
+                # and place in the correct column so get_trend_for_display() can convert it.
+                overalls    = np.array(trend_overalls[ch])
+                sensor_cfg  = self._loaded_channel_sensor_configs.get(ch, {})
+                sensor_eu   = sensor_cfg.get('engineering_units', 'mV')
+                sensitivity = float(sensor_cfg.get('sensitivity', 1.0))
+                rec_tgt     = self.config.channel_target_units.get(ch, sensor_eu) or sensor_eu
+                amp_mode    = self.config.channel_amplitude_modes.get(ch, '0-P') or '0-P'
+                n_steps  = integration_steps(sensor_eu, rec_tgt)
+                col      = max(0, min(4, n_steps + 2))
+                src_si   = UNIT_TO_SI.get(sensor_eu, 1.0)
+                tgt_si   = UNIT_TO_SI.get(rec_tgt,   1.0)
+                amp_f    = AMPLITUDE_SCALE.get(amp_mode, 1.0)
+                scale    = src_si / tgt_si / sensitivity
+                orders         = np.zeros((len(overalls), 5))
+                orders[:, col] = overalls / (scale * amp_f) if (scale * amp_f) != 0 else overalls
+                self.trend[ch] = {"rel_times": np.array(rel_times), "orders": orders}
         if trend_rel_times:
-            log.debug(f"Reconstructed trend from {n} monitor frame attrs")
+            source = "overall_orders_json" if trend_raw_orders else "overall_json (backscaled)"
+            log.debug(f"Reconstructed trend from {n} monitor frame attrs [{source}]")
 
     def load_monitor_capture(self, session_h5: Path, capture_index: int) -> None:
         """Load a single interval capture frame into frame_cache and trigger display.
