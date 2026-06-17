@@ -1504,6 +1504,23 @@ class GUI:
         except Exception as exc:
             log.error(f'session browser: failed to load session {session_h5}: {exc}')
 
+        # Wire scope sensors from file metadata — same as _on_load_file so that
+        # get_trend_for_display() and process_sample() see the correct sensor_eu
+        # and sensitivity when selecting integration order and applying unit scaling.
+        for sid, sensor_dict in self.collector._loaded_scope_sensors.items():
+            if self.registry.find_by_id(sid) is None:
+                try:
+                    from vibechecker.scope_sensor import ScopeSensor
+                    sensor = ScopeSensor.from_dict(sensor_dict)
+                    self.registry.add(sensor)
+                except Exception as exc:
+                    log.warning(f'session browser: could not add sensor {sid!r}: {exc}')
+        for ch, sensor_cfg in self.collector._loaded_channel_sensor_configs.items():
+            sid = sensor_cfg.get("id")
+            sensor = self.registry.find_by_id(sid) if sid else None
+            self.collector.set_scope_sensor(ch, sensor)
+        self.collector.reprocess_last_block()
+
         # Re-add series and sync display state — mirrors _on_load_file post-load steps
         for ch in sorted(self.collector.config.enabled_channels):
             self._add_channel_series(ch)

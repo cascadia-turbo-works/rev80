@@ -911,11 +911,31 @@ class DataCollector:
 
         # Rebuild trend from stored overall_json — overwrites the single point
         # added by reprocess_last_block() with the full session history.
+        #
+        # overall_json values are in the TARGET unit recorded at capture time,
+        # not raw mV.  get_trend_for_display() expects orders[:,col] in raw mV
+        # (same as overall_ampl_by_integration_order), so we back-scale each
+        # channel's values and place them in the correct column.
+        from vibechecker.util import UNIT_TO_SI, AMPLITUDE_SCALE, integration_steps
         for ch, rel_times in trend_rel_times.items():
-            overalls = trend_overalls[ch]
-            orders = np.zeros((len(overalls), 5))
-            orders[:, 2] = np.array(overalls)  # col 2 = order 0 = raw mV RMS
-            self.trend[ch] = {
+            overalls    = np.array(trend_overalls[ch])
+            sensor_cfg  = self._loaded_channel_sensor_configs.get(ch, {})
+            sensor_eu   = sensor_cfg.get('engineering_units', 'mV')
+            sensitivity = float(sensor_cfg.get('sensitivity', 1.0))
+            rec_tgt     = self.config.channel_target_units.get(ch, sensor_eu) or sensor_eu
+            amp_mode    = self.config.channel_amplitude_modes.get(ch, '0-P') or '0-P'
+
+            n_steps   = integration_steps(sensor_eu, rec_tgt)
+            col       = max(0, min(4, n_steps + 2))
+            src_si    = UNIT_TO_SI.get(sensor_eu, 1.0)
+            tgt_si    = UNIT_TO_SI.get(rec_tgt,   1.0)
+            amp_f     = AMPLITUDE_SCALE.get(amp_mode, 1.0)
+            scale     = src_si / tgt_si / sensitivity
+
+            orders           = np.zeros((len(overalls), 5))
+            # Reverse the display scaling so get_trend_for_display re-applies it correctly
+            orders[:, col]   = overalls / (scale * amp_f) if (scale * amp_f) != 0 else overalls
+            self.trend[ch]   = {
                 "rel_times": np.array(rel_times),
                 "orders":    orders,
             }
