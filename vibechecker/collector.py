@@ -577,7 +577,7 @@ class DataCollector:
     _FILE_VERSION = 4
 
     def save_data(self, target: Path):
-        """Save frame cache and trend history to an HDF5 file (v3 format).
+        """Save frame cache and trend history to an HDF5 file (v4 format).
 
         Layout::
 
@@ -601,7 +601,13 @@ class DataCollector:
             /trend/{ch}/data                        (M,) float64  (channel overall amplitude)
         """
         frames = list(self.data["frame_cache"])
-        with h5py.File(target, "w") as f:
+        log.info(f"Writing {len(frames)} frames to {target}")
+        try:
+            f_handle = h5py.File(target, "w")
+        except OSError as exc:
+            log.error(f"save_data: failed to open {target} for writing: {exc}")
+            raise
+        with f_handle as f:
             # ── /metadata ──────────────────────────────────────────────
             meta_grp = f.create_group("metadata")
             meta_grp.attrs["version"] = self._FILE_VERSION
@@ -679,6 +685,7 @@ class DataCollector:
             log.error(f"load_data: file does not exist: {target}")
             return
 
+        log.info(f"Reading snapshot {target.name}")
         self.data["frame_cache"].clear()
         self.trend = {}
         self._loaded_channel_sensor_configs = {}
@@ -726,6 +733,7 @@ class DataCollector:
                             }
 
         self._post_load()
+        log.info(f"Loaded {len(self.data['frame_cache'])} frames from {target.name}")
 
     def _restore_metadata(self, f: 'h5py.File') -> int:
         """Restore AcquisitionSettings and sensor config from /metadata in an open HDF5 file.
@@ -865,12 +873,13 @@ class DataCollector:
         """Load all interval frames from a monitor session into frame_cache.
 
         Reads /metadata/ for config restore, then all /monitor/{N}/ groups in order.
-        The frame_cache deque naturally caps at cache_frames, keeping the most recent N.
+        The frame_cache is resized to hold all N captures so every frame is browsable.
         """
         if not session_h5.is_file():
             log.error(f"load_monitor_session: file does not exist: {session_h5}")
             return
 
+        log.info(f"Reading monitor session {session_h5.name}")
         self.data["frame_cache"].clear()
         self.trend = {}
         self._loaded_channel_sensor_configs = {}
@@ -890,6 +899,7 @@ class DataCollector:
                 return
 
             keys = sorted(mon_grp.keys(), key=int)
+            self.resize_frame_cache(max(len(keys), 1))  # expand deque to hold all N captures
             for key in keys:
                 grp = mon_grp[key]
                 frame = self._read_frame_group(grp, ch_units, version)
@@ -906,8 +916,8 @@ class DataCollector:
                     trend_overalls.setdefault(ch, []).append(float(val))
 
         n = len(self.data["frame_cache"])
-        log.debug(f"Loaded {n} monitor frames from {session_h5}")
         self._post_load()  # clears trend, reprocesses last frame
+        log.info(f"Loaded {n} captures from {session_h5.name}")
 
         # Rebuild trend from stored overall_json — overwrites the single point
         # added by reprocess_last_block() with the full session history.
@@ -951,6 +961,8 @@ class DataCollector:
             log.error(f"load_monitor_capture: file does not exist: {session_h5}")
             return
 
+        log.info(f"Loading capture {capture_index} from {session_h5.name}")
+
         self.data["frame_cache"].clear()
         self.trend = {}
         self._loaded_channel_sensor_configs = {}
@@ -986,6 +998,8 @@ class DataCollector:
         if not session_h5.is_file():
             log.error(f"load_monitor_burst: file does not exist: {session_h5}")
             return
+
+        log.info(f"Loading burst {burst_id!r} from {session_h5.name}")
 
         self.data["frame_cache"].clear()
         self.trend = {}
@@ -1064,3 +1078,54 @@ class DataCollector:
             self.trend[ch] = {"rel_times": np.array(vt), "orders": orders}
         if trend_rel_times:
             log.debug(f"Reconstructed burst trend from {len(trend_rel_times)} channels")
+
+    def reprocess_session_trend(self, session_h5: Path,
+                                 progress_cb=None) -> int:
+        """Re-derive overall_json for every /monitor/N/ using the current config.
+
+        Reads stored raw-mV arrays, runs process_sample() with the currently wired
+        sensor config, and overwrites the overall_json attr on each capture group.
+        Call after saving new sensor/channel config to keep the trend consistent.
+        Returns the number of captures processed.
+        """
+        import json as _json
+        from vibechecker.sample import VibeSample
+        from datetime import datetime as _dt
+
+        log.info(f"Reprocessing session trend in {session_h5.name}")
+        with h5py.File(session_h5, "a") as f:
+            mon_grp = f.get("monitor")
+            if mon_grp is None:
+                log.error(f"reprocess_session_trend: no /monitor group in {session_h5}")
+                return 0
+            keys = sorted(mon_grp.keys(), key=int)
+            n    = len(keys)
+            for i, key in enumerate(keys):
+                grp     = mon_grp[key]
+                overall = {}
+                for ch_str in [k for k in grp.keys() if k.isdigit()]:
+                    ch   = int(ch_str)
+                    data = np.asarray(grp[ch_str]["data"][()], dtype=np.float64)
+                    ts   = str(grp.attrs.get("timestamp", ""))
+                    sr   = int(grp.attrs.get("samplerate", self.config.samplerate))
+                    try:
+                        ts_dt = _dt.fromisoformat(ts)
+                    except ValueError:
+                        ts_dt = _dt.utcnow()
+                    sample = VibeSample(
+                        status="OK", _timestamp=ts_dt,
+                        samplerate=sr, unit="mV", overflow=False, data=data,
+                    )
+                    try:
+                        result = self.process_sample(ch, sample)
+                    except Exception as exc:
+                        log.warning(f"reprocess_session_trend: skipped cap={key} ch={ch}: {exc}")
+                        continue
+                    if result is not None:
+                        overall[str(ch)] = float(result.overall)
+                grp.attrs["overall_json"] = _json.dumps(overall)
+                if progress_cb:
+                    progress_cb(i + 1, n)
+
+        log.info(f"Reprocessed {n} captures in {session_h5.name}")
+        return n

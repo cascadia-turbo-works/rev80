@@ -151,6 +151,7 @@ class GUI:
         self._session_browser_selected_capture: int | None = None
         self._session_browser_selected_burst: str | None = None
         self._session_browser_selected_session_dir = None
+        self._current_session_h5: 'Path | None' = None
 
     # ------------------------------------------------------------------
     # Status indicator helpers
@@ -896,6 +897,25 @@ class GUI:
             return
         self._on_load_file(Path(path_str))
 
+    def _wire_session_sensors(self) -> None:
+        """Register any unknown sensors from the loaded session/file and wire them to channels.
+
+        Must be called after load_monitor_session() or load_data() so that
+        _loaded_scope_sensors and _loaded_channel_sensor_configs are populated.
+        """
+        for sid, sensor_dict in self.collector._loaded_scope_sensors.items():
+            if self.registry.find_by_id(sid) is None:
+                try:
+                    sensor = ScopeSensor.from_dict(sensor_dict)
+                    self.registry.add(sensor)
+                    log.info(f"Added sensor to registry from file: {sensor.name!r} ({sid})")
+                except Exception as exc:
+                    log.warning(f"_wire_session_sensors: could not add sensor {sid!r}: {exc}")
+        for ch, sensor_cfg in self.collector._loaded_channel_sensor_configs.items():
+            sid    = sensor_cfg.get("id")
+            sensor = self.registry.find_by_id(sid) if sid else None
+            self.collector.set_scope_sensor(ch, sensor)
+
     def _on_load_file(self, path: Path):
         """Load an h5 file and sync all GUI state to the loaded data."""
         if self.collector.is_streaming:
@@ -929,22 +949,7 @@ class GUI:
         for ch in sorted(loaded_channels):
             self._add_channel_series(ch)
 
-        # Auto-add any sensors from the file that aren't in the local registry,
-        # then assign them to channels so scope_sensors is populated for the config dialog.
-        for sid, sensor_dict in self.collector._loaded_scope_sensors.items():
-            if self.registry.find_by_id(sid) is None:
-                try:
-                    sensor = ScopeSensor.from_dict(sensor_dict)
-                    self.registry.add(sensor)
-                    log.info(f"Added sensor from file to registry: {sensor.name!r} ({sid})")
-                except Exception as exc:
-                    log.warning(f"Could not restore sensor {sid!r} from file: {exc}")
-
-        # Wire scope sensors to channels from the loaded channel configs
-        for ch, sensor_cfg in self.collector._loaded_channel_sensor_configs.items():
-            sid = sensor_cfg.get("id")
-            sensor = self.registry.find_by_id(sid) if sid else None
-            self.collector.set_scope_sensor(ch, sensor)
+        self._wire_session_sensors()
 
         self._update_axis_assignment()
         self._update_results_section_visibility()
@@ -1329,7 +1334,7 @@ class GUI:
             self._refresh_session_browser()
             dpg.configure_item(
                 ui.DLG_SESSION_BROWSER,
-                pos=((WINDOW_WIDTH - 980) // 2, (WINDOW_HEIGHT - 594) // 2),
+                pos=((WINDOW_WIDTH - 1030) // 2, (WINDOW_HEIGHT - 620) // 2),
                 show=True,
             )
             return
@@ -1337,7 +1342,7 @@ class GUI:
 
     def _build_session_browser(self) -> None:
         """Build the session browser modal — session table + burst table."""
-        DLG_W, DLG_H = 980, 594
+        DLG_W, DLG_H = 1030, 620
         ROW_H = DLG_H - 130
 
         _tbl_kw = dict(
@@ -1397,6 +1402,18 @@ class GUI:
             # ── Bottom bar ────────────────────────────────────────────
             dpg.add_spacer(height=8)
             with dpg.group(horizontal=True):
+                dpg.add_button(
+                    label=f'{icons.IC["save"]}  Save Config',
+                    tag='_SB_SAVE_CONFIG_BTN',
+                    callback=self._on_sb_save_config,
+                    width=120, height=28,
+                )
+                dpg.add_button(
+                    label=f'{icons.IC["refresh"]}  Reprocess',
+                    tag='_SB_REPROCESS_BTN',
+                    callback=self._on_sb_reprocess,
+                    width=110, height=28,
+                )
                 dpg.add_button(
                     label=f'{icons.IC["refresh"]}  Refresh',
                     callback=self._refresh_session_browser,
@@ -1491,6 +1508,7 @@ class GUI:
         session_dir = entry['session_dir']
         session_h5  = entry['session_h5']
         self._session_browser_selected_session_dir = session_dir
+        self._current_session_h5 = session_h5
 
         # Clear stale plot series before loading (prevents color cycle accumulation)
         for ch in range(_MAX_CHANNELS):
@@ -1504,21 +1522,9 @@ class GUI:
         except Exception as exc:
             log.error(f'session browser: failed to load session {session_h5}: {exc}')
 
-        # Wire scope sensors from file metadata — same as _on_load_file so that
-        # get_trend_for_display() and process_sample() see the correct sensor_eu
-        # and sensitivity when selecting integration order and applying unit scaling.
-        for sid, sensor_dict in self.collector._loaded_scope_sensors.items():
-            if self.registry.find_by_id(sid) is None:
-                try:
-                    from vibechecker.scope_sensor import ScopeSensor
-                    sensor = ScopeSensor.from_dict(sensor_dict)
-                    self.registry.add(sensor)
-                except Exception as exc:
-                    log.warning(f'session browser: could not add sensor {sid!r}: {exc}')
-        for ch, sensor_cfg in self.collector._loaded_channel_sensor_configs.items():
-            sid = sensor_cfg.get("id")
-            sensor = self.registry.find_by_id(sid) if sid else None
-            self.collector.set_scope_sensor(ch, sensor)
+        # Wire scope sensors from file metadata — registers unknown sensors and
+        # populates collector.scope_sensors for get_trend_for_display() / process_sample().
+        self._wire_session_sensors()
         self.collector.reprocess_last_block()
 
         # Re-add series and sync display state — mirrors _on_load_file post-load steps
@@ -1588,6 +1594,78 @@ class GUI:
                     )
         except Exception as exc:
             log.warning(f'session browser: failed to draw burst vlines: {exc}')
+
+    def _on_sb_save_config(self, sender=None, data=None) -> None:
+        """Patch /metadata/channels/ and /metadata/scope_sensors/ with current config."""
+        session_h5 = self._current_session_h5
+        if session_h5 is None:
+            log.warning("_on_sb_save_config: no session loaded")
+            return
+        try:
+            with h5py.File(str(session_h5), 'a') as f:
+                meta = f.require_group('metadata')
+                # Recreate channels group — interpretation attrs only; hardware attrs unchanged
+                if 'channels' in meta:
+                    del meta['channels']
+                ch_grp = meta.create_group('channels')
+                for ch in self.collector.config.enabled_channels:
+                    scope_s = self.collector.scope_sensors.get(ch)
+                    cg = ch_grp.create_group(str(ch))
+                    cg.attrs['name']            = self.collector.config.name_for(ch)
+                    cg.attrs['scope_sensor_id'] = scope_s.id if scope_s else ''
+                    cg.attrs['target_unit']     = self.collector.config.target_unit_for(ch)
+                    cg.attrs['amplitude_mode']  = self.collector.config.amplitude_mode_for(ch)
+                # Recreate scope_sensors group with currently wired sensors
+                if 'scope_sensors' in meta:
+                    del meta['scope_sensors']
+                ss_grp = meta.create_group('scope_sensors')
+                seen: set = set()
+                for ch in self.collector.config.enabled_channels:
+                    scope_s = self.collector.scope_sensors.get(ch)
+                    if scope_s and scope_s.id not in seen:
+                        seen.add(scope_s.id)
+                        sg = ss_grp.create_group(scope_s.id)
+                        for k, v in scope_s.to_dict().items():
+                            sg.attrs[k] = v
+            log.info(f"Saved config to {session_h5.name}")
+        except Exception as exc:
+            log.error(f"_on_sb_save_config: failed to patch {session_h5}: {exc}")
+            return
+        # Reprocess trend with the new config
+        self._on_sb_reprocess()
+
+    def _on_sb_reprocess(self, sender=None, data=None) -> None:
+        """Reprocess overall_json for all captures using the current sensor/channel config."""
+        session_h5 = self._current_session_h5
+        if session_h5 is None:
+            log.warning("_on_sb_reprocess: no session loaded")
+            return
+
+        if dpg.does_item_exist('_SB_REPROCESS_BTN'):
+            dpg.configure_item('_SB_REPROCESS_BTN', enabled=False, label='Reprocessing…')
+
+        def _progress(i: int, n: int) -> None:
+            if dpg.does_item_exist('_SB_REPROCESS_BTN'):
+                dpg.configure_item('_SB_REPROCESS_BTN', label=f'{i} / {n}')
+
+        def _run() -> None:
+            try:
+                self.collector.reprocess_session_trend(session_h5, progress_cb=_progress)
+            except Exception as exc:
+                log.error(f"_on_sb_reprocess: failed: {exc}")
+            finally:
+                if dpg.does_item_exist('_SB_REPROCESS_BTN'):
+                    dpg.configure_item('_SB_REPROCESS_BTN', enabled=True,
+                                       label=f'{icons.IC["refresh"]}  Reprocess')
+            # Reload session to display updated trend
+            try:
+                self.collector.load_monitor_session(session_h5)
+                self._wire_session_sensors()
+                self.collector.reprocess_last_block()
+            except Exception as exc:
+                log.error(f"_on_sb_reprocess: reload failed: {exc}")
+
+        threading.Thread(target=_run, daemon=True, name='SBReprocess').start()
 
     def _on_burst_list_select(self, sender=None, data=None, user_data=None) -> None:
         """Load all frames from the selected burst event."""
@@ -3417,6 +3495,9 @@ class GUI:
             except Exception as exc:
                 log.error(f"--from-file: load_monitor_session failed: {exc}")
                 return
+            self._current_session_h5 = p
+            self._wire_session_sensors()
+            self.collector.reprocess_last_block()
             for ch in sorted(self.collector.config.enabled_channels):
                 self._add_channel_series(ch)
             self._update_axis_assignment()
