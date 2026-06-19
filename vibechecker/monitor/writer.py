@@ -161,7 +161,7 @@ class MonitorWriterThread:
             burst_grp.attrs['burst_list'] = json.dumps([])
 
         self._h5_initialised = True
-        log.debug(f'MonitorWriter: created {session.session_h5}')
+        log.info(f'MonitorWriter: created {session.session_h5}')
 
     def _write(self, item: dict) -> None:
         session = self._session
