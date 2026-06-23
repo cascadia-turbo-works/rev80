@@ -1532,6 +1532,7 @@ class GUI:
             self._add_channel_series(ch)
         self._update_axis_assignment()
         self._update_results_section_visibility()
+        self._update_connection_summary()
 
         self._autoscale_plots()
 
@@ -1749,9 +1750,18 @@ class GUI:
             for child in (dpg.get_item_children('_SB_BURST_TABLE', slot=1) or []):
                 dpg.delete_item(child)
 
-        # Auto-select newest session
+        # If a session is already loaded and still in the list, re-highlight it without
+        # reloading.  Only auto-load on first open (no session currently loaded) so that
+        # re-opening the browser after changing channel settings doesn't overwrite them.
         if sessions:
-            self._on_session_list_select(user_data=sessions[0])
+            current = self._current_session_h5
+            if current is not None:
+                for i, s in enumerate(sessions):
+                    if s['session_h5'] == current and i < len(self._sb_session_sel_ids):
+                        dpg.set_value(self._sb_session_sel_ids[i], True)
+                        break
+            else:
+                self._on_session_list_select(user_data=sessions[0])
 
     # ------------------------------------------------------------------
 

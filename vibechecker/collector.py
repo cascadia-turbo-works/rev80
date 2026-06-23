@@ -1064,8 +1064,11 @@ class DataCollector:
         log.debug(f"Loaded {n} burst frames for '{burst_id}' from {session_h5}")
         self._post_load()
 
-        # Rebuild trend from per-frame overall_json, filtering any NaN/inf values
+        # Rebuild trend from per-frame overall_json.
+        # overall_json is in target EU — inverse-scale to raw mV so
+        # get_trend_for_display() can apply the forward conversion correctly.
         import math as _math
+        from vibechecker.util import UNIT_TO_SI, AMPLITUDE_SCALE, integration_steps
         for ch, rel_times in trend_rel_times.items():
             overalls = trend_overalls[ch]
             valid = [(t, v) for t, v in zip(rel_times, overalls)
@@ -1073,8 +1076,19 @@ class DataCollector:
             if not valid:
                 continue
             vt, vv = zip(*valid)
-            orders = np.zeros((len(vv), 5))
-            orders[:, 2] = np.array(vv)
+            sensor_cfg  = self._loaded_channel_sensor_configs.get(ch, {})
+            sensor_eu   = sensor_cfg.get('engineering_units', 'mV')
+            sensitivity = float(sensor_cfg.get('sensitivity', 1.0))
+            rec_tgt     = self.config.channel_target_units.get(ch, sensor_eu) or sensor_eu
+            amp_mode    = self.config.channel_amplitude_modes.get(ch, '0-P') or '0-P'
+            n_steps  = integration_steps(sensor_eu, rec_tgt)
+            col      = max(0, min(4, n_steps + 2))
+            src_si   = UNIT_TO_SI.get(sensor_eu, 1.0)
+            tgt_si   = UNIT_TO_SI.get(rec_tgt,   1.0)
+            amp_f    = AMPLITUDE_SCALE.get(amp_mode, 1.0)
+            scale    = src_si / tgt_si / sensitivity
+            orders         = np.zeros((len(vv), 5))
+            orders[:, col] = np.array(vv) / (scale * amp_f) if (scale * amp_f) != 0 else np.array(vv)
             self.trend[ch] = {"rel_times": np.array(vt), "orders": orders}
         if trend_rel_times:
             log.debug(f"Reconstructed burst trend from {len(trend_rel_times)} channels")
@@ -1126,6 +1140,38 @@ class DataCollector:
                 grp.attrs["overall_json"] = _json.dumps(overall)
                 if progress_cb:
                     progress_cb(i + 1, n)
+
+        # Also reprocess per-frame overall_json inside each burst event
+        with h5py.File(session_h5, "a") as f:
+            burst_grp = f.get("burst")
+            if burst_grp is not None:
+                for burst_id, bid_grp in burst_grp.items():
+                    if not hasattr(bid_grp, 'keys'):
+                        continue
+                    for fi_str in [k for k in bid_grp.keys() if k.isdigit()]:
+                        fi_grp  = bid_grp[fi_str]
+                        overall = {}
+                        for ch_str in [k for k in fi_grp.keys() if k.isdigit()]:
+                            ch   = int(ch_str)
+                            data = np.asarray(fi_grp[ch_str]["data"][()], dtype=np.float64)
+                            ts   = str(fi_grp.attrs.get("timestamp", ""))
+                            sr   = int(fi_grp.attrs.get("samplerate", self.config.samplerate))
+                            try:
+                                ts_dt = _dt.fromisoformat(ts)
+                            except ValueError:
+                                ts_dt = _dt.utcnow()
+                            sample = VibeSample(
+                                status="OK", _timestamp=ts_dt,
+                                samplerate=sr, unit="mV", overflow=False, data=data,
+                            )
+                            try:
+                                result = self.process_sample(ch, sample)
+                            except Exception as exc:
+                                log.warning(f"reprocess_session_trend: skipped burst={burst_id} fi={fi_str} ch={ch}: {exc}")
+                                continue
+                            if result is not None:
+                                overall[str(ch)] = float(result.overall)
+                        fi_grp.attrs["overall_json"] = _json.dumps(overall)
 
         log.info(f"Reprocessed {n} captures in {session_h5.name}")
         return n
