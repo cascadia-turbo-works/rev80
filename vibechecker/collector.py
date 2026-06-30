@@ -1043,16 +1043,25 @@ class DataCollector:
             else:
                 trigger_rel = 0.0
 
+            # Indices of frames that have no overall_json (pre-trigger frames);
+            # their trend contribution is computed offline after the file closes.
+            frames_needing_trend: list[tuple[float, dict]] = []
+
             for fi in range(n_frames):
                 fi_grp = bid_grp.get(str(fi))
                 if fi_grp is None:
                     continue
                 frame = self._read_frame_group(fi_grp, ch_units, version)
-                self.data["frame_cache"].append(frame)
-                # Per-frame overall for trend, rebased to trigger=0
+                # Rebase each VibeSample's rel_time to trigger=0 so the browse
+                # cursor (which reads v.rel_time) aligns with the rebased trend.
                 raw_rel_t_f = float(fi_grp.attrs.get("rel_time", 0.0))
                 raw_rel_t = raw_rel_t_f if _math.isfinite(raw_rel_t_f) else 0.0
                 rel_t = raw_rel_t - trigger_rel
+                for s in frame.values():
+                    if hasattr(s, 'rel_time'):
+                        s.rel_time = rel_t
+                self.data["frame_cache"].append(frame)
+                # Per-frame overall for trend
                 raw_overall = fi_grp.attrs.get("overall_json", None)
                 if raw_overall is not None:
                     try:
@@ -1063,10 +1072,31 @@ class DataCollector:
                             trend_overalls.setdefault(ch, []).append(float(val))
                     except Exception:
                         pass
+                else:
+                    frames_needing_trend.append((rel_t, frame))
 
         n = len(self.data["frame_cache"])
         log.debug(f"Loaded {n} burst frames for '{burst_id}' from {session_h5}")
         self._post_load()
+
+        # Compute trend for pre-trigger frames that had no overall_json stored.
+        # process_sample() uses the currently wired sensors (set by the GUI's
+        # _wire_session_sensors before or after this call); if sensors are not
+        # yet wired, it falls back to mV scaling which is still a valid shape.
+        if frames_needing_trend:
+            for rel_t, frame in frames_needing_trend:
+                for ch, sample in sorted(frame.items()):
+                    if not isinstance(ch, int):
+                        continue
+                    result = self.process_sample(ch, sample)
+                    if result is not None:
+                        trend_rel_times.setdefault(ch, []).append(rel_t)
+                        trend_overalls.setdefault(ch, []).append(float(result.overall))
+            # Re-sort each channel's trend by rel_time (pre-trigger is negative)
+            for ch in list(trend_rel_times.keys()):
+                pairs = sorted(zip(trend_rel_times[ch], trend_overalls[ch]))
+                trend_rel_times[ch], trend_overalls[ch] = map(list, zip(*pairs))
+            log.debug(f"Reprocessed {len(frames_needing_trend)} pre-trigger frames for trend")
 
         # Rebuild trend from per-frame overall_json.
         # overall_json is in target EU — inverse-scale to raw mV so
