@@ -336,6 +336,20 @@ class UI_Elements:
     # ── Results pane ────────────────────────────────────────────────────────
     CH_WARNINGS_SECTION = 'CH_WARNINGS_SECTION'
 
+    # ── Frame info card ─────────────────────────────────────────────────────
+    FRAME_INFO_SECTION      = 'FRAME_INFO_SECTION'
+    FRAME_INFO_TIMESTAMP    = 'FRAME_INFO_TIMESTAMP'     # always shown
+    FRAME_INFO_REL_TIME     = 'FRAME_INFO_REL_TIME'      # burst only
+    FRAME_INFO_BLOCKSIZE    = 'FRAME_INFO_BLOCKSIZE'     # always shown
+    FRAME_INFO_SAMPLERATE   = 'FRAME_INFO_SAMPLERATE'   # always shown
+    FRAME_INFO_BURST_SEP    = 'FRAME_INFO_BURST_SEP'    # burst section divider
+    FRAME_INFO_BURST_ID     = 'FRAME_INFO_BURST_ID'     # burst only
+    FRAME_INFO_TRIGGER_TYPE = 'FRAME_INFO_TRIGGER_TYPE' # burst only
+    FRAME_INFO_TRIGGER_TS   = 'FRAME_INFO_TRIGGER_TS'   # burst only
+    FRAME_INFO_MAX_OVERALL  = 'FRAME_INFO_MAX_OVERALL'  # burst only
+    FRAME_INFO_SESSION_SEP  = 'FRAME_INFO_SESSION_SEP'  # session/burst divider
+    FRAME_INFO_SESSION_ID   = 'FRAME_INFO_SESSION_ID'   # session or burst
+
     # ── Per-channel dynamic tags ───────────────────────────────────────────
     @staticmethod
     def scope_ch_header(ch: int) -> str:
