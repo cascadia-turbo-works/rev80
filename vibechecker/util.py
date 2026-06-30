@@ -20,6 +20,7 @@ THEME_COLORS: dict = {
     'GREEN_DARK':    '#186028',
     # Channel trace colours (match _CH_COLORS order in gui.py)
     'WHITE':         '#F0F0F0',
+    'BLUE':          '#4A90E2',
     'ORANGE':        '#FFA500',
     'LIME':          '#64DC64',
     'CORAL':         '#FF5050',
