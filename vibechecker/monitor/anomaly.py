@@ -1,7 +1,7 @@
 import logging
 import math
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 import numpy as np
@@ -23,7 +23,7 @@ def ewma_alpha_from_time(ewma_time_s: float, dt: float) -> float:
 
 @dataclass(frozen=True)
 class AnomalyEvent:
-    trigger_time: datetime    # UTC datetime of the t=0 frame (anomaly onset, not detection time)
+    trigger_time: datetime    # local datetime of the t=0 frame (anomaly onset, not detection time)
     channel: int
     reason: str
     burst_duration_s: float
@@ -160,7 +160,7 @@ class RmsThresholdHook:
                     # First above-threshold frame in this streak — flag it as
                     # the t=0 anomaly onset, even though the event won't fire
                     # until `consecutive_n` frames later.
-                    self._streak_start_time[ch] = datetime.now(timezone.utc)
+                    self._streak_start_time[ch] = datetime.now()
                     self._streak_start_rel[ch]  = r.rel_time
                 self._consec_above[ch] += 1
                 log.debug(
@@ -177,7 +177,7 @@ class RmsThresholdHook:
                         f"{self._threshold_frac * 100:.1f}% threshold on ch{ch}"
                     )
                     return AnomalyEvent(
-                        trigger_time=self._streak_start_time.pop(ch, datetime.now(timezone.utc)),
+                        trigger_time=self._streak_start_time.pop(ch, datetime.now()),
                         channel=ch,
                         reason=reason,
                         burst_duration_s=self._burst_duration_s,
@@ -319,7 +319,7 @@ class SpectralThresholdHook:
                         f"on ch{ch} @ {peak_freq:.1f} Hz"
                     )
                     return AnomalyEvent(
-                        trigger_time=datetime.now(timezone.utc),
+                        trigger_time=datetime.now(),
                         channel=ch,
                         reason=reason,
                         burst_duration_s=self._burst_duration_s,
@@ -409,7 +409,7 @@ class FixedThresholdHook:
                 limit = self._convert(self._upper_limit, self._upper_unit, r.unit, ch)
                 if limit is not None and current > limit:
                     return AnomalyEvent(
-                        trigger_time=datetime.now(timezone.utc),
+                        trigger_time=datetime.now(),
                         channel=ch,
                         reason=(
                             f"Overall {current:.4g} {r.unit} > upper limit "
@@ -423,7 +423,7 @@ class FixedThresholdHook:
                 limit = self._convert(self._lower_limit, self._lower_unit, r.unit, ch)
                 if limit is not None and current < limit:
                     return AnomalyEvent(
-                        trigger_time=datetime.now(timezone.utc),
+                        trigger_time=datetime.now(),
                         channel=ch,
                         reason=(
                             f"Overall {current:.4g} {r.unit} < lower limit "
