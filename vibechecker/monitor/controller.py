@@ -1,6 +1,6 @@
 import time
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime
 
 import vibechecker
 from vibechecker.monitor.anomaly import AnomalyEvent, AnomalyHook, NullAnomalyHook
@@ -42,7 +42,7 @@ class MonitorController:
         self._burst_all_results:    list[list] = []  # per-frame results during burst
         self._burst_pre_overalls:   list[str]  = []  # overall_json per pre-trigger frame
         self._burst_pretrigger:     int       = 0
-        self._burst_trigger_ts:     str       = ''   # ISO UTC timestamp at trigger
+        self._burst_trigger_ts:     str       = ''   # ISO local timestamp at trigger
         self._burst_trigger_rel:    float     = 0.0  # session rel_time at trigger
         self._last_frame_cache:     deque | None = None
 
@@ -119,11 +119,11 @@ class MonitorController:
         if not self._recording or self._session is None or self._in_burst:
             return
         now = time.monotonic()
-        utc_now = datetime.now(timezone.utc)
+        now_local = datetime.now()
         self._in_burst            = True
         self._burst_end_mono      = now + self._session.burst_duration_s
-        self._burst_id            = utc_now.strftime('%Y-%m-%d-%H%M%S')
-        self._burst_trigger_ts    = utc_now.isoformat()
+        self._burst_id            = now_local.strftime('%Y-%m-%d-%H%M%S')
+        self._burst_trigger_ts    = now_local.isoformat()
         self._burst_trigger_rel   = now - self._start_mono
         self._burst_results       = []
         # Snapshot pre-trigger frames from last seen frame cache.
@@ -218,7 +218,7 @@ class MonitorController:
 
     def _capture_interval(self, results: list, frame_cache: deque,
                           rel_time: float) -> None:
-        timestamp_str = datetime.now(timezone.utc).isoformat()
+        timestamp_str = datetime.now().isoformat()
         latest        = dict(frame_cache[-1]) if frame_cache else {}
         self._enqueue(
             frames     = [latest],
@@ -274,10 +274,9 @@ class MonitorController:
 
     def _start_burst(self, event: AnomalyEvent, results: list,
                      frame_cache: deque, now: float, rel_time: float) -> None:
-        utc_now = datetime.now(timezone.utc)
         self._in_burst            = True
         self._burst_end_mono      = now + event.burst_duration_s
-        self._burst_id            = utc_now.strftime('%Y-%m-%d-%H%M%S')
+        self._burst_id            = event.trigger_time.strftime('%Y-%m-%d-%H%M%S')
         # Trigger metadata reflects the t=0 frame (anomaly onset), which may
         # precede `now` by however long the hook's confirmation window took.
         self._burst_trigger_ts    = event.trigger_time.isoformat()

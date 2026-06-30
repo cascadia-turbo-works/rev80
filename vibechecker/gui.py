@@ -80,6 +80,7 @@ def _c(key: str, alpha: int = 255) -> tuple:
     return vibechecker.hex_to_rgba(vibechecker.THEME_COLORS[key], alpha)
 
 
+
 _CH_COLORS = [
     _c("BLUE"),   # Ch A
     _c("ORANGE"),  # Ch B
@@ -416,21 +417,21 @@ class GUI:
             dpg.configure_item(ui.FRAME_INFO_SECTION, show=False)
             return
 
-        # Always-visible rows
+        # ── Frame section (always visible) ──────────────────────────────────
         try:
-            ts_str = sample._timestamp.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + " (local)"
+            ts_str = sample._timestamp.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         except Exception:
             ts_str = str(getattr(sample, 'timestamp', '—'))
-        dpg.set_value(ui.FRAME_INFO_TIMESTAMP, f"Timestamp:\n  {ts_str}")
+        dpg.set_value(ui.FRAME_INFO_TIMESTAMP, f"Capture Time:\n  {ts_str}")
 
         sr = sample.samplerate
         ns = sample.blocksize
         dpg.set_value(ui.FRAME_INFO_BLOCKSIZE,  f"Block size: {ns:,} samples")
         dpg.set_value(ui.FRAME_INFO_SAMPLERATE, f"Sample rate: {sr:,} Hz")
 
-        ctx        = self._browse_context
-        kind       = ctx.get('type', 'live')
-        is_burst   = kind == 'burst'
+        ctx         = self._browse_context
+        kind        = ctx.get('type', 'live')
+        is_burst    = kind == 'burst'
         has_session = kind in ('burst', 'session')
 
         # Frame Time (burst only)
@@ -443,56 +444,44 @@ class GUI:
             dpg.set_value(ui.FRAME_INFO_REL_TIME, f"Frame Time: {rel_str}")
         dpg.configure_item(ui.FRAME_INFO_REL_TIME, show=is_burst)
 
-        # Burst section (trigger time first, then type, then max overall)
-        dpg.configure_item(ui.FRAME_INFO_BURST_SEP,    show=is_burst)
-        dpg.configure_item(ui.FRAME_INFO_TRIGGER_TS,   show=is_burst)
-        dpg.configure_item(ui.FRAME_INFO_TRIGGER_TYPE, show=is_burst)
-        dpg.configure_item(ui.FRAME_INFO_MAX_OVERALL,  show=is_burst)
+        # ── Burst section ────────────────────────────────────────────────────
+        for tag in (ui.FRAME_INFO_BURST_HEADER, ui.FRAME_INFO_BURST_SEP,
+                    ui.FRAME_INFO_TRIGGER_TS, ui.FRAME_INFO_TRIGGER_TYPE):
+            dpg.configure_item(tag, show=is_burst)
         if is_burst:
             dpg.set_value(ui.FRAME_INFO_TRIGGER_TS,
-                          f"Trigger time:\n  {ctx.get('trigger_ts', '—')}")
+                          f"Burst Time:\n  {ctx.get('trigger_ts', '—')}")
             dpg.set_value(ui.FRAME_INFO_TRIGGER_TYPE,
                           f"Trigger type: {ctx.get('trigger_type', '—')}")
-            try:
-                import json as _json
-                ov = _json.loads(ctx.get('max_overall_json', '{}'))
-                ch_cfg = self.collector.config.channel_target_units
-                parts = []
-                for ch_str, val in sorted(ov.items(), key=lambda x: int(x[0])):
-                    ch   = int(ch_str)
-                    lbl  = chr(65 + ch)
-                    unit = ch_cfg.get(ch) or 'EU'
-                    parts.append(f"Ch {lbl}: {float(val):.3g} {unit}")
-                ov_str = "  ".join(parts) if parts else "—"
-            except Exception:
-                ov_str = ctx.get('max_overall_json', '—')
-            dpg.set_value(ui.FRAME_INFO_MAX_OVERALL, f"Max Overall: {ov_str}")
 
-        # Session section (session timestamp first, then stats)
-        dpg.configure_item(ui.FRAME_INFO_SESSION_SEP,  show=has_session)
-        dpg.configure_item(ui.FRAME_INFO_SESSION_DATE, show=has_session)
-        dpg.configure_item(ui.FRAME_INFO_SESSION_TIME, show=has_session)
-        dpg.configure_item(ui.FRAME_INFO_N_CAPTURES,   show=has_session)
-        dpg.configure_item(ui.FRAME_INFO_N_BURSTS,     show=has_session)
+        # ── Session section ──────────────────────────────────────────────────
+        for tag in (ui.FRAME_INFO_SESSION_HEADER, ui.FRAME_INFO_SESSION_SEP,
+                    ui.FRAME_INFO_SESSION_START, ui.FRAME_INFO_SESSION_END,
+                    ui.FRAME_INFO_N_CAPTURES, ui.FRAME_INFO_N_BURSTS,
+                    ui.FRAME_INFO_INTERVAL):
+            dpg.configure_item(tag, show=has_session)
         if has_session:
-            dpg.set_value(ui.FRAME_INFO_SESSION_DATE,
-                          f"Date: {ctx.get('session_date', '—')}")
-            dpg.set_value(ui.FRAME_INFO_SESSION_TIME,
-                          f"Time: {ctx.get('session_time', '—')}")
+            dpg.set_value(ui.FRAME_INFO_SESSION_START,
+                          f"Start Time:\n  {ctx.get('start_time', '—')}")
+            dpg.set_value(ui.FRAME_INFO_SESSION_END,
+                          f"End Time:\n  {ctx.get('end_time', '—')}")
             dpg.set_value(ui.FRAME_INFO_N_CAPTURES,
                           f"Captures: {ctx.get('n_captures', '—')}")
             dpg.set_value(ui.FRAME_INFO_N_BURSTS,
                           f"Bursts: {ctx.get('n_bursts', '—')}")
+            iv = ctx.get('interval_s', 0.0)
+            iv_str = f"{float(iv):.1f} s" if iv else '—'
+            dpg.set_value(ui.FRAME_INFO_INTERVAL, f"Capture interval: {iv_str}")
 
-        # Resize card to fit visible content.
-        # Timestamp and Trigger time each take 2 display lines (_CARD_LINE_H each line).
-        _SEP_H = 12   # add_separator pixel height
-        always_h  = 4 * _CARD_LINE_H   # Timestamp (2 lines) + Block size + Sample rate
-        burst_h   = (1 + 2 + 1 + 1) * _CARD_LINE_H + _SEP_H  if is_burst   else 0
-        # Frame Time + Trigger time(2) + Trigger type + Max Overall + sep
-        session_h = 4 * _CARD_LINE_H + _SEP_H            if has_session else 0
-        # Date + Time + Captures + Bursts + sep
-        card_h = _CARD_BASE_H + always_h + burst_h + session_h
+        # ── Resize card to fit visible rows ──────────────────────────────────
+        # Each 2-line item counts as 2 × _CARD_LINE_H; section headers = 1 row.
+        _SEP_H   = 12  # add_separator pixel height
+        always_h = 4 * _CARD_LINE_H          # Capture Time (2) + Block size + Sample rate
+        burst_h  = (1 + 1 + 2 + 1) * _CARD_LINE_H + _SEP_H if is_burst    else 0
+        # Frame Time + header + Burst Time (2) + Trigger type + sep
+        sess_h   = (1 + 2 + 2 + 1 + 1 + 1) * _CARD_LINE_H + _SEP_H if has_session else 0
+        # header + Start Time (2) + End Time (2) + Captures + Bursts + Interval + sep
+        card_h = _CARD_BASE_H + always_h + burst_h + sess_h
         dpg.configure_item(ui.FRAME_INFO_SECTION, height=card_h, show=True)
 
     def _update_trend_cursor(self):
@@ -1562,32 +1551,40 @@ class GUI:
                 continue
             try:
                 with h5py.File(str(h5), 'r') as f:
-                    meta = f.get('metadata', {})
+                    meta       = f.get('metadata', {})
                     start_time = str(meta.attrs.get('start_time', d.name) if meta else d.name)
-                    # Parse date / time from ISO timestamp
-                    if 'T' in start_time:
-                        dt_part = start_time[:19]
-                        date_s, time_s = dt_part[:10], dt_part[11:19]
-                    else:
-                        date_s, time_s = start_time[:10], start_time[11:19]
-                    n_channels  = len(f.get('metadata/channels', {}))
-                    n_captures  = len(f.get('monitor', {}))
-                    burst_raw   = f['burst'].attrs.get('burst_list', '[]') if 'burst' in f else '[]'
+                    interval_s = float(meta.attrs.get('interval_s', 0.0)) if meta else 0.0
+                    n_channels = len(f.get('metadata/channels', {}))
+                    n_captures = len(f.get('monitor', {}))
+                    burst_raw  = f['burst'].attrs.get('burst_list', '[]') if 'burst' in f else '[]'
                     if isinstance(burst_raw, bytes):
                         burst_raw = burst_raw.decode()
-                    n_bursts    = len(_json.loads(burst_raw) if burst_raw else [])
+                    n_bursts   = len(_json.loads(burst_raw) if burst_raw else [])
+                    # End time: last capture's stored timestamp
+                    end_time = '—'
+                    mon_grp = f.get('monitor')
+                    if mon_grp:
+                        last_key = max(mon_grp.keys(), key=int, default=None)
+                        if last_key is not None:
+                            raw_end = str(mon_grp[last_key].attrs.get('timestamp', ''))
+                            if raw_end:
+                                end_time = raw_end[:19].replace('T', ' ')
             except Exception as exc:
                 log.warning(f'session browser: skipping {h5}: {exc}')
                 continue
+            start_disp = start_time[:19].replace('T', ' ')
             sessions.append({
-                'session_id': d.name,
+                'session_id':  d.name,
                 'session_dir': d,
-                'session_h5': h5,
-                'date': date_s,
-                'time': time_s,
-                'n_channels': n_channels,
-                'n_captures': n_captures,
-                'n_bursts': n_bursts,
+                'session_h5':  h5,
+                'date':        start_disp[:10],   # kept for legacy table display
+                'time':        start_disp[11:19],
+                'start_time':  start_disp,
+                'end_time':    end_time,
+                'interval_s':  interval_s,
+                'n_channels':  n_channels,
+                'n_captures':  n_captures,
+                'n_bursts':    n_bursts,
             })
 
         self._session_browser_sessions = sessions
@@ -1613,12 +1610,12 @@ class GUI:
         self._current_session_id    = entry.get('session_id', '')
         self._current_session_entry = entry
         self._browse_context = {
-            'type':         'session',
-            'session_id':   self._current_session_id,
-            'session_date': entry.get('date', '—'),
-            'session_time': entry.get('time', '—'),
-            'n_captures':   entry.get('n_captures', '—'),
-            'n_bursts':     entry.get('n_bursts', '—'),
+            'type':        'session',
+            'start_time':  entry.get('start_time', '—'),
+            'end_time':    entry.get('end_time',   '—'),
+            'interval_s':  entry.get('interval_s', 0.0),
+            'n_captures':  entry.get('n_captures', '—'),
+            'n_bursts':    entry.get('n_bursts',   '—'),
         }
 
         # Clear stale plot series before loading (prevents color cycle accumulation)
@@ -1812,14 +1809,14 @@ class GUI:
 
         se = self._current_session_entry
         self._browse_context = {
-            'type':             'burst',
-            'trigger_type':     burst.get('trigger_type', 'burst'),
-            'trigger_ts':       burst.get('timestamp', ''),
-            'max_overall_json': burst.get('max_overall_json', '{}'),
-            'session_date':     se.get('date',       '—'),
-            'session_time':     se.get('time',       '—'),
-            'n_captures':       se.get('n_captures', '—'),
-            'n_bursts':         se.get('n_bursts',   '—'),
+            'type':         'burst',
+            'trigger_type': burst.get('trigger_type', 'burst'),
+            'trigger_ts':   burst.get('timestamp', '')[:19].replace('T', ' '),
+            'start_time':   se.get('start_time', '—'),
+            'end_time':     se.get('end_time',   '—'),
+            'interval_s':   se.get('interval_s', 0.0),
+            'n_captures':   se.get('n_captures', '—'),
+            'n_bursts':     se.get('n_bursts',   '—'),
         }
         self._wire_session_sensors()
         for ch in sorted(self.collector.config.enabled_channels):
@@ -2183,7 +2180,7 @@ class GUI:
 
     def _start_recording(self):
         """Start streaming (if not running) and start monitor session."""
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         # Start streaming if needed
         if not self.collector.is_streaming:
@@ -2214,8 +2211,8 @@ class GUI:
         block_s = cfg.blocksize / cfg.samplerate
         pre_buffer_n = max(1, int(pre_buf_s / block_s)) if block_s > 0 else 1
 
-        now_utc = datetime.now(timezone.utc)
-        session_id = now_utc.strftime('%Y-%m-%d-%H%M%S')
+        now_local  = datetime.now()
+        session_id = now_local.strftime('%Y-%m-%d-%H%M%S')
 
         if out_dir_s:
             output_dir = Path(out_dir_s) / session_id
@@ -2245,7 +2242,7 @@ class GUI:
 
         session = vibechecker.MonitorSession(
             session_id=session_id,
-            start_time=now_utc,
+            start_time=now_local,
             interval_s=float(interval_s),
             pre_buffer_frames=pre_buffer_n,
             burst_duration_s=burst_dur,
@@ -3506,21 +3503,23 @@ class GUI:
                         dpg.add_text("Frame", color=_c("MUTED"))
                         dpg.add_separator()
                         # Always visible
-                        dpg.add_text("Timestamp:\n  —",   tag=ui.FRAME_INFO_TIMESTAMP)
-                        dpg.add_text("Frame Time: —",     tag=ui.FRAME_INFO_REL_TIME,     show=False)
-                        dpg.add_text("Block size: —",     tag=ui.FRAME_INFO_BLOCKSIZE)
-                        dpg.add_text("Sample rate: —",    tag=ui.FRAME_INFO_SAMPLERATE)
+                        dpg.add_text("Capture Time:\n  —", tag=ui.FRAME_INFO_TIMESTAMP)
+                        dpg.add_text("Frame Time: —",      tag=ui.FRAME_INFO_REL_TIME,       show=False)
+                        dpg.add_text("Block size: —",      tag=ui.FRAME_INFO_BLOCKSIZE)
+                        dpg.add_text("Sample rate: —",     tag=ui.FRAME_INFO_SAMPLERATE)
                         # Burst section
-                        dpg.add_separator(tag=ui.FRAME_INFO_BURST_SEP,    show=False)
-                        dpg.add_text("Trigger time:\n  —", tag=ui.FRAME_INFO_TRIGGER_TS,   show=False)
-                        dpg.add_text("Trigger type: —",   tag=ui.FRAME_INFO_TRIGGER_TYPE, show=False)
-                        dpg.add_text("Max Overall: —",    tag=ui.FRAME_INFO_MAX_OVERALL,  show=False)
+                        dpg.add_text("Burst", color=_c("MUTED"), tag=ui.FRAME_INFO_BURST_HEADER, show=False)
+                        dpg.add_separator(tag=ui.FRAME_INFO_BURST_SEP,      show=False)
+                        dpg.add_text("Burst Time:\n  —",   tag=ui.FRAME_INFO_TRIGGER_TS,     show=False)
+                        dpg.add_text("Trigger type: —",    tag=ui.FRAME_INFO_TRIGGER_TYPE,   show=False)
                         # Session / burst section
-                        dpg.add_separator(tag=ui.FRAME_INFO_SESSION_SEP,  show=False)
-                        dpg.add_text("Date: —",           tag=ui.FRAME_INFO_SESSION_DATE, show=False)
-                        dpg.add_text("Time: —",           tag=ui.FRAME_INFO_SESSION_TIME, show=False)
-                        dpg.add_text("Captures: —",       tag=ui.FRAME_INFO_N_CAPTURES,   show=False)
-                        dpg.add_text("Bursts: —",         tag=ui.FRAME_INFO_N_BURSTS,     show=False)
+                        dpg.add_text("Session", color=_c("MUTED"), tag=ui.FRAME_INFO_SESSION_HEADER, show=False)
+                        dpg.add_separator(tag=ui.FRAME_INFO_SESSION_SEP,    show=False)
+                        dpg.add_text("Start Time:\n  —",   tag=ui.FRAME_INFO_SESSION_START,  show=False)
+                        dpg.add_text("End Time:\n  —",     tag=ui.FRAME_INFO_SESSION_END,    show=False)
+                        dpg.add_text("Captures: —",        tag=ui.FRAME_INFO_N_CAPTURES,     show=False)
+                        dpg.add_text("Bursts: —",          tag=ui.FRAME_INFO_N_BURSTS,       show=False)
+                        dpg.add_text("Capture interval: —", tag=ui.FRAME_INFO_INTERVAL,      show=False)
                     dpg.add_spacer(height=4)
 
                     # Per-channel result sections (all hidden by default;
