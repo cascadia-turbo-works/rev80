@@ -242,9 +242,10 @@ class MonitorWriterThread:
         trigger           = item.get('trigger', 'burst')
         rel_time          = float(item['rel_time'])
         timestamp_str     = item['timestamp']
-        n_pretrigger      = int(item.get('n_pretrigger_frames', 0))
-        all_results: list = item.get('all_results', [])
-        overall_json, _   = _compute_overall_peaks(results)
+        n_pretrigger        = int(item.get('n_pretrigger_frames', 0))
+        all_results: list   = item.get('all_results', [])
+        pre_overalls: list  = item.get('pre_overalls', [])  # overall_json strings for pre-trigger frames
+        overall_json, _     = _compute_overall_peaks(results)
         n_frames          = len(frames)
         duration_s        = 0.0
         if n_frames >= 2:
@@ -271,7 +272,6 @@ class MonitorWriterThread:
                 ch_samples   = {k: v for k, v in frame_dict.items() if isinstance(k, int)}
                 first_sample = next(iter(ch_samples.values()), None)
                 is_pre       = 1 if frame_index < n_pretrigger else 0
-                frame_results = all_results[frame_index] if frame_index < len(all_results) else []
 
                 fi_grp = bid_grp.create_group(str(frame_index))
                 fi_grp.attrs['timestamp']     = first_sample.timestamp if first_sample else timestamp_str
@@ -279,9 +279,15 @@ class MonitorWriterThread:
                 fi_grp.attrs['samplerate']    = int(first_sample.samplerate) if first_sample else 0
                 fi_grp.attrs['status']        = str(first_sample.status) if first_sample else ''
                 fi_grp.attrs['is_pretrigger'] = is_pre
-                if frame_results:
-                    frame_overall, _ = _compute_overall_peaks(frame_results)
-                    fi_grp.attrs['overall_json'] = frame_overall
+
+                if is_pre and frame_index < len(pre_overalls):
+                    # Use pre-computed overall from cached mV overalls on the VibeSample
+                    fi_grp.attrs['overall_json'] = pre_overalls[frame_index]
+                else:
+                    frame_results = all_results[frame_index] if frame_index < len(all_results) else []
+                    if frame_results:
+                        frame_overall, _ = _compute_overall_peaks(frame_results)
+                        fi_grp.attrs['overall_json'] = frame_overall
 
                 for ch, sample in sorted(ch_samples.items()):
                     _write_channel_group(
