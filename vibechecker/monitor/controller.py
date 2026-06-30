@@ -40,6 +40,7 @@ class MonitorController:
         self._burst_frames:         list[dict] = []
         self._burst_results:        list      = []
         self._burst_all_results:    list[list] = []  # per-frame results during burst
+        self._burst_pre_overalls:   list[str]  = []  # overall_json per pre-trigger frame
         self._burst_pretrigger:     int       = 0
         self._burst_trigger_ts:     str       = ''   # ISO UTC timestamp at trigger
         self._burst_trigger_rel:    float     = 0.0  # session rel_time at trigger
@@ -74,10 +75,11 @@ class MonitorController:
 
         self._capture_count = 0
         self._burst_count   = 0
-        self._in_burst          = False
-        self._burst_frames      = []
-        self._burst_results     = []
-        self._burst_all_results = []
+        self._in_burst           = False
+        self._burst_frames       = []
+        self._burst_results      = []
+        self._burst_all_results  = []
+        self._burst_pre_overalls = []
         self._recording     = True
         self._cooldown_until_mono = 0.0
 
@@ -135,6 +137,9 @@ class MonitorController:
         else:
             self._burst_frames     = []
             self._burst_pretrigger = 0
+        self._burst_pre_overalls = self._compute_pretrigger_overalls(
+            self._burst_frames[:self._burst_pretrigger]
+        )
         self._burst_all_results = [[]] * self._burst_pretrigger
         self._gate.enter_burst(self._session.burst_duration_s, now, self._session.max_burst_s)
         self._start_cooldown(now)
@@ -223,6 +228,50 @@ class MonitorController:
             timestamp  = timestamp_str,
         )
 
+    def _compute_pretrigger_overalls(self, frames: list[dict]) -> list[str]:
+        """Build overall_json strings for pre-trigger frames from cached mV overalls.
+
+        VibeSamples already have overall_ampl_by_integration_order populated from
+        live processing.  Apply forward scaling using the session channel/sensor
+        snapshot to produce target-EU values matching the rest of overall_json.
+        """
+        import json as _json
+        from vibechecker.util import UNIT_TO_SI, AMPLITUDE_SCALE, integration_steps
+
+        session = self._session
+        if session is None:
+            return ['{}'] * len(frames)
+
+        ch_snap   = session.channel_snapshot   # {str(ch): {scope_sensor_id, ...}}
+        sens_snap = session.sensor_snapshot    # {sensor_id: {sensitivity_mv_per_eu, ...}}
+
+        out: list[str] = []
+        for frame_dict in frames:
+            overall: dict[str, float] = {}
+            for ch, sample in frame_dict.items():
+                if not isinstance(ch, int):
+                    continue
+                ch_cfg  = ch_snap.get(str(ch), {})
+                sid     = ch_cfg.get('scope_sensor_id')
+                s_cfg   = sens_snap.get(sid, {}) if sid else {}
+
+                sens_mv   = float(s_cfg.get('sensitivity_mv_per_eu', 1.0))
+                sensor_eu = s_cfg.get('engineering_units', 'mV')
+                target_u  = ch_cfg.get('target_unit') or sensor_eu
+                amp_mode  = ch_cfg.get('amplitude_mode', '0-P') or '0-P'
+
+                n_steps = integration_steps(sensor_eu, target_u)
+                col     = max(0, min(4, n_steps + 2))
+                src_si  = UNIT_TO_SI.get(sensor_eu, 1.0)
+                tgt_si  = UNIT_TO_SI.get(target_u,  1.0)
+                amp_f   = AMPLITUDE_SCALE.get(amp_mode, 1.0)
+                scale   = src_si / tgt_si / sens_mv
+
+                raw_mv = float(sample.overall_ampl_by_integration_order[col])
+                overall[str(ch)] = raw_mv * scale * amp_f
+            out.append(_json.dumps(overall))
+        return out
+
     def _start_burst(self, event: AnomalyEvent, results: list,
                      frame_cache: deque, now: float, rel_time: float) -> None:
         utc_now = datetime.now(timezone.utc)
@@ -241,8 +290,11 @@ class MonitorController:
         pre = list(frame_cache)[-n:] if frame_cache else []
         self._burst_frames     = [dict(f) for f in pre]
         self._burst_pretrigger = max(0, len(self._burst_frames) - 1)
-        # Pad all_results so index n_pretrigger carries the trigger results and
-        # indices 0..n_pretrigger-1 (pre-trigger frames) carry empty lists.
+        # Pre-compute overalls for pre-trigger frames from their cached mV values.
+        self._burst_pre_overalls = self._compute_pretrigger_overalls(
+            self._burst_frames[:self._burst_pretrigger]
+        )
+        # Pad all_results: trigger frame at n_pretrigger, empties for pre-trigger.
         self._burst_all_results = [[]] * self._burst_pretrigger + [list(results)]
 
         self._start_cooldown(now)
@@ -276,6 +328,7 @@ class MonitorController:
                 frames             = self._burst_frames,
                 results            = self._burst_results or results,
                 all_results        = self._burst_all_results,
+                pre_overalls       = self._burst_pre_overalls,
                 trigger            = 'burst',
                 rel_time           = self._burst_trigger_rel,   # trigger time, not flush time
                 timestamp          = self._burst_trigger_ts,    # trigger timestamp
@@ -286,6 +339,7 @@ class MonitorController:
         self._burst_frames       = []
         self._burst_results      = []
         self._burst_all_results  = []
+        self._burst_pre_overalls = []
         self._burst_id           = ''
         self._burst_pretrigger   = 0
         self._burst_trigger_ts   = ''
@@ -296,14 +350,16 @@ class MonitorController:
     def _enqueue(self, frames: list, results: list, trigger: str,
                  rel_time: float, timestamp: str,
                  burst_id: str = '', n_pretrigger: int = 0,
-                 all_results: list | None = None) -> None:
+                 all_results: list | None = None,
+                 pre_overalls: list | None = None) -> None:
         item: dict = {
-            'frames':      frames,
-            'results':     results,
-            'all_results': all_results or [],
-            'trigger':     trigger,
-            'rel_time':    rel_time,
-            'timestamp':   timestamp,
+            'frames':       frames,
+            'results':      results,
+            'all_results':  all_results or [],
+            'pre_overalls': pre_overalls or [],
+            'trigger':      trigger,
+            'rel_time':     rel_time,
+            'timestamp':    timestamp,
         }
         if trigger != 'interval':
             item['burst_id']           = burst_id
