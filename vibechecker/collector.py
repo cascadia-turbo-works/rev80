@@ -1029,6 +1029,10 @@ class DataCollector:
             n_frames     = int(bid_grp.attrs.get("n_frames", len(bid_grp)))
             n_pretrigger = int(bid_grp.attrs.get("n_pretrigger_frames", 0))
 
+            # Expand cache before the append loop so pre-trigger frames aren't
+            # silently evicted when n_frames exceeds the current deque maxlen.
+            self.resize_frame_cache(max(n_frames, 1))
+
             # Rebase rel_times so trigger frame = 0, pre-trigger = negative.
             # Use the trigger frame's own stored rel_time as origin (same time scale).
             import math as _math
