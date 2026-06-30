@@ -2024,6 +2024,7 @@ class GUI:
             3600,
         )
         burst_dur_s = float(dpg.get_value(ui.MON_DLG_BURST_DUR)) if dpg.does_item_exist(ui.MON_DLG_BURST_DUR) else 60.0
+        pre_buf_s   = float(dpg.get_value(ui.MON_DLG_PRE_BUFFER)) if dpg.does_item_exist(ui.MON_DLG_PRE_BUFFER) else 0.0
 
         cfg = self.collector.config
         block_s = cfg.blocksize / cfg.samplerate if cfg.samplerate else 1.0
@@ -2039,8 +2040,8 @@ class GUI:
         if per_year > 50e9:
             interval_est += "  (exceeds 50 GiB)"
 
-        # Per burst: frames captured during burst duration
-        burst_frames = max(1, int(burst_dur_s / block_s)) if block_s > 0 else 1
+        # Per burst: pre-buffer frames + post-trigger frames
+        burst_frames = max(1, int((burst_dur_s + pre_buf_s) / block_s)) if block_s > 0 else 1
         burst_bytes = burst_frames * compressed
         if burst_bytes >= 1e6:
             burst_est = f"~{burst_bytes / 1e6:.1f} MiB/burst"
@@ -2135,8 +2136,10 @@ class GUI:
             sensor_snapshot=sensor_snapshot,
         )
 
-        # Enlarge frame cache to hold pre-trigger frames
-        self.collector.resize_frame_cache(max(self.collector.config.cache_frames, pre_buffer_n))
+        # Enlarge frame cache to hold pre-trigger frames + trigger frame.
+        # +1 ensures frame_cache[-n:] yields n true pre-trigger frames with the
+        # trigger frame at cache[-1] (which becomes burst_frames[n_pretrigger]).
+        self.collector.resize_frame_cache(max(self.collector.config.cache_frames, pre_buffer_n + 1))
 
         if self._monitor is None:
             self._monitor = vibechecker.MonitorController()

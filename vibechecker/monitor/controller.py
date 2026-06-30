@@ -124,15 +124,18 @@ class MonitorController:
         self._burst_trigger_ts    = utc_now.isoformat()
         self._burst_trigger_rel   = now - self._start_mono
         self._burst_results       = []
-        # Snapshot pre-trigger frames from last seen frame cache
+        # Snapshot pre-trigger frames from last seen frame cache.
+        # frame_cache[-1] is the current (trigger) frame; it becomes burst_frames[n_pretrigger]
+        # so that load_monitor_burst can use it as the t=0 reference.
         n = self._session.pre_buffer_frames
         if self._last_frame_cache:
             pre = list(self._last_frame_cache)[-n:]
             self._burst_frames     = [dict(f) for f in pre]
-            self._burst_pretrigger = len(self._burst_frames)
+            self._burst_pretrigger = max(0, len(self._burst_frames) - 1)
         else:
             self._burst_frames     = []
             self._burst_pretrigger = 0
+        self._burst_all_results = [[]] * self._burst_pretrigger
         self._gate.enter_burst(self._session.burst_duration_s, now, self._session.max_burst_s)
         self._start_cooldown(now)
         log.info('Monitor burst triggered manually')
@@ -231,13 +234,16 @@ class MonitorController:
         self._burst_trigger_ts    = event.trigger_time.isoformat()
         self._burst_trigger_rel   = event.trigger_rel_time
         self._burst_results       = list(results)
-        self._burst_all_results   = [list(results)]
 
-        # Snapshot pre-trigger frames
+        # Snapshot pre-trigger frames.  frame_cache[-1] is the trigger frame;
+        # n_pretrigger is its index so load_monitor_burst can use it as t=0.
         n = self._session.pre_buffer_frames if self._session else 1
         pre = list(frame_cache)[-n:] if frame_cache else []
         self._burst_frames     = [dict(f) for f in pre]
-        self._burst_pretrigger = len(self._burst_frames)
+        self._burst_pretrigger = max(0, len(self._burst_frames) - 1)
+        # Pad all_results so index n_pretrigger carries the trigger results and
+        # indices 0..n_pretrigger-1 (pre-trigger frames) carry empty lists.
+        self._burst_all_results = [[]] * self._burst_pretrigger + [list(results)]
 
         self._start_cooldown(now)
 
