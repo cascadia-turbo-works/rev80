@@ -1699,10 +1699,12 @@ class GUI:
         except Exception as exc:
             log.error(f'session browser: failed to load burst {burst_id} from {session_h5}: {exc}')
 
+        self._wire_session_sensors()
         for ch in sorted(self.collector.config.enabled_channels):
             self._add_channel_series(ch)
         self._update_axis_assignment()
         self._update_results_section_visibility()
+        self._update_browse_label()
 
         self._autoscale_plots()
 
