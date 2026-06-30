@@ -518,8 +518,8 @@ class GUI:
                     )
                     with dpg.theme() as cursor_theme:
                         with dpg.theme_component(dpg.mvAll):
-                            dpg.add_theme_color(dpg.mvPlotCol_Line, _c("ON_SURFACE", 180))
-                            dpg.add_theme_style(dpg.mvPlotStyleVar_LineWeight, 1.0)
+                            dpg.add_theme_color(dpg.mvPlotCol_Line, _c("RED_LIGHT", 220))
+                            dpg.add_theme_style(dpg.mvPlotStyleVar_LineWeight, 1.5)
                     dpg.bind_item_theme(ui.PLT_TREND_CURSOR, cursor_theme)
                 else:
                     dpg.set_value(ui.PLT_TREND_CURSOR, [[rel_time]])
