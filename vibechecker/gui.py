@@ -81,7 +81,7 @@ def _c(key: str, alpha: int = 255) -> tuple:
 
 
 _CH_COLORS = [
-    _c("WHITE"),  # Ch A
+    _c("BLUE"),   # Ch A
     _c("ORANGE"),  # Ch B
     _c("LIME"),  # Ch C
     _c("CORAL"),  # Ch D
