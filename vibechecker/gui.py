@@ -152,6 +152,8 @@ class GUI:
         self._session_browser_selected_burst: str | None = None
         self._session_browser_selected_session_dir = None
         self._current_session_h5: 'Path | None' = None
+        self._current_session_id: str = ''
+        self._browse_context: dict = {}  # {type, burst_id, trigger_type, trigger_ts, session_id, ...}
 
     # ------------------------------------------------------------------
     # Status indicator helpers
@@ -397,6 +399,92 @@ class GUI:
         # Vertical cursor on trend plot showing current browse position
         self._update_trend_cursor()
 
+    def _update_frame_info(self) -> None:
+        """Populate the Frame info card from the currently displayed frame + browse context."""
+        if not dpg.does_item_exist(ui.FRAME_INFO_SECTION):
+            return
+        cache  = self.collector.data["frame_cache"]
+        cursor = self.collector._cache_cursor
+        if not cache:
+            dpg.configure_item(ui.FRAME_INFO_SECTION, show=False)
+            return
+
+        frame  = cache[-(min(cursor, len(cache) - 1) + 1)]
+        sample = next((v for k, v in frame.items() if isinstance(k, int)), None)
+        if sample is None:
+            dpg.configure_item(ui.FRAME_INFO_SECTION, show=False)
+            return
+
+        # Always-visible rows
+        try:
+            ts_str = sample._timestamp.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + " (local)"
+        except Exception:
+            ts_str = str(getattr(sample, 'timestamp', '—'))
+        dpg.set_value(ui.FRAME_INFO_TIMESTAMP, f"Timestamp: {ts_str}")
+
+        sr = sample.samplerate
+        ns = sample.blocksize
+        dpg.set_value(ui.FRAME_INFO_BLOCKSIZE,  f"Block size: {ns:,} samples")
+        dpg.set_value(ui.FRAME_INFO_SAMPLERATE, f"Sample rate: {sr:,} Hz")
+
+        ctx  = self._browse_context
+        kind = ctx.get('type', 'live')
+        is_burst   = kind == 'burst'
+        has_session = kind in ('burst', 'session')
+
+        # Burst-only: Frame Time
+        if is_burst:
+            rt   = float(sample.rel_time)
+            sign = "-" if rt < 0 else "+"
+            m, s = divmod(abs(rt), 60)
+            h, m = divmod(int(m), 60)
+            rel_str = (f"{sign}{h}:{m:02d}:{s:05.2f}" if h else f"{sign}{int(m):02d}:{s:05.2f}")
+            dpg.set_value(ui.FRAME_INFO_REL_TIME, f"Frame Time: {rel_str}")
+        dpg.configure_item(ui.FRAME_INFO_REL_TIME, show=is_burst)
+
+        # Burst section rows
+        dpg.configure_item(ui.FRAME_INFO_BURST_SEP,    show=is_burst)
+        dpg.configure_item(ui.FRAME_INFO_BURST_ID,     show=is_burst)
+        dpg.configure_item(ui.FRAME_INFO_TRIGGER_TYPE, show=is_burst)
+        dpg.configure_item(ui.FRAME_INFO_TRIGGER_TS,   show=is_burst)
+        dpg.configure_item(ui.FRAME_INFO_MAX_OVERALL,  show=is_burst)
+        if is_burst:
+            dpg.set_value(ui.FRAME_INFO_BURST_ID,
+                          f"Burst ID: {ctx.get('burst_id', '—')}")
+            dpg.set_value(ui.FRAME_INFO_TRIGGER_TYPE,
+                          f"Trigger type: {ctx.get('trigger_type', '—')}")
+            dpg.set_value(ui.FRAME_INFO_TRIGGER_TS,
+                          f"Trigger time: {ctx.get('trigger_ts', '—')}")
+            try:
+                import json as _json
+                ov = _json.loads(ctx.get('max_overall_json', '{}'))
+                ch_cfg = self.collector.config.channel_target_units
+                parts = []
+                for ch_str, val in sorted(ov.items(), key=lambda x: int(x[0])):
+                    ch  = int(ch_str)
+                    lbl = chr(65 + ch)
+                    unit = ch_cfg.get(ch) or 'EU'
+                    parts.append(f"Ch {lbl}: {float(val):.3g} {unit}")
+                ov_str = "  ".join(parts) if parts else "—"
+            except Exception:
+                ov_str = ctx.get('max_overall_json', '—')
+            dpg.set_value(ui.FRAME_INFO_MAX_OVERALL, f"Max Overall: {ov_str}")
+
+        # Session / burst shared rows
+        dpg.configure_item(ui.FRAME_INFO_SESSION_SEP, show=has_session)
+        dpg.configure_item(ui.FRAME_INFO_SESSION_ID,  show=has_session)
+        if has_session:
+            dpg.set_value(ui.FRAME_INFO_SESSION_ID,
+                          f"Session ID: {ctx.get('session_id', '—')}")
+
+        # Resize card to match visible content
+        always_rows = 3
+        extra = (1 if is_burst else 0) + (5 if is_burst else 0) + (2 if has_session else 0)
+        sep_h = 12  # approximate height of add_separator in pixels
+        n_seps = (1 if is_burst else 0) + (1 if has_session else 0)
+        card_h = _CARD_BASE_H + (always_rows + extra) * _CARD_LINE_H + n_seps * sep_h
+        dpg.configure_item(ui.FRAME_INFO_SECTION, height=card_h, show=True)
+
     def _update_trend_cursor(self):
         """Show/hide a vertical line on the trend plot at the browsed frame's rel_time."""
         cache = self.collector.data["frame_cache"]
@@ -471,6 +559,7 @@ class GUI:
 
         self._update_trend_plot()
         self._update_browse_label()
+        self._update_frame_info()
         self._ensure_legends()
         if self._autoscale_pending:
             self._autoscale_plots()
@@ -724,6 +813,7 @@ class GUI:
             return
         self._set_stream_status("waiting")
         self._autoscale_pending = True
+        self._browse_context = {'type': 'live'}
         self.collector.clear_trend()  # reset rel_time so trend starts at t=0
         self.collector.start_stream()
         self._update_browse_label()
@@ -927,6 +1017,7 @@ class GUI:
             self._set_device_status("disconnected")
 
         self.collector.load_data(path)
+        self._browse_context = {'type': 'file', 'name': path.stem}
 
         cache = self.collector.data["frame_cache"]
         if not cache:
@@ -1509,6 +1600,8 @@ class GUI:
         session_h5  = entry['session_h5']
         self._session_browser_selected_session_dir = session_dir
         self._current_session_h5 = session_h5
+        self._current_session_id = entry.get('session_id', '')
+        self._browse_context = {'type': 'session', 'session_id': self._current_session_id}
 
         # Clear stale plot series before loading (prevents color cycle accumulation)
         for ch in range(_MAX_CHANNELS):
@@ -1699,6 +1792,14 @@ class GUI:
         except Exception as exc:
             log.error(f'session browser: failed to load burst {burst_id} from {session_h5}: {exc}')
 
+        self._browse_context = {
+            'type':             'burst',
+            'burst_id':         burst.get('burst_id', ''),
+            'trigger_type':     burst.get('trigger_type', 'burst'),
+            'trigger_ts':       burst.get('timestamp', ''),
+            'max_overall_json': burst.get('max_overall_json', '{}'),
+            'session_id':       self._current_session_id,
+        }
         self._wire_session_sensors()
         for ch in sorted(self.collector.config.enabled_channels):
             self._add_channel_series(ch)
@@ -3369,6 +3470,31 @@ class GUI:
                         callback=self._redraw,
                         width=100,
                     )
+                    dpg.add_spacer(height=4)
+
+                    # Frame metadata card — hidden until first frame arrives
+                    with dpg.child_window(
+                        border=True,
+                        autosize_x=True,
+                        height=_CARD_BASE_H + 3 * _CARD_LINE_H,
+                        no_scrollbar=True,
+                        tag=ui.FRAME_INFO_SECTION,
+                        show=False,
+                    ) as _sfi:
+                        dpg.bind_item_theme(_sfi, self._sect_theme)
+                        dpg.add_text("Frame", color=_c("MUTED"))
+                        dpg.add_separator()
+                        dpg.add_text("Timestamp: —",    tag=ui.FRAME_INFO_TIMESTAMP)
+                        dpg.add_text("Frame Time: —",   tag=ui.FRAME_INFO_REL_TIME, show=False)
+                        dpg.add_text("Block size: —",   tag=ui.FRAME_INFO_BLOCKSIZE)
+                        dpg.add_text("Sample rate: —",  tag=ui.FRAME_INFO_SAMPLERATE)
+                        dpg.add_separator(tag=ui.FRAME_INFO_BURST_SEP, show=False)
+                        dpg.add_text("Burst ID: —",     tag=ui.FRAME_INFO_BURST_ID,     show=False)
+                        dpg.add_text("Trigger type: —", tag=ui.FRAME_INFO_TRIGGER_TYPE, show=False)
+                        dpg.add_text("Trigger time: —", tag=ui.FRAME_INFO_TRIGGER_TS,   show=False)
+                        dpg.add_text("Max Overall: —",  tag=ui.FRAME_INFO_MAX_OVERALL,  show=False)
+                        dpg.add_separator(tag=ui.FRAME_INFO_SESSION_SEP, show=False)
+                        dpg.add_text("Session ID: —",   tag=ui.FRAME_INFO_SESSION_ID,   show=False)
                     dpg.add_spacer(height=4)
 
                     # Per-channel result sections (all hidden by default;
