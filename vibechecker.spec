@@ -59,7 +59,8 @@ hidden_imports = [
 # ── Bundled data files ───────────────────────────────────────────────────────
 
 datas = [
-    (str(LOGGING_YAML), '.'),          # → sys._MEIPASS/logging.yaml
+    (str(LOGGING_YAML), 'vibechecker'),                            # → sys._MEIPASS/vibechecker/logging.yaml
+    (str(ROOT / 'assets'), 'assets'),                              # → sys._MEIPASS/assets/
 ]
 
 # Bundle PicoScope DLLs under drivers/ sub-directory
