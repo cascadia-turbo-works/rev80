@@ -20,6 +20,7 @@ THEME_COLORS: dict = {
     'GREEN_DARK':    '#186028',
     # Channel trace colours (match _CH_COLORS order in gui.py)
     'WHITE':         '#F0F0F0',
+    'BLUE':          '#4A90E2',
     'ORANGE':        '#FFA500',
     'LIME':          '#64DC64',
     'CORAL':         '#FF5050',
@@ -335,6 +336,24 @@ class UI_Elements:
 
     # ── Results pane ────────────────────────────────────────────────────────
     CH_WARNINGS_SECTION = 'CH_WARNINGS_SECTION'
+
+    # ── Frame info card ─────────────────────────────────────────────────────
+    FRAME_INFO_SECTION        = 'FRAME_INFO_SECTION'
+    FRAME_INFO_TIMESTAMP      = 'FRAME_INFO_TIMESTAMP'      # always (2-line)
+    FRAME_INFO_REL_TIME       = 'FRAME_INFO_REL_TIME'       # burst only
+    FRAME_INFO_BLOCKSIZE      = 'FRAME_INFO_BLOCKSIZE'      # always
+    FRAME_INFO_SAMPLERATE     = 'FRAME_INFO_SAMPLERATE'     # always
+    FRAME_INFO_BURST_HEADER   = 'FRAME_INFO_BURST_HEADER'   # "Burst" section label
+    FRAME_INFO_BURST_SEP      = 'FRAME_INFO_BURST_SEP'      # burst section divider
+    FRAME_INFO_TRIGGER_TS     = 'FRAME_INFO_TRIGGER_TS'     # burst only (2-line)
+    FRAME_INFO_TRIGGER_TYPE   = 'FRAME_INFO_TRIGGER_TYPE'   # burst only
+    FRAME_INFO_SESSION_HEADER = 'FRAME_INFO_SESSION_HEADER' # "Session" section label
+    FRAME_INFO_SESSION_SEP    = 'FRAME_INFO_SESSION_SEP'    # session/burst divider
+    FRAME_INFO_SESSION_START  = 'FRAME_INFO_SESSION_START'  # session or burst (2-line)
+    FRAME_INFO_SESSION_END    = 'FRAME_INFO_SESSION_END'    # session or burst (2-line)
+    FRAME_INFO_N_CAPTURES     = 'FRAME_INFO_N_CAPTURES'     # session or burst
+    FRAME_INFO_N_BURSTS       = 'FRAME_INFO_N_BURSTS'       # session or burst
+    FRAME_INFO_INTERVAL       = 'FRAME_INFO_INTERVAL'       # session or burst
 
     # ── Per-channel dynamic tags ───────────────────────────────────────────
     @staticmethod

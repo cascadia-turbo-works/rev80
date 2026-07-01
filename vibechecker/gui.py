@@ -80,8 +80,9 @@ def _c(key: str, alpha: int = 255) -> tuple:
     return vibechecker.hex_to_rgba(vibechecker.THEME_COLORS[key], alpha)
 
 
+
 _CH_COLORS = [
-    _c("WHITE"),  # Ch A
+    _c("BLUE"),   # Ch A
     _c("ORANGE"),  # Ch B
     _c("LIME"),  # Ch C
     _c("CORAL"),  # Ch D
@@ -151,6 +152,10 @@ class GUI:
         self._session_browser_selected_capture: int | None = None
         self._session_browser_selected_burst: str | None = None
         self._session_browser_selected_session_dir = None
+        self._current_session_h5: 'Path | None' = None
+        self._current_session_id: str = ''
+        self._current_session_entry: dict = {}
+        self._browse_context: dict = {}  # {type, burst_id, trigger_type, trigger_ts, session_*, ...}
 
     # ------------------------------------------------------------------
     # Status indicator helpers
@@ -396,6 +401,89 @@ class GUI:
         # Vertical cursor on trend plot showing current browse position
         self._update_trend_cursor()
 
+    def _update_frame_info(self) -> None:
+        """Populate the Frame info card from the currently displayed frame + browse context."""
+        if not dpg.does_item_exist(ui.FRAME_INFO_SECTION):
+            return
+        cache  = self.collector.data["frame_cache"]
+        cursor = self.collector._cache_cursor
+        if not cache:
+            dpg.configure_item(ui.FRAME_INFO_SECTION, show=False)
+            return
+
+        frame  = cache[-(min(cursor, len(cache) - 1) + 1)]
+        sample = next((v for k, v in frame.items() if isinstance(k, int)), None)
+        if sample is None:
+            dpg.configure_item(ui.FRAME_INFO_SECTION, show=False)
+            return
+
+        # ── Frame section (always visible) ──────────────────────────────────
+        try:
+            ts_str = sample._timestamp.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        except Exception:
+            ts_str = str(getattr(sample, 'timestamp', '—'))
+        dpg.set_value(ui.FRAME_INFO_TIMESTAMP, f"Capture Time:\n  {ts_str}")
+
+        sr = sample.samplerate
+        ns = sample.blocksize
+        dpg.set_value(ui.FRAME_INFO_BLOCKSIZE,  f"Block size: {ns:,} samples")
+        dpg.set_value(ui.FRAME_INFO_SAMPLERATE, f"Sample rate: {sr:,} Hz")
+
+        ctx         = self._browse_context
+        kind        = ctx.get('type', 'live')
+        is_burst    = kind == 'burst'
+        has_session = kind in ('burst', 'session')
+
+        # Frame Time (burst only)
+        if is_burst:
+            rt   = float(sample.rel_time)
+            sign = "-" if rt < 0 else "+"
+            m, s = divmod(abs(rt), 60)
+            h, m = divmod(int(m), 60)
+            rel_str = (f"{sign}{h}:{m:02d}:{s:05.2f}" if h else f"{sign}{int(m):02d}:{s:05.2f}")
+            dpg.set_value(ui.FRAME_INFO_REL_TIME, f"Frame Time: {rel_str}")
+        dpg.configure_item(ui.FRAME_INFO_REL_TIME, show=is_burst)
+
+        # ── Burst section ────────────────────────────────────────────────────
+        for tag in (ui.FRAME_INFO_BURST_HEADER, ui.FRAME_INFO_BURST_SEP,
+                    ui.FRAME_INFO_TRIGGER_TS, ui.FRAME_INFO_TRIGGER_TYPE):
+            dpg.configure_item(tag, show=is_burst)
+        if is_burst:
+            dpg.set_value(ui.FRAME_INFO_TRIGGER_TS,
+                          f"Burst Time:\n  {ctx.get('trigger_ts', '—')}")
+            dpg.set_value(ui.FRAME_INFO_TRIGGER_TYPE,
+                          f"Trigger type: {ctx.get('trigger_type', '—')}")
+
+        # ── Session section ──────────────────────────────────────────────────
+        for tag in (ui.FRAME_INFO_SESSION_HEADER, ui.FRAME_INFO_SESSION_SEP,
+                    ui.FRAME_INFO_SESSION_START, ui.FRAME_INFO_SESSION_END,
+                    ui.FRAME_INFO_N_CAPTURES, ui.FRAME_INFO_N_BURSTS,
+                    ui.FRAME_INFO_INTERVAL):
+            dpg.configure_item(tag, show=has_session)
+        if has_session:
+            dpg.set_value(ui.FRAME_INFO_SESSION_START,
+                          f"Start Time:\n  {ctx.get('start_time', '—')}")
+            dpg.set_value(ui.FRAME_INFO_SESSION_END,
+                          f"End Time:\n  {ctx.get('end_time', '—')}")
+            dpg.set_value(ui.FRAME_INFO_N_CAPTURES,
+                          f"Captures: {ctx.get('n_captures', '—')}")
+            dpg.set_value(ui.FRAME_INFO_N_BURSTS,
+                          f"Bursts: {ctx.get('n_bursts', '—')}")
+            iv = ctx.get('interval_s', 0.0)
+            iv_str = f"{float(iv):.1f} s" if iv else '—'
+            dpg.set_value(ui.FRAME_INFO_INTERVAL, f"Capture interval: {iv_str}")
+
+        # ── Resize card to fit visible rows ──────────────────────────────────
+        # Each 2-line item counts as 2 × _CARD_LINE_H; section headers = 1 row.
+        _SEP_H   = 12  # add_separator pixel height
+        always_h = 4 * _CARD_LINE_H          # Capture Time (2) + Block size + Sample rate
+        burst_h  = (1 + 1 + 2 + 1) * _CARD_LINE_H + _SEP_H if is_burst    else 0
+        # Frame Time + header + Burst Time (2) + Trigger type + sep
+        sess_h   = (1 + 2 + 2 + 1 + 1 + 1) * _CARD_LINE_H + _SEP_H if has_session else 0
+        # header + Start Time (2) + End Time (2) + Captures + Bursts + Interval + sep
+        card_h = _CARD_BASE_H + always_h + burst_h + sess_h
+        dpg.configure_item(ui.FRAME_INFO_SECTION, height=card_h, show=True)
+
     def _update_trend_cursor(self):
         """Show/hide a vertical line on the trend plot at the browsed frame's rel_time."""
         cache = self.collector.data["frame_cache"]
@@ -419,8 +507,8 @@ class GUI:
                     )
                     with dpg.theme() as cursor_theme:
                         with dpg.theme_component(dpg.mvAll):
-                            dpg.add_theme_color(dpg.mvPlotCol_Line, _c("ON_SURFACE", 180))
-                            dpg.add_theme_style(dpg.mvPlotStyleVar_LineWeight, 1.0)
+                            dpg.add_theme_color(dpg.mvPlotCol_Line, _c("RED_LIGHT", 220))
+                            dpg.add_theme_style(dpg.mvPlotStyleVar_LineWeight, 1.5)
                     dpg.bind_item_theme(ui.PLT_TREND_CURSOR, cursor_theme)
                 else:
                     dpg.set_value(ui.PLT_TREND_CURSOR, [[rel_time]])
@@ -470,6 +558,7 @@ class GUI:
 
         self._update_trend_plot()
         self._update_browse_label()
+        self._update_frame_info()
         self._ensure_legends()
         if self._autoscale_pending:
             self._autoscale_plots()
@@ -723,6 +812,7 @@ class GUI:
             return
         self._set_stream_status("waiting")
         self._autoscale_pending = True
+        self._browse_context = {'type': 'live'}
         self.collector.clear_trend()  # reset rel_time so trend starts at t=0
         self.collector.start_stream()
         self._update_browse_label()
@@ -896,6 +986,25 @@ class GUI:
             return
         self._on_load_file(Path(path_str))
 
+    def _wire_session_sensors(self) -> None:
+        """Register any unknown sensors from the loaded session/file and wire them to channels.
+
+        Must be called after load_monitor_session() or load_data() so that
+        _loaded_scope_sensors and _loaded_channel_sensor_configs are populated.
+        """
+        for sid, sensor_dict in self.collector._loaded_scope_sensors.items():
+            if self.registry.find_by_id(sid) is None:
+                try:
+                    sensor = ScopeSensor.from_dict(sensor_dict)
+                    self.registry.add(sensor)
+                    log.info(f"Added sensor to registry from file: {sensor.name!r} ({sid})")
+                except Exception as exc:
+                    log.warning(f"_wire_session_sensors: could not add sensor {sid!r}: {exc}")
+        for ch, sensor_cfg in self.collector._loaded_channel_sensor_configs.items():
+            sid    = sensor_cfg.get("id")
+            sensor = self.registry.find_by_id(sid) if sid else None
+            self.collector.set_scope_sensor(ch, sensor)
+
     def _on_load_file(self, path: Path):
         """Load an h5 file and sync all GUI state to the loaded data."""
         if self.collector.is_streaming:
@@ -907,6 +1016,7 @@ class GUI:
             self._set_device_status("disconnected")
 
         self.collector.load_data(path)
+        self._browse_context = {'type': 'file', 'name': path.stem}
 
         cache = self.collector.data["frame_cache"]
         if not cache:
@@ -929,22 +1039,7 @@ class GUI:
         for ch in sorted(loaded_channels):
             self._add_channel_series(ch)
 
-        # Auto-add any sensors from the file that aren't in the local registry,
-        # then assign them to channels so scope_sensors is populated for the config dialog.
-        for sid, sensor_dict in self.collector._loaded_scope_sensors.items():
-            if self.registry.find_by_id(sid) is None:
-                try:
-                    sensor = ScopeSensor.from_dict(sensor_dict)
-                    self.registry.add(sensor)
-                    log.info(f"Added sensor from file to registry: {sensor.name!r} ({sid})")
-                except Exception as exc:
-                    log.warning(f"Could not restore sensor {sid!r} from file: {exc}")
-
-        # Wire scope sensors to channels from the loaded channel configs
-        for ch, sensor_cfg in self.collector._loaded_channel_sensor_configs.items():
-            sid = sensor_cfg.get("id")
-            sensor = self.registry.find_by_id(sid) if sid else None
-            self.collector.set_scope_sensor(ch, sensor)
+        self._wire_session_sensors()
 
         self._update_axis_assignment()
         self._update_results_section_visibility()
@@ -1329,7 +1424,7 @@ class GUI:
             self._refresh_session_browser()
             dpg.configure_item(
                 ui.DLG_SESSION_BROWSER,
-                pos=((WINDOW_WIDTH - 980) // 2, (WINDOW_HEIGHT - 594) // 2),
+                pos=((WINDOW_WIDTH - 1030) // 2, (WINDOW_HEIGHT - 620) // 2),
                 show=True,
             )
             return
@@ -1337,7 +1432,7 @@ class GUI:
 
     def _build_session_browser(self) -> None:
         """Build the session browser modal — session table + burst table."""
-        DLG_W, DLG_H = 980, 594
+        DLG_W, DLG_H = 1030, 620
         ROW_H = DLG_H - 130
 
         _tbl_kw = dict(
@@ -1398,6 +1493,18 @@ class GUI:
             dpg.add_spacer(height=8)
             with dpg.group(horizontal=True):
                 dpg.add_button(
+                    label=f'{icons.IC["save"]}  Save Config',
+                    tag='_SB_SAVE_CONFIG_BTN',
+                    callback=self._on_sb_save_config,
+                    width=120, height=28,
+                )
+                dpg.add_button(
+                    label=f'{icons.IC["refresh"]}  Reprocess',
+                    tag='_SB_REPROCESS_BTN',
+                    callback=self._on_sb_reprocess,
+                    width=110, height=28,
+                )
+                dpg.add_button(
                     label=f'{icons.IC["refresh"]}  Refresh',
                     callback=self._refresh_session_browser,
                     width=100, height=28,
@@ -1444,32 +1551,40 @@ class GUI:
                 continue
             try:
                 with h5py.File(str(h5), 'r') as f:
-                    meta = f.get('metadata', {})
+                    meta       = f.get('metadata', {})
                     start_time = str(meta.attrs.get('start_time', d.name) if meta else d.name)
-                    # Parse date / time from ISO timestamp
-                    if 'T' in start_time:
-                        dt_part = start_time[:19]
-                        date_s, time_s = dt_part[:10], dt_part[11:19]
-                    else:
-                        date_s, time_s = start_time[:10], start_time[11:19]
-                    n_channels  = len(f.get('metadata/channels', {}))
-                    n_captures  = len(f.get('monitor', {}))
-                    burst_raw   = f['burst'].attrs.get('burst_list', '[]') if 'burst' in f else '[]'
+                    interval_s = float(meta.attrs.get('interval_s', 0.0)) if meta else 0.0
+                    n_channels = len(f.get('metadata/channels', {}))
+                    n_captures = len(f.get('monitor', {}))
+                    burst_raw  = f['burst'].attrs.get('burst_list', '[]') if 'burst' in f else '[]'
                     if isinstance(burst_raw, bytes):
                         burst_raw = burst_raw.decode()
-                    n_bursts    = len(_json.loads(burst_raw) if burst_raw else [])
+                    n_bursts   = len(_json.loads(burst_raw) if burst_raw else [])
+                    # End time: last capture's stored timestamp
+                    end_time = '—'
+                    mon_grp = f.get('monitor')
+                    if mon_grp:
+                        last_key = max(mon_grp.keys(), key=int, default=None)
+                        if last_key is not None:
+                            raw_end = str(mon_grp[last_key].attrs.get('timestamp', ''))
+                            if raw_end:
+                                end_time = raw_end[:19].replace('T', ' ')
             except Exception as exc:
                 log.warning(f'session browser: skipping {h5}: {exc}')
                 continue
+            start_disp = start_time[:19].replace('T', ' ')
             sessions.append({
-                'session_id': d.name,
+                'session_id':  d.name,
                 'session_dir': d,
-                'session_h5': h5,
-                'date': date_s,
-                'time': time_s,
-                'n_channels': n_channels,
-                'n_captures': n_captures,
-                'n_bursts': n_bursts,
+                'session_h5':  h5,
+                'date':        start_disp[:10],   # kept for legacy table display
+                'time':        start_disp[11:19],
+                'start_time':  start_disp,
+                'end_time':    end_time,
+                'interval_s':  interval_s,
+                'n_channels':  n_channels,
+                'n_captures':  n_captures,
+                'n_bursts':    n_bursts,
             })
 
         self._session_browser_sessions = sessions
@@ -1491,6 +1606,17 @@ class GUI:
         session_dir = entry['session_dir']
         session_h5  = entry['session_h5']
         self._session_browser_selected_session_dir = session_dir
+        self._current_session_h5    = session_h5
+        self._current_session_id    = entry.get('session_id', '')
+        self._current_session_entry = entry
+        self._browse_context = {
+            'type':        'session',
+            'start_time':  entry.get('start_time', '—'),
+            'end_time':    entry.get('end_time',   '—'),
+            'interval_s':  entry.get('interval_s', 0.0),
+            'n_captures':  entry.get('n_captures', '—'),
+            'n_bursts':    entry.get('n_bursts',   '—'),
+        }
 
         # Clear stale plot series before loading (prevents color cycle accumulation)
         for ch in range(_MAX_CHANNELS):
@@ -1504,21 +1630,9 @@ class GUI:
         except Exception as exc:
             log.error(f'session browser: failed to load session {session_h5}: {exc}')
 
-        # Wire scope sensors from file metadata — same as _on_load_file so that
-        # get_trend_for_display() and process_sample() see the correct sensor_eu
-        # and sensitivity when selecting integration order and applying unit scaling.
-        for sid, sensor_dict in self.collector._loaded_scope_sensors.items():
-            if self.registry.find_by_id(sid) is None:
-                try:
-                    from vibechecker.scope_sensor import ScopeSensor
-                    sensor = ScopeSensor.from_dict(sensor_dict)
-                    self.registry.add(sensor)
-                except Exception as exc:
-                    log.warning(f'session browser: could not add sensor {sid!r}: {exc}')
-        for ch, sensor_cfg in self.collector._loaded_channel_sensor_configs.items():
-            sid = sensor_cfg.get("id")
-            sensor = self.registry.find_by_id(sid) if sid else None
-            self.collector.set_scope_sensor(ch, sensor)
+        # Wire scope sensors from file metadata — registers unknown sensors and
+        # populates collector.scope_sensors for get_trend_for_display() / process_sample().
+        self._wire_session_sensors()
         self.collector.reprocess_last_block()
 
         # Re-add series and sync display state — mirrors _on_load_file post-load steps
@@ -1526,6 +1640,7 @@ class GUI:
             self._add_channel_series(ch)
         self._update_axis_assignment()
         self._update_results_section_visibility()
+        self._update_connection_summary()
 
         self._autoscale_plots()
 
@@ -1589,6 +1704,78 @@ class GUI:
         except Exception as exc:
             log.warning(f'session browser: failed to draw burst vlines: {exc}')
 
+    def _on_sb_save_config(self, sender=None, data=None) -> None:
+        """Patch /metadata/channels/ and /metadata/scope_sensors/ with current config."""
+        session_h5 = self._current_session_h5
+        if session_h5 is None:
+            log.warning("_on_sb_save_config: no session loaded")
+            return
+        try:
+            with h5py.File(str(session_h5), 'a') as f:
+                meta = f.require_group('metadata')
+                # Recreate channels group — interpretation attrs only; hardware attrs unchanged
+                if 'channels' in meta:
+                    del meta['channels']
+                ch_grp = meta.create_group('channels')
+                for ch in self.collector.config.enabled_channels:
+                    scope_s = self.collector.scope_sensors.get(ch)
+                    cg = ch_grp.create_group(str(ch))
+                    cg.attrs['name']            = self.collector.config.name_for(ch)
+                    cg.attrs['scope_sensor_id'] = scope_s.id if scope_s else ''
+                    cg.attrs['target_unit']     = self.collector.config.target_unit_for(ch)
+                    cg.attrs['amplitude_mode']  = self.collector.config.amplitude_mode_for(ch)
+                # Recreate scope_sensors group with currently wired sensors
+                if 'scope_sensors' in meta:
+                    del meta['scope_sensors']
+                ss_grp = meta.create_group('scope_sensors')
+                seen: set = set()
+                for ch in self.collector.config.enabled_channels:
+                    scope_s = self.collector.scope_sensors.get(ch)
+                    if scope_s and scope_s.id not in seen:
+                        seen.add(scope_s.id)
+                        sg = ss_grp.create_group(scope_s.id)
+                        for k, v in scope_s.to_dict().items():
+                            sg.attrs[k] = v
+            log.info(f"Saved config to {session_h5.name}")
+        except Exception as exc:
+            log.error(f"_on_sb_save_config: failed to patch {session_h5}: {exc}")
+            return
+        # Reprocess trend with the new config
+        self._on_sb_reprocess()
+
+    def _on_sb_reprocess(self, sender=None, data=None) -> None:
+        """Reprocess overall_json for all captures using the current sensor/channel config."""
+        session_h5 = self._current_session_h5
+        if session_h5 is None:
+            log.warning("_on_sb_reprocess: no session loaded")
+            return
+
+        if dpg.does_item_exist('_SB_REPROCESS_BTN'):
+            dpg.configure_item('_SB_REPROCESS_BTN', enabled=False, label='Reprocessing…')
+
+        def _progress(i: int, n: int) -> None:
+            if dpg.does_item_exist('_SB_REPROCESS_BTN'):
+                dpg.configure_item('_SB_REPROCESS_BTN', label=f'{i} / {n}')
+
+        def _run() -> None:
+            try:
+                self.collector.reprocess_session_trend(session_h5, progress_cb=_progress)
+            except Exception as exc:
+                log.error(f"_on_sb_reprocess: failed: {exc}")
+            finally:
+                if dpg.does_item_exist('_SB_REPROCESS_BTN'):
+                    dpg.configure_item('_SB_REPROCESS_BTN', enabled=True,
+                                       label=f'{icons.IC["refresh"]}  Reprocess')
+            # Reload session to display updated trend
+            try:
+                self.collector.load_monitor_session(session_h5)
+                self._wire_session_sensors()
+                self.collector.reprocess_last_block()
+            except Exception as exc:
+                log.error(f"_on_sb_reprocess: reload failed: {exc}")
+
+        threading.Thread(target=_run, daemon=True, name='SBReprocess').start()
+
     def _on_burst_list_select(self, sender=None, data=None, user_data=None) -> None:
         """Load all frames from the selected burst event."""
         burst = user_data
@@ -1620,10 +1807,23 @@ class GUI:
         except Exception as exc:
             log.error(f'session browser: failed to load burst {burst_id} from {session_h5}: {exc}')
 
+        se = self._current_session_entry
+        self._browse_context = {
+            'type':         'burst',
+            'trigger_type': burst.get('trigger_type', 'burst'),
+            'trigger_ts':   burst.get('timestamp', '')[:19].replace('T', ' '),
+            'start_time':   se.get('start_time', '—'),
+            'end_time':     se.get('end_time',   '—'),
+            'interval_s':   se.get('interval_s', 0.0),
+            'n_captures':   se.get('n_captures', '—'),
+            'n_bursts':     se.get('n_bursts',   '—'),
+        }
+        self._wire_session_sensors()
         for ch in sorted(self.collector.config.enabled_channels):
             self._add_channel_series(ch)
         self._update_axis_assignment()
         self._update_results_section_visibility()
+        self._update_browse_label()
 
         self._autoscale_plots()
 
@@ -1671,9 +1871,18 @@ class GUI:
             for child in (dpg.get_item_children('_SB_BURST_TABLE', slot=1) or []):
                 dpg.delete_item(child)
 
-        # Auto-select newest session
+        # If a session is already loaded and still in the list, re-highlight it without
+        # reloading.  Only auto-load on first open (no session currently loaded) so that
+        # re-opening the browser after changing channel settings doesn't overwrite them.
         if sessions:
-            self._on_session_list_select(user_data=sessions[0])
+            current = self._current_session_h5
+            if current is not None:
+                for i, s in enumerate(sessions):
+                    if s['session_h5'] == current and i < len(self._sb_session_sel_ids):
+                        dpg.set_value(self._sb_session_sel_ids[i], True)
+                        break
+            else:
+                self._on_session_list_select(user_data=sessions[0])
 
     # ------------------------------------------------------------------
 
@@ -1936,6 +2145,7 @@ class GUI:
             3600,
         )
         burst_dur_s = float(dpg.get_value(ui.MON_DLG_BURST_DUR)) if dpg.does_item_exist(ui.MON_DLG_BURST_DUR) else 60.0
+        pre_buf_s   = float(dpg.get_value(ui.MON_DLG_PRE_BUFFER)) if dpg.does_item_exist(ui.MON_DLG_PRE_BUFFER) else 0.0
 
         cfg = self.collector.config
         block_s = cfg.blocksize / cfg.samplerate if cfg.samplerate else 1.0
@@ -1951,8 +2161,8 @@ class GUI:
         if per_year > 50e9:
             interval_est += "  (exceeds 50 GiB)"
 
-        # Per burst: frames captured during burst duration
-        burst_frames = max(1, int(burst_dur_s / block_s)) if block_s > 0 else 1
+        # Per burst: pre-buffer frames + post-trigger frames
+        burst_frames = max(1, int((burst_dur_s + pre_buf_s) / block_s)) if block_s > 0 else 1
         burst_bytes = burst_frames * compressed
         if burst_bytes >= 1e6:
             burst_est = f"~{burst_bytes / 1e6:.1f} MiB/burst"
@@ -1970,7 +2180,7 @@ class GUI:
 
     def _start_recording(self):
         """Start streaming (if not running) and start monitor session."""
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         # Start streaming if needed
         if not self.collector.is_streaming:
@@ -2001,8 +2211,8 @@ class GUI:
         block_s = cfg.blocksize / cfg.samplerate
         pre_buffer_n = max(1, int(pre_buf_s / block_s)) if block_s > 0 else 1
 
-        now_utc = datetime.now(timezone.utc)
-        session_id = now_utc.strftime('%Y-%m-%d-%H%M%S')
+        now_local  = datetime.now()
+        session_id = now_local.strftime('%Y-%m-%d-%H%M%S')
 
         if out_dir_s:
             output_dir = Path(out_dir_s) / session_id
@@ -2032,7 +2242,7 @@ class GUI:
 
         session = vibechecker.MonitorSession(
             session_id=session_id,
-            start_time=now_utc,
+            start_time=now_local,
             interval_s=float(interval_s),
             pre_buffer_frames=pre_buffer_n,
             burst_duration_s=burst_dur,
@@ -2047,8 +2257,10 @@ class GUI:
             sensor_snapshot=sensor_snapshot,
         )
 
-        # Enlarge frame cache to hold pre-trigger frames
-        self.collector.resize_frame_cache(max(self.collector.config.cache_frames, pre_buffer_n))
+        # Enlarge frame cache to hold pre-trigger frames + trigger frame.
+        # +1 ensures frame_cache[-n:] yields n true pre-trigger frames with the
+        # trigger frame at cache[-1] (which becomes burst_frames[n_pretrigger]).
+        self.collector.resize_frame_cache(max(self.collector.config.cache_frames, pre_buffer_n + 1))
 
         if self._monitor is None:
             self._monitor = vibechecker.MonitorController()
@@ -3278,6 +3490,38 @@ class GUI:
                     )
                     dpg.add_spacer(height=4)
 
+                    # Frame metadata card — hidden until first frame arrives
+                    with dpg.child_window(
+                        border=True,
+                        autosize_x=True,
+                        height=_CARD_BASE_H + 3 * _CARD_LINE_H,
+                        no_scrollbar=True,
+                        tag=ui.FRAME_INFO_SECTION,
+                        show=False,
+                    ) as _sfi:
+                        dpg.bind_item_theme(_sfi, self._sect_theme)
+                        dpg.add_text("Frame", color=_c("MUTED"))
+                        dpg.add_separator()
+                        # Always visible
+                        dpg.add_text("Capture Time:\n  —", tag=ui.FRAME_INFO_TIMESTAMP)
+                        dpg.add_text("Frame Time: —",      tag=ui.FRAME_INFO_REL_TIME,       show=False)
+                        dpg.add_text("Block size: —",      tag=ui.FRAME_INFO_BLOCKSIZE)
+                        dpg.add_text("Sample rate: —",     tag=ui.FRAME_INFO_SAMPLERATE)
+                        # Burst section
+                        dpg.add_text("Burst", color=_c("MUTED"), tag=ui.FRAME_INFO_BURST_HEADER, show=False)
+                        dpg.add_separator(tag=ui.FRAME_INFO_BURST_SEP,      show=False)
+                        dpg.add_text("Burst Time:\n  —",   tag=ui.FRAME_INFO_TRIGGER_TS,     show=False)
+                        dpg.add_text("Trigger type: —",    tag=ui.FRAME_INFO_TRIGGER_TYPE,   show=False)
+                        # Session / burst section
+                        dpg.add_text("Session", color=_c("MUTED"), tag=ui.FRAME_INFO_SESSION_HEADER, show=False)
+                        dpg.add_separator(tag=ui.FRAME_INFO_SESSION_SEP,    show=False)
+                        dpg.add_text("Start Time:\n  —",   tag=ui.FRAME_INFO_SESSION_START,  show=False)
+                        dpg.add_text("End Time:\n  —",     tag=ui.FRAME_INFO_SESSION_END,    show=False)
+                        dpg.add_text("Captures: —",        tag=ui.FRAME_INFO_N_CAPTURES,     show=False)
+                        dpg.add_text("Bursts: —",          tag=ui.FRAME_INFO_N_BURSTS,       show=False)
+                        dpg.add_text("Capture interval: —", tag=ui.FRAME_INFO_INTERVAL,      show=False)
+                    dpg.add_spacer(height=4)
+
                     # Per-channel result sections (all hidden by default;
                     # _update_results_section_visibility shows enabled ones)
                     for _ch in range(_MAX_CHANNELS):
@@ -3417,6 +3661,9 @@ class GUI:
             except Exception as exc:
                 log.error(f"--from-file: load_monitor_session failed: {exc}")
                 return
+            self._current_session_h5 = p
+            self._wire_session_sensors()
+            self.collector.reprocess_last_block()
             for ch in sorted(self.collector.config.enabled_channels):
                 self._add_channel_series(ch)
             self._update_axis_assignment()
