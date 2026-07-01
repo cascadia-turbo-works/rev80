@@ -20,10 +20,13 @@ Quick info commands (return immediately, no hardware required):
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 
 # All heavy imports (vibechecker, numpy, scipy, …) are deferred into run() and
 # the info-command helpers so that --help and the info flags return instantly.
+
+log = logging.getLogger(__name__)
 
 
 # ── Info commands ──────────────────────────────────────────────────────────────
@@ -146,7 +149,7 @@ def _build_anomaly_hook(anom_cfg: dict, config, pre_buffer_s: float = 0.0):
     """
     from vibechecker.monitor.anomaly import (
         CompositeAnomalyHook, FixedThresholdHook, NullAnomalyHook,
-        RmsThresholdHook, SpectralThresholdHook,
+        RmsThresholdHook, SpectralThresholdHook, ewma_alpha_from_time,
     )
 
     hooks: list = []
@@ -165,17 +168,25 @@ def _build_anomaly_hook(anom_cfg: dict, config, pre_buffer_s: float = 0.0):
                     "pre-trigger buffer (%.3gs) — the t=0 frame will eat into the "
                     "pre-anomaly context captured in each burst", rms_s, pre_buffer_s,
                 )
+            if "rms_ewma_time" in anom_cfg and period > 0:
+                rms_alpha = ewma_alpha_from_time(float(anom_cfg["rms_ewma_time"]), period)
+            else:
+                rms_alpha = float(anom_cfg.get("rms_alpha", 0.97))
             hooks.append(RmsThresholdHook(
-                rms_threshold_pct    = float(anom_cfg.get("rms_pct",   10.0)),
+                rms_threshold_pct    = float(anom_cfg.get("rms_pct", 10.0)),
                 consecutive_n        = consecutive_n,
-                baseline_alpha       = float(anom_cfg.get("rms_alpha", 0.97)),
+                baseline_alpha       = rms_alpha,
                 min_baseline_samples = warmup,
             ))
         if hook_type in ("spectral", "both"):
+            if "spec_ewma_time" in anom_cfg and period > 0:
+                spec_alpha = ewma_alpha_from_time(float(anom_cfg["spec_ewma_time"]), period)
+            else:
+                spec_alpha = float(anom_cfg.get("spec_alpha", 0.995))
             hooks.append(SpectralThresholdHook(
                 spectral_threshold_pct = float(anom_cfg.get("spec_pct",   50.0)),
                 consecutive_n          = int(anom_cfg.get("spec_n",       10)),
-                baseline_alpha         = float(anom_cfg.get("spec_alpha", 0.995)),
+                baseline_alpha         = spec_alpha,
                 min_baseline_samples   = warmup,
                 fmin                   = anom_cfg.get("spec_fmin",  None),
                 fmax                   = anom_cfg.get("spec_fmax",  None),
@@ -211,8 +222,6 @@ def _apply_overrides(config, args) -> None:
 # ── Session summary ────────────────────────────────────────────────────────────
 
 def _print_session_summary(sensor, config, args, mon_cfg, anom_cfg, device_path) -> None:
-    from pathlib import Path
-    import vibechecker
     from vibechecker.config import acquisition_config_path
 
     interval_s    = args.interval
@@ -232,33 +241,52 @@ def _print_session_summary(sensor, config, args, mon_cfg, anom_cfg, device_path)
     hook_type    = anom_cfg.get("hook_type", "rms").upper()
 
     print(f"\n{'─' * 54}")
-    print(f"  vibechecker headless")
+    print("  vibechecker headless")
     print(f"{'─' * 54}")
     print(f"  Device      {sensor.model_name}  s/n {sensor.serial_number}")
     print(f"  Channels    {ch_labels or '(none)'}")
     print(f"  Sample rate {config.samplerate} Hz   block {config.blocksize}   "
           f"resolution {config.binsize:.3g} Hz")
     print()
-    print(f"  Monitor")
+    print("  Monitor")
     print(f"    Interval  {interval_str}  ({interval_s:.0f}s)")
     print(f"    Pre-burst {pre_burst_s:.0f}s   Burst {burst_dur_s:.0f}s  "
           f"max {mon_cfg.get('max_burst_s', 600):.0f}s")
     if anom_enabled:
-        warmup = anom_cfg.get("warmup", 10)
+        import math as _math
+        from vibechecker.monitor.anomaly import ewma_alpha_from_time as _ewma
+        warmup  = anom_cfg.get("warmup", 10)
+        dt      = config.acquisition_period
         if hook_type in ("RMS", "BOTH"):
+            if "rms_ewma_time" in anom_cfg and dt > 0:
+                rms_tau   = float(anom_cfg["rms_ewma_time"])
+                rms_alpha = _ewma(rms_tau, dt)
+                alpha_str = f"ewma_time={rms_tau:.3g}s (α={rms_alpha:.4f})"
+            else:
+                rms_alpha = float(anom_cfg.get("rms_alpha", 0.97))
+                rms_tau   = -dt / _math.log(rms_alpha) if rms_alpha < 1 else float("inf")
+                alpha_str = f"α={rms_alpha:.4f} (τ={rms_tau:.3g}s)"
             print(f"    Anomaly   RMS  threshold={anom_cfg.get('rms_pct', 10):.4g}%  "
-                  f"sustained={anom_cfg.get('rms_s', 3.0):.3g}s  warmup={warmup}")
+                  f"{alpha_str}  sustained={anom_cfg.get('rms_s', 3.0):.3g}s  warmup={warmup}")
         if hook_type in ("SPECTRAL", "BOTH"):
+            if "spec_ewma_time" in anom_cfg and dt > 0:
+                spec_tau   = float(anom_cfg["spec_ewma_time"])
+                spec_alpha = _ewma(spec_tau, dt)
+                alpha_str  = f"ewma_time={spec_tau:.3g}s (α={spec_alpha:.4f})"
+            else:
+                spec_alpha = float(anom_cfg.get("spec_alpha", 0.995))
+                spec_tau   = -dt / _math.log(spec_alpha) if spec_alpha < 1 else float("inf")
+                alpha_str  = f"α={spec_alpha:.4f} (τ={spec_tau:.3g}s)"
             fmin = anom_cfg.get("spec_fmin")
             fmax = anom_cfg.get("spec_fmax")
             band = (f"{fmin:.0f}–{fmax:.0f} Hz"
                     if fmin is not None and fmax is not None else "full band")
             print(f"    Anomaly   Spectral  threshold={anom_cfg.get('spec_pct', 50):.4g}%  "
-                  f"n={anom_cfg.get('spec_n', 10)}  {band}  warmup={warmup}")
+                  f"{alpha_str}  n={anom_cfg.get('spec_n', 10)}  {band}  warmup={warmup}")
     else:
-        print(f"    Anomaly   disabled")
+        print("    Anomaly   disabled")
     print()
-    print(f"  Config files")
+    print("  Config files")
     print(f"    Acquisition  {acquisition_config_path()}")
     print(f"    Device       {device_path}")
     print(f"{'─' * 54}\n")
@@ -413,7 +441,7 @@ def run(args: argparse.Namespace) -> int:
     monitor.start(session, anomaly_hook=anomaly_hook)
 
     print(f"Session {session_id} — recording to {session.session_dir}")
-    print(f"  t + Enter: manual burst   Ctrl+C: stop\n")
+    print("  t + Enter: manual burst   Ctrl+C: stop\n")
 
     # ── Keyboard input thread ─────────────────────────────────────────────────
     def _kbd_loop():
@@ -513,7 +541,7 @@ def run(args: argparse.Namespace) -> int:
     collector.stop_stream()
 
     snap = monitor.status_snapshot()
-    print(f"\nSession complete.")
+    print("\nSession complete.")
     print(f"  Captures : {snap['capture_count']}")
     print(f"  Bursts   : {snap['burst_count']}")
     print(f"  File     : {session.session_h5}")

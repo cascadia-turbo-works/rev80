@@ -1418,7 +1418,8 @@ class GUI:
                      date, time, n_channels, n_captures, n_bursts}
         Reads the folder from the _SB_FOLDER widget if it exists, else default.
         """
-        import h5py, json as _json
+        import h5py
+        import json as _json
         if dpg.does_item_exist('_SB_FOLDER'):
             folder_str = dpg.get_value('_SB_FOLDER').strip()
             monitor_root = Path(folder_str) if folder_str else vibechecker.data_dir() / 'monitor'
@@ -1476,7 +1477,8 @@ class GUI:
 
     def _on_session_list_select(self, sender=None, data=None, user_data=None) -> None:
         """Load all interval frames from the selected session; populate burst table."""
-        import h5py, json
+        import h5py
+        import json
         # user_data carries the session dict when called from table row selectable
         entry = user_data
         if entry is None:
@@ -1501,6 +1503,23 @@ class GUI:
             self.collector.load_monitor_session(session_h5)
         except Exception as exc:
             log.error(f'session browser: failed to load session {session_h5}: {exc}')
+
+        # Wire scope sensors from file metadata — same as _on_load_file so that
+        # get_trend_for_display() and process_sample() see the correct sensor_eu
+        # and sensitivity when selecting integration order and applying unit scaling.
+        for sid, sensor_dict in self.collector._loaded_scope_sensors.items():
+            if self.registry.find_by_id(sid) is None:
+                try:
+                    from vibechecker.scope_sensor import ScopeSensor
+                    sensor = ScopeSensor.from_dict(sensor_dict)
+                    self.registry.add(sensor)
+                except Exception as exc:
+                    log.warning(f'session browser: could not add sensor {sid!r}: {exc}')
+        for ch, sensor_cfg in self.collector._loaded_channel_sensor_configs.items():
+            sid = sensor_cfg.get("id")
+            sensor = self.registry.find_by_id(sid) if sid else None
+            self.collector.set_scope_sensor(ch, sensor)
+        self.collector.reprocess_last_block()
 
         # Re-add series and sync display state — mirrors _on_load_file post-load steps
         for ch in sorted(self.collector.config.enabled_channels):
@@ -1841,14 +1860,15 @@ class GUI:
                 dpg.set_value(tag, val)
         _sv(ui.MON_ANOM_ENABLED,   bool(anom.get("enabled",    False)))
         _sv(ui.MON_ANOM_HOOK,      str(anom.get("hook_type",  "RMS")))
-        _sv(ui.MON_ANOM_RMS_PCT,   float(anom.get("rms_pct",   10.0)))
-        _sv(ui.MON_ANOM_RMS_S,     float(anom.get("rms_s",     3.0)))
-        _sv(ui.MON_ANOM_RMS_ALPHA, float(anom.get("rms_alpha", 0.97)))
-        _sv(ui.MON_ANOM_RMS_WARMUP,int(anom.get("warmup",      10)))
-        _sv(ui.MON_ANOM_SPEC_PCT,  float(anom.get("spec_pct",  50.0)))
-        _sv(ui.MON_ANOM_SPEC_N,    int(anom.get("spec_n",      10)))
-        _sv(ui.MON_ANOM_SPEC_FMIN, float(anom.get("spec_fmin") or 0.0))
-        _sv(ui.MON_ANOM_SPEC_FMAX, float(anom.get("spec_fmax") or 0.0))
+        _sv(ui.MON_ANOM_RMS_PCT,      float(anom.get("rms_pct",       10.0)))
+        _sv(ui.MON_ANOM_RMS_S,        float(anom.get("rms_s",         3.0)))
+        _sv(ui.MON_ANOM_RMS_EWMA_TIME, float(anom.get("rms_ewma_time", 60.0)))
+        _sv(ui.MON_ANOM_RMS_WARMUP,   int(anom.get("warmup",          10)))
+        _sv(ui.MON_ANOM_SPEC_PCT,     float(anom.get("spec_pct",      50.0)))
+        _sv(ui.MON_ANOM_SPEC_N,       int(anom.get("spec_n",          10)))
+        _sv(ui.MON_ANOM_SPEC_FMIN,    float(anom.get("spec_fmin") or  0.0))
+        _sv(ui.MON_ANOM_SPEC_FMAX,    float(anom.get("spec_fmax") or  0.0))
+        _sv(ui.MON_ANOM_SPEC_EWMA_TIME, float(anom.get("spec_ewma_time", 300.0)))
 
         _sv(ui.MON_ANOM_FIXED_UPPER_ENABLED, bool(anom.get("fixed_upper_enabled", False)))
         _sv(ui.MON_ANOM_FIXED_UPPER_VALUE,   float(anom.get("fixed_upper_value",  1.0)))
@@ -1884,14 +1904,15 @@ class GUI:
             'anomaly': {
                 'enabled':       bool(_get(ui.MON_ANOM_ENABLED,    False)),
                 'hook_type':     str(_get(ui.MON_ANOM_HOOK,        'RMS')),
-                'rms_pct':       float(_get(ui.MON_ANOM_RMS_PCT,   10.0)),
-                'rms_s':         float(_get(ui.MON_ANOM_RMS_S,     3.0)),
-                'rms_alpha':     float(_get(ui.MON_ANOM_RMS_ALPHA, 0.97)),
-                'warmup':        int(_get(ui.MON_ANOM_RMS_WARMUP,  10)),
-                'spec_pct':      float(_get(ui.MON_ANOM_SPEC_PCT,  50.0)),
-                'spec_n':        int(_get(ui.MON_ANOM_SPEC_N,      10)),
+                'rms_pct':       float(_get(ui.MON_ANOM_RMS_PCT,        10.0)),
+                'rms_s':         float(_get(ui.MON_ANOM_RMS_S,          3.0)),
+                'rms_ewma_time': float(_get(ui.MON_ANOM_RMS_EWMA_TIME,  60.0)),
+                'warmup':        int(_get(ui.MON_ANOM_RMS_WARMUP,        10)),
+                'spec_pct':      float(_get(ui.MON_ANOM_SPEC_PCT,        50.0)),
+                'spec_n':        int(_get(ui.MON_ANOM_SPEC_N,            10)),
                 'spec_fmin':     _get(ui.MON_ANOM_SPEC_FMIN, None) or None,
                 'spec_fmax':     _get(ui.MON_ANOM_SPEC_FMAX, None) or None,
+                'spec_ewma_time': float(_get(ui.MON_ANOM_SPEC_EWMA_TIME, 300.0)),
                 'cooldown_enabled':    bool(_get(ui.MON_ANOM_COOLDOWN_ENABLED, False)),
                 'cooldown_s':          float(_get(ui.MON_ANOM_COOLDOWN_S,      300.0)),
                 'fixed_upper_enabled': bool(_get(ui.MON_ANOM_FIXED_UPPER_ENABLED, False)),
@@ -2053,7 +2074,7 @@ class GUI:
                 dpg.configure_item(btn, enabled=True)
 
     def _on_anom_config_change(self, sender=None, data=None) -> None:
-        """Show/hide RMS/Spectral settings groups based on hook selection."""
+        """Show/hide RMS/Spectral settings groups; refresh computed-alpha labels."""
         if not dpg.does_item_exist(ui.MON_ANOM_HOOK):
             return
         hook = dpg.get_value(ui.MON_ANOM_HOOK)
@@ -2061,6 +2082,18 @@ class GUI:
             dpg.configure_item(ui.MON_ANOM_RMS_GROUP,  show=hook in ('RMS',  'Both'))
         if dpg.does_item_exist(ui.MON_ANOM_SPEC_GROUP):
             dpg.configure_item(ui.MON_ANOM_SPEC_GROUP, show=hook in ('Spectral', 'Both'))
+        # Update α labels from ewma_time + current acquisition period
+        from vibechecker.monitor.anomaly import ewma_alpha_from_time
+        dt = self.collector.config.acquisition_period if self.collector else 1.0
+        for time_tag, label_tag in (
+            (ui.MON_ANOM_RMS_EWMA_TIME,  ui.MON_ANOM_RMS_ALPHA_LABEL),
+            (ui.MON_ANOM_SPEC_EWMA_TIME, ui.MON_ANOM_SPEC_ALPHA_LABEL),
+        ):
+            if dpg.does_item_exist(time_tag) and dpg.does_item_exist(label_tag):
+                t = float(dpg.get_value(time_tag))
+                if t > 0 and dt > 0:
+                    alpha = ewma_alpha_from_time(t, dt)
+                    dpg.set_value(label_tag, f"  α = {alpha:.4f}  (dt = {dt:.3g} s)")
 
     def _build_anomaly_hook(self, pre_buffer_s: float | None = None):
         """Read anomaly config widgets and return a configured hook.
@@ -2071,7 +2104,7 @@ class GUI:
         """
         from vibechecker.monitor.anomaly import (
             RmsThresholdHook, SpectralThresholdHook, FixedThresholdHook,
-            CompositeAnomalyHook, NullAnomalyHook,
+            CompositeAnomalyHook, NullAnomalyHook, ewma_alpha_from_time,
         )
         def _get(tag, default):
             return dpg.get_value(tag) if dpg.does_item_exist(tag) else default
@@ -2098,20 +2131,25 @@ class GUI:
                         "pre-anomaly context captured in each burst",
                         rms_s, pre_buffer_s,
                     )
+                rms_ewma_t = float(_get(ui.MON_ANOM_RMS_EWMA_TIME, 60.0))
+                rms_alpha  = ewma_alpha_from_time(rms_ewma_t, period) if period > 0 else 0.97
                 hooks.append(RmsThresholdHook(
-                    rms_threshold_pct    = float(_get(ui.MON_ANOM_RMS_PCT,    10.0)),
+                    rms_threshold_pct    = float(_get(ui.MON_ANOM_RMS_PCT, 10.0)),
                     consecutive_n        = consecutive_n,
-                    baseline_alpha       = float(_get(ui.MON_ANOM_RMS_ALPHA,  0.97)),
+                    baseline_alpha       = rms_alpha,
                     min_baseline_samples = warmup,
                     burst_duration_s     = burst_dur,
                 ))
 
             if hook_type in ('Spectral', 'Both'):
-                fmin_v = float(_get(ui.MON_ANOM_SPEC_FMIN, 0.0))
-                fmax_v = float(_get(ui.MON_ANOM_SPEC_FMAX, 0.0))
+                fmin_v      = float(_get(ui.MON_ANOM_SPEC_FMIN, 0.0))
+                fmax_v      = float(_get(ui.MON_ANOM_SPEC_FMAX, 0.0))
+                spec_ewma_t = float(_get(ui.MON_ANOM_SPEC_EWMA_TIME, 300.0))
+                spec_alpha  = ewma_alpha_from_time(spec_ewma_t, period) if period > 0 else 0.995
                 hooks.append(SpectralThresholdHook(
                     spectral_threshold_pct = float(_get(ui.MON_ANOM_SPEC_PCT, 50.0)),
                     consecutive_n          = int(_get(ui.MON_ANOM_SPEC_N,     3)),
+                    baseline_alpha         = spec_alpha,
                     min_baseline_samples   = warmup,
                     fmin                   = fmin_v if fmin_v > 0 else None,
                     fmax                   = fmax_v if fmax_v > 0 else None,
@@ -2833,12 +2871,18 @@ class GUI:
                                      "Signal must remain above threshold for this many seconds "
                                      "before a burst is triggered. Filters momentary spikes. "
                                      "Set to 0 to trigger on the first anomalous frame.")
-                                _alpha_w = dpg.add_input_float(label="EWMA alpha",     tag=ui.MON_ANOM_RMS_ALPHA, default_value=0.97, min_value=0.5,  max_value=0.999, step=0.01, format="%.3f", width=_mon_w)
-                                _tip(_alpha_w,
-                                     "Exponential smoothing factor for the baseline. "
-                                     "Higher values (→ 1.0) make the baseline adapt more slowly — "
-                                     "better for detecting sustained changes while ignoring brief transients. "
-                                     "Lower values track faster but may miss slow drift.")
+                                _ewma_rms_w = dpg.add_input_float(
+                                    label="EWMA time (s)", tag=ui.MON_ANOM_RMS_EWMA_TIME,
+                                    default_value=60.0, min_value=1.0, max_value=86400.0,
+                                    step=10.0, width=_mon_w,
+                                    callback=self._on_anom_config_change,
+                                )
+                                _tip(_ewma_rms_w,
+                                     "Time constant τ of the exponential baseline (seconds). "
+                                     "The baseline adapts to 1/e ≈ 37% of a step change in τ seconds. "
+                                     "Larger τ = slower adaptation = detects sustained shifts; "
+                                     "smaller τ tracks faster but may miss slow drift.")
+                                dpg.add_text("", tag=ui.MON_ANOM_RMS_ALPHA_LABEL, color=_c("MUTED"))
                                 _warmup_w = dpg.add_input_int(  label="Warmup frames",  tag=ui.MON_ANOM_RMS_WARMUP,default_value=30,   min_value=5,    max_value=500,   width=_mon_w)
                                 _tip(_warmup_w,
                                      "Number of frames collected to build the initial baseline "
@@ -2857,6 +2901,18 @@ class GUI:
                                 dpg.add_input_int(  label="Consecutive N",   tag=ui.MON_ANOM_SPEC_N,    default_value=3,   min_value=1,   max_value=20,   width=_mon_w)
                                 dpg.add_input_float(label="Freq min (Hz)",   tag=ui.MON_ANOM_SPEC_FMIN, default_value=0.0, min_value=0.0, step=10.0,      width=_mon_w)
                                 dpg.add_input_float(label="Freq max (0=all)",tag=ui.MON_ANOM_SPEC_FMAX, default_value=0.0, min_value=0.0, step=10.0,      width=_mon_w)
+                                _ewma_spec_w = dpg.add_input_float(
+                                    label="EWMA time (s)", tag=ui.MON_ANOM_SPEC_EWMA_TIME,
+                                    default_value=300.0, min_value=1.0, max_value=86400.0,
+                                    step=30.0, width=_mon_w,
+                                    callback=self._on_anom_config_change,
+                                )
+                                _tip(_ewma_spec_w,
+                                     "Time constant τ of the spectral baseline (seconds). "
+                                     "The per-bin PSD baseline adapts to 1/e of a change in τ seconds. "
+                                     "Spectral baselines typically need slower adaptation (larger τ) "
+                                     "than RMS baselines to avoid chasing machine run-up variations.")
+                                dpg.add_text("", tag=ui.MON_ANOM_SPEC_ALPHA_LABEL, color=_c("MUTED"))
 
                             # ── Fixed Level Trigger ─────────────────────
                             dpg.add_spacer(height=8)
