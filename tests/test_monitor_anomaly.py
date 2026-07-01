@@ -447,9 +447,9 @@ class TestRmsStreakTracking:
 
         results_high = [_make_result(channel=0, overall=10.0)]
 
-        before_streak = datetime.now(timezone.utc)
+        before_streak = datetime.now()
         hook.on_results(results_high, None)               # frame 1 — streak starts
-        after_streak_start = datetime.now(timezone.utc)
+        after_streak_start = datetime.now()
         time.sleep(0.05)
         hook.on_results(results_high, None)               # frame 2
         time.sleep(0.05)
@@ -458,7 +458,7 @@ class TestRmsStreakTracking:
         assert event is not None
         # trigger_time reflects when the streak STARTED, not when the hook fired
         assert before_streak <= event.trigger_time <= after_streak_start
-        assert event.trigger_time < datetime.now(timezone.utc) - timedelta(seconds=0.05)
+        assert event.trigger_time < datetime.now() - timedelta(seconds=0.05)
 
     def test_streak_resets_on_normal_frame_clears_t0(self):
         """A below-threshold frame mid-streak clears the remembered t=0 reference."""
