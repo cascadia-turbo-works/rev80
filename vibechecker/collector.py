@@ -450,6 +450,12 @@ class DataCollector:
                                       btype='lowpass', fs=samplerate, output='sos')
             filtered_mv = scipy.signal.sosfilt(sos, filtered_mv)
 
+        # rfft is used in both step 3 (5-order overalls) and step 8 (time-domain output).
+        # Plain rfft — no window, no segment averaging — so irfft is an exact inverse.
+        N       = sample.blocksize
+        rfft_mv = np.fft.rfft(filtered_mv)
+        freq_td = np.fft.rfftfreq(N, d=1.0 / samplerate)
+
         # ── 2. Welch PSD in mV² — compute once, cache on sample ──────
         psd_key = (config.fft_window, config.welch_overlap,
                    config.highpass_enabled, config.highpass_fc,
@@ -468,17 +474,23 @@ class DataCollector:
             sample.freq_hz         = freq_hz
             sample._psd_config_key = psd_key
 
-            # ── 3. 5-order mV RMS overalls, orders −2…+2 ─────────────
-            pos = freq_hz > 0   # DC bin excluded from integration factors
-            for i, n_ord in enumerate(range(-2, 3)):   # i=0 → ord=-2, i=2 → ord=0
-                if n_ord != 0:
-                    omega        = np.zeros_like(psd_mv)
-                    omega[pos]   = (2 * np.pi * freq_hz[pos]) ** (2 * n_ord)
-                    psd_ord      = psd_mv * omega
+            # ── 3. 5-order mV RMS overalls via time-domain IFFT ──────
+            # Using sqrt(mean(x²)) on the IFFT signal avoids the Welch window
+            # normalisation artifact (Hann leakage inflates sqrt(sum(psd)) by
+            # sqrt(3/2) for a pure tone). The irfft is an exact inverse of the
+            # plain rfft above, so the round-trip is lossless.
+            for i, n_ord in enumerate(range(-2, 3)):
+                if n_ord == 0:
+                    time_ord = filtered_mv          # passthrough — no IFFT needed
                 else:
-                    psd_ord = psd_mv
-                band = np.sqrt(np.maximum(psd_ord, 0.0))
-                sample.overall_ampl_by_integration_order[i] = float(np.sqrt(np.sum(np.square(band))))
+                    omega_i       = 2 * np.pi * freq_td   # new array each iteration
+                    omega_i[0]    = 1.0                    # avoid 0^n_ord; zeroed below
+                    transfer_i    = np.power(1j * omega_i, n_ord)
+                    transfer_i[0] = 0.0                    # kill DC for all int/diff orders
+                    time_ord      = np.fft.irfft(rfft_mv * transfer_i, n=N)
+                sample.overall_ampl_by_integration_order[i] = float(
+                    np.sqrt(np.mean(np.square(time_ord)))
+                )
         else:
             freq_hz = sample.freq_hz
             psd_mv  = sample.psd_mv
@@ -507,16 +519,16 @@ class DataCollector:
         peaks     = np.array(peaks[np.argsort(-spectrum_amp[peaks])])
 
         # ── 7. Overall amplitude in target unit ───────────────────────
-        band     = spectrum_amp
-        band_rms = band / amp_factor
-        overall  = float(np.sqrt(np.sum(np.square(band_rms)))) * amp_factor
+        # Reuse the IFFT-based mV RMS cached in step 3; apply unit scale + amp mode.
+        col_idx = max(0, min(4, n_steps + 2))
+        overall = float(
+            sample.overall_ampl_by_integration_order[col_idx]
+            * (src_si / tgt_si / sensitivity_mv)
+            * amp_factor
+        )
 
         # ── 8. Time-domain signal — inline FFT integration ───────────
-        # Separate rfft of filtered_mv preserves phase; Welch above cannot
-        # be reused because segment-averaging discards phase information.
-        N          = sample.blocksize
-        rfft_mv    = np.fft.rfft(filtered_mv)
-        freq_td    = np.fft.rfftfreq(N, d=1.0 / samplerate)
+        # rfft_mv / freq_td already computed above (reused from step 3).
         eu_scale   = src_si / tgt_si / sensitivity_mv
         if n_steps != 0:
             omega_td    = 2 * np.pi * freq_td
