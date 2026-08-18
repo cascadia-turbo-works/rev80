@@ -298,3 +298,28 @@ Verbage:
 - start monitor. Record -> monitor
 - arm by default, remove button
 - Trigger burst -> record burst
+
+# 2026-07-01 Prep meeting for HR install
+
+- Rearrange monitor config ui elements
+ - Move burst pre- and post- time settings to anomally detection section - missleading when its right below capture interval setting
+- Remove "reset baseline" button and unwire. This isn't useful afterall.
+
+# 2026-07-23 
+
+- Two main use cases
+    - Single probe no key phaser "big machines
+    - "Motor world" 1 to 2 triax + keyphasor. 
+- Add tach channel to picoscop - analyze analgo for pulse edges
+    - Label channel type as keyphaseor - save speed, pulse arrival time, something
+    - Associate signal channels with specific keyphasor when using multiple
+    - Requires rotation direction, and angle from x probe.
+- Speed allows lots of tricks
+    - Ground truth to identify states: Speed above/below threshold for event triggering. Clear "not running" state
+    - Advanced plotting, orbits, phase, polar
+- Slow roll runout trend
+  - Trial vibechecker software as is, configure for fast DC acquisition.
+  - Standalone DC logging for roll runout.
+- Bench install. Vibration research. Electronics
+    - Soldering, esd mat.
+- Register LLC
