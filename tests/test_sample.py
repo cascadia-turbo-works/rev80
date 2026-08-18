@@ -5,6 +5,7 @@ from vibechecker.scope_sensor import ScopeSensor
 
 tone_step = 500
 tol = 1e-4
+overall_tol = 0.01   # 1% relative — tight enough to catch the ~22% excess, loose enough for Welch window error
 
 
 def _peak_amp_at(result: vc.ChannelResult, freq_hz: float) -> float:
@@ -51,6 +52,9 @@ def test_tone_vel(freq):
 
     assert result is not None
     assert np.abs(_peak_amp_at(result, freq) - vel_ampl) < tol
+    # For a pure tone, overall (0-P) == tone amplitude (Parseval)
+    assert np.abs(result.overall - vel_ampl) < overall_tol * vel_ampl, \
+        f'test_tone_vel at {freq}Hz: overall={result.overall:.6f}, expected~{vel_ampl:.6f}'
 
 
 @pytest.mark.parametrize('freq', range(tone_step, 10000, tone_step))
@@ -70,6 +74,9 @@ def test_tone_acc(freq):
 
     assert result is not None
     assert np.abs(_peak_amp_at(result, freq) - acc_ampl) < tol
+    # For a pure tone, overall (0-P) == tone amplitude (Parseval)
+    assert np.abs(result.overall - acc_ampl) < overall_tol * acc_ampl, \
+        f'test_tone_acc at {freq}Hz: overall={result.overall:.6f}, expected~{acc_ampl:.6f}'
 
 
 # ── Modality-aware integration tests ─────────────────────────────────
