@@ -22,7 +22,7 @@ def resource_path(relative: str) -> Path:
     """
     if _is_frozen():
         return Path(sys._MEIPASS) / relative  # type: ignore[attr-defined]
-    return Path(__file__).parent.parent / relative
+    return Path(__file__).parent.parent.parent / relative
 
 
 def _user_dir() -> Path:
