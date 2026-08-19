@@ -1,4 +1,4 @@
-"""Tests for vibechecker.config — path helpers and YAML persistence."""
+"""Tests for rev80.config — path helpers and YAML persistence."""
 
 import sys
 import os
@@ -8,8 +8,8 @@ from unittest.mock import patch
 import pytest
 import yaml
 
-import vibechecker.config as cfg
-from vibechecker.sample import AcquisitionSettings
+import rev80.config as cfg
+from rev80.sample import AcquisitionSettings
 
 
 # ---------------------------------------------------------------------------
@@ -38,19 +38,19 @@ class TestConfigDir:
         p1, p2 = _isolated_config(tmp_path, platform='linux')
         with p1, p2:
             result = cfg.config_dir()
-        assert result == tmp_path / 'vibechecker'
+        assert result == tmp_path / 'rev80'
 
     def test_windows_uses_appdata(self, tmp_path):
         p1, p2 = _isolated_config(tmp_path, platform='win32')
         with p1, p2:
             result = cfg.config_dir()
-        assert result == tmp_path / 'vibechecker'
+        assert result == tmp_path / 'rev80'
 
     def test_linux_fallback_when_no_xdg(self, monkeypatch):
         monkeypatch.setattr(sys, 'platform', 'linux')
         monkeypatch.delenv('XDG_CONFIG_HOME', raising=False)
         result = cfg.config_dir()
-        assert result == Path.home() / '.config' / 'vibechecker'
+        assert result == Path.home() / '.config' / 'rev80'
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +98,7 @@ class TestDeviceFilename:
         assert '0000' in name
 
     def test_device_config_path_in_devices_dir(self, tmp_path):
-        with patch('vibechecker.config.config_dir', return_value=tmp_path / 'vc'):
+        with patch('rev80.config.config_dir', return_value=tmp_path / 'vc'):
             path = cfg.device_config_path('PicoScope 4424A', 'JY123')
         assert path.parent.name == 'devices'
         assert path.suffix == '.yaml'
@@ -111,7 +111,7 @@ class TestDeviceFilename:
 
 class TestEnsureConfigs:
     def test_creates_defaults_yaml(self, tmp_path):
-        with patch('vibechecker.config.config_dir', return_value=tmp_path / 'vc'):
+        with patch('rev80.config.config_dir', return_value=tmp_path / 'vc'):
             cfg.ensure_defaults_config()
             path = tmp_path / 'vc' / 'devices' / 'picoscope-defaults.yaml'
             assert path.exists()
@@ -119,7 +119,7 @@ class TestEnsureConfigs:
             assert 'channel' in data
 
     def test_creates_acquisition_yaml(self, tmp_path):
-        with patch('vibechecker.config.config_dir', return_value=tmp_path / 'vc'):
+        with patch('rev80.config.config_dir', return_value=tmp_path / 'vc'):
             cfg.ensure_acquisition_config()
             path = tmp_path / 'vc' / 'acquisition.yaml'
             assert path.exists()
@@ -128,7 +128,7 @@ class TestEnsureConfigs:
             assert 'monitor' in data
 
     def test_ensure_idempotent(self, tmp_path):
-        with patch('vibechecker.config.config_dir', return_value=tmp_path / 'vc'):
+        with patch('rev80.config.config_dir', return_value=tmp_path / 'vc'):
             cfg.ensure_defaults_config()
             cfg.ensure_defaults_config()
             cfg.ensure_acquisition_config()
@@ -138,7 +138,7 @@ class TestEnsureConfigs:
         vc = tmp_path / 'vc'
         (vc / 'devices').mkdir(parents=True)
         (vc / 'devices' / 'picoscope-defaults.yaml').write_text('custom: true\n')
-        with patch('vibechecker.config.config_dir', return_value=vc):
+        with patch('rev80.config.config_dir', return_value=vc):
             cfg.ensure_defaults_config()
         assert 'custom' in (vc / 'devices' / 'picoscope-defaults.yaml').read_text()
 
@@ -149,7 +149,7 @@ class TestEnsureConfigs:
 
 class TestAcquisitionConfig:
     def test_returns_builtin_defaults_when_no_file(self, tmp_path):
-        with patch('vibechecker.config.config_dir', return_value=tmp_path / 'vc'):
+        with patch('rev80.config.config_dir', return_value=tmp_path / 'vc'):
             data = cfg.load_acquisition_config()
         assert data['acquisition']['maxfreq'] == cfg._BUILTIN_ACQ['acquisition']['maxfreq']
         assert 'monitor' in data
@@ -160,7 +160,7 @@ class TestAcquisitionConfig:
         (vc / 'acquisition.yaml').write_text(
             yaml.dump({'acquisition': {'maxfreq': 5000.0}})
         )
-        with patch('vibechecker.config.config_dir', return_value=vc):
+        with patch('rev80.config.config_dir', return_value=vc):
             data = cfg.load_acquisition_config()
         assert data['acquisition']['maxfreq'] == 5000.0
         assert data['acquisition']['fft_window'] == cfg._BUILTIN_ACQ['acquisition']['fft_window']
@@ -171,7 +171,7 @@ class TestAcquisitionConfig:
         (vc / 'acquisition.yaml').write_text(
             yaml.dump({'monitor': {'anomaly': {'enabled': True, 'rms_pct': 15.0}}})
         )
-        with patch('vibechecker.config.config_dir', return_value=vc):
+        with patch('rev80.config.config_dir', return_value=vc):
             data = cfg.load_acquisition_config()
         assert data['monitor']['anomaly']['enabled'] is True
         assert data['monitor']['anomaly']['rms_pct'] == 15.0
@@ -180,7 +180,7 @@ class TestAcquisitionConfig:
     def test_roundtrip(self, tmp_path):
         vc = tmp_path / 'vc'
         payload = cfg.load_acquisition_config.__wrapped__ if hasattr(cfg.load_acquisition_config, '__wrapped__') else None
-        with patch('vibechecker.config.config_dir', return_value=vc):
+        with patch('rev80.config.config_dir', return_value=vc):
             original = cfg.load_acquisition_config()
             original['acquisition']['maxfreq'] = 8000.0
             original['monitor']['interval_s'] = 300
@@ -196,7 +196,7 @@ class TestAcquisitionConfig:
 
 class TestDeviceConfig:
     def test_returns_defaults_when_no_file(self, tmp_path):
-        with patch('vibechecker.config.config_dir', return_value=tmp_path / 'vc'):
+        with patch('rev80.config.config_dir', return_value=tmp_path / 'vc'):
             data = cfg.load_device_config('PicoScope 4424A', 'JY999')
         assert 'channels' in data
         assert 'siggen' in data
@@ -213,7 +213,7 @@ class TestDeviceConfig:
         }
         fname = cfg.device_filename('PicoScope 4424A', 'JY123')
         (vc / 'devices' / fname).write_text(yaml.dump(device_data))
-        with patch('vibechecker.config.config_dir', return_value=vc):
+        with patch('rev80.config.config_dir', return_value=vc):
             data = cfg.load_device_config('PicoScope 4424A', 'JY123')
         assert data['channels'][0]['coupling'] == 'DC'
         assert data['channels'][0]['channel_name'] == 'Motor'
@@ -227,7 +227,7 @@ class TestDeviceConfig:
             'siggen': {'wave_type': 'PS4000A_SINE', 'freq_hz': 500.0,
                        'pktopk_uv': 1_000_000, 'offset_uv': 0},
         }
-        with patch('vibechecker.config.config_dir', return_value=vc):
+        with patch('rev80.config.config_dir', return_value=vc):
             cfg.save_device_config('PicoScope 4424A', 'JY123', payload)
             data = cfg.load_device_config('PicoScope 4424A', 'JY123')
         assert data['channels'][0]['coupling'] == 'DC'
@@ -240,7 +240,7 @@ class TestDeviceConfig:
             'siggen': None,
             'acquisition': {'maxfreq': 9999.0},  # should be ignored
         }
-        with patch('vibechecker.config.config_dir', return_value=vc):
+        with patch('rev80.config.config_dir', return_value=vc):
             cfg.save_device_config('PicoScope 4424A', 'JY123', payload)
             fname = cfg.device_filename('PicoScope 4424A', 'JY123')
             raw = yaml.safe_load((vc / 'devices' / fname).read_text())
@@ -248,7 +248,7 @@ class TestDeviceConfig:
 
     def test_creates_parent_dirs(self, tmp_path):
         vc = tmp_path / 'vc'
-        with patch('vibechecker.config.config_dir', return_value=vc):
+        with patch('rev80.config.config_dir', return_value=vc):
             cfg.save_device_config('PicoScope 4424A', 'NEW1', {'channels': {}, 'siggen': None})
         assert (vc / 'devices').exists()
 
@@ -258,7 +258,7 @@ class TestDeviceConfig:
         partial = {'channels': {0: {'coupling': 'DC'}}, 'siggen': None}
         fname = cfg.device_filename('PicoScope 4424A', 'PARTIAL')
         (vc / 'devices' / fname).write_text(yaml.dump(partial))
-        with patch('vibechecker.config.config_dir', return_value=vc):
+        with patch('rev80.config.config_dir', return_value=vc):
             data = cfg.load_device_config('PicoScope 4424A', 'PARTIAL')
         assert data['channels'][0]['coupling'] == 'DC'
         assert data['channels'][0]['voltage_range'] == cfg._BUILTIN_CHANNEL_TEMPLATE['voltage_range']
@@ -270,12 +270,12 @@ class TestDeviceConfig:
 
 class TestNewDeviceChannels:
     def test_returns_n_channels(self, tmp_path):
-        with patch('vibechecker.config.config_dir', return_value=tmp_path / 'vc'):
+        with patch('rev80.config.config_dir', return_value=tmp_path / 'vc'):
             channels = cfg.new_device_channels(4)
         assert set(channels.keys()) == {0, 1, 2, 3}
 
     def test_each_channel_is_independent_copy(self, tmp_path):
-        with patch('vibechecker.config.config_dir', return_value=tmp_path / 'vc'):
+        with patch('rev80.config.config_dir', return_value=tmp_path / 'vc'):
             channels = cfg.new_device_channels(2)
         channels[0]['coupling'] = 'DC'
         assert channels[1]['coupling'] != 'DC'
@@ -289,7 +289,7 @@ class TestNewDeviceChannels:
                                    'channel_name': '', 'target_unit': '',
                                    'amplitude_mode': ''}})
         )
-        with patch('vibechecker.config.config_dir', return_value=vc):
+        with patch('rev80.config.config_dir', return_value=vc):
             channels = cfg.new_device_channels(2)
         assert channels[0]['coupling'] == 'DC'
         assert channels[1]['voltage_range'] == 3

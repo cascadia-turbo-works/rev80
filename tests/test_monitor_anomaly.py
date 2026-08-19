@@ -1,4 +1,4 @@
-"""Tests for Phase 2 anomaly detection hooks in vibechecker.monitor.anomaly."""
+"""Tests for Phase 2 anomaly detection hooks in rev80.monitor.anomaly."""
 import logging
 import time
 from datetime import datetime, timedelta, timezone
@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import numpy as np
 import pytest
 
-from vibechecker.monitor.anomaly import (
+from rev80.monitor.anomaly import (
     AnomalyEvent,
     CompositeAnomalyHook,
     FixedThresholdHook,
@@ -14,7 +14,7 @@ from vibechecker.monitor.anomaly import (
     RmsThresholdHook,
     SpectralThresholdHook,
 )
-from vibechecker.sample import ChannelResult
+from rev80.sample import ChannelResult
 
 
 # ---------------------------------------------------------------------------

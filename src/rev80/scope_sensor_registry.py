@@ -4,15 +4,15 @@ Storage:
   {config_dir}/scope_sensors.yaml  — global sensor library (all devices)
 
 Per-device channel assignments and acquisition settings are managed by
-vibechecker.config (devices/{serial}.yaml), not by this class.
+rev80.config (devices/{serial}.yaml), not by this class.
 """
 
 from pathlib import Path
 
 import yaml
 
-from vibechecker.scope_sensor import ScopeSensor
-from vibechecker.config import config_dir, _atomic_yaml_write
+from rev80.scope_sensor import ScopeSensor
+from rev80.config import config_dir, _atomic_yaml_write
 
 
 def _sensors_file(path: Path | None) -> Path:

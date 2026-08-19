@@ -10,14 +10,14 @@ from datetime import datetime
 import numpy as np
 import pytest
 
-from vibechecker import (
+from rev80 import (
     AcquisitionSettings,
     DataCollector,
     VibeSample,
     VibeSensor,
     ChannelResult,
 )
-from vibechecker.scope_sensor import ScopeSensor
+from rev80.scope_sensor import ScopeSensor
 
 
 # ---------------------------------------------------------------------------

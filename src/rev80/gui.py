@@ -1,4 +1,4 @@
-# Vibechecker frontend
+# Rev80 frontend
 
 import threading
 from pathlib import Path
@@ -6,16 +6,16 @@ from pathlib import Path
 import dearpygui.dearpygui as dpg
 import numpy as np
 
-import vibechecker
-import vibechecker.config as _cfg
-import vibechecker.icons as icons
-from vibechecker.sample import AcquisitionSettings
-from vibechecker.scope_sensor import ScopeSensor
-from vibechecker.scope_sensor_registry import ScopeSensorRegistry
-from vibechecker.util import UNIT_TO_SI
+import rev80
+import rev80.config as _cfg
+import rev80.icons as icons
+from rev80.sample import AcquisitionSettings
+from rev80.scope_sensor import ScopeSensor
+from rev80.scope_sensor_registry import ScopeSensorRegistry
+from rev80.util import UNIT_TO_SI
 
-log = vibechecker.get_logger("gui")
-ui = vibechecker.UI_Elements()
+log = rev80.get_logger("gui")
+ui = rev80.UI_Elements()
 
 # Layout constants
 # TODO: make left/right panel widths and plot heights resizable by mouse drag.
@@ -77,7 +77,7 @@ _CARD_H_MONITOR = _CARD_BASE_H + _CARD_BTN_H * 4 + _CARD_LINE_H * 5  # Monitor+R
 
 def _c(key: str, alpha: int = 255) -> tuple:
     """Shorthand: THEME_COLORS[key] → DPG RGBA tuple."""
-    return vibechecker.hex_to_rgba(vibechecker.THEME_COLORS[key], alpha)
+    return rev80.hex_to_rgba(rev80.THEME_COLORS[key], alpha)
 
 
 
@@ -93,8 +93,8 @@ _CH_COLORS = [
 ]
 
 # Spectrum dialog display labels — index-aligned with preset lists
-_MAXFREQ_LABELS = [f"{int(f)} Hz" for f in vibechecker.MAXFREQ_PRESETS]
-_BINSIZE_LABELS = [f"{b} Hz/bin" for b in vibechecker.BINSIZE_PRESETS]
+_MAXFREQ_LABELS = [f"{int(f)} Hz" for f in rev80.MAXFREQ_PRESETS]
+_BINSIZE_LABELS = [f"{b} Hz/bin" for b in rev80.BINSIZE_PRESETS]
 
 # Welch FFT window options (scipy.signal.welch 'window' argument strings)
 _FFT_WINDOWS = ["hann", "blackmanharris", "flattop", "hamming", "boxcar", "bartlett"]
@@ -126,12 +126,12 @@ _VOLTAGE_RANGE_LABELS = [
 
 
 class GUI:
-    collector: vibechecker.DataCollector
+    collector: rev80.DataCollector
     found_sensors: list
 
     def __init__(self):
         self.context = None
-        self.collector = vibechecker.DataCollector()
+        self.collector = rev80.DataCollector()
         self.registry = ScopeSensorRegistry()
         self._editing_scope_sensor_id: str | None = None
         self._num_channels: int = _DEFAULT_NUM_CHANNELS
@@ -143,7 +143,7 @@ class GUI:
         self.found_sensors: list = []
         self._autoscale_pending: bool = False  # True → autoscale on next frame
         self._was_streaming_before_config: bool = False  # stream state when config opened
-        self._monitor: vibechecker.MonitorController | None = None
+        self._monitor: rev80.MonitorController | None = None
         self._session_browser_sessions: list = []
         self._sb_session_sel_ids: list = []   # selectable item IDs for single-select
         self._sb_burst_sel_ids:   list = []
@@ -337,14 +337,14 @@ class GUI:
         """Return amplitude mode: channel config → default '0-P'."""
         return self.collector.config.amplitude_mode_for(ch) or "0-P"
 
-    def _update_time_plot(self, result: vibechecker.ChannelResult, ch: int):
+    def _update_time_plot(self, result: rev80.ChannelResult, ch: int):
         if not dpg.does_item_exist(ui.plt_time_series(ch)):
             return
         time = result.time_vec * 1000.0  # convert s → ms (axis label is "Time, ms")
         signal = result.time_data
         dpg.set_value(ui.plt_time_series(ch), [time.tolist(), signal.tolist()])
 
-    def _update_freq_plot(self, result: vibechecker.ChannelResult, ch: int):
+    def _update_freq_plot(self, result: rev80.ChannelResult, ch: int):
         if not dpg.does_item_exist(ui.plt_freq_series(ch)):
             return
         freq = result.freq
@@ -745,15 +745,15 @@ class GUI:
         mf_str = dpg.get_value(ui.ACQ_DLG_MAXFREQ) if dpg.does_item_exist(ui.ACQ_DLG_MAXFREQ) else ""
         bs_str = dpg.get_value(ui.ACQ_DLG_BINSIZE) if dpg.does_item_exist(ui.ACQ_DLG_BINSIZE) else ""
         try:
-            maxfreq = vibechecker.MAXFREQ_PRESETS[_MAXFREQ_LABELS.index(mf_str)]
+            maxfreq = rev80.MAXFREQ_PRESETS[_MAXFREQ_LABELS.index(mf_str)]
         except (ValueError, IndexError):
             maxfreq = self.collector.config.maxfreq
         try:
-            binsize = vibechecker.BINSIZE_PRESETS[_BINSIZE_LABELS.index(bs_str)]
+            binsize = rev80.BINSIZE_PRESETS[_BINSIZE_LABELS.index(bs_str)]
         except (ValueError, IndexError):
             binsize = self.collector.config.binsize
-        samplerate = vibechecker.nextpow2(int(2 * maxfreq))
-        blocksize = vibechecker.nextpow2(int(samplerate / binsize))
+        samplerate = rev80.nextpow2(int(2 * maxfreq))
+        blocksize = rev80.nextpow2(int(samplerate / binsize))
         n_fft_bins = blocksize // 2 + 1
         acq_time = blocksize / samplerate
         mem_bytes = blocksize * 8
@@ -959,8 +959,8 @@ class GUI:
         """Open the platform-native file dialog; returns path string or ''."""
         from plyer import filechooser
 
-        filters = [f"*{vibechecker.EXT}"]
-        path = str(Path(vibechecker.SAVEDIR).resolve())
+        filters = [f"*{rev80.EXT}"]
+        path = str(Path(rev80.SAVEDIR).resolve())
         if save:
             result = filechooser.save_file(title="Save Vibration Data", path=path, filters=filters)
         else:
@@ -975,7 +975,7 @@ class GUI:
             return
         p = Path(path_str)
         if not p.suffix:
-            p = p.with_suffix(vibechecker.EXT)
+            p = p.with_suffix(rev80.EXT)
         if dpg.does_item_exist(ui.ACQ_NOTES):
             self.collector.notes = dpg.get_value(ui.ACQ_NOTES)
         self.collector.save_data(p)
@@ -1110,7 +1110,7 @@ class GUI:
             # Device already connected — cannot re-scan while handle may be open.
             self.found_sensors = [self.collector.sensor]
         else:
-            self.found_sensors = vibechecker.VibeSensor.find()
+            self.found_sensors = rev80.VibeSensor.find()
         self._repopulate_device_list()
 
     def _autoconnect(self):
@@ -1124,11 +1124,11 @@ class GUI:
         (VibeSensor.find, connect_sensor, config load) are thread-safe; DPG updates
         follow the same background-thread pattern as _discover_devices.
         """
-        if vibechecker.PICOSCOPE_DRIVER_MISSING:
+        if rev80.PICOSCOPE_DRIVER_MISSING:
             log.debug("Autoconnect: PicoScope driver not available")
             return
 
-        sensors = vibechecker.VibeSensor.find()
+        sensors = rev80.VibeSensor.find()
         self.found_sensors = sensors
 
         if not sensors:
@@ -1169,7 +1169,7 @@ class GUI:
             return
         dpg.delete_item(ui.DEVSETUP_DEVICE_LIST_GROUP, children_only=True)
         if not self.found_sensors:
-            if vibechecker.PICOSCOPE_DRIVER_MISSING:
+            if rev80.PICOSCOPE_DRIVER_MISSING:
                 dpg.add_text(
                     "PicoScope driver not found.\nInstall PicoSDK to connect a device.",
                     parent=ui.DEVSETUP_DEVICE_LIST_GROUP,
@@ -1311,7 +1311,7 @@ class GUI:
                     dpg.add_combo(
                         label="Amplitude",
                         tag=ui.scope_ch_amplitude_mode(ch),
-                        items=list(vibechecker.AMPLITUDE_MODES),
+                        items=list(rev80.AMPLITUDE_MODES),
                         default_value=ch_amp,
                         width=_CH_HALF_FIELD_W,
                     )
@@ -1387,7 +1387,7 @@ class GUI:
             amp_tag = ui.scope_ch_amplitude_mode(ch)
             if dpg.does_item_exist(amp_tag):
                 amp = dpg.get_value(amp_tag)
-                if amp in vibechecker.AMPLITUDE_MODES:
+                if amp in rev80.AMPLITUDE_MODES:
                     self.collector.config.channel_amplitude_modes[ch] = amp
                 else:
                     self.collector.config.channel_amplitude_modes.pop(ch, None)
@@ -1454,7 +1454,7 @@ class GUI:
             with dpg.group(horizontal=True):
                 dpg.add_input_text(
                     tag='_SB_FOLDER',
-                    default_value=str(vibechecker.data_dir() / 'monitor'),
+                    default_value=str(rev80.data_dir() / 'monitor'),
                     width=-90,
                     hint="Path to monitor sessions folder",
                 )
@@ -1529,9 +1529,9 @@ class GUI:
         import json as _json
         if dpg.does_item_exist('_SB_FOLDER'):
             folder_str = dpg.get_value('_SB_FOLDER').strip()
-            monitor_root = Path(folder_str) if folder_str else vibechecker.data_dir() / 'monitor'
+            monitor_root = Path(folder_str) if folder_str else rev80.data_dir() / 'monitor'
         else:
-            monitor_root = vibechecker.data_dir() / 'monitor'
+            monitor_root = rev80.data_dir() / 'monitor'
 
         sessions = []
         if not monitor_root.exists():
@@ -1833,7 +1833,7 @@ class GUI:
             from plyer import filechooser
             result = filechooser.choose_dir(
                 title="Select monitor sessions folder",
-                path=str(vibechecker.data_dir() / 'monitor'),
+                path=str(rev80.data_dir() / 'monitor'),
             )
             if result:
                 if dpg.does_item_exist('_SB_FOLDER'):
@@ -1974,11 +1974,11 @@ class GUI:
         mf_str = dpg.get_value(ui.ACQ_DLG_MAXFREQ)
         bs_str = dpg.get_value(ui.ACQ_DLG_BINSIZE)
         try:
-            cfg.maxfreq = vibechecker.MAXFREQ_PRESETS[_MAXFREQ_LABELS.index(mf_str)]
+            cfg.maxfreq = rev80.MAXFREQ_PRESETS[_MAXFREQ_LABELS.index(mf_str)]
         except (ValueError, IndexError):
             pass
         try:
-            cfg.binsize = vibechecker.BINSIZE_PRESETS[_BINSIZE_LABELS.index(bs_str)]
+            cfg.binsize = rev80.BINSIZE_PRESETS[_BINSIZE_LABELS.index(bs_str)]
         except (ValueError, IndexError):
             pass
         if dpg.does_item_exist(ui.ACQ_DLG_WINDOW):
@@ -2051,9 +2051,9 @@ class GUI:
         out_dir = mon.get("output_dir") or ""
         compress = mon.get("compression", "gzip") == "gzip"
 
-        interval_label = vibechecker.MONITOR_INTERVAL_PRESETS.get(
+        interval_label = rev80.MONITOR_INTERVAL_PRESETS.get(
             int(interval_s),
-            vibechecker.MONITOR_INTERVAL_PRESETS[3600],
+            rev80.MONITOR_INTERVAL_PRESETS[3600],
         )
         dpg.set_value(ui.MON_DLG_INTERVAL, interval_label)
         dpg.set_value(ui.MON_DLG_PRE_BUFFER, pre_buf_s)
@@ -2098,7 +2098,7 @@ class GUI:
 
         interval_label = _get(ui.MON_DLG_INTERVAL, "1 h")
         interval_s = next(
-            (k for k, v in vibechecker.MONITOR_INTERVAL_PRESETS.items() if v == interval_label),
+            (k for k, v in rev80.MONITOR_INTERVAL_PRESETS.items() if v == interval_label),
             3600,
         )
         acq_cfg = _cfg.load_acquisition_config()
@@ -2141,7 +2141,7 @@ class GUI:
             return
         interval_label = dpg.get_value(ui.MON_DLG_INTERVAL) if dpg.does_item_exist(ui.MON_DLG_INTERVAL) else "1 h"
         interval_s = next(
-            (k for k, v in vibechecker.MONITOR_INTERVAL_PRESETS.items() if v == interval_label),
+            (k for k, v in rev80.MONITOR_INTERVAL_PRESETS.items() if v == interval_label),
             3600,
         )
         burst_dur_s = float(dpg.get_value(ui.MON_DLG_BURST_DUR)) if dpg.does_item_exist(ui.MON_DLG_BURST_DUR) else 60.0
@@ -2196,7 +2196,7 @@ class GUI:
         # Read dialog config (fall back to defaults when dialog hasn't been opened)
         interval_label = dpg.get_value(ui.MON_DLG_INTERVAL) if dpg.does_item_exist(ui.MON_DLG_INTERVAL) else "1 h"
         interval_s = next(
-            (k for k, v in vibechecker.MONITOR_INTERVAL_PRESETS.items() if v == interval_label),
+            (k for k, v in rev80.MONITOR_INTERVAL_PRESETS.items() if v == interval_label),
             3600,
         )
         pre_buf_s = float(dpg.get_value(ui.MON_DLG_PRE_BUFFER)) if dpg.does_item_exist(ui.MON_DLG_PRE_BUFFER) else 60.0
@@ -2217,7 +2217,7 @@ class GUI:
         if out_dir_s:
             output_dir = Path(out_dir_s) / session_id
         else:
-            output_dir = vibechecker.data_dir() / "monitor" / session_id
+            output_dir = rev80.data_dir() / "monitor" / session_id
 
         # Build config snapshots for embedding in every capture file
         acq_snapshot = cfg.to_dict()
@@ -2240,7 +2240,7 @@ class GUI:
                 seen.add(sc.id)
                 sensor_snapshot[sc.id] = sc.to_dict()
 
-        session = vibechecker.MonitorSession(
+        session = rev80.MonitorSession(
             session_id=session_id,
             start_time=now_local,
             interval_s=float(interval_s),
@@ -2263,7 +2263,7 @@ class GUI:
         self.collector.resize_frame_cache(max(self.collector.config.cache_frames, pre_buffer_n + 1))
 
         if self._monitor is None:
-            self._monitor = vibechecker.MonitorController()
+            self._monitor = rev80.MonitorController()
         anomaly_hook = self._build_anomaly_hook(pre_buffer_s=pre_buf_s)
         self._monitor.start(session, anomaly_hook=anomaly_hook)
 
@@ -2295,7 +2295,7 @@ class GUI:
         if dpg.does_item_exist(ui.MON_ANOM_SPEC_GROUP):
             dpg.configure_item(ui.MON_ANOM_SPEC_GROUP, show=hook in ('Spectral', 'Both'))
         # Update α labels from ewma_time + current acquisition period
-        from vibechecker.monitor.anomaly import ewma_alpha_from_time
+        from rev80.monitor.anomaly import ewma_alpha_from_time
         dt = self.collector.config.acquisition_period if self.collector else 1.0
         for time_tag, label_tag in (
             (ui.MON_ANOM_RMS_EWMA_TIME,  ui.MON_ANOM_RMS_ALPHA_LABEL),
@@ -2314,7 +2314,7 @@ class GUI:
         defaults if the dialog was never opened) — the hook is then active for
         the whole session; there is no separate arm/disarm step.
         """
-        from vibechecker.monitor.anomaly import (
+        from rev80.monitor.anomaly import (
             RmsThresholdHook, SpectralThresholdHook, FixedThresholdHook,
             CompositeAnomalyHook, NullAnomalyHook, ewma_alpha_from_time,
         )
@@ -2831,7 +2831,7 @@ class GUI:
                                     dpg.add_combo(
                                         label="Source EU",
                                         tag=ui.SREG_FIELD_UNITS,
-                                        items=vibechecker.EU_OPTIONS,
+                                        items=rev80.EU_OPTIONS,
                                         width=_SREG_FIELD_W,
                                     )
                                     dpg.add_input_float(
@@ -2994,7 +2994,7 @@ class GUI:
                             dpg.add_combo(
                                 label="Capture interval",
                                 tag=ui.MON_DLG_INTERVAL,
-                                items=list(vibechecker.MONITOR_INTERVAL_PRESETS.values()),
+                                items=list(rev80.MONITOR_INTERVAL_PRESETS.values()),
                                 default_value="1 h",
                                 width=_mon_w,
                                 callback=self._on_monitor_config_change,
@@ -3165,7 +3165,7 @@ class GUI:
             dpg.add_button(label=f'{icons.IC["close"]}  Close', callback=self._on_config_close, width=-1)
 
         # ── Section container theme (slightly lighter than window background) ──
-        _sect_bg = vibechecker.hex_to_rgba(vibechecker.THEME_COLORS["SURFACE"])
+        _sect_bg = rev80.hex_to_rgba(rev80.THEME_COLORS["SURFACE"])
         with dpg.theme() as self._sect_theme:
             with dpg.theme_component(dpg.mvChildWindow):
                 dpg.add_theme_color(dpg.mvThemeCol_ChildBg, _sect_bg, category=dpg.mvThemeCat_Core)
@@ -3189,7 +3189,7 @@ class GUI:
             self._toggle_themes[state] = _t
 
         # ── Main window ────────────────────────────────────────────────
-        with dpg.window(label="Vibe Checkup", tag=ui.PRIMARY_WINDOW):
+        with dpg.window(label="Rev80", tag=ui.PRIMARY_WINDOW):
             with dpg.group(horizontal=True):
                 # ── Controls column (left) ────────────────────────────
                 with dpg.child_window(width=CONTROLS_WIDTH, autosize_y=True):
@@ -3674,7 +3674,7 @@ class GUI:
 
     def run(self, initial_file: str | None = None, autodetect: bool = True):
         log.info("Launch app window")
-        dpg.create_viewport(title="Vibe Logger", width=WINDOW_WIDTH, height=WINDOW_HEIGHT)
+        dpg.create_viewport(title="Rev80", width=WINDOW_WIDTH, height=WINDOW_HEIGHT)
         dpg.show_viewport()
         dpg.set_primary_window(ui.PRIMARY_WINDOW, True)
         if autodetect:

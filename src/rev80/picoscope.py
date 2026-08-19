@@ -1,4 +1,4 @@
-# PicoScope 4000A acquisition backend for vibechecker
+# PicoScope 4000A acquisition backend for rev80
 #
 # Provides:
 #   FindPicoScope()      — enumerate connected PS4000A devices
@@ -11,15 +11,15 @@ from datetime import datetime
 
 import numpy as np
 
-from vibechecker._pico_loader import ensure_pico_dlls_loadable
+from rev80._pico_loader import ensure_pico_dlls_loadable
 ensure_pico_dlls_loadable()
 
 from picosdk.ps4000a import ps4000a as ps  # noqa: E402
 from picosdk.functions import adc2mV, assert_pico_ok  # noqa: E402
 
-import vibechecker  # noqa: E402
+import rev80  # noqa: E402
 
-log = vibechecker.get_logger(__name__)
+log = rev80.get_logger(__name__)
 
 # PICO_INFO enum values used with ps4000aGetUnitInfo
 _PICO_VARIANT_INFO      = 3   # model variant string  e.g. "4461"

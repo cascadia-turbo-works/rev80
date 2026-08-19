@@ -1,6 +1,6 @@
-; vibechecker.iss  —  Inno Setup script
+; rev80.iss  —  Inno Setup script
 ;
-; Vibechecker — Desktop GUI for PicoScope vibration analysis
+; Rev80 — Desktop GUI for PicoScope vibration analysis
 ; Copyright (c) 2026 Rev Engineering. Author: Henry Gotjen.
 ; Released under the MIT License.
 ;
@@ -8,19 +8,19 @@
 ;   Inno Setup 6.x  https://jrsoftware.org/isinfo.php
 ;
 ; Usage (from project root after PyInstaller build):
-;   iscc installer\vibechecker.iss
+;   iscc installer\rev80.iss
 ;
 ; Output:
-;   installer\Output\VibecheckerSetup-x.y.z.exe
+;   installer\Output\Rev80Setup-x.y.z.exe
 
-#define AppName      "Vibechecker"
+#define AppName      "Rev80"
 #include "version.iss"
 #define AppPublisher "Rev Engineering"
 #define AppCopyright "Copyright (c) 2026 Rev Engineering. Author: Henry Gotjen."
-#define AppExeName   "vibechecker.exe"
-#define AppIcon      "..\assets\icons\vibechecker.ico"
+#define AppExeName   "rev80.exe"
+#define AppIcon      "..\assets\icons\rev80.ico"
 ; Directory produced by PyInstaller COLLECT step
-#define BuildDir     "..\dist\vibechecker"
+#define BuildDir     "..\dist\rev80"
 
 [Setup]
 AppId={{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
@@ -31,7 +31,7 @@ AppCopyright={#AppCopyright}
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 OutputDir=Output
-OutputBaseFilename=VibecheckerSetup-{#AppVersion}
+OutputBaseFilename=Rev80Setup-{#AppVersion}
 SetupIconFile={#AppIcon}
 Compression=lzma2/ultra64
 SolidCompression=yes
@@ -55,9 +55,9 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Source: "{#BuildDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\{#AppName}";   Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\vibechecker.ico"
+Name: "{group}\{#AppName}";   Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\rev80.ico"
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
-Name: "{commondesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\vibechecker.ico"; Tasks: desktopicon
+Name: "{commondesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\rev80.ico"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(AppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
@@ -67,7 +67,7 @@ Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(
 
 [Code]
 // ── PicoSDK prerequisite check ──────────────────────────────────────────────
-// Vibechecker bundles the user-mode DLLs (ps4000a.dll, picoipp.dll) but the
+// Rev80 bundles the user-mode DLLs (ps4000a.dll, picoipp.dll) but the
 // USB kernel driver must be installed separately via PicoSDK.
 // We warn the user rather than hard-blocking, since some sites pre-install
 // PicoSDK via group policy or the device may be connected later.
@@ -91,10 +91,10 @@ begin
   begin
     if MsgBox(
       'PicoSDK does not appear to be installed on this machine.' + #13#10 +
-      'Vibechecker will launch but will not be able to connect to a PicoScope ' +
+      'Rev80 will launch but will not be able to connect to a PicoScope ' +
       'until PicoSDK is installed.' + #13#10#13#10 +
       'Download PicoSDK from: https://www.picotech.com/downloads' + #13#10#13#10 +
-      'Continue with Vibechecker installation?',
+      'Continue with Rev80 installation?',
       mbConfirmation, MB_YESNO) = IDNO then
       Result := False;
   end;

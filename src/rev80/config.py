@@ -1,8 +1,8 @@
-"""vibechecker.config — OS-aware configuration directory and YAML persistence.
+"""rev80.config — OS-aware configuration directory and YAML persistence.
 
 Config directory layout:
-  Linux:   $XDG_CONFIG_HOME/vibechecker/   (default: ~/.config/vibechecker/)
-  Windows: %APPDATA%/vibechecker/
+  Linux:   $XDG_CONFIG_HOME/rev80/   (default: ~/.config/rev80/)
+  Windows: %APPDATA%/rev80/
 
   acquisition.yaml             — acquisition + monitor settings (per software instance)
   scope_sensors.yaml           — global IEPE sensor registry (all devices)
@@ -20,9 +20,9 @@ from typing import Any
 
 import yaml
 
-import vibechecker
+import rev80
 
-log = vibechecker.get_logger(__name__)
+log = rev80.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Built-in defaults
@@ -109,12 +109,12 @@ _BUILTIN_ACQ: dict[str, Any] = {
 # ---------------------------------------------------------------------------
 
 def config_dir() -> Path:
-    """Return the OS-appropriate vibechecker config directory (not created yet)."""
+    """Return the OS-appropriate rev80 config directory (not created yet)."""
     if sys.platform == 'win32':
         base = Path(os.environ.get('APPDATA') or Path.home() / 'AppData' / 'Roaming')
     else:
         base = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config')
-    return base / 'vibechecker'
+    return base / 'rev80'
 
 
 def sanitize_serial(serial: str) -> str:

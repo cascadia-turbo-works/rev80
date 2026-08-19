@@ -1,16 +1,16 @@
 import argparse
 import sys
-import vibechecker
+import rev80
 
 def _parse_args():
     p = argparse.ArgumentParser(
-        prog="vibechecker",
-        description="vibechecker — vibration analysis GUI",
+        prog="rev80",
+        description="Rev80 — vibration analysis GUI",
         add_help=False,   # keep --help working via DPG passthrough
     )
     p.add_argument("--headless",      action="store_true")
     p.add_argument("--init-config",   action="store_true",
-                   help="Seed ~/.config/vibechecker/ with default config files and exit")
+                   help="Seed ~/.config/rev80/ with default config files and exit")
     p.add_argument("--from-file",     metavar="PATH", default=None,
                    help="Load an h5 measurement or monitor session on startup")
     p.add_argument("--autodetect",    action=argparse.BooleanOptionalAction,
@@ -27,7 +27,7 @@ def _parse_args():
     return args, remaining
 
 def _init_config() -> int:
-    from vibechecker.config import acquisition_config_path, ensure_config_dir
+    from rev80.config import acquisition_config_path, ensure_config_dir
     cfg_dir = acquisition_config_path().parent
     before  = set(cfg_dir.rglob('*.yaml')) if cfg_dir.exists() else set()
 
@@ -48,14 +48,14 @@ def main():
 
     if args.headless:
         sys.argv = [sys.argv[0]] + [a for a in sys.argv[1:] if a != "--headless"]
-        from vibechecker.headless import main as headless_main
+        from rev80.headless import main as headless_main
         headless_main()
     else:
-        vibechecker.setup_logging(debug=args.debug)
-        vibechecker.log_system_info()
-        sys.excepthook = vibechecker.exception_handler
-        vibechecker.get_logger().info('Vibechecker Launched')
-        app = vibechecker.GUI()
+        rev80.setup_logging(debug=args.debug)
+        rev80.log_system_info()
+        sys.excepthook = rev80.exception_handler
+        rev80.get_logger().info('Rev80 Launched')
+        app = rev80.GUI()
         app.initialize()
         app.run(initial_file=args.from_file, autodetect=args.autodetect)
         app.cleanup()

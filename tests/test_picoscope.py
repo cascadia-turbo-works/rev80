@@ -1,4 +1,4 @@
-"""Unit tests for vibechecker.picoscope.
+"""Unit tests for rev80.picoscope.
 
 All tests mock picosdk so they run without PicoScope hardware attached.
 Tests cover:
@@ -15,9 +15,9 @@ from unittest.mock import MagicMock, patch, call
 import numpy as np
 import pytest
 
-import vibechecker as vc
-import vibechecker.picoscope as pico_module
-from vibechecker.picoscope import PicoScopeStream, _DRIVER_BUFFER_SAMPLES
+import rev80 as vc
+import rev80.picoscope as pico_module
+from rev80.picoscope import PicoScopeStream, _DRIVER_BUFFER_SAMPLES
 
 
 # ---------------------------------------------------------------------------
