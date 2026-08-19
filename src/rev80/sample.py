@@ -3,11 +3,11 @@ from datetime import datetime
 
 import numpy as np
 
-import vibechecker
-from vibechecker import nextpow2
-from vibechecker.config import DEFAULT_CACHE_FRAMES
+import rev80
+from rev80 import nextpow2
+from rev80.config import DEFAULT_CACHE_FRAMES
 
-log = vibechecker.get_logger(__name__)
+log = rev80.get_logger(__name__)
 
 @dataclass
 class AcquisitionSettings:

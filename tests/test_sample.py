@@ -1,7 +1,7 @@
 import pytest
 import numpy as np
-import vibechecker as vc
-from vibechecker.scope_sensor import ScopeSensor
+import rev80 as vc
+from rev80.scope_sensor import ScopeSensor
 
 tone_step = 500
 tol = 1e-4

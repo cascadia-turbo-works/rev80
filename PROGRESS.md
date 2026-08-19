@@ -1,4 +1,4 @@
-# vibechecker — Project Progress
+# Rev80 — Project Progress
 
 Maps client meetings, stated requirements, and development phases from
 `VibeGui Project.md` to git commits. Useful for tracking what has been
@@ -287,6 +287,7 @@ Items captured from meetings or todo lists that have not yet been implemented:
 | R25 | Mar 2026 | Time-domain zoom window |
 | R26 | Mar 2026 | Velocity integration low-frequency noise investigation |
 | R27 | Mar 2026 | Windows packaging (exe) |
+| R31 | Aug 2026 | Rebrand: rename all public-facing product references from "vibechecker" to "Rev80"; data dir ~/Documents/Rev80/, config dir rev80/, installer Rev80Setup-*.exe, CLI rev80 / rev80-headless, source layout src/rev80/ | ✅ Done |
 | — | Future | Sexy web portal for data sharing |
 | — | Future | Proximity probe / DAQ integration (prox probes need only one integration step) |
 

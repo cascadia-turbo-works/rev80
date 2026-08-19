@@ -1,7 +1,7 @@
 """Icon registry — CommitMono Nerd Font (Codicons BMP PUA)."""
 from __future__ import annotations
 import dearpygui.dearpygui as dpg
-from vibechecker._paths import resource_path
+from rev80._paths import resource_path
 
 FONT_SIZE = 16  # 12pt @ 96 DPI
 

@@ -3,7 +3,7 @@ import threading
 import scipy.fft as fft
 import numpy as np
 
-from vibechecker import AcquisitionSettings
+from rev80 import AcquisitionSettings
 
 N_CHANNELS = 2
 

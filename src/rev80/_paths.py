@@ -1,9 +1,9 @@
 """
-Runtime-safe path resolution for vibechecker.
+Runtime-safe path resolution for rev80.
 
 In development:  uses project-relative paths (current working directory).
 Frozen (PyInstaller):  uses sys._MEIPASS for bundled resources and
-    ~/Documents/vibechecker/ for user-writable data and logs.
+    ~/Documents/Rev80/ for user-writable data and logs.
 """
 
 import sys
@@ -26,8 +26,8 @@ def resource_path(relative: str) -> Path:
 
 
 def _user_dir() -> Path:
-    """Return ~/Documents/vibechecker, creating it if necessary."""
-    base = Path.home() / 'Documents' / 'vibechecker'
+    """Return ~/Documents/Rev80, creating it if necessary."""
+    base = Path.home() / 'Documents' / 'Rev80'
     base.mkdir(parents=True, exist_ok=True)
     return base
 

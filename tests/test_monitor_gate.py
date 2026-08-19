@@ -1,10 +1,10 @@
-"""Unit tests for vibechecker.monitor.gate.IntervalGate.
+"""Unit tests for rev80.monitor.gate.IntervalGate.
 
 All tests inject monotonic time explicitly — no wall-clock dependency.
 """
 
 import pytest
-from vibechecker.monitor.gate import IntervalGate
+from rev80.monitor.gate import IntervalGate
 
 
 def _gate(interval: float, start: float = 0.0) -> IntervalGate:

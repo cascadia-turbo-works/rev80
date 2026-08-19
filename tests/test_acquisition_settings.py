@@ -1,5 +1,5 @@
 import pytest
-from vibechecker import AcquisitionSettings
+from rev80 import AcquisitionSettings
 
 
 def test_default_instance():
