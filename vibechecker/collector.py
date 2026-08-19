@@ -497,6 +497,12 @@ class DataCollector:
 
         # ── 4. Integrate / scale mV² PSD → target-unit² PSD ─────────
         n_steps = integration_steps(sensor_eu, effective_tgt)
+        if abs(n_steps) > 2:
+            log.error(
+                f'process_sample ch={ch}: integration steps {n_steps} out of range [-2, 2] '
+                f'({sensor_eu!r} → {effective_tgt!r}); skipping frame'
+            )
+            return None
         if n_steps != 0:
             omega_factor       = np.zeros_like(psd_mv)
             pos                = freq_hz > 0
@@ -520,7 +526,7 @@ class DataCollector:
 
         # ── 7. Overall amplitude in target unit ───────────────────────
         # Reuse the IFFT-based mV RMS cached in step 3; apply unit scale + amp mode.
-        col_idx = max(0, min(4, n_steps + 2))
+        col_idx = n_steps + 2
         overall = float(
             sample.overall_ampl_by_integration_order[col_idx]
             * (src_si / tgt_si / sensitivity_mv)
