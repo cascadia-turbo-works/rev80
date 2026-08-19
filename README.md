@@ -147,7 +147,7 @@ Writes a v5 `session.h5` file loadable by the GUI session browser or `--from-fil
 ## Installing on Windows
 
 1. Install **PicoSDK 11.1.418** (or PicoScope 7 for Windows) from [picotech.com/downloads](https://www.picotech.com/downloads). **Restart your computer** after installation so Windows registers the USB kernel driver.
-2. Run **`Rev80Setup-0.1.0.exe`** and follow the installer. It creates a Start Menu shortcut and an uninstaller. No admin rights required.
+2. Run **`Rev80Setup-<version>.exe`** and follow the installer. It creates a Start Menu shortcut and an uninstaller. No admin rights required.
 
 > **SmartScreen warning:** the installer is currently unsigned. Click *More info → Run anyway* to proceed.
 
