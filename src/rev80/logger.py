@@ -6,12 +6,12 @@ import platform
 import yaml
 import logging.config
 
-from vibechecker._paths import resource_path, log_dir
+from rev80._paths import resource_path, log_dir
 
 
 def setup_logging(debug: bool = False) -> None:
     """Load logging configuration and direct file handlers to the correct log dir."""
-    config_file = resource_path("vibechecker/logging.yaml")
+    config_file = resource_path("rev80/logging.yaml")
     if not config_file.exists():
         raise FileNotFoundError(f"Logging config not found: {config_file}")
     with open(config_file, "r") as f:

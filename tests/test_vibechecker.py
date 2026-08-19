@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 from pathlib import Path
 
-from vibechecker import (
+from rev80 import (
     AcquisitionSettings,
     DataCollector,
     VibeSample,
@@ -19,7 +19,7 @@ from vibechecker import (
     GUI,
     get_logger,
 )
-from vibechecker.scope_sensor import ScopeSensor
+from rev80.scope_sensor import ScopeSensor
 
 DATADIR = Path('DEVDATA')
 log = get_logger('test')

@@ -6,7 +6,7 @@ from typing import Protocol, runtime_checkable
 
 import numpy as np
 
-from vibechecker.util import UNIT_TO_SI, modality_of
+from rev80.util import UNIT_TO_SI, modality_of
 
 log = logging.getLogger(__name__)
 

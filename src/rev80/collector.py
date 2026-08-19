@@ -10,14 +10,14 @@ import h5py
 import numpy as np
 import scipy.signal
 
-import vibechecker
-from vibechecker._paths import data_dir
-from vibechecker.scope_sensor import ScopeSensor
+import rev80
+from rev80._paths import data_dir
+from rev80.scope_sensor import ScopeSensor
 
-log = vibechecker.get_logger("collector")
+log = rev80.get_logger("collector")
 
 
-def _write_channel_group(h5_grp, ch: int, sample: 'vibechecker.VibeSample') -> None:
+def _write_channel_group(h5_grp, ch: int, sample: 'rev80.VibeSample') -> None:
     """Write one VibeSample's mV data into an h5py group.
 
     Used by both DataCollector.save_data() and MonitorWriterThread.
@@ -48,15 +48,15 @@ class DataCollector:
 
     def __init__(
         self,
-        sensor: Union[vibechecker.VibeSensor, None] = None,
-        config: Union[vibechecker.AcquisitionSettings, None] = None,
+        sensor: Union[rev80.VibeSensor, None] = None,
+        config: Union[rev80.AcquisitionSettings, None] = None,
     ):
 
-        self.sensor: Union[vibechecker.VibeSensor, None] = None
+        self.sensor: Union[rev80.VibeSensor, None] = None
         self.stream = None
         self.datadir: Path = data_dir()
         self.data: Dict = {}
-        self.config = config if config else vibechecker.AcquisitionSettings()
+        self.config = config if config else rev80.AcquisitionSettings()
         self.scope_sensors: dict[int, ScopeSensor] = {}
         self._cache_cursor: int = 0
         self.siggen_config: dict | None = None
@@ -202,7 +202,7 @@ class DataCollector:
         All unit/sensitivity/amplitude-mode conversion is handled here so the
         GUI never needs to import unit-conversion utilities.
         """
-        from vibechecker.util import UNIT_TO_SI, AMPLITUDE_SCALE, integration_steps
+        from rev80.util import UNIT_TO_SI, AMPLITUDE_SCALE, integration_steps
         out: dict[int, tuple[list[float], list[float]]] = {}
         for ch in self.config.enabled_channels:
             td        = self.trend.get(ch, {})
@@ -261,9 +261,9 @@ class DataCollector:
     # Sensor connection
     # ------------------------------------------------------------------
 
-    def connect_sensor(self, sensor: vibechecker.VibeSensor, siggen_config: dict | None = None):
+    def connect_sensor(self, sensor: rev80.VibeSensor, siggen_config: dict | None = None):
         """Connect to a device and initialise its stream."""
-        if not isinstance(sensor, vibechecker.VibeSensor):
+        if not isinstance(sensor, rev80.VibeSensor):
             raise TypeError(f"Attempted to select invalid sensor of {type(sensor)}")
 
         if self.stream is not None or self.sensor is not None:
@@ -378,13 +378,13 @@ class DataCollector:
             data_arr = data_arr[:, np.newaxis]
 
         overflow_mask: int = samp.get("overflow_mask", 0)
-        samples: dict[int, vibechecker.VibeSample] = {}
+        samples: dict[int, rev80.VibeSample] = {}
 
         samplerate = samp.get("samplerate", self.config.samplerate)
         for i, ch in enumerate(channels):
             col  = min(i, data_arr.shape[1] - 1)
             data = np.ascontiguousarray(data_arr[:, col], dtype=np.float64)
-            samples[ch] = vibechecker.VibeSample(
+            samples[ch] = rev80.VibeSample(
                 status=samp["status"],
                 _timestamp=samp["timestamp"],
                 samplerate=samplerate,
@@ -416,14 +416,14 @@ class DataCollector:
     # Sample processing
     # ------------------------------------------------------------------
 
-    def process_sample(self, ch: int, sample: 'vibechecker.VibeSample') -> 'vibechecker.ChannelResult | None':
+    def process_sample(self, ch: int, sample: 'rev80.VibeSample') -> 'rev80.ChannelResult | None':
         """Filter, compute PSD, 5-order mV overalls, and convert to display units.
 
         Side-effects on sample (cached after first call per config):
           - psd_mv / freq_hz / _psd_config_key
           - overall_ampl_by_integration_order — (5,) RMS overalls in mV, orders −2…+2
         """
-        from vibechecker.util import UNIT_TO_SI, AMPLITUDE_SCALE, integration_steps
+        from rev80.util import UNIT_TO_SI, AMPLITUDE_SCALE, integration_steps
 
         if sample.blocksize <= 1:
             return None
@@ -546,14 +546,14 @@ class DataCollector:
             rfft_target = rfft_mv * eu_scale
         time_signal = np.fft.irfft(rfft_target, n=N)
 
-        return vibechecker.ChannelResult(
+        return rev80.ChannelResult(
             channel=ch, unit=effective_tgt, overflow=sample.overflow,
             time_data=time_signal, time_vec=sample.time_vec, samplerate=samplerate,
             freq=freq_hz, spectrum=spectrum_amp, peaks=peaks, overall=overall,
             timestamp=sample._timestamp, rel_time=sample.rel_time, status=sample.status,
         )
 
-    def process_samples(self) -> list['vibechecker.ChannelResult']:
+    def process_samples(self) -> list['rev80.ChannelResult']:
         """Process the current frame; return one ChannelResult per enabled channel.
 
         Uses the latest frame when streaming; uses _cache_cursor when browsing.
@@ -567,7 +567,7 @@ class DataCollector:
             self._cache_cursor = min(self._cache_cursor, len(cache) - 1)
         idx   = -1 if self.is_streaming else -1 - self._cache_cursor
         frame = cache[idx]
-        results: list[vibechecker.ChannelResult] = []
+        results: list[rev80.ChannelResult] = []
         for ch in sorted(self.config.enabled_channels):
             sample = frame.get(ch)
             if sample is None or sample.blocksize <= 1:
@@ -772,7 +772,7 @@ class DataCollector:
         if "acquisition" in meta_grp:
             acq_dict = {k: (None if v == "" else v)
                         for k, v in meta_grp["acquisition"].attrs.items()}
-            self.config = vibechecker.AcquisitionSettings.from_dict(acq_dict)
+            self.config = rev80.AcquisitionSettings.from_dict(acq_dict)
 
         # Scope sensor library — {sensor_id: dict}
         self._loaded_scope_sensors = {}
@@ -832,7 +832,7 @@ class DataCollector:
         return ch_units
 
     def _read_frame_group(self, fg: 'h5py.Group', ch_units: dict[int, str],
-                          version: int) -> dict[int, 'vibechecker.VibeSample']:
+                          version: int) -> dict[int, 'rev80.VibeSample']:
         """Read one HDF5 frame group into a dict[int, VibeSample]."""
         def decode(x):
             return x.decode() if isinstance(x, bytes) else str(x)
@@ -846,14 +846,14 @@ class DataCollector:
         except (ValueError, TypeError):
             timestamp = datetime.now()
 
-        frame_samples: dict[int, vibechecker.VibeSample] = {}
+        frame_samples: dict[int, rev80.VibeSample] = {}
         for ch_str, cg in fg.items():
             if not ch_str.isdigit():
                 continue
             ch   = int(ch_str)
             data = np.ascontiguousarray(cg["data"][()], dtype=np.float64)
             unit = "mV" if version >= 4 else ch_units.get(ch, "mV")
-            frame_samples[ch] = vibechecker.VibeSample(
+            frame_samples[ch] = rev80.VibeSample(
                 status=status, _timestamp=timestamp, samplerate=samplerate,
                 unit=unit, overflow=False, data=data, rel_time=rel_time,
             )
@@ -944,7 +944,7 @@ class DataCollector:
         # not raw mV.  get_trend_for_display() expects orders[:,col] in raw mV
         # (same as overall_ampl_by_integration_order), so we back-scale each
         # channel's values and place them in the correct column.
-        from vibechecker.util import UNIT_TO_SI, AMPLITUDE_SCALE, integration_steps
+        from rev80.util import UNIT_TO_SI, AMPLITUDE_SCALE, integration_steps
         for ch, rel_times in trend_rel_times.items():
             overalls    = np.array(trend_overalls[ch])
             sensor_cfg  = self._loaded_channel_sensor_configs.get(ch, {})
@@ -1095,7 +1095,7 @@ class DataCollector:
         # overall_json is in target EU — inverse-scale to raw mV so
         # get_trend_for_display() can apply the forward conversion correctly.
         import math as _math
-        from vibechecker.util import UNIT_TO_SI, AMPLITUDE_SCALE, integration_steps
+        from rev80.util import UNIT_TO_SI, AMPLITUDE_SCALE, integration_steps
         for ch, rel_times in trend_rel_times.items():
             overalls = trend_overalls[ch]
             valid = [(t, v) for t, v in zip(rel_times, overalls)
@@ -1130,7 +1130,7 @@ class DataCollector:
         Returns the number of captures processed.
         """
         import json as _json
-        from vibechecker.sample import VibeSample
+        from rev80.sample import VibeSample
         from datetime import datetime as _dt
 
         log.info(f"Reprocessing session trend in {session_h5.name}")

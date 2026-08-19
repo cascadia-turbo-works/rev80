@@ -1,7 +1,7 @@
 [project]
-name = "vibechecker"
+name = "rev80"
 version = "0.1.0"
-description = "A Python toolkit for vibration sensing and logging"
+description = "Rev80 — industrial vibration analysis for PicoScope"
 authors = [
     { name="Henry Gotjen", email="hgotjen@gmail.com" }
 ]
@@ -20,22 +20,22 @@ dependencies = [
 ]
 
 [project.scripts]
-vibechecker-headless = "vibechecker.headless:main"
-vibechecker = "vibechecker.__main__:main"
+rev80-headless = "rev80.headless:main"
+rev80 = "rev80.__main__:main"
 
 [project.optional-dependencies]
 gui = ["dearpygui==2.0.0"]
 dev = ["pytest", "ipykernel", "pyinstaller", "ruff"]
 
 [tool.setuptools.packages.find]
-include = ["vibechecker*"]
+where = ["src"]
 
 [build-system]
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [tool.pytest.ini_options]
-pythonpath = "."
+pythonpath = ["src"]
 
 [tool.ruff]
 line-length = 120

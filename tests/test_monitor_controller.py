@@ -1,4 +1,4 @@
-"""Integration tests for vibechecker.monitor.controller.MonitorController.
+"""Integration tests for rev80.monitor.controller.MonitorController.
 
 Uses synthetic ChannelResult + VibeSample objects — no hardware required.
 interval_s is set very short (0.05–0.1 s) so tests complete in <2 s wall time.
@@ -13,11 +13,11 @@ import h5py
 import numpy as np
 import pytest
 
-import vibechecker as vc
-from vibechecker.monitor.anomaly import AnomalyEvent
-from vibechecker.monitor.controller import MonitorController
-from vibechecker.monitor.session import MonitorSession
-from vibechecker.sample import ChannelResult, VibeSample
+import rev80 as vc
+from rev80.monitor.anomaly import AnomalyEvent
+from rev80.monitor.controller import MonitorController
+from rev80.monitor.session import MonitorSession
+from rev80.sample import ChannelResult, VibeSample
 
 
 # ---------------------------------------------------------------------------

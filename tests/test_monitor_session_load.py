@@ -20,11 +20,11 @@ import h5py
 import numpy as np
 import pytest
 
-import vibechecker as vc
-from vibechecker.collector import DataCollector
-from vibechecker.monitor.controller import MonitorController
-from vibechecker.monitor.session import MonitorSession
-from vibechecker.sample import AcquisitionSettings, ChannelResult, VibeSample
+import rev80 as vc
+from rev80.collector import DataCollector
+from rev80.monitor.controller import MonitorController
+from rev80.monitor.session import MonitorSession
+from rev80.sample import AcquisitionSettings, ChannelResult, VibeSample
 
 
 # ---------------------------------------------------------------------------

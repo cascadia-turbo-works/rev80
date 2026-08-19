@@ -22,8 +22,8 @@ import time
 import numpy as np
 import pytest
 
-import vibechecker as vc
-from vibechecker.picoscope import PicoScopeStream
+import rev80 as vc
+from rev80.picoscope import PicoScopeStream
 
 # ---------------------------------------------------------------------------
 # Signal generator parameters  (siggen output → Channel A loopback)

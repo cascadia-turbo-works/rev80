@@ -1,6 +1,6 @@
 import numpy as np
 
-from vibechecker._paths import data_dir
+from rev80._paths import data_dir
 
 # ── GUI colour palette ──────────────────────────────────────────────────────
 # All colours defined as hex strings (#RRGGBB).  Use hex_to_rgba() to convert
