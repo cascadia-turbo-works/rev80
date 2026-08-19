@@ -5,9 +5,9 @@ import pytest
 import numpy as np
 from pathlib import Path
 
-import vibechecker as vc
-from vibechecker.scope_sensor import ScopeSensor
-from vibechecker.scope_sensor_registry import ScopeSensorRegistry
+import rev80 as vc
+from rev80.scope_sensor import ScopeSensor
+from rev80.scope_sensor_registry import ScopeSensorRegistry
 
 
 # ---------------------------------------------------------------------------

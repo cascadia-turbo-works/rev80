@@ -2,9 +2,9 @@ import numpy as np
 from dataclasses import dataclass
 from datetime import datetime
 
-import vibechecker
+import rev80
 
-log = vibechecker.get_logger(__name__)
+log = rev80.get_logger(__name__)
 
 @dataclass
 class VibeSensor:
@@ -27,7 +27,7 @@ class VibeSensor:
     def find(cls):
         """Return all connected hardware sensors. SimulatedSensor is excluded —
         use VibeSensor.simulated() directly for CI/testing."""
-        return [cls(**dev) for dev in vibechecker.FindPicoScope()]
+        return [cls(**dev) for dev in rev80.FindPicoScope()]
 
     @classmethod
     def simulated(cls):
@@ -42,15 +42,15 @@ class VibeSensor:
                    is_simulation = True
                    )
     
-    def connect(self, config: vibechecker.AcquisitionSettings, callback,
+    def connect(self, config: rev80.AcquisitionSettings, callback,
                 siggen_config: dict | None = None):
         """Return a stream object with .start() / .stop() / .close() / .active."""
         self.callback = callback   # app callback — DataCollector.receive_data
 
         if self.is_simulation:
-            return vibechecker.SimulatedSensor(config, sensor=self, callback=self._callback)
+            return rev80.SimulatedSensor(config, sensor=self, callback=self._callback)
 
-        from vibechecker.picoscope import PicoScopeStream
+        from rev80.picoscope import PicoScopeStream
         return PicoScopeStream(config, callback=callback,
                                serial=self.serial_number, siggen_config=siggen_config)
 

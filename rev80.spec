@@ -1,7 +1,7 @@
-# vibechecker.spec  —  PyInstaller build spec
+# rev80.spec  —  PyInstaller build spec
 #
 # Build (from project root on Windows):
-#   pyinstaller vibechecker.spec
+#   pyinstaller rev80.spec
 #
 # Prerequisites:
 #   pip install pyinstaller
@@ -16,12 +16,12 @@ from PyInstaller.utils.hooks import collect_submodules, collect_data_files, coll
 
 ROOT = Path(SPECPATH)
 DRIVERS_DIR = ROOT / 'drivers'
-LOGGING_YAML = ROOT / 'vibechecker' / 'logging.yaml'
-ICON_FILE = ROOT / 'assets' / 'icons' / 'vibechecker.ico'
+LOGGING_YAML = ROOT / 'src' / 'rev80' / 'logging.yaml'
+ICON_FILE = ROOT / 'assets' / 'icons' / 'rev80.ico'
 
 # ── Version ──────────────────────────────────────────────────────────────────
 
-_ver_text = (ROOT / 'vibechecker' / '_version.py').read_text()
+_ver_text = (ROOT / 'src' / 'rev80' / '_version.py').read_text()
 APP_VERSION = re.search(r'__version__ = "([^"]+)"', _ver_text).group(1)
 
 # Write installer/version.iss so iscc picks it up without extra arguments
@@ -33,8 +33,8 @@ print(f'Building version {APP_VERSION}')
 
 # dearpygui embeds its own renderer; picosdk uses ctypes (no hidden imports).
 hidden_imports = [
-    'vibechecker._paths',
-    'vibechecker._pico_loader',
+    'rev80._paths',
+    'rev80._pico_loader',
     'scipy.signal',
     'scipy.signal.windows',
     'scipy.fft',
@@ -59,7 +59,7 @@ hidden_imports = [
 # ── Bundled data files ───────────────────────────────────────────────────────
 
 datas = [
-    (str(LOGGING_YAML), 'vibechecker'),                            # → sys._MEIPASS/vibechecker/logging.yaml
+    (str(LOGGING_YAML), 'rev80'),                                  # → sys._MEIPASS/rev80/logging.yaml
     (str(ROOT / 'assets'), 'assets'),                              # → sys._MEIPASS/assets/
 ]
 
@@ -93,7 +93,7 @@ excludes = [
 # ── Analysis ─────────────────────────────────────────────────────────────────
 
 a = Analysis(
-    [str(ROOT / 'vibechecker' / '__main__.py')],
+    [str(ROOT / 'src' / 'rev80' / '__main__.py')],
     pathex=[str(ROOT)],
     binaries=binaries,
     datas=datas,
@@ -117,7 +117,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='vibechecker',
+    name='rev80',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -138,5 +138,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name='vibechecker',
+    name='rev80',
 )

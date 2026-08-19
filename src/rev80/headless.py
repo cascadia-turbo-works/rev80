@@ -1,5 +1,5 @@
 """
-vibechecker headless mode — interval datalogger with no GUI.
+rev80 headless mode — interval datalogger with no GUI.
 
 Discovers a PicoScope (or uses the simulated sensor), loads the saved device
 config, and runs Monitor Mode indefinitely.  All captured data is written to
@@ -8,13 +8,13 @@ Sessions can be browsed and loaded in the GUI session browser afterwards.
 
 Usage
 -----
-    python -m vibechecker.headless [options]
-    vibechecker-headless [options]       # if installed via pip
+    python -m rev80.headless [options]
+    rev80-headless [options]       # if installed via pip
 
 Quick info commands (return immediately, no hardware required):
-    vibechecker-headless --list-devices
-    vibechecker-headless --list-sensors
-    vibechecker-headless --edit-config
+    rev80-headless --list-devices
+    rev80-headless --list-sensors
+    rev80-headless --edit-config
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ import argparse
 import logging
 import sys
 
-# All heavy imports (vibechecker, numpy, scipy, …) are deferred into run() and
+# All heavy imports (rev80, numpy, scipy, …) are deferred into run() and
 # the info-command helpers so that --help and the info flags return instantly.
 
 log = logging.getLogger(__name__)
@@ -32,9 +32,9 @@ log = logging.getLogger(__name__)
 # ── Info commands ──────────────────────────────────────────────────────────────
 
 def _list_devices() -> int:
-    import vibechecker
-    sensors = vibechecker.VibeSensor.find()
-    if vibechecker.PICOSCOPE_DRIVER_MISSING:
+    import rev80
+    sensors = rev80.VibeSensor.find()
+    if rev80.PICOSCOPE_DRIVER_MISSING:
         print("PicoScope driver not installed — cannot enumerate hardware devices.")
         print("Install it with:  sudo ./drivers/install-picoscope4000a-driver.sh")
         return 1
@@ -50,8 +50,8 @@ def _list_devices() -> int:
 
 
 def _list_sensors() -> int:
-    from vibechecker.config import config_dir
-    from vibechecker.scope_sensor_registry import ScopeSensorRegistry
+    from rev80.config import config_dir
+    from rev80.scope_sensor_registry import ScopeSensorRegistry
     reg = ScopeSensorRegistry(config_dir() / "scope_sensors.yaml")
     sensors = reg.all()
     if not sensors:
@@ -73,7 +73,7 @@ def _list_sensors() -> int:
 def _edit_config() -> int:
     import os
     import subprocess
-    from vibechecker.config import acquisition_config_path, ensure_acquisition_config
+    from rev80.config import acquisition_config_path, ensure_acquisition_config
     ensure_acquisition_config()
     path   = acquisition_config_path()
     editor = os.environ.get("EDITOR", os.environ.get("VISUAL", "nano"))
@@ -87,7 +87,7 @@ def _edit_config() -> int:
 def _build_session(collector, args, session_id, anom_cfg=None):
     from datetime import datetime, timezone
     from pathlib import Path
-    import vibechecker
+    import rev80
 
     cfg     = collector.config
     block_s = cfg.blocksize / cfg.samplerate if cfg.samplerate else 1.0
@@ -96,7 +96,7 @@ def _build_session(collector, args, session_id, anom_cfg=None):
     session_dir = (
         Path(args.output) / session_id
         if args.output
-        else vibechecker.data_dir() / "monitor" / session_id
+        else rev80.data_dir() / "monitor" / session_id
     )
 
     ch_snapshot: dict = {}
@@ -121,7 +121,7 @@ def _build_session(collector, args, session_id, anom_cfg=None):
 
     anom_cfg = anom_cfg or {}
 
-    from vibechecker.monitor.session import MonitorSession
+    from rev80.monitor.session import MonitorSession
     return MonitorSession(
         session_id        = session_id,
         start_time        = datetime.now(timezone.utc),
@@ -147,7 +147,7 @@ def _build_anomaly_hook(anom_cfg: dict, config, pre_buffer_s: float = 0.0):
     fixed-level threshold trigger has its own independent enable switches and
     fires regardless of `enabled`.
     """
-    from vibechecker.monitor.anomaly import (
+    from rev80.monitor.anomaly import (
         CompositeAnomalyHook, FixedThresholdHook, NullAnomalyHook,
         RmsThresholdHook, SpectralThresholdHook, ewma_alpha_from_time,
     )
@@ -222,7 +222,7 @@ def _apply_overrides(config, args) -> None:
 # ── Session summary ────────────────────────────────────────────────────────────
 
 def _print_session_summary(sensor, config, args, mon_cfg, anom_cfg, device_path) -> None:
-    from vibechecker.config import acquisition_config_path
+    from rev80.config import acquisition_config_path
 
     interval_s    = args.interval
     burst_dur_s   = args.burst_duration
@@ -241,7 +241,7 @@ def _print_session_summary(sensor, config, args, mon_cfg, anom_cfg, device_path)
     hook_type    = anom_cfg.get("hook_type", "rms").upper()
 
     print(f"\n{'─' * 54}")
-    print("  vibechecker headless")
+    print("  Rev80 headless")
     print(f"{'─' * 54}")
     print(f"  Device      {sensor.model_name}  s/n {sensor.serial_number}")
     print(f"  Channels    {ch_labels or '(none)'}")
@@ -254,7 +254,7 @@ def _print_session_summary(sensor, config, args, mon_cfg, anom_cfg, device_path)
           f"max {mon_cfg.get('max_burst_s', 600):.0f}s")
     if anom_enabled:
         import math as _math
-        from vibechecker.monitor.anomaly import ewma_alpha_from_time as _ewma
+        from rev80.monitor.anomaly import ewma_alpha_from_time as _ewma
         warmup  = anom_cfg.get("warmup", 10)
         dt      = config.acquisition_period
         if hook_type in ("RMS", "BOTH"):
@@ -299,16 +299,16 @@ def run(args: argparse.Namespace) -> int:
     import threading
     from datetime import datetime, timezone
 
-    import vibechecker
-    import vibechecker.config as _cfg
-    from vibechecker.collector import DataCollector
-    from vibechecker.monitor.controller import MonitorController
-    from vibechecker.sample import AcquisitionSettings
+    import rev80
+    import rev80.config as _cfg
+    from rev80.collector import DataCollector
+    from rev80.monitor.controller import MonitorController
+    from rev80.sample import AcquisitionSettings
 
     shutdown = threading.Event()
 
     def _handle_signal(signum, frame):
-        vibechecker.get_logger('vibechecker-cli').info(
+        rev80.get_logger('rev80-cli').info(
             f"Signal {signum} received — shutting down after current interval…"
         )
         shutdown.set()
@@ -316,22 +316,22 @@ def run(args: argparse.Namespace) -> int:
     signal.signal(signal.SIGINT,  _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
-    log = vibechecker.get_logger('vibechecker-cli')
+    log = rev80.get_logger('rev80-cli')
 
     # ── Discover device ───────────────────────────────────────────────────────
     if args.device and args.device.lower() == "sim":
-        sensor = vibechecker.VibeSensor.simulated()
+        sensor = rev80.VibeSensor.simulated()
         log.info("Using simulated sensor")
     elif args.device:
-        sensors = vibechecker.VibeSensor.find()
+        sensors = rev80.VibeSensor.find()
         sensor  = next((s for s in sensors if args.device in s.serial_number), None)
         if sensor is None:
             log.error(f"Device '{args.device}' not found. "
                       f"Available: {[s.serial_number for s in sensors]}")
             return 1
     else:
-        sensors = vibechecker.VibeSensor.find()
-        if vibechecker.PICOSCOPE_DRIVER_MISSING:
+        sensors = rev80.VibeSensor.find()
+        if rev80.PICOSCOPE_DRIVER_MISSING:
             print("ERROR: PicoScope driver not installed.", file=sys.stderr)
             print("       Install it with:", file=sys.stderr)
             print("         sudo ./drivers/install-picoscope4000a-driver.sh", file=sys.stderr)
@@ -553,8 +553,8 @@ def run(args: argparse.Namespace) -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        prog="vibechecker-headless",
-        description="vibechecker interval datalogger — no GUI required",
+        prog="rev80-headless",
+        description="Rev80 interval datalogger — no GUI required",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Quick info commands (return immediately, no hardware required):\n"
@@ -567,7 +567,7 @@ def main() -> None:
     # Info commands — handled before any heavy import
     info = parser.add_argument_group("info commands")
     info.add_argument("--init-config",  action="store_true",
-                      help="Seed ~/.config/vibechecker/ with default config files and exit")
+                      help="Seed ~/.config/rev80/ with default config files and exit")
     info.add_argument("--list-devices", action="store_true",
                       help="List connected PicoScope devices and exit")
     info.add_argument("--list-sensors", action="store_true",
@@ -607,7 +607,7 @@ def main() -> None:
 
     # Info commands: minimal imports, return immediately
     if args.init_config:
-        from vibechecker.__main__ import _init_config
+        from rev80.__main__ import _init_config
         sys.exit(_init_config())
     if args.list_devices:
         sys.exit(_list_devices())
@@ -617,12 +617,12 @@ def main() -> None:
         sys.exit(_edit_config())
 
     # Full session: now pull in everything
-    import vibechecker
-    import vibechecker.config as _cfg_boot
+    import rev80
+    import rev80.config as _cfg_boot
     _cfg_boot.ensure_config_dir()
-    vibechecker.setup_logging(debug=args.debug)
-    sys.excepthook = vibechecker.exception_handler
-    vibechecker.get_logger().info("vibechecker headless started")
+    rev80.setup_logging(debug=args.debug)
+    sys.excepthook = rev80.exception_handler
+    rev80.get_logger().info("rev80 headless started")
 
     sys.exit(run(args))
 

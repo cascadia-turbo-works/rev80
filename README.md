@@ -1,6 +1,8 @@
-# vibechecker
+# Rev80
 
 A Python desktop application for capturing, analyzing, and recording vibration data from industrial rotating equipment. Designed for predictive maintenance workflows using IEPE accelerometers and voltage-output sensors connected via USB oscilloscopes (PicoScope 4000A series) or USB audio interfaces (Digiducer legacy).
+
+> **Rev80** by Rev Engineering, LLC — solves 80% of your vibration needs for 10% of the cost.
 
 ---
 
@@ -52,11 +54,11 @@ A Python desktop application for capturing, analyzing, and recording vibration d
 ### GUI mode
 
 ```bash
-vibechecker                                          # launch GUI
-vibechecker --from-file path/to/file.h5             # load measurement on startup
-vibechecker --from-file path/to/session_dir/        # load monitor session on startup
-vibechecker --init-config                            # seed config files and exit
-vibechecker --debug                                  # verbose logging
+rev80                                                # launch GUI
+rev80 --from-file path/to/file.h5                   # load measurement on startup
+rev80 --from-file path/to/session_dir/              # load monitor session on startup
+rev80 --init-config                                  # seed config files and exit
+rev80 --debug                                        # verbose logging
 ```
 
 `--from-file` accepts a v4 single-measurement `.h5` file or a v5 monitor session directory (containing `session.h5`). The GUI opens, displays the data immediately, and the session browser and file browser remain fully functional.
@@ -64,18 +66,18 @@ vibechecker --debug                                  # verbose logging
 ### Headless mode
 
 ```bash
-vibechecker-headless [options]
+rev80-headless [options]
 # or equivalently:
-python -m vibechecker --headless [options]
+python -m rev80 --headless [options]
 ```
 
 **Before first use on a new machine, seed the config directory:**
 
 ```bash
-vibechecker-headless --init-config
+rev80-headless --init-config
 ```
 
-This writes `acquisition.yaml` and `devices/picoscope-defaults.yaml` to `~/.config/vibechecker/` so you can edit them before connecting hardware.
+This writes `acquisition.yaml` and `devices/picoscope-defaults.yaml` to `~/.config/rev80/` so you can edit them before connecting hardware.
 
 **Info commands** (return immediately, no hardware or heavy imports):
 
@@ -122,20 +124,20 @@ sample rate, monitor interval, anomaly config, config file paths) and waits for 
 
 ```bash
 # First time on a new Pi — seed config, connect scope, generate device config
-vibechecker-headless --init-config
-vibechecker-headless --list-devices
-vibechecker-headless                          # generates device config, shows summary
+rev80-headless --init-config
+rev80-headless --list-devices
+rev80-headless                          # generates device config, shows summary
 
 # Edit settings, then start unattended
-nano ~/.config/vibechecker/acquisition.yaml
-nano ~/.config/vibechecker/devices/picoscope-4424A-JY123.yaml
-vibechecker-headless --start-now
+nano ~/.config/rev80/acquisition.yaml
+nano ~/.config/rev80/devices/picoscope-4424A-JY123.yaml
+rev80-headless --start-now
 
 # One-liner with explicit overrides (changes persisted to device config)
-vibechecker-headless --channels 0 1 --interval 300 --start-now
+rev80-headless --channels 0 1 --interval 300 --start-now
 
 # Simulated sensor — offline testing, no hardware
-vibechecker-headless --device sim --interval 10 --start-now
+rev80-headless --device sim --interval 10 --start-now
 ```
 
 Writes a v5 `session.h5` file loadable by the GUI session browser or `--from-file`. Clean shutdown on `Ctrl+C` or `SIGTERM` (suitable for systemd `Restart=on-failure`).
@@ -145,7 +147,7 @@ Writes a v5 `session.h5` file loadable by the GUI session browser or `--from-fil
 ## Installing on Windows
 
 1. Install **PicoSDK 11.1.418** (or PicoScope 7 for Windows) from [picotech.com/downloads](https://www.picotech.com/downloads). **Restart your computer** after installation so Windows registers the USB kernel driver.
-2. Run **`VibecheckerSetup-0.1.0.exe`** and follow the installer. It creates a Start Menu shortcut and an uninstaller. No admin rights required.
+2. Run **`Rev80Setup-<version>.exe`** and follow the installer. It creates a Start Menu shortcut and an uninstaller. No admin rights required.
 
 > **SmartScreen warning:** the installer is currently unsigned. Click *More info → Run anyway* to proceed.
 
@@ -153,9 +155,9 @@ Writes a v5 `session.h5` file loadable by the GUI session browser or `--from-fil
 
 | Purpose | Location |
 | --- | --- |
-| Measurement data (`.h5`) | `~/Documents/vibechecker/data/` |
-| Log files | `~/Documents/vibechecker/logs/` |
-| Config / sensor library | `%APPDATA%\vibechecker\` |
+| Measurement data (`.h5`) | `~/Documents/Rev80/data/` |
+| Log files | `~/Documents/Rev80/logs/` |
+| Config / sensor library | `%APPDATA%\rev80\` |
 
 ---
 
@@ -182,19 +184,19 @@ Works on Windows, Linux, and macOS. Requires Python 3.10+.
 
    ```bash
    # GUI (default)
-   python -m vibechecker
+   python -m rev80
 
    # GUI — open directly on a saved measurement or monitor session
-   python -m vibechecker --from-file DEVDATA/my_run.h5
-   python -m vibechecker --from-file DEVDATA/monitor/2026-06-02-130000/
+   python -m rev80 --from-file DEVDATA/my_run.h5
+   python -m rev80 --from-file DEVDATA/monitor/2026-06-02-130000/
 
    # Headless interval datalogger (no display required)
-   vibechecker-headless --init-config              # seed config files first
-   vibechecker-headless                            # auto-detect scope, show summary
-   vibechecker-headless --device sim --interval 10 --start-now  # offline test
+   rev80-headless --init-config              # seed config files first
+   rev80-headless                            # auto-detect scope, show summary
+   rev80-headless --device sim --interval 10 --start-now  # offline test
 
    # With debug logging to console
-   python -m vibechecker --debug
+   python -m rev80 --debug
    ```
 
 **Runtime dependencies:** `numpy`, `scipy`, `dearpygui==2.0.0`, `h5py`, `pyyaml`, `plyer`, `picosdk`
@@ -203,13 +205,13 @@ Works on Windows, Linux, and macOS. Requires Python 3.10+.
 
 ```bash
 # Seed config on a fresh install
-vibechecker-headless --init-config
+rev80-headless --init-config
 
 # Auto-detect PicoScope — shows summary, waits for Enter
-vibechecker-headless
+rev80-headless
 
 # Fully explicit, skip prompt (suitable for scripts/systemd)
-vibechecker-headless \
+rev80-headless \
   --interval 300 \
   --pre-buffer 30 \
   --burst-duration 120 \
@@ -220,20 +222,20 @@ vibechecker-headless \
   --start-now
 
 # Simulated sensor (no hardware)
-vibechecker-headless --device sim --interval 10 --start-now
+rev80-headless --device sim --interval 10 --start-now
 ```
 
 Sessions written by the headless mode are identical v5 HDF5 files and can be loaded in the GUI:
 
 ```bash
 # Open GUI on a specific session directory
-python -m vibechecker --from-file /mnt/nas/vibration/2026-06-02-130000/
+python -m rev80 --from-file /mnt/nas/vibration/2026-06-02-130000/
 
 # Or point at the session.h5 directly
-python -m vibechecker --from-file /mnt/nas/vibration/2026-06-02-130000/session.h5
+python -m rev80 --from-file /mnt/nas/vibration/2026-06-02-130000/session.h5
 
 # Or a regular single-measurement save
-python -m vibechecker --from-file DEVDATA/my_measurement.h5
+python -m rev80 --from-file DEVDATA/my_measurement.h5
 ```
 
 The `picosdk` package requires the PicoScope 4000A driver (`ps4000a.dll` / `libps4000a.so`) to be present on the system for hardware use. The app will start without it and show a "driver not found" notice in the device dialog — the simulated sensor is still available.
@@ -259,13 +261,13 @@ pip install -e ".[dev]"
 pytest tests/
 
 # Launch the app against the source tree
-python -m vibechecker
+python -m rev80
 ```
 
 ### Project layout
 
 ```
-vibechecker/              Python package
+src/rev80/                Python package
   _paths.py               Runtime-safe path resolution (dev vs frozen)
   _pico_loader.py         Windows DLL search path setup for frozen builds
   logging.yaml            Logging configuration (bundled with package)
@@ -279,9 +281,9 @@ vibechecker/              Python package
   assets/
     fonts/                CommitMono Nerd Font (gitignored — add locally)
 assets/                   App icon source
-  vibechecker_icon.svg    Source artwork
-  make_icons.sh           Regenerates vibechecker.ico via Inkscape + ImageMagick
-  vibechecker.ico         Multi-resolution icon used by installer and exe
+  rev80.svg               Source artwork
+  make_icons.sh           Regenerates rev80.ico via Inkscape + ImageMagick
+  rev80.ico               Multi-resolution icon used by installer and exe
 drivers/                  PicoScope DLLs (Windows build only, not committed)
 installer/                Inno Setup script
 tests/                    pytest suite
@@ -289,13 +291,13 @@ tests/                    pytest suite
   test_monitor_gate.py
   test_monitor_index.py
   test_monitor_session_load.py   full write→load→browse integration tests
-vibechecker.spec          PyInstaller build spec
+rev80.spec                PyInstaller build spec
 build.sh                  Full build pipeline (run from Git Bash)
 ```
 
 ### Replacing the app icon
 
-Drop a new `assets/vibechecker.ico` in place and rebuild — no changes to `vibechecker.spec` or `installer/vibechecker.iss` are needed. To regenerate the `.ico` from the SVG source:
+Drop a new `assets/rev80.ico` in place and rebuild — no changes to `rev80.spec` or `installer/rev80.iss` are needed. To regenerate the `.ico` from the SVG source:
 
 ```bash
 # Requires inkscape and imagemagick
@@ -340,8 +342,8 @@ pip install -e ".[dev]"
 
 | Path | Description |
 | --- | --- |
-| `dist/vibechecker/vibechecker.exe` | Standalone executable (no install needed) |
-| `installer/Output/VibecheckerSetup-<version>.exe` | Installer with Start Menu shortcut and uninstaller |
+| `dist/rev80/rev80.exe` | Standalone executable (no install needed) |
+| `installer/Output/Rev80Setup-<version>.exe` | Installer with Start Menu shortcut and uninstaller |
 
 ### Known constraints
 
@@ -603,7 +605,7 @@ Sensors are managed through `ScopeSensorRegistry` and assigned to channels via t
 
 ## Signal Generator
 
-The PicoScope 4000A has a built-in arbitrary waveform generator (AWG) on its AUX output. `vibechecker` exposes this through the **Generate** config tab.
+The PicoScope 4000A has a built-in arbitrary waveform generator (AWG) on its AUX output. Rev80 exposes this through the **Generate** config tab.
 
 | Setting | Description |
 | --- | --- |
@@ -615,7 +617,7 @@ The PicoScope 4000A has a built-in arbitrary waveform generator (AWG) on its AUX
 
 **Timing:** The signal generator runs **continuously** from stream start to stream stop. It is programmed once when `start()` is called (`_setup_siggen()` → `ps4000aSetSigGenBuiltIn` with `PS4000A_SIGGEN_NONE` trigger source = free-running). There is no per-block triggering; the AWG and the ADC acquisition run independently and simultaneously.
 
-Signal generator settings are persisted to `~/.config/vibechecker/channel_assignments.yaml` under a `siggen:` key and restored automatically when the same device reconnects.
+Signal generator settings are persisted to `~/.config/rev80/channel_assignments.yaml` under a `siggen:` key and restored automatically when the same device reconnects.
 
 ---
 
@@ -640,7 +642,7 @@ The default source for `SimulatedSensor` is `GenerateBearingVibration_TemporalMe
 
 ## Monitor Mode
 
-Monitor Mode turns vibechecker into a continuous interval datalogger with automatic event capture.
+Monitor Mode turns Rev80 into a continuous interval datalogger with automatic event capture.
 
 ### Interval recording
 
@@ -767,14 +769,14 @@ collector.load_monitor_burst(session_h5, burst_id)
 ## Configuration and Persistence
 
 Config lives in the OS-specific config directory:
-- **Linux/macOS:** `$XDG_CONFIG_HOME/vibechecker/` (default: `~/.config/vibechecker/`)
-- **Windows:** `%APPDATA%\vibechecker\`
+- **Linux/macOS:** `$XDG_CONFIG_HOME/rev80/` (default: `~/.config/rev80/`)
+- **Windows:** `%APPDATA%\rev80\`
 
-Run `vibechecker --init-config` (or `vibechecker-headless --init-config`) to create the
+Run `rev80 --init-config` (or `rev80-headless --init-config`) to create the
 directory and seed all default files. The layout is:
 
 ```
-~/.config/vibechecker/
+~/.config/rev80/
   acquisition.yaml                       # acquisition + monitor settings (instance-wide)
   scope_sensors.yaml                     # IEPE sensor library (shared across all devices)
   devices/
@@ -902,14 +904,14 @@ a channel, `DataCollector` divides incoming mV by `sensitivity` to produce engin
 
 ### Logging
 
-Logging is configured via `vibechecker/logging.yaml`. In development, log files are written
-to `log/`. In a frozen Windows build, logs go to `~/Documents/vibechecker/logs/`.
+Logging is configured via `src/rev80/logging.yaml`. In development, log files are written
+to `log/`. In a frozen Windows build, logs go to `~/Documents/Rev80/logs/`.
 
 ---
 
 ## PicoScope Integration
 
-`vibechecker` targets the **PicoScope 4000A series** as its primary acquisition hardware via the `picosdk` Python bindings.
+Rev80 targets the **PicoScope 4000A series** as its primary acquisition hardware via the `picosdk` Python bindings.
 
 ### Key implementation details
 

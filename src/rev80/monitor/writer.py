@@ -8,10 +8,10 @@ import threading
 import h5py
 import numpy as np
 
-import vibechecker
-from vibechecker.monitor.session import MonitorSession
+import rev80
+from rev80.monitor.session import MonitorSession
 
-log = vibechecker.get_logger(__name__)
+log = rev80.get_logger(__name__)
 
 _DISK_GUARD_BYTES: int = 1 * 1024 ** 3  # 1 GiB
 _QUEUE_WARN_DEPTH: int = 50

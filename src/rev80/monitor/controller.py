@@ -2,13 +2,13 @@ import time
 from collections import deque
 from datetime import datetime
 
-import vibechecker
-from vibechecker.monitor.anomaly import AnomalyEvent, AnomalyHook, NullAnomalyHook
-from vibechecker.monitor.gate import IntervalGate
-from vibechecker.monitor.session import MonitorSession
-from vibechecker.monitor.writer import MonitorWriterThread
+import rev80
+from rev80.monitor.anomaly import AnomalyEvent, AnomalyHook, NullAnomalyHook
+from rev80.monitor.gate import IntervalGate
+from rev80.monitor.session import MonitorSession
+from rev80.monitor.writer import MonitorWriterThread
 
-log = vibechecker.get_logger(__name__)
+log = rev80.get_logger(__name__)
 
 
 class MonitorController:
@@ -236,7 +236,7 @@ class MonitorController:
         snapshot to produce target-EU values matching the rest of overall_json.
         """
         import json as _json
-        from vibechecker.util import UNIT_TO_SI, AMPLITUDE_SCALE, integration_steps
+        from rev80.util import UNIT_TO_SI, AMPLITUDE_SCALE, integration_steps
 
         session = self._session
         if session is None:
