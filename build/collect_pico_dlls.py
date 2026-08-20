@@ -13,10 +13,14 @@ Output:
 
 Requirements:
     - 64-bit Windows
-    - PicoSDK installed (default path: C:\\Program Files\\Pico Technology\\SDK)
     - Python 3.8+ (64-bit)
+    - PicoSDK DLLs available via one of:
+        a) PicoSDK installed (auto-detected via registry / default path)
+        b) PICO_DLL_DIR env var pointing at a directory with the DLLs
+        c) vendor/pico/ in the project root (gitignored staging area)
 """
 
+import os
 import platform
 import shutil
 import struct
@@ -41,6 +45,10 @@ _REG_KEYS = [
 
 DRIVERS_DIR = Path(__file__).parent.parent / 'drivers'
 
+# Fallback: vendor/pico/ in project root (gitignored, pre-staged DLLs).
+# Override with PICO_DLL_DIR env var to point at any directory containing the DLLs.
+VENDOR_DLL_DIR = Path(__file__).parent.parent / 'vendor' / 'pico'
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 
@@ -49,6 +57,22 @@ def _check_platform() -> None:
         sys.exit('collect_pico_dlls.py must be run on Windows.')
     if struct.calcsize('P') != 8:
         sys.exit('Must be run with 64-bit Python (PicoSDK DLLs are 64-bit only).')
+
+
+def _fallback_dirs() -> list[str]:
+    """Return pre-staged DLL directories when PicoSDK is not installed.
+
+    Checks (in order):
+      1. PICO_DLL_DIR env var — set to any directory containing the DLLs
+      2. vendor/pico/ in project root — gitignored, commit-free staging area
+    """
+    dirs: list[str] = []
+    env = os.environ.get('PICO_DLL_DIR')
+    if env:
+        dirs.append(env)
+    if VENDOR_DLL_DIR.is_dir():
+        dirs.append(str(VENDOR_DLL_DIR))
+    return dirs
 
 
 def _probe_registry() -> tuple[list[str], bool]:
@@ -108,9 +132,9 @@ def _is_64bit_dll(dll_path: Path) -> bool:
 def main() -> None:
     _check_platform()
 
-    # Build ordered search path: registry first, then well-known defaults
+    # Build ordered search path: registry → well-known defaults → pre-staged fallbacks
     reg_paths, sdk_in_registry = _probe_registry()
-    search_dirs = reg_paths + PICO_SDK_CANDIDATES
+    search_dirs = reg_paths + PICO_SDK_CANDIDATES + _fallback_dirs()
     print(f'Searching for DLLs in: {search_dirs}')
 
     DRIVERS_DIR.mkdir(parents=True, exist_ok=True)
@@ -132,6 +156,7 @@ def main() -> None:
         print(f'  Copied {dll_name}: {src} → {dst}')
 
     if missing:
+        searched = '\n    '.join(search_dirs) if search_dirs else '(none)'
         if sdk_in_registry:
             sys.exit(
                 f'ERROR: PicoSDK is registered but its DLLs are not yet visible: {missing}\n'
@@ -140,8 +165,11 @@ def main() -> None:
             )
         sys.exit(
             f'ERROR: Could not locate the following DLLs: {missing}\n'
-            'Install PicoSDK from https://www.picotech.com/downloads,\n'
-            'restart Windows, then re-run the build.'
+            f'Searched:\n    {searched}\n\n'
+            'To fix, choose one of:\n'
+            '  1. Install PicoSDK from https://www.picotech.com/downloads and restart Windows.\n'
+            '  2. Set PICO_DLL_DIR to a directory containing the required DLLs.\n'
+            '  3. Place the DLLs in vendor/pico/ in the project root (gitignored).'
         )
 
     print(f'\nAll DLLs collected to {DRIVERS_DIR}/')
