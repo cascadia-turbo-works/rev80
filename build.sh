@@ -4,7 +4,11 @@
 # Prerequisites:
 #   - 64-bit Python 3.10+ in PATH
 #   - pip install pyinstaller
-#   - PicoSDK installed (for DLL collection step)
+#   - PicoSDK DLLs available via one of:
+#       a) PicoSDK installed on the build machine (auto-detected via registry)
+#       b) PICO_DLL_DIR env var pointing at a directory with ps4000a.dll + picoipp.dll
+#       c) vendor/pico/ in project root (gitignored) containing the same DLLs
+#      Source: C:\Program Files\Pico Technology\SDK\lib\ on any PicoSDK install
 #   - Inno Setup 6.x installed
 #
 # Usage:

@@ -26,3 +26,8 @@ dist/
 build/vibechecker/
 installer/Output/
 *.spec.bak
+
+# ── Pre-staged PicoSDK binaries (gitignored; sourced from a PicoSDK install) ─
+# Place ps4000a.dll + picoipp.dll here, or set PICO_DLL_DIR env var.
+# See build/collect_pico_dlls.py for details.
+vendor/pico/
