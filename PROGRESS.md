@@ -269,27 +269,28 @@ v4 with per-channel orders matrix; v3 files loaded in best-effort degraded mode.
 
 ---
 
-## Open Requirements / Backlog
+## Requirements Tracker
 
-Items captured from meetings or todo lists that have not yet been implemented:
-
-| # | Source | Requirement |
-|---|--------|-------------|
-| R4 | Jan 2025 | Spectral smoothing |
-| R5 | Jan 2025 | Interactive peak inspection (click peak → identify frequency) |
-| R6 | Jan 2025 | Running speed harmonic markers on spectrum |
-| R7 | Jan 2025 | Bearing fault frequency markers on spectrum |
-| R8 | Jan 2025 | Measurement metadata (company, machine, bearing types, running rate) |
-| R10 | Jan 2025 | Startup / coastdown trend (luxury) |
-| R21 | Jan 2026 | UI/UX language aligned with Alta tooling |
-| R22 | Jan 2026 | Demo screenshots for website |
-| R24 | Mar 2026 | Two-channel phase relationship display |
-| R25 | Mar 2026 | Time-domain zoom window |
-| R26 | Mar 2026 | Velocity integration low-frequency noise investigation |
-| R27 | Mar 2026 | Windows packaging (exe) |
-| R31 | Aug 2026 | Rebrand: rename all public-facing product references from "vibechecker" to "Rev80"; data dir ~/Documents/Rev80/, config dir rev80/, installer Rev80Setup-*.exe, CLI rev80 / rev80-headless, source layout src/rev80/ | ✅ Done |
-| — | Future | Sexy web portal for data sharing |
-| — | Future | Proximity probe / DAQ integration (prox probes need only one integration step) |
+| # | Source | Requirement | Status |
+|---|--------|-------------|--------|
+| R4 | Jan 2025 | Spectral smoothing | ❌ Abandoned |
+| R5 | Jan 2025 | Interactive peak inspection (click peak → identify frequency) | ✅ Done — crosshairs on spectrum, time-series, and trend plots (`7f9b6a8`) |
+| R6 | Jan 2025 | Running speed harmonic markers on spectrum — tachometer channel provides live 1xRPM (feature/tachometer); harmonic overlay implementation pending | 🔲 TODO |
+| R7 | Jan 2025 | Bearing fault frequency markers on spectrum | ❌ Abandoned — future capability, deferred for simplicity |
+| R8 | Jan 2025 | Measurement metadata (company, machine, bearing types, running rate) | ✅ Done — measurement notes field (`2623d24`) |
+| R10 | Jan 2025 | Startup / coastdown trend (luxury) | ✅ Done — trend plot with browse (`cff702e`, `142dc30`) |
+| R21 | Jan 2026 | UI/UX language aligned with Alta tooling | ✅ Done — plot labels, dynamic legend, Y-axis units (`7f9b6a8`) |
+| R22 | Jan 2026 | Demo screenshots for website | 🔲 TODO |
+| R24 | Mar 2026 | Multi-channel advanced plots: phase relationship, orbit plot (XY scope), waterfall, polar plot — many enabled by tachometer keyphasor channel | 🔲 TODO |
+| R25 | Mar 2026 | Time-domain zoom window | ✅ Done — time-series autoscaled to 300 ms window (`7f9b6a8`) |
+| R26 | Mar 2026 | Velocity integration low-frequency noise investigation | ✅ Done — FFT integration sign fix + Welch window leakage fix (`afa5ce0`, `3e4bb59`) |
+| R27 | Mar 2026 | Windows packaging (exe) | ✅ Done — Rev80Setup installer (`694146d`, `rev80.iss`, `build.sh`) |
+| R31 | Aug 2026 | Rebrand vibechecker → Rev80 | ✅ Done (`62dd2c2`) |
+| R32 | Aug 2026 | Anti-aliasing protection — field incident: high-frequency bearing fault aliased at low power, injecting spurious spectral energy. Enforce anti-aliasing filter (cutoff ≤ Nyquist) with sufficient rolloff, and/or warn when settings risk aliasing. Approach TBD. | 🔲 TODO |
+| R33 | Aug 2026 | Flexible plot layout / dockable panels — users need context-dependent layouts (e.g. spectrum + waveform vs. trend + spectrum). Investigate DPG drag-drop window docking; if not natively supported, evaluate panel-switching or split-view alternatives. | 🔲 TODO |
+| — | Future | Proximity probe support | ✅ Done — scope sensor with EU in displacement units |
+| — | Future | Web portal for data sharing | ❌ Abandoned |
+| — | Future | MCC DAQ tooling (USB-1608FS-Plus) | ❌ Abandoned — PicoScope oscilloscope replaces DAQ for all current use cases |
 
 ---
 
