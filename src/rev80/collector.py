@@ -29,6 +29,7 @@ def _write_channel_group(h5_grp, ch: int, sample: 'rev80.VibeSample') -> None:
     cg.attrs['samplerate'] = int(sample.samplerate)
     cg.attrs['status']     = str(sample.status)
     cg.attrs['overflow']   = bool(sample.overflow)
+    cg.attrs['degraded']   = bool(sample.degraded)
 
 
 class DataCollector:
@@ -112,6 +113,14 @@ class DataCollector:
         except Exception:
             log.error("Device connection may be interrupted")
             return False
+
+    @property
+    def stream_degraded(self):
+        """True when the underlying stream has flagged sustained sub-rate throughput.
+
+        Safe default False for streams with no concept of this (e.g. SimulatedSensor).
+        """
+        return getattr(self.stream, 'degraded', False)
 
     # ------------------------------------------------------------------
     # Data store
@@ -378,6 +387,7 @@ class DataCollector:
             data_arr = data_arr[:, np.newaxis]
 
         overflow_mask: int = samp.get("overflow_mask", 0)
+        degraded: bool = samp.get("degraded", False)
         samples: dict[int, rev80.VibeSample] = {}
 
         samplerate = samp.get("samplerate", self.config.samplerate)
@@ -390,6 +400,7 @@ class DataCollector:
                 samplerate=samplerate,
                 unit="mV",
                 overflow=bool(overflow_mask & (1 << ch)),
+                degraded=degraded,
                 data=data,
                 rel_time=samp["rel_time"],
                 label=f"Ch{chr(65 + ch)}",
@@ -439,16 +450,33 @@ class DataCollector:
         nyq            = samplerate / 2.0
 
         # ── 1. Butterworth filter ─────────────────────────────────────
+        # Lowpass is retired: mandatory anti-aliasing now happens upstream in
+        # PicoScopeStream, before this function ever sees the data.
         filtered_mv = sample.data.copy()
         order = config._BUTTER_ORDER
         if config.highpass_enabled and config.highpass_fc < nyq:
             sos = scipy.signal.butter(order, config.highpass_fc,
                                       btype='highpass', fs=samplerate, output='sos')
-            filtered_mv = scipy.signal.sosfilt(sos, filtered_mv)
-        if config.lowpass_enabled and config.lowpass_fc < nyq:
-            sos = scipy.signal.butter(order, config.lowpass_fc,
-                                      btype='lowpass', fs=samplerate, output='sos')
-            filtered_mv = scipy.signal.sosfilt(sos, filtered_mv)
+            # Zero-phase filtering — consistent with the exact-inverse rfft/irfft
+            # design below. sosfiltfilt needs a minimum block length; fall back
+            # to the causal filter for very short blocks (small binsize / high
+            # maxfreq combinations).
+            min_len = 3 * (2 * order + 1)
+            if len(filtered_mv) >= min_len:
+                try:
+                    filtered_mv = scipy.signal.sosfiltfilt(sos, filtered_mv)
+                except ValueError:
+                    log.debug(
+                        f'process_sample ch={ch}: sosfiltfilt failed on block of '
+                        f'length {len(filtered_mv)}; falling back to causal sosfilt'
+                    )
+                    filtered_mv = scipy.signal.sosfilt(sos, filtered_mv)
+            else:
+                log.debug(
+                    f'process_sample ch={ch}: block length {len(filtered_mv)} too short '
+                    f'for zero-phase highpass (need >= {min_len}); falling back to causal sosfilt'
+                )
+                filtered_mv = scipy.signal.sosfilt(sos, filtered_mv)
 
         # rfft is used in both step 3 (5-order overalls) and step 8 (time-domain output).
         # Plain rfft — no window, no segment averaging — so irfft is an exact inverse.
@@ -458,8 +486,7 @@ class DataCollector:
 
         # ── 2. Welch PSD in mV² — compute once, cache on sample ──────
         psd_key = (config.fft_window, config.welch_overlap,
-                   config.highpass_enabled, config.highpass_fc,
-                   config.lowpass_enabled, config.lowpass_fc)
+                   config.highpass_enabled, config.highpass_fc)
         if sample.psd_mv is None or sample._psd_config_key != psd_key:
             nfft     = int(samplerate / config.binsize)
             nperseg  = min(nfft, len(filtered_mv))
@@ -548,6 +575,7 @@ class DataCollector:
 
         return rev80.ChannelResult(
             channel=ch, unit=effective_tgt, overflow=sample.overflow,
+            degraded=sample.degraded,
             time_data=time_signal, time_vec=sample.time_vec, samplerate=samplerate,
             freq=freq_hz, spectrum=spectrum_amp, peaks=peaks, overall=overall,
             timestamp=sample._timestamp, rel_time=sample.rel_time, status=sample.status,
@@ -604,8 +632,7 @@ class DataCollector:
             /metadata/acquisition                   group
             /metadata/acquisition.attrs             maxfreq, binsize, fft_window,
                                                     welch_overlap, highpass_enabled,
-                                                    highpass_fc, lowpass_enabled, lowpass_fc,
-                                                    trend_max_points
+                                                    highpass_fc, trend_max_points
             /metadata/scope_sensors/{id}            group (one per unique sensor used)
             /metadata/scope_sensors/{id}.attrs      name, id, sensitivity, engineering_units,
                                                     target_unit, notes
