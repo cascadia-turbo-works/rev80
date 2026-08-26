@@ -10,6 +10,7 @@ import time
 from datetime import datetime
 
 import numpy as np
+import scipy.signal
 
 from rev80._pico_loader import ensure_pico_dlls_loadable
 ensure_pico_dlls_loadable()
@@ -36,6 +37,30 @@ _NOT_RESPONDING_DELAY_S = 2.0   # longer pause after PICO_NOT_RESPONDING (device
 # Streaming watchdog / recovery tuning
 _WATCHDOG_TIMEOUT_S     = 5.0   # seconds of silence → assume device hung
 _MAX_RECONNECT_ATTEMPTS = 3     # recovery attempts before giving up
+
+# Anti-alias oversample/decimate tuning.
+#
+# Measured on a PicoScope 4424A (4 channels) during hardware testing for R32:
+# continuous ps4000aRunStreaming / ps4000aGetStreamingLatestValues silently
+# drops the majority of samples above roughly 100-250 kHz (depending on
+# channel count), with status='OKAY' and no overflow bit set — the driver
+# gives zero indication anything was lost. Requested rates >=300k Hz saw
+# delivery ratios drop as low as 15-23% at 4 channels; even the 1-channel
+# case fell to ~34% once the driver internally clamped near 1 MHz. A flat,
+# channel-count-independent ceiling of 100 kHz keeps clear margin across
+# 1/2/4 channels (the 4-channel case is borderline in the 100-200k range).
+#
+# To get real anti-alias protection without hitting that ceiling, the ADC is
+# run at effective_osr * config.samplerate (oversampled), then filtered and
+# decimated back down to config.samplerate before reaching DataCollector.
+STREAMING_CEILING_HZ = 100_000
+OSR_TARGET           = 4
+
+# Streaming-rate watchdog tuning (detects sustained-but-not-silent
+# under-delivery — see PicoScopeStream.degraded).
+_RATE_CHECK_INTERVAL_S     = 2.0   # seconds between rate-degradation checks
+_RATE_DEGRADED_THRESHOLD   = 0.9   # effective/requested ratio below this = degraded
+_RATE_DEGRADED_CONSECUTIVE = 2     # consecutive bad windows before flagging (~4s)
 
 
 def _open_unit(chandle) -> bool:
@@ -222,6 +247,18 @@ def FindPicoScope() -> list:
     return devices
 
 
+def antialias_decimate(raw_block: np.ndarray, factor: int) -> np.ndarray:
+    """Anti-alias filter + decimate a (N, channels) raw block by an integer factor.
+
+    Zero-phase FIR decimation avoids introducing group delay into the
+    time-domain signal. factor=1 is a no-op (some maxfreq presets have no
+    streaming headroom for oversampling — see AcquisitionSettings docs).
+    """
+    if factor <= 1:
+        return raw_block
+    return scipy.signal.decimate(raw_block, factor, ftype='fir', zero_phase=True, axis=0)
+
+
 class PicoScopeStream:
     """
     Wraps ps4000a streaming API in a background polling thread.
@@ -273,6 +310,16 @@ class PicoScopeStream:
         self._stop_event   = threading.Event()
         self._thread: threading.Thread | None = None
 
+        # Oversample ratio: the ADC is driven at effective_osr * config.samplerate
+        # and the result is filtered + decimated back down before reaching the
+        # app callback. Capped at OSR_TARGET and by how much headroom is left
+        # under STREAMING_CEILING_HZ at this target rate (see module docstring
+        # comment above STREAMING_CEILING_HZ for the hardware measurements this
+        # is based on).
+        self._effective_osr = max(1, int(min(
+            OSR_TARGET, STREAMING_CEILING_HZ / config.samplerate,
+        )))
+
         # One rolling driver buffer per enabled channel
         self._enabled_channels: list[int] = list(config.enabled_channels)
         self._driver_buffers: dict[int, np.ndarray] = {
@@ -280,19 +327,35 @@ class PicoScopeStream:
             for ch in self._enabled_channels
         }
 
-        # 2-D accumulator: shape (acc_size, N) — one column per enabled channel
+        # 2-D accumulator: shape (acc_size, N) — one column per enabled channel.
+        # Sized in raw (oversampled) samples — see _effective_osr above.
         N = len(self._enabled_channels)
-        self._accumulator   = np.zeros((config.blocksize * 2, N), dtype=np.float64)
+        self._accumulator   = np.zeros((config.blocksize * self._effective_osr * 2, N),
+                                       dtype=np.float64)
         self._acc_ptr       = 0
         self._stream_start  = 0.0
 
         # Actual sample rate reported by hardware after ps4000aRunStreaming;
-        # initialised from config and updated in _start_streaming.
+        # initialised from config and updated in _start_streaming. This is the
+        # *target* rate reported downstream (DataCollector, VibeSample, HDF5) —
+        # oversampling is fully transparent to consumers of this attribute.
         self._actual_samplerate = config.samplerate
+        # Actual *raw* (oversampled) rate achieved by hardware, updated in
+        # _start_streaming. Used only internally (decimation, rate watchdog).
+        self._actual_raw_samplerate = config.samplerate * self._effective_osr
         # Watchdog: updated by _streaming_callback whenever data arrives
         self._last_data_time    = 0.0
         # Channels already warned about overflow this stream; cleared on start/recover
         self._overflow_warned: set[int] = set()
+
+        # Streaming-rate watchdog state (detects sustained under-delivery —
+        # see _poll_loop and _streaming_callback).
+        self._rate_window_samples = 0
+        self._rate_window_start   = 0.0
+        self._rate_last_check     = 0.0
+        self._rate_bad_windows    = 0
+        self.degraded: bool = False
+        self.effective_samplerate: float = 0.0
 
     # ------------------------------------------------------------------
     # Public interface
@@ -315,10 +378,19 @@ class PicoScopeStream:
         # Reset accumulator and watchdog state
         N = len(self._enabled_channels)
         self._acc_ptr         = 0
-        self._accumulator     = np.zeros((self.config.blocksize * 2, N), dtype=np.float64)
+        self._accumulator     = np.zeros(
+            (self.config.blocksize * self._effective_osr * 2, N), dtype=np.float64)
         self._stream_start    = time.monotonic()
         self._last_data_time  = time.monotonic()
         self._overflow_warned = set()   # reset per-channel overflow inhibit on each stream start
+
+        # Reset streaming-rate watchdog state
+        self._rate_window_samples = 0
+        self._rate_window_start   = time.monotonic()
+        self._rate_last_check     = time.monotonic()
+        self._rate_bad_windows    = 0
+        self.degraded              = False
+        self.effective_samplerate  = 0.0
 
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._poll_loop, daemon=True,
@@ -513,7 +585,13 @@ class PicoScopeStream:
                 ps.PS4000A_RATIO_MODE['PS4000A_RATIO_MODE_NONE'],
             ))
 
-        sample_interval_us = ctypes.c_int32(max(1, int(1e6 / self.config.samplerate)))
+        # Drive the ADC at effective_osr * config.samplerate (oversampled) so the
+        # anti-alias filter in _streaming_callback has real signal above the
+        # target Nyquist to filter out before decimating back down. See
+        # STREAMING_CEILING_HZ / OSR_TARGET module comment for why this is
+        # necessary and bounded.
+        raw_samplerate = self.config.samplerate * self._effective_osr
+        sample_interval_us = ctypes.c_int32(max(1, int(1e6 / raw_samplerate)))
 
         assert_pico_ok(ps.ps4000aRunStreaming(
             self._chandle,
@@ -527,14 +605,19 @@ class PicoScopeStream:
             _DRIVER_BUFFER_SAMPLES,
         ))
 
-        # Read back the actual achieved sample rate (hardware may round the interval).
-        # Store on self — config.samplerate is now a read-only derived property.
+        # Read back the actual achieved raw (oversampled) sample rate (hardware
+        # may round the interval to a whole microsecond).
         actual_us = sample_interval_us.value
-        actual_fs = int(round(1e6 / actual_us))
-        if actual_fs != self.config.samplerate:
-            log.debug(f'PicoScope actual sample rate: {actual_fs} Hz '
-                      f'(requested {self.config.samplerate} Hz)')
-        self._actual_samplerate = actual_fs
+        actual_raw_fs = int(round(1e6 / actual_us))
+        if actual_raw_fs != raw_samplerate:
+            log.debug(f'PicoScope actual raw sample rate: {actual_raw_fs} Hz '
+                      f'(requested {raw_samplerate} Hz, osr={self._effective_osr})')
+        self._actual_raw_samplerate = actual_raw_fs
+        # _actual_samplerate is the *target* rate reported downstream — always
+        # config.samplerate, regardless of oversampling. Downstream code
+        # (DataCollector, VibeSample, HDF5 persistence) must stay unaware that
+        # oversampling happened.
+        self._actual_samplerate = self.config.samplerate
 
     # ------------------------------------------------------------------
     # Streaming callback + poll loop (run on background thread)
@@ -548,6 +631,12 @@ class PicoScopeStream:
 
         # Watchdog heartbeat
         self._last_data_time = time.monotonic()
+
+        # Streaming-rate watchdog: accumulate raw samples actually delivered
+        # by the driver this callback, independent of the accumulator/decimate
+        # accounting below — this measures raw hardware delivery, not
+        # decimated output. Checked periodically in _poll_loop.
+        self._rate_window_samples += noOfSamples
 
         # Log ADC overflow (signal clipping) once per channel per stream.
         # overflow is a bitmask: bit n set → channel n clipped.
@@ -584,9 +673,11 @@ class PicoScopeStream:
         N   = len(self._enabled_channels)
         end = self._acc_ptr + noOfSamples
 
-        # Grow accumulator rows if needed
+        # Grow accumulator rows if needed. Sized in raw samples — bs below is
+        # the raw (oversampled) block size needed before decimation.
+        raw_bs = self.config.blocksize * self._effective_osr
         if end > self._accumulator.shape[0]:
-            new_rows = end + self.config.blocksize
+            new_rows = end + raw_bs
             grown = np.zeros((new_rows, N), dtype=np.float64)
             grown[:self._accumulator.shape[0]] = self._accumulator
             self._accumulator = grown
@@ -595,13 +686,19 @@ class PicoScopeStream:
             self._accumulator[self._acc_ptr:end, i] = chunk_mv
         self._acc_ptr = end
 
-        # Fire app callback for each complete block accumulated
-        bs = self.config.blocksize
+        # Fire app callback for each complete raw block accumulated, decimated
+        # down to config.blocksize before being handed to the app callback.
+        bs = raw_bs
         while self._acc_ptr >= bs:
-            block     = self._accumulator[:bs, :].copy()   # shape (blocksize, N)
+            raw_block = self._accumulator[:bs, :].copy()   # shape (raw_bs, N)
             remainder = self._acc_ptr - bs
             self._accumulator[:remainder] = self._accumulator[bs:self._acc_ptr]
             self._acc_ptr = remainder
+
+            # Anti-alias filter + decimate back down to the target blocksize.
+            # DataCollector and everything downstream is unaware oversampling
+            # happened — 'samplerate' below stays the target rate.
+            block = antialias_decimate(raw_block, self._effective_osr)
 
             rel_time = self._last_data_time - self._stream_start
             status   = 'OVERFLOW' if overflow else 'OKAY'
@@ -615,6 +712,7 @@ class PicoScopeStream:
                 'channels':      list(self._enabled_channels),
                 'data':          block,           # shape (blocksize, N)
                 'samplerate':    self._actual_samplerate,
+                'degraded':      self.degraded,
             }
             try:
                 self._app_callback(samp)
@@ -651,10 +749,18 @@ class PicoScopeStream:
                 # Reset accumulator so stale partial data isn't carried forward
                 N = len(self._enabled_channels)
                 self._acc_ptr         = 0
-                self._accumulator     = np.zeros((self.config.blocksize * 2, N),
-                                                 dtype=np.float64)
+                self._accumulator     = np.zeros(
+                    (self.config.blocksize * self._effective_osr * 2, N),
+                    dtype=np.float64)
                 self._last_data_time  = time.monotonic()
                 self._overflow_warned = set()   # settings changed — re-arm overflow warnings
+                # Reset streaming-rate watchdog state too — a fresh connection
+                # deserves a fresh measurement window, not one polluted by the
+                # gap during recovery.
+                self._rate_window_samples = 0
+                self._rate_window_start   = time.monotonic()
+                self._rate_last_check     = time.monotonic()
+                self._rate_bad_windows    = 0
                 log.info('PicoScopeStream: recovery successful')
                 return True
             except Exception as e:
@@ -697,6 +803,60 @@ class PicoScopeStream:
                 c_func_ptr = ps.StreamingReadyType(self._streaming_callback)
                 continue
 
+            # Streaming-rate watchdog: detects sustained-but-not-silent
+            # under-delivery (e.g. USB/bus bandwidth ceiling exceeded) — a
+            # failure mode the silence watchdog above cannot see, since
+            # callbacks keep firing regularly with status='OKAY' the whole
+            # time. Deliberately does NOT call _try_recover() — see
+            # _check_rate_degradation for why.
+            self._check_rate_degradation()
+
             time.sleep(0.001)
 
         log.debug('PicoScopeStream poll loop exited')
+
+    def _check_rate_degradation(self):
+        """Periodically compare delivered vs. requested raw sample rate.
+
+        Independent of the silence watchdog in _poll_loop: a device that is
+        streaming at a fraction of the requested rate keeps calling back
+        regularly with status='OKAY' and no overflow bit, so the silence
+        watchdog never trips even though the majority of samples may be
+        silently dropped by the driver (measured on a PicoScope 4424A — see
+        STREAMING_CEILING_HZ comment above).
+        """
+        now = time.monotonic()
+        if now - self._rate_last_check < _RATE_CHECK_INTERVAL_S:
+            return
+
+        elapsed = now - self._rate_window_start
+        effective_rate = self._rate_window_samples / elapsed if elapsed > 0 else 0.0
+        self.effective_samplerate = effective_rate
+
+        requested = self._actual_raw_samplerate
+        ratio = effective_rate / requested if requested > 0 else 1.0
+
+        if ratio < _RATE_DEGRADED_THRESHOLD:
+            self._rate_bad_windows += 1
+            if self._rate_bad_windows >= _RATE_DEGRADED_CONSECUTIVE and not self.degraded:
+                self.degraded = True
+                log.warning(
+                    f'PicoScopeStream: streaming rate degraded — '
+                    f'{effective_rate:.0f} Hz measured vs {requested:.0f} Hz requested '
+                    f'({ratio:.0%}). This is a USB/bus bandwidth ceiling, not a '
+                    f'device hang — NOT triggering recovery (reopening the device '
+                    f'would not change available throughput).'
+                )
+        else:
+            self._rate_bad_windows = 0
+            if self.degraded:
+                self.degraded = False
+                log.info(
+                    f'PicoScopeStream: streaming rate recovered — '
+                    f'{effective_rate:.0f} Hz measured vs {requested:.0f} Hz requested '
+                    f'({ratio:.0%})'
+                )
+
+        self._rate_window_samples = 0
+        self._rate_window_start   = now
+        self._rate_last_check     = now
