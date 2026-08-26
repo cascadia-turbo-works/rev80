@@ -17,7 +17,7 @@ class AcquisitionSettings:
     Everything else (samplerate, blocksize, acquisition time) is derived.
 
     Arithmetic flow:
-        maxfreq  → samplerate = nextpow2(2 * maxfreq)
+        maxfreq  → samplerate = nextpow2(2.56 * maxfreq)
         binsize  → blocksize  = nextpow2(samplerate / binsize)
     """
     _fm: float = 2e3               # max analysis frequency (Hz)
@@ -38,8 +38,6 @@ class AcquisitionSettings:
     # Butterworth filters (applied per-channel in DataCollector.receive_data)
     highpass_enabled: bool = True
     highpass_fc: float = 10.0      # Hz
-    lowpass_enabled: bool = False
-    lowpass_fc: float = 1000.0     # Hz
     # Frame cache
     cache_frames: int = DEFAULT_CACHE_FRAMES  # depth of the ring cache in DataCollector
 
@@ -83,8 +81,6 @@ class AcquisitionSettings:
             'welch_overlap':    self.welch_overlap,
             'highpass_enabled': self.highpass_enabled,
             'highpass_fc':      self.highpass_fc,
-            'lowpass_enabled':  self.lowpass_enabled,
-            'lowpass_fc':       self.lowpass_fc,
             'trend_max_points': self.trend_max_points,
             'cache_frames':     self.cache_frames,
         }
@@ -102,8 +98,6 @@ class AcquisitionSettings:
         if 'welch_overlap'    in d: obj.welch_overlap    = float(d['welch_overlap'])   # noqa: E701
         if 'highpass_enabled' in d: obj.highpass_enabled = bool(d['highpass_enabled']) # noqa: E701
         if 'highpass_fc'      in d: obj.highpass_fc      = float(d['highpass_fc'])     # noqa: E701
-        if 'lowpass_enabled'  in d: obj.lowpass_enabled  = bool(d['lowpass_enabled'])  # noqa: E701
-        if 'lowpass_fc'       in d: obj.lowpass_fc       = float(d['lowpass_fc'])      # noqa: E701
         if 'trend_max_points' in d: obj.trend_max_points = int(d['trend_max_points'])  # noqa: E701
         if 'cache_frames'     in d: obj.cache_frames     = int(d['cache_frames'])           # noqa: E701
         return obj
@@ -112,8 +106,17 @@ class AcquisitionSettings:
 
     @property
     def samplerate(self) -> int:
-        """Minimum power-of-2 sample rate satisfying Nyquist for maxfreq."""
-        return nextpow2(int(2 * self._fm))
+        """Minimum power-of-2 sample rate guaranteeing >=1.28x maxfreq at Nyquist.
+
+        Uses 2.56x maxfreq (rather than the bare 2x Nyquist minimum) before
+        rounding up to a power of two. Since nextpow2 only rounds up, this
+        guarantees Nyquist (samplerate/2) >= 1.28 * maxfreq, i.e. at least a
+        28% margin at every preset. This is the same oversampling ratio real
+        FFT vibration analyzers use, and provides the transition-band room
+        needed for the mandatory anti-alias filter applied upstream of this
+        setting (see PicoScopeStream).
+        """
+        return nextpow2(int(2.56 * self._fm))
 
     @property
     def blocksize(self) -> int:
@@ -165,6 +168,7 @@ class VibeSample:
     samplerate: int
     unit: str
     overflow: bool
+    degraded: bool = False
     data: np.ndarray = field(default_factory=lambda: np.array([0], dtype=np.float64))
 
     # at processing time, calculate the overall amplitude for -2 ..0 .. +2 orders of integration/derivative
@@ -217,6 +221,7 @@ class ChannelResult:
     channel:    int
     unit:       str              # target display unit, e.g. 'in/s', 'g', 'mV'
     overflow:   bool             # True if ADC clipped during this block
+    degraded:   bool             # True if streaming rate was degraded during this block
     time_data:  np.ndarray       # (N,) signal in target unit
     time_vec:   np.ndarray       # (N,) seconds
     samplerate: int

@@ -66,8 +66,6 @@ _BUILTIN_ACQ: dict[str, Any] = {
         'welch_overlap':    0.5,
         'highpass_enabled': True,
         'highpass_fc':      10.0,
-        'lowpass_enabled':  False,
-        'lowpass_fc':       1000.0,
         'trend_max_points': 5000,
         'cache_frames':     15,
     },
