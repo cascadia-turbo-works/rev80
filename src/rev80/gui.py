@@ -730,15 +730,31 @@ class GUI:
         fs_ks = cfg.samplerate / 1000
         t_col = cfg.acquisition_period
         hp = f"HP {cfg.highpass_fc:.0f} Hz" if cfg.highpass_enabled else "HP off"
-        lp = f"LP {cfg.lowpass_fc:.0f} Hz" if cfg.lowpass_enabled else "LP off"
+        aa = f"AA {cfg.samplerate / 2:.0f} Hz"
         info = (
             f"{cfg.maxfreq:.0f} Hz max  |  {cfg.binsize:.2f} Hz/bin\n"
             f"{cfg.n_fft_bins} lines  |  {fs_ks:.1f} kS/s\n"
             f"Acq: {t_col:.3f} s  |  {cfg.fft_window}\n"
-            f"{hp}  |  {lp}"
+            f"{hp}  |  {aa}"
         )
         if dpg.does_item_exist(ui.SPECTRUM_INFO_TEXT):
             dpg.set_value(ui.SPECTRUM_INFO_TEXT, info)
+
+        # Streaming-rate degraded warning — only relevant while a real hardware
+        # stream is active; SimulatedSensor and "no device" cases have no
+        # concept of this and stay hidden.
+        if dpg.does_item_exist(ui.SPECTRUM_DEGRADED_WARNING):
+            degraded = bool(self.collector.stream_degraded)
+            if degraded:
+                stream = self.collector.stream
+                eff = getattr(stream, 'effective_samplerate', None)
+                nominal = cfg.samplerate
+                if eff is not None:
+                    warn_text = f"⚠ rate degraded: {eff:.0f}/{nominal:.0f} Hz"
+                else:
+                    warn_text = "⚠ rate degraded"
+                dpg.set_value(ui.SPECTRUM_DEGRADED_WARNING, warn_text)
+            dpg.configure_item(ui.SPECTRUM_DEGRADED_WARNING, show=degraded)
 
     def _update_acq_derived(self):
         """Refresh derived display fields in the acquisition dialog based on current widget values."""
@@ -1956,10 +1972,6 @@ class GUI:
             dpg.set_value(ui.ACQ_DLG_HP_ENABLED, cfg.highpass_enabled)
         if dpg.does_item_exist(ui.ACQ_DLG_HP_FC):
             dpg.set_value(ui.ACQ_DLG_HP_FC, cfg.highpass_fc)
-        if dpg.does_item_exist(ui.ACQ_DLG_LP_ENABLED):
-            dpg.set_value(ui.ACQ_DLG_LP_ENABLED, cfg.lowpass_enabled)
-        if dpg.does_item_exist(ui.ACQ_DLG_LP_FC):
-            dpg.set_value(ui.ACQ_DLG_LP_FC, cfg.lowpass_fc)
         if dpg.does_item_exist(ui.ACQ_DLG_CACHE_FRAMES):
             dpg.set_value(ui.ACQ_DLG_CACHE_FRAMES, cfg.cache_frames)
         self._update_acq_derived()
@@ -1991,10 +2003,6 @@ class GUI:
             cfg.highpass_enabled = dpg.get_value(ui.ACQ_DLG_HP_ENABLED)
         if dpg.does_item_exist(ui.ACQ_DLG_HP_FC):
             cfg.highpass_fc = float(dpg.get_value(ui.ACQ_DLG_HP_FC))
-        if dpg.does_item_exist(ui.ACQ_DLG_LP_ENABLED):
-            cfg.lowpass_enabled = dpg.get_value(ui.ACQ_DLG_LP_ENABLED)
-        if dpg.does_item_exist(ui.ACQ_DLG_LP_FC):
-            cfg.lowpass_fc = float(dpg.get_value(ui.ACQ_DLG_LP_FC))
         if dpg.does_item_exist(ui.ACQ_DLG_CACHE_FRAMES):
             n = max(1, int(dpg.get_value(ui.ACQ_DLG_CACHE_FRAMES)))
             cfg.cache_frames = n
@@ -2888,13 +2896,6 @@ class GUI:
                                 dpg.add_input_float(
                                     label="Hz", tag=ui.ACQ_DLG_HP_FC, default_value=10.0, min_value=0.1, width=100
                                 )
-                            # Control: Lowpass filter
-                            with dpg.group(horizontal=True):
-                                dpg.add_checkbox(label="Lowpass", tag=ui.ACQ_DLG_LP_ENABLED, default_value=False)
-                                dpg.add_input_float(
-                                    label="Hz", tag=ui.ACQ_DLG_LP_FC, default_value=1000.0, min_value=1.0, width=100
-                                )
-
                             # Control: Frame cache depth
                             dpg.add_separator()
                             dpg.add_text("Recording Length")
@@ -3311,6 +3312,12 @@ class GUI:
                             default_value="",
                             width=-1,
                             height=120,
+                        )
+                        dpg.add_text(
+                            "",
+                            tag=ui.SPECTRUM_DEGRADED_WARNING,
+                            color=_c("RED_LIGHT"),
+                            show=False,
                         )
 
                     dpg.add_spacer(height=6)
