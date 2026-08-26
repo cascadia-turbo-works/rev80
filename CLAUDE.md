@@ -129,9 +129,9 @@ Per-device YAML at `~/.config/vibechecker/devices/{sanitized_serial}.yaml` (Linu
 ## Build / packaging
 
 ```bash
-./build.sh   # run from Git Bash (Windows or Linux)
+./scripts/build.sh   # run from Git Bash (Windows or Linux), from the repo root
 ```
 
-Build pipeline: collect PicoSDK DLLs → PyInstaller (`vibechecker.spec`, one-dir bundle) → Inno Setup installer (`installer/vibechecker.iss`, non-admin install).
+Build pipeline: collect PicoSDK DLLs → PyInstaller (`build/rev80.spec`, one-dir bundle) → Inno Setup installer (`installer/rev80.iss`, non-admin install).
 
 `_paths.py` must be used for all resource and data directory lookups — it handles the `sys._MEIPASS` path difference in frozen builds.

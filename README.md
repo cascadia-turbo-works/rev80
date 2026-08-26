@@ -291,13 +291,16 @@ tests/                    pytest suite
   test_monitor_gate.py
   test_monitor_index.py
   test_monitor_session_load.py   full write→load→browse integration tests
-rev80.spec                PyInstaller build spec
-build.sh                  Full build pipeline (run from Git Bash)
+build/
+  rev80.spec              PyInstaller build spec
+  collect_pico_dlls.py    Collects PicoScope DLLs into drivers/
+scripts/
+  build.sh                Full build pipeline (run from Git Bash)
 ```
 
 ### Replacing the app icon
 
-Drop a new `assets/rev80.ico` in place and rebuild — no changes to `rev80.spec` or `installer/rev80.iss` are needed. To regenerate the `.ico` from the SVG source:
+Drop a new `assets/rev80.ico` in place and rebuild — no changes to `build/rev80.spec` or `installer/rev80.iss` are needed. To regenerate the `.ico` from the SVG source:
 
 ```bash
 # Requires inkscape and imagemagick
@@ -316,7 +319,7 @@ Produces a self-contained one-directory executable and a standalone installer (`
 | Tool | Where to get it | Notes |
 | --- | --- | --- |
 | Python 3.10+ (64-bit) | [python.org](https://www.python.org/downloads/) | Must be 64-bit; add to PATH |
-| Git for Windows | [git-scm.com](https://git-scm.com/download/win) | Provides Git Bash for `build.sh` |
+| Git for Windows | [git-scm.com](https://git-scm.com/download/win) | Provides Git Bash for `scripts/build.sh` |
 | PicoSDK 11.1.418 | [picotech.com/downloads](https://www.picotech.com/downloads) | **Reboot after install** |
 | Inno Setup 6 | [jrsoftware.org/isinfo.php](https://jrsoftware.org/isinfo.php) | Per-user install to `%LOCALAPPDATA%` is fine |
 
@@ -329,13 +332,14 @@ pip install -e ".[dev]"
 ### Running the build
 
 ```bash
+# Run from the repo root
 # Full pipeline: collect DLLs → PyInstaller → Inno Setup
-./build.sh
+./scripts/build.sh
 
 # Individual steps
-./build.sh dlls         # collect PicoScope DLLs into drivers/ only
-./build.sh pyinstaller  # PyInstaller only (skips DLL collection)
-./build.sh installer    # Inno Setup only (requires dist/ to exist)
+./scripts/build.sh dlls         # collect PicoScope DLLs into drivers/ only
+./scripts/build.sh pyinstaller  # PyInstaller only (skips DLL collection)
+./scripts/build.sh installer    # Inno Setup only (requires dist/ to exist)
 ```
 
 ### Output

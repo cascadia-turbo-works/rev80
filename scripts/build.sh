@@ -116,7 +116,7 @@ if [[ "$STEP" == "all" || "$STEP" == "pyinstaller" ]]; then
         rm -rf dist/rev80
     fi
 
-    python -m PyInstaller rev80.spec --noconfirm $PYINSTALLER_CLEAN
+    python -m PyInstaller build/rev80.spec --noconfirm $PYINSTALLER_CLEAN
     echo
 fi
 

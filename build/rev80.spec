@@ -1,7 +1,7 @@
 # rev80.spec  —  PyInstaller build spec
 #
 # Build (from project root on Windows):
-#   pyinstaller rev80.spec
+#   pyinstaller build/rev80.spec
 #
 # Prerequisites:
 #   pip install pyinstaller
@@ -14,7 +14,7 @@ from PyInstaller.utils.hooks import collect_submodules, collect_data_files, coll
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 
-ROOT = Path(SPECPATH)
+ROOT = Path(SPECPATH).parent
 DRIVERS_DIR = ROOT / 'drivers'
 LOGGING_YAML = ROOT / 'src' / 'rev80' / 'logging.yaml'
 ICON_FILE = ROOT / 'assets' / 'icons' / 'rev80.ico'

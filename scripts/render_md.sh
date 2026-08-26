@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
-# render_progress.sh — Convert PROGRESS.md (or any .md) to PDF
+# render_md.sh — Convert any Markdown file to PDF
 # via pandoc → styled HTML → weasyprint
 #
 # Usage:
-#   ./render_progress.sh                       # outputs doc/PROGRESS.pdf
-#   ./render_progress.sh path/to/file.md       # any markdown file
-#   ./render_progress.sh file.md output.pdf    # explicit output path
+#   ./render_md.sh path/to/file.md              # outputs doc/file.pdf
+#   ./render_md.sh path/to/file.md output.pdf    # explicit output path
 
 set -euo pipefail
 
-INPUT="${1:-PROGRESS.md}"
-OUTPUT="${2:-doc/PROGRESS.pdf}"
+if [[ $# -lt 1 ]]; then
+  echo "Usage: $0 path/to/file.md [output.pdf]" >&2
+  exit 1
+fi
+
+INPUT="$1"
+BASENAME="$(basename "$INPUT")"
+OUTPUT="${2:-doc/${BASENAME%.*}.pdf}"
 
 CSS_FILE="$(mktemp /tmp/vibechecker_XXXXXX.css)"
 HTML_FILE="$(mktemp /tmp/vibechecker_XXXXXX.html)"
