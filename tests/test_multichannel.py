@@ -386,6 +386,7 @@ class TestChannelResult:
             channel=ch,
             unit=unit,
             overflow=False,
+            degraded=False,
             time_data=np.zeros(n),
             time_vec=np.linspace(0, 1, n),
             samplerate=8000,

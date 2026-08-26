@@ -303,7 +303,7 @@ class TestAcquisitionSettingsSerialisation:
     def test_to_dict_contains_expected_keys(self):
         d = AcquisitionSettings().to_dict()
         for key in ('maxfreq', 'binsize', 'fft_window', 'welch_overlap',
-                    'highpass_enabled', 'highpass_fc', 'lowpass_enabled', 'lowpass_fc',
+                    'highpass_enabled', 'highpass_fc',
                     'trend_max_points'):
             assert key in d, f'Missing key: {key}'
 
@@ -315,8 +315,6 @@ class TestAcquisitionSettingsSerialisation:
         original.welch_overlap = 0.75
         original.highpass_enabled = False
         original.highpass_fc = 20.0
-        original.lowpass_enabled = True
-        original.lowpass_fc = 2000.0
         original.trend_max_points = 200
 
         restored = AcquisitionSettings.from_dict(original.to_dict())
@@ -327,8 +325,6 @@ class TestAcquisitionSettingsSerialisation:
         assert restored.welch_overlap == 0.75
         assert restored.highpass_enabled is False
         assert restored.highpass_fc == 20.0
-        assert restored.lowpass_enabled is True
-        assert restored.lowpass_fc == 2000.0
         assert restored.trend_max_points == 200
 
     def test_from_dict_with_partial_dict_uses_defaults(self):

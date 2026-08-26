@@ -93,9 +93,7 @@ def test_filter_defaults():
     """Filter fields have valid types and sane ranges regardless of the default values."""
     config = AcquisitionSettings()
     assert isinstance(config.highpass_enabled, bool)
-    assert isinstance(config.lowpass_enabled, bool)
     assert config.highpass_fc > 0
-    assert config.lowpass_fc > 0
 
 
 def test_welch_overlap_default():

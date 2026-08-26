@@ -164,63 +164,65 @@ class TestStreamingCallbackAccumulator:
 
     def test_single_chunk_smaller_than_blocksize_no_callback(self, monkeypatch):
         stream, received = _make_stream(monkeypatch=monkeypatch)
-        bs = stream.config.blocksize
+        raw_bs = stream.config.blocksize * stream._effective_osr
 
-        _fill_driver_buffers(stream, value=0)
+        _fill_driver_buffers(stream, value=0, n=raw_bs)
         stream._streaming_callback(
-            handle=0, noOfSamples=bs - 1, startIndex=0,
+            handle=0, noOfSamples=raw_bs - 1, startIndex=0,
             overflow=0, triggerAt=0, triggered=0, autoStop=0, param=None,
         )
         assert len(received) == 0
 
     def test_exact_blocksize_fires_once(self, monkeypatch):
         stream, received = _make_stream(monkeypatch=monkeypatch)
-        bs = stream.config.blocksize
+        raw_bs = stream.config.blocksize * stream._effective_osr
 
-        buf = np.arange(bs, dtype=np.int16)
-        stream._driver_buffers[0] = np.zeros(max(bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
-        stream._driver_buffers[0][:bs] = buf
+        buf = np.arange(raw_bs, dtype=np.int16)
+        stream._driver_buffers[0] = np.zeros(max(raw_bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
+        stream._driver_buffers[0][:raw_bs] = buf
 
         stream._streaming_callback(
-            handle=0, noOfSamples=bs, startIndex=0,
+            handle=0, noOfSamples=raw_bs, startIndex=0,
             overflow=0, triggerAt=0, triggered=0, autoStop=0, param=None,
         )
         assert len(received) == 1
 
     def test_two_chunks_fire_one_callback(self, monkeypatch):
         stream, received = _make_stream(monkeypatch=monkeypatch)
-        bs = stream.config.blocksize
-        half = bs // 2
+        raw_bs = stream.config.blocksize * stream._effective_osr
+        half = raw_bs // 2
 
-        buf = np.zeros(max(bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
+        buf = np.zeros(max(raw_bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
         stream._driver_buffers[0] = buf
 
         buf[:half] = 1
         stream._streaming_callback(0, half, 0, 0, 0, 0, 0, None)
         assert len(received) == 0
 
-        buf[half:bs] = 2
+        buf[half:raw_bs] = 2
         stream._streaming_callback(0, half, half, 0, 0, 0, 0, None)
         assert len(received) == 1
 
     def test_double_blocksize_fires_twice(self, monkeypatch):
         stream, received = _make_stream(monkeypatch=monkeypatch)
-        bs = stream.config.blocksize
+        raw_bs = stream.config.blocksize * stream._effective_osr
 
-        buf = np.zeros(max(bs * 2, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
+        buf = np.zeros(max(raw_bs * 2, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
         stream._driver_buffers[0] = buf
 
-        stream._streaming_callback(0, bs * 2, 0, 0, 0, 0, 0, None)
+        stream._streaming_callback(0, raw_bs * 2, 0, 0, 0, 0, 0, None)
         assert len(received) == 2
 
     def test_data_shape_is_blocksize_by_n_channels(self, monkeypatch):
-        """Fired data must have shape (blocksize, N) where N = enabled channels."""
+        """Fired data must have shape (blocksize, N) where N = enabled channels,
+        after anti-alias decimation from the raw (oversampled) block size."""
         bs = 64
         stream, received = _make_stream(_make_config(blocksize=bs), monkeypatch=monkeypatch)
+        raw_bs = bs * stream._effective_osr
 
-        buf = np.zeros(max(bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
+        buf = np.zeros(max(raw_bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
         stream._driver_buffers[0] = buf
-        stream._streaming_callback(0, bs, 0, 0, 0, 0, 0, None)
+        stream._streaming_callback(0, raw_bs, 0, 0, 0, 0, 0, None)
 
         assert len(received) == 1
         N = len(stream._enabled_channels)
@@ -230,8 +232,9 @@ class TestStreamingCallbackAccumulator:
         """Each fired dict must carry a 'channels' key matching enabled_channels."""
         bs = 64
         stream, received = _make_stream(_make_config(blocksize=bs), monkeypatch=monkeypatch)
-        stream._driver_buffers[0] = np.zeros(max(bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
-        stream._streaming_callback(0, bs, 0, 0, 0, 0, 0, None)
+        raw_bs = bs * stream._effective_osr
+        stream._driver_buffers[0] = np.zeros(max(raw_bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
+        stream._streaming_callback(0, raw_bs, 0, 0, 0, 0, 0, None)
 
         assert 'channels' in received[0]
         assert received[0]['channels'] == [0]
@@ -240,8 +243,9 @@ class TestStreamingCallbackAccumulator:
         """unit list length must equal number of enabled channels."""
         bs = 64
         stream, received = _make_stream(_make_config(blocksize=bs), monkeypatch=monkeypatch)
-        stream._driver_buffers[0] = np.zeros(max(bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
-        stream._streaming_callback(0, bs, 0, 0, 0, 0, 0, None)
+        raw_bs = bs * stream._effective_osr
+        stream._driver_buffers[0] = np.zeros(max(raw_bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
+        stream._streaming_callback(0, raw_bs, 0, 0, 0, 0, 0, None)
 
         N = len(stream._enabled_channels)
         assert len(received[0]['unit']) == N
@@ -250,37 +254,138 @@ class TestStreamingCallbackAccumulator:
     def test_overflow_sets_status(self, monkeypatch):
         bs = 64
         stream, received = _make_stream(_make_config(blocksize=bs), monkeypatch=monkeypatch)
-        stream._driver_buffers[0] = np.zeros(max(bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
-        stream._streaming_callback(0, bs, 0, overflow=1,
+        raw_bs = bs * stream._effective_osr
+        stream._driver_buffers[0] = np.zeros(max(raw_bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
+        stream._streaming_callback(0, raw_bs, 0, overflow=1,
                                    triggerAt=0, triggered=0, autoStop=0, param=None)
         assert received[0]['status'] == 'OVERFLOW'
 
     def test_okay_status(self, monkeypatch):
         bs = 64
         stream, received = _make_stream(_make_config(blocksize=bs), monkeypatch=monkeypatch)
-        stream._driver_buffers[0] = np.zeros(max(bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
-        stream._streaming_callback(0, bs, 0, overflow=0,
+        raw_bs = bs * stream._effective_osr
+        stream._driver_buffers[0] = np.zeros(max(raw_bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
+        stream._streaming_callback(0, raw_bs, 0, overflow=0,
                                    triggerAt=0, triggered=0, autoStop=0, param=None)
         assert received[0]['status'] == 'OKAY'
 
     def test_data_dtype_float64(self, monkeypatch):
         bs = 64
         stream, received = _make_stream(_make_config(blocksize=bs), monkeypatch=monkeypatch)
-        stream._driver_buffers[0] = np.ones(max(bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
-        stream._streaming_callback(0, bs, 0, 0, 0, 0, 0, None)
+        raw_bs = bs * stream._effective_osr
+        stream._driver_buffers[0] = np.ones(max(raw_bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
+        stream._streaming_callback(0, raw_bs, 0, 0, 0, 0, 0, None)
         assert received[0]['data'].dtype == np.float64
 
     def test_timestamp_is_datetime(self, monkeypatch):
         bs = 64
         stream, received = _make_stream(_make_config(blocksize=bs), monkeypatch=monkeypatch)
-        stream._driver_buffers[0] = np.zeros(max(bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
-        stream._streaming_callback(0, bs, 0, 0, 0, 0, 0, None)
+        raw_bs = bs * stream._effective_osr
+        stream._driver_buffers[0] = np.zeros(max(raw_bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
+        stream._streaming_callback(0, raw_bs, 0, 0, 0, 0, 0, None)
         assert isinstance(received[0]['timestamp'], datetime)
 
     def test_zero_samples_noop(self, monkeypatch):
         stream, received = _make_stream(monkeypatch=monkeypatch)
         stream._streaming_callback(0, 0, 0, 0, 0, 0, 0, None)
         assert len(received) == 0
+
+
+# ---------------------------------------------------------------------------
+# PicoScopeStream — streaming-rate degradation watchdog (R32)
+#
+# _check_rate_degradation() is driven directly (not via the background poll
+# thread) with a fully controlled fake clock, monkeypatching time.monotonic
+# in the picoscope module namespace so no real sleeping is needed.
+# ---------------------------------------------------------------------------
+
+class TestRateDegradationWatchdog:
+
+    RAW_RATE = 4000.0  # requested raw (oversampled) samplerate for these tests
+
+    def _fake_clock(self, monkeypatch, start=1000.0):
+        clock = {'t': start}
+        monkeypatch.setattr(pico_module.time, 'monotonic', lambda: clock['t'])
+        return clock
+
+    def _prime(self, stream, clock):
+        """Reset watchdog bookkeeping to the current fake time, as start()
+        would, so the first _check_rate_degradation() call sees a clean
+        window rather than a huge bogus elapsed time since object init."""
+        stream._actual_raw_samplerate = self.RAW_RATE
+        stream._rate_window_start = clock['t']
+        stream._rate_last_check = clock['t']
+        stream._rate_window_samples = 0
+        stream._rate_bad_windows = 0
+        stream.degraded = False
+
+    def test_healthy_stream_stays_not_degraded(self, monkeypatch):
+        stream, _ = _make_stream()
+        clock = self._fake_clock(monkeypatch)
+        self._prime(stream, clock)
+        interval = pico_module._RATE_CHECK_INTERVAL_S
+
+        for _ in range(5):
+            clock['t'] += interval
+            stream._rate_window_samples = int(self.RAW_RATE * interval)  # 100% delivered
+            stream._check_rate_degradation()
+            assert stream.degraded is False
+
+    def test_sustained_shortfall_triggers_then_recovers(self, monkeypatch):
+        stream, _ = _make_stream()
+        clock = self._fake_clock(monkeypatch)
+        self._prime(stream, clock)
+        interval = pico_module._RATE_CHECK_INTERVAL_S
+        consecutive = pico_module._RATE_DEGRADED_CONSECUTIVE
+
+        # Well below _RATE_DEGRADED_THRESHOLD (0.9) — 50% delivered.
+        bad_samples = int(self.RAW_RATE * interval * 0.5)
+
+        for i in range(consecutive):
+            clock['t'] += interval
+            stream._rate_window_samples = bad_samples
+            stream._check_rate_degradation()
+            if i < consecutive - 1:
+                # Debounce: fewer than _RATE_DEGRADED_CONSECUTIVE bad windows
+                # must not flag degraded yet.
+                assert stream.degraded is False
+
+        assert stream.degraded is True
+
+        # A subsequent healthy window clears the flag.
+        clock['t'] += interval
+        stream._rate_window_samples = int(self.RAW_RATE * interval)
+        stream._check_rate_degradation()
+        assert stream.degraded is False
+
+    def test_try_recover_never_called_for_rate_degradation(self, monkeypatch):
+        """Explicit design decision: a USB/bus bandwidth ceiling is not a
+        device hang, so the rate watchdog must never trigger _try_recover()
+        (unlike the silence watchdog)."""
+        stream, _ = _make_stream()
+        spy = MagicMock()
+        monkeypatch.setattr(stream, '_try_recover', spy)
+
+        clock = self._fake_clock(monkeypatch)
+        self._prime(stream, clock)
+        interval = pico_module._RATE_CHECK_INTERVAL_S
+        consecutive = pico_module._RATE_DEGRADED_CONSECUTIVE
+        bad_samples = int(self.RAW_RATE * interval * 0.5)
+
+        # Drive several consecutive bad windows — well past the debounce.
+        for _ in range(consecutive + 2):
+            clock['t'] += interval
+            stream._rate_window_samples = bad_samples
+            stream._check_rate_degradation()
+        assert stream.degraded is True
+
+        # ... then recover.
+        clock['t'] += interval
+        stream._rate_window_samples = int(self.RAW_RATE * interval)
+        stream._check_rate_degradation()
+        assert stream.degraded is False
+
+        spy.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -294,11 +399,13 @@ class TestPicoScopeStreamInterface:
         assert stream.active is False
 
     def test_accumulator_shape_is_2d(self):
-        """Accumulator is 2-D: (2*blocksize, N_channels)."""
+        """Accumulator is 2-D: (2*blocksize*effective_osr, N_channels) — sized
+        in raw (oversampled) samples, since decimation happens after
+        accumulation."""
         bs = 256
         stream, _ = _make_stream(_make_config(blocksize=bs))
         assert stream._accumulator.ndim == 2
-        assert stream._accumulator.shape[0] == bs * 2
+        assert stream._accumulator.shape[0] == bs * stream._effective_osr * 2
         assert stream._accumulator.shape[1] == len(stream._enabled_channels)
 
     def test_acc_ptr_starts_zero(self):
@@ -387,7 +494,6 @@ class TestMvPassthrough:
         )
         collector = vc.DataCollector()
         collector.config.highpass_enabled = False
-        collector.config.lowpass_enabled = False
         result = collector.process_sample(0, sample)
         assert result is not None
         assert len(result.time_data) == n
