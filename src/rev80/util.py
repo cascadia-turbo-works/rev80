@@ -46,7 +46,7 @@ def hex_to_rgba(hex_color: str, alpha: int = 255) -> tuple:
 # ── Spectrum preset values (quick-pick selections in the GUI) ────────────────
 # These are convenience presets, NOT hard constraints.  AcquisitionSettings
 # derives samplerate and blocksize arithmetically from maxfreq and binsize.
-MAXFREQ_PRESETS = [2e2, 5e2, 1e3, 2e3, 5e3, 1e4, 2e4, 5e4, 1e5, 2.5e5, 5e5]
+MAXFREQ_PRESETS = [2e2, 5e2, 1e3, 2e3, 5e3, 1e4, 2e4, 5e4]
 BINSIZE_PRESETS = [0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0]
 
 # ── Unit taxonomy ──────────────────────────────────────────────────────────
@@ -182,6 +182,7 @@ class UI_Elements:
 
     # ── Spectrum Setup section ─────────────────────────────────────────────
     SPECTRUM_INFO_TEXT = 'SPECTRUM_INFO_TEXT'  # readonly multi-line text
+    SPECTRUM_DEGRADED_WARNING = 'SPECTRUM_DEGRADED_WARNING'  # shown only when stream is rate-degraded
     BTN_SPECTRUM_SETUP = 'BTN_SPECTRUM_SETUP'
 
     # ── Acquisition section ────────────────────────────────────────────────
@@ -285,8 +286,6 @@ class UI_Elements:
     ACQ_DLG_OVERLAP    = 'ACQ_DLG_OVERLAP'
     ACQ_DLG_HP_ENABLED = 'ACQ_DLG_HP_ENABLED'
     ACQ_DLG_HP_FC      = 'ACQ_DLG_HP_FC'
-    ACQ_DLG_LP_ENABLED = 'ACQ_DLG_LP_ENABLED'
-    ACQ_DLG_LP_FC      = 'ACQ_DLG_LP_FC'
     ACQ_DLG_CACHE_FRAMES = 'ACQ_DLG_CACHE_FRAMES'
     # Acquisition dialog — derived display fields
     ACQ_DLG_SAMPLERATE = 'ACQ_DLG_SAMPLERATE'

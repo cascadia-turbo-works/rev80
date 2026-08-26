@@ -28,6 +28,7 @@ def _make_result(channel=0, overall=0.1, n=64, samplerate=1000, unit='mV', rel_t
         channel=channel,
         unit=unit,
         overflow=False,
+        degraded=False,
         time_data=np.ones(n) * overall,
         time_vec=np.arange(n) / samplerate,
         samplerate=samplerate,
@@ -210,7 +211,7 @@ def _make_spectral_result(channel=0, spectrum_scale=1.0, n=64, samplerate=1000):
     freq = np.linspace(0, samplerate / 2, n // 2 + 1)
     spectrum = np.ones_like(freq) * spectrum_scale
     return ChannelResult(
-        channel=channel, unit='mV', overflow=False,
+        channel=channel, unit='mV', overflow=False, degraded=False,
         time_data=np.ones(n), time_vec=np.arange(n) / samplerate,
         samplerate=samplerate, freq=freq, spectrum=spectrum,
         peaks=np.array([], dtype=int), overall=spectrum_scale,
@@ -285,7 +286,7 @@ class TestSpectralThresholdHook:
 
         baseline_spectrum = np.ones_like(freq) * 0.01
         hook.set_baseline([ChannelResult(
-            channel=0, unit='mV', overflow=False,
+            channel=0, unit='mV', overflow=False, degraded=False,
             time_data=np.ones(n), time_vec=np.arange(n) / samplerate,
             samplerate=samplerate, freq=freq, spectrum=baseline_spectrum,
             peaks=np.array([], dtype=int), overall=0.01,
@@ -297,7 +298,7 @@ class TestSpectralThresholdHook:
         out_of_band[freq > 400.0] = 100.0
 
         result = ChannelResult(
-            channel=0, unit='mV', overflow=False,
+            channel=0, unit='mV', overflow=False, degraded=False,
             time_data=np.ones(n), time_vec=np.arange(n) / samplerate,
             samplerate=samplerate, freq=freq, spectrum=out_of_band,
             peaks=np.array([], dtype=int), overall=1.0,

@@ -61,12 +61,12 @@ rate, it skips to the latest frame — all earlier frames remain in the
 |---|---|
 | `util.py` | Constants (`MAXFREQ_PRESETS`, `BINSIZE_PRESETS`), unit taxonomy and SI conversion, amplitude mode scaling, `UI_Elements` tag registry |
 | `sensor.py` | `VibeSensor` dataclass — device metadata; `find()` enumerates PicoScopes; `simulated()` returns test sensor; `connect()` returns the appropriate stream |
-| `picoscope.py` | `FindPicoScope()` enumeration; `PicoScopeStream` acquisition thread; watchdog/recovery; per-channel coupling and voltage range config; AWG signal generator control |
+| `picoscope.py` | `FindPicoScope()` enumeration; `PicoScopeStream` acquisition thread — drives the ADC oversampled and applies a mandatory zero-phase anti-alias filter + decimate (`antialias_decimate()`) down to the configured rate; silence watchdog/recovery; a second, independent watchdog flags sustained USB streaming-rate degradation (`.degraded`) without triggering recovery; per-channel coupling and voltage range config; AWG signal generator control |
 | `scope_sensor.py` | `ScopeSensor` dataclass — IEPE sensor metadata: name, sensitivity (mV/EU), engineering units, optional target unit for frequency-domain integration |
 | `scope_sensor_registry.py` | `ScopeSensorRegistry` — YAML-backed global sensor library (`scope_sensors.yaml`); CRUD by ID/name; loaded from `~/.config/vibechecker/` |
 | `simulation.py` | `SimulatedSensor` (threading-based fake stream) + signal generators (`GenerateTone`, bearing-defect) for offline dev/test |
 | `sample.py` | `AcquisitionSettings` (derived samplerate/blocksize from maxfreq/binsize; per-channel names, target units, amplitude modes, couplings, voltage ranges) + `VibeSample` (HDF5 I/O, `process()` → `ChannelResult`) |
-| `collector.py` | `DataCollector` — stream lifecycle, per-channel Butterworth filter bank, channel→`ScopeSensor` assignment (mV→EU), 32-frame ring cache, trend accumulation, `new_frame_event` signal, HDF5 save/load |
+| `collector.py` | `DataCollector` — stream lifecycle, per-channel zero-phase Butterworth highpass filter (falls back to causal for short blocks), channel→`ScopeSensor` assignment (mV→EU), 32-frame ring cache, trend accumulation, `new_frame_event` signal, HDF5 save/load |
 | `config.py` | OS-aware device config directory (`~/.config/vibechecker/` on Linux, `%APPDATA%/vibechecker/` on Windows); per-device YAML persistence with atomic writes; default config fallback |
 | `gui.py` | `GUI` class — dearpygui 3-panel layout (controls / plots / results), `_poll_new_frames()` render loop, config dialogs (Device/Channels/Sensor/Spectrum/Siggen), spectrum FFT window/preset controls, per-channel result cards, trend plot, HDF5 file load/save |
 | `logger.py` | YAML-configured logging; rotating log files written to `log/` |
@@ -76,14 +76,18 @@ rate, it skips to the latest frame — all earlier frames remain in the
 ### Data flow details
 
 - `VibeSensor._callback` is the hardware stream callback; it scales raw ADC counts to mV via per-channel voltage range and packages a dict keyed by channel index.
-- `DataCollector.receive_data` looks up the `ScopeSensor` assigned to each channel, applies per-channel Butterworth highpass/lowpass filters, converts mV→EU via `sensitivity`, then wraps each channel in a `VibeSample`.
+- `DataCollector.receive_data` looks up the `ScopeSensor` assigned to each channel, converts mV→EU via `sensitivity`, then wraps each channel in a `VibeSample` (carrying the frame's `overflow` and `degraded` flags). The per-channel Butterworth highpass filter is applied later, in `process_sample()`; anti-aliasing is no longer applied here at all — it happens upstream in `PicoScopeStream`, before the ADC's own Nyquist limit can fold high-frequency content into the passband, and is not user-configurable.
 - `DataCollector._data_callback` appends the frame to a 32-frame ring cache (deque) and sets `new_frame_event`. All consumers — GUI render loop, `collect_sample`, tests — read from `frame_cache` via `new_frame_event`; there is no separate callbacks fan-out.
 - `VibeSample.process()` uses `scipy.signal.welch` with configurable window/overlap. Cross-modality conversion (accel↔vel↔disp) uses frequency-domain integration via `(2πf)^n` scaling. Returns a `ChannelResult` frozen dataclass.
 - Data is saved as HDF5 (`.h5`) into `DEVDATA/`. File names include an ISO timestamp with `:` replaced by `-` for FAT32 compatibility.
 
 ### AcquisitionSettings interdependencies
 
-Changing `maxfreq` auto-adjusts `samplerate`; changing `binsize` auto-adjusts `blocksize` to the next power of two. These are enforced in the setters — do not bypass them by setting private `_fs`/`_ns` directly.
+Changing `maxfreq` auto-adjusts `samplerate` (`nextpow2(2.56 * maxfreq)` — guarantees Nyquist >= 1.28x maxfreq, the margin the mandatory anti-alias filter in `PicoScopeStream` needs); changing `binsize` auto-adjusts `blocksize` to the next power of two. These are enforced in the setters — do not bypass them by setting private `_fm`/`_df` directly.
+
+There is no user-facing `lowpass_enabled`/`lowpass_fc` — anti-aliasing is mandatory and automatically derived from `maxfreq`. `highpass_enabled`/`highpass_fc` remain user-configurable (an unrelated DC/drift-removal control).
+
+`PicoScopeStream` drives the ADC above `samplerate` by an oversampling ratio (`effective_osr`, up to 4x) capped by `STREAMING_CEILING_HZ` (a measured safe continuous-USB-streaming ceiling — see `picoscope.py`), then filters and decimates back down; this is invisible to `AcquisitionSettings`/`DataCollector`/the GUI, all of which only ever see `samplerate`/`blocksize`.
 
 Per-channel fields (`channel_names`, `channel_target_units`, `channel_amplitude_modes`, `channel_couplings`, `channel_voltage_ranges`) are dicts keyed by channel index (0-based). They are independent of each other and of the global acquisition parameters.
 
