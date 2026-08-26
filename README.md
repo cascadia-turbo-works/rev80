@@ -35,7 +35,8 @@ A Python desktop application for capturing, analyzing, and recording vibration d
 - Welch-based power spectral density with configurable window (Hann, Blackman-Harris, Flattop, Hamming, etc.)
 - Velocity and displacement spectra derived from acceleration via frequency-domain integration
 - Single-shot and continuous streaming capture modes
-- Per-channel 4th-order Butterworth highpass and lowpass filters
+- Per-channel zero-phase 4th-order Butterworth highpass filter
+- Mandatory hardware-level anti-aliasing (oversample + zero-phase decimate) on every capture, plus a streaming-rate watchdog that flags degraded USB throughput
 - Configurable IEPE sensor library: sensitivity (mV/EU), modality, engineering units
 - PicoScope 4000A built-in signal generator for excitation testing
 - HDF5 file save/load for post-processing and archiving (v4 format)
@@ -424,12 +425,12 @@ When the GUI is slower than the hardware data rate it skips to the latest frame 
 | `util.py` | Constants (`MAXFREQ_PRESETS`, `BINSIZE_PRESETS`, `UNITS`, `AMPLITUDE_MODES`, `MONITOR_INTERVAL_PRESETS`), unit taxonomy and SI conversion, integration order helpers, `UI_Elements` DPG tag registry |
 | `icons.py` | CommitMono Nerd Font (Codicons) registry; `load()` registers font with DPG; `IC` dict maps icon names to `\uXXXX` codepoints |
 | `sensor.py` | `VibeSensor` dataclass — device metadata; `find()` enumerates hardware PicoScopes only; `simulated()` returns a test sensor; `connect()` returns the appropriate stream |
-| `picoscope.py` | `FindPicoScope()` — enumerates PS4000A units; `PicoScopeStream` — polling thread, ADC→mV, overflow detection, watchdog recovery, signal generator setup |
+| `picoscope.py` | `FindPicoScope()` — enumerates PS4000A units; `PicoScopeStream` — polling thread, ADC→mV, overflow detection, anti-alias oversample/decimate (`antialias_decimate()`), streaming-rate degradation watchdog, silence-watchdog recovery, signal generator setup |
 | `scope_sensor.py` | `ScopeSensor` dataclass — IEPE sensor metadata: name, sensitivity (mV/EU), engineering units, amplitude mode, UUID |
 | `scope_sensor_registry.py` | `ScopeSensorRegistry` — YAML-backed CRUD for user sensor library and per-channel assignments |
 | `sample.py` | `AcquisitionSettings` — spectrum, filter, and cache config with derived properties; `VibeSample` — single-channel time-domain block; `ChannelResult` — frozen display-ready result from `process_sample()` |
 | `config.py` | OS-aware config directory; per-device YAML persistence (channels, acquisition settings, monitor defaults); atomic writes; fallback to built-in defaults |
-| `collector.py` | `DataCollector` — multi-channel acquisition state machine: stream lifecycle, per-channel Butterworth filtering, mV→EU conversion, frame ring cache, `new_frame_event` signal, DSP via `process_sample()` / `process_samples()`, trend accumulation, HDF5 save/load, monitor session loaders |
+| `collector.py` | `DataCollector` — multi-channel acquisition state machine: stream lifecycle, per-channel zero-phase Butterworth highpass filtering, mV→EU conversion, frame ring cache, `new_frame_event` signal, DSP via `process_sample()` / `process_samples()`, trend accumulation, HDF5 save/load, monitor session loaders |
 | `simulation.py` | `SimulatedSensor` (daemon thread) + signal generators: `GenerateTone`, `GenerateNoise`, `GenerateBearingVibration_SpectralMethod`, `GenerateBearingVibration_TemporalMethod` |
 | `gui.py` | `GUI` class — dearpygui three-column layout with manual render loop (`_poll_new_frames`), all config dialogs, spectrum/time/trend plots, file I/O, monitor card, session browser |
 | `monitor/__init__.py` | Re-exports: `MonitorController`, `MonitorSession` |
@@ -445,17 +446,18 @@ When the GUI is slower than the hardware data rate it skips to the latest frame 
 
 ### 1. Acquisition — `PicoScopeStream` (`picoscope.py`)
 
-`PicoScopeStream` is a background polling thread that wraps `ps4000aRunStreaming`. On each poll:
+`PicoScopeStream` is a background polling thread that wraps `ps4000aRunStreaming`. The ADC is always driven faster than the requested `maxfreq` — at an oversampling ratio (up to 4×, capped by a measured safe continuous-streaming ceiling for this hardware) — so a zero-phase digital anti-alias filter can reject content above the target Nyquist *before* decimating down to the configured rate; this is mandatory and not user-configurable. On each poll:
 
 1. Converts ADC counts → mV via `adc2mV()` for all enabled channels
 2. Detects ADC overflow per channel via the overflow bitmask
-3. Accumulates mV samples in a `(blocksize × N_channels)` buffer
-4. When the buffer fills, fires the registered callback with:
+3. Accumulates mV samples in a raw, oversampled `(blocksize × effective_osr × N_channels)` buffer
+4. Once a full raw block has accumulated, anti-alias filters and decimates it down to `blocksize` samples via `antialias_decimate()`, then fires the registered callback with:
 
 ```python
 {
     'status':        str,           # 'OKAY', 'OVERFLOW', etc.
     'overflow_mask': int,           # bitmask, one bit per channel
+    'degraded':      bool,          # True if sustained USB streaming throughput has fallen below the rate watchdog's threshold
     'rel_time':      float,         # seconds since stream start
     'timestamp':     datetime,
     'unit':          ['mV', ...],   # one entry per channel
@@ -464,7 +466,7 @@ When the GUI is slower than the hardware data rate it skips to the latest frame 
 }
 ```
 
-A watchdog thread monitors for >5 s silence and attempts up to 3 reconnect cycles automatically.
+A watchdog thread monitors for >5 s silence and attempts up to 3 reconnect cycles automatically. A second, independent watchdog monitors *sustained* USB streaming throughput every 2 s — this catches a different failure mode where the driver silently delivers only a fraction of the requested rate (`status='OKAY'`, no overflow, callbacks keep firing) that the silence watchdog can't see. It only sets `degraded=True` on the stream and logs a warning; it never triggers reconnect, since a bandwidth ceiling isn't fixed by reopening the device.
 
 **Device discovery** — `VibeSensor.find()` calls `FindPicoScope()` and returns hardware-only results. `SimulatedSensor` is excluded; use `VibeSensor.simulated()` for offline development and testing.
 
@@ -474,11 +476,10 @@ A watchdog thread monitors for >5 s silence and attempts up to 3 reconnect cycle
 
 1. For each enabled channel, extracts the channel column from `frame['data']`
 2. Converts mV → engineering units using `ScopeSensor.sensitivity` (if a sensor is assigned)
-3. Optionally applies a **4th-order Butterworth highpass** filter (default 10 Hz cutoff) using SOS coefficients for numerical stability
-4. Optionally applies a **4th-order Butterworth lowpass** filter
-5. Wraps each channel's data in a `VibeSample`
-6. Assembles a frame dict `{ch: VibeSample, 'overflow': mask}` and appends it to the frame ring cache (configurable depth via `AcquisitionSettings.cache_frames`, default 32)
-7. Sets `new_frame_event` to signal the GUI render loop
+3. Optionally applies a **4th-order Butterworth highpass** filter (default 10 Hz cutoff), zero-phase (`sosfiltfilt`) when the block is long enough, falling back to causal (`sosfilt`) for very short blocks
+4. Wraps each channel's data in a `VibeSample` (anti-aliasing is no longer applied here — it happens upstream in `PicoScopeStream`, before the ADC's own Nyquist limit can fold high-frequency content into the passband)
+5. Assembles a frame dict `{ch: VibeSample, 'overflow': mask}` and appends it to the frame ring cache (configurable depth via `AcquisitionSettings.cache_frames`, default 32)
+6. Sets `new_frame_event` to signal the GUI render loop
 
 ### 3. Spectral Analysis — `DataCollector.process_sample()` (`collector.py`)
 
@@ -511,7 +512,7 @@ The GUI uses a manual render loop (`while dpg.is_dearpygui_running()`). Each tic
 | --- | --- |
 | `maxfreq` | Upper frequency of interest (Hz) — drives `samplerate` selection |
 | `binsize` | Frequency resolution of Welch FFT (Hz) — drives `blocksize` selection |
-| `samplerate` | **Derived** — minimum samplerate ≥ 2 × maxfreq |
+| `samplerate` | **Derived** — minimum samplerate ≥ 2.56 × maxfreq (the 28% margin above 2× Nyquist gives the mandatory anti-alias filter a real transition band — same ratio commercial FFT vibration analyzers use) |
 | `blocksize` | **Derived** — next power of 2 satisfying samplerate / blocksize ≤ binsize |
 | `acquisition_period` | **Derived** — blocksize / samplerate (seconds) |
 | `n_fft_bins` | **Derived** — number of Welch output bins |
@@ -522,10 +523,12 @@ The GUI uses a manual render loop (`while dpg.is_dearpygui_running()`). Each tic
 
 | Property | Description |
 | --- | --- |
-| `highpass_enabled` | Enable 4th-order Butterworth highpass filter |
+| `highpass_enabled` | Enable 4th-order Butterworth highpass filter (zero-phase) |
 | `highpass_fc` | Highpass cutoff frequency (Hz) |
-| `lowpass_enabled` | Enable 4th-order Butterworth lowpass filter |
-| `lowpass_fc` | Lowpass cutoff frequency (Hz) |
+
+Anti-aliasing is no longer a user-configurable lowpass — it's a mandatory
+filter applied at capture time in `PicoScopeStream`, automatically derived
+from `maxfreq` (see `samplerate` above). There's no separate cutoff to set.
 
 ### Channel settings
 
@@ -795,14 +798,12 @@ file to change capture intervals, anomaly thresholds, filter settings, etc.
 
 ```yaml
 acquisition:
-  maxfreq: 1000.0           # Hz — drives sample rate (samplerate = nextpow2(2 × maxfreq))
+  maxfreq: 1000.0           # Hz — drives sample rate (samplerate = nextpow2(2.56 × maxfreq))
   binsize: 1.0              # Hz — drives FFT block size
   fft_window: hann
   welch_overlap: 0.5
   highpass_enabled: true
   highpass_fc: 10.0         # Hz
-  lowpass_enabled: false
-  lowpass_fc: 1000.0        # Hz
   trend_max_points: 5000
   cache_frames: 15
 
