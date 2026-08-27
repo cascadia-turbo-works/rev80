@@ -452,31 +452,19 @@ class DataCollector:
         # ── 1. Butterworth filter ─────────────────────────────────────
         # Lowpass is retired: mandatory anti-aliasing now happens upstream in
         # PicoScopeStream, before this function ever sees the data.
+        #
+        # Causal (sosfilt), not zero-phase: sosfiltfilt effectively doubles the
+        # filter order (forward + backward pass), which resonates badly for a
+        # low cutoff relative to a short block (e.g. 10 Hz over a 1s block —
+        # only 10 cutoff-cycles of margin) -- confirmed on real hardware data,
+        # sosfiltfilt overshot the raw signal by 35-45% at the block edges
+        # (any padtype) vs. causal sosfilt's normal ~8-10% transient.
         filtered_mv = sample.data.copy()
         order = config._BUTTER_ORDER
         if config.highpass_enabled and config.highpass_fc < nyq:
             sos = scipy.signal.butter(order, config.highpass_fc,
                                       btype='highpass', fs=samplerate, output='sos')
-            # Zero-phase filtering — consistent with the exact-inverse rfft/irfft
-            # design below. sosfiltfilt needs a minimum block length; fall back
-            # to the causal filter for very short blocks (small binsize / high
-            # maxfreq combinations).
-            min_len = 3 * (2 * order + 1)
-            if len(filtered_mv) >= min_len:
-                try:
-                    filtered_mv = scipy.signal.sosfiltfilt(sos, filtered_mv)
-                except ValueError:
-                    log.debug(
-                        f'process_sample ch={ch}: sosfiltfilt failed on block of '
-                        f'length {len(filtered_mv)}; falling back to causal sosfilt'
-                    )
-                    filtered_mv = scipy.signal.sosfilt(sos, filtered_mv)
-            else:
-                log.debug(
-                    f'process_sample ch={ch}: block length {len(filtered_mv)} too short '
-                    f'for zero-phase highpass (need >= {min_len}); falling back to causal sosfilt'
-                )
-                filtered_mv = scipy.signal.sosfilt(sos, filtered_mv)
+            filtered_mv = scipy.signal.sosfilt(sos, filtered_mv)
 
         # rfft is used in both step 3 (5-order overalls) and step 8 (time-domain output).
         # Plain rfft — no window, no segment averaging — so irfft is an exact inverse.
@@ -514,6 +502,19 @@ class DataCollector:
                     omega_i[0]    = 1.0                    # avoid 0^n_ord; zeroed below
                     transfer_i    = np.power(1j * omega_i, n_ord)
                     transfer_i[0] = 0.0                    # kill DC for all int/diff orders
+                    if n_ord < 0:
+                        # Integration only: also kill the 1x-binsize bin. A single
+                        # time-domain highpass pass can't keep residual near-DC
+                        # energy (finite filter rolloff + FFT/window leakage) from
+                        # blowing up under 1/f^n integration -- confirmed on real
+                        # hardware, bin 1 dominated the whole spectrum. Zeroing an
+                        # exact FFT bin is lossless for every other frequency and,
+                        # unlike a smooth frequency-response weighting, introduces
+                        # no circular-convolution edge artifacts in the irfft
+                        # reconstruction. Unconditional (not gated on
+                        # highpass_enabled) -- bin 1 is essentially never real
+                        # signal of interest for integrated velocity/displacement.
+                        transfer_i[1] = 0.0
                     time_ord      = np.fft.irfft(rfft_mv * transfer_i, n=N)
                 sample.overall_ampl_by_integration_order[i] = float(
                     np.sqrt(np.mean(np.square(time_ord)))
@@ -534,6 +535,8 @@ class DataCollector:
             omega_factor       = np.zeros_like(psd_mv)
             pos                = freq_hz > 0
             omega_factor[pos]  = (2 * np.pi * freq_hz[pos]) ** (2 * n_steps)
+            if n_steps < 0:
+                omega_factor[1] = 0.0   # also kill the 1x-binsize bin -- see step 3 comment
             integrated_psd     = psd_mv * omega_factor
         else:
             integrated_psd = psd_mv.copy()
@@ -568,6 +571,8 @@ class DataCollector:
             omega_td[0] = 1.0
             transfer       = np.power(1j * omega_td, n_steps)
             transfer[0]    = 0.0
+            if n_steps < 0:
+                transfer[1] = 0.0   # also kill the 1x-binsize bin -- see step 3 comment
             rfft_target    = rfft_mv * transfer * eu_scale
         else:
             rfft_target = rfft_mv * eu_scale
