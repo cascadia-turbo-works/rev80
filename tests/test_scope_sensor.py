@@ -1,9 +1,7 @@
 """Tests for ScopeSensor, ScopeSensorRegistry, and pipeline scaling."""
 
-import time
 import pytest
 import numpy as np
-from pathlib import Path
 
 import rev80 as vc
 from rev80.scope_sensor import ScopeSensor

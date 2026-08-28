@@ -10,10 +10,9 @@ Tests cover:
 
 import ctypes
 from datetime import datetime
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock
 
 import numpy as np
-import pytest
 
 import rev80 as vc
 import rev80.picoscope as pico_module
