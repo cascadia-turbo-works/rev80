@@ -80,8 +80,39 @@ def test_blocksize_is_power_of_two():
 
 
 def test_n_fft_bins():
-    config = AcquisitionSettings()
-    assert config.n_fft_bins == config.blocksize // 2 + 1
+    """n_fft_bins must describe the spectrum that is actually computed.
+
+    The old assertion (`n_fft_bins == blocksize // 2 + 1`) merely restated the
+    implementation, so it stayed green while the Welch call produced a
+    different number of lines at 40 of the 72 preset combinations (F-8).
+    The real invariant is that the stated line count and the stated bin width
+    agree with each other and with the block that is actually transformed.
+    """
+    import numpy as np
+    import scipy.signal
+
+    from rev80.util import MAXFREQ_PRESETS, BINSIZE_PRESETS
+
+    for maxfreq in MAXFREQ_PRESETS:
+        for binsize in BINSIZE_PRESETS:
+            config = AcquisitionSettings()
+            config.maxfreq = maxfreq
+            config.binsize = binsize
+
+            freq, _ = scipy.signal.welch(
+                np.zeros(config.blocksize), fs=float(config.samplerate),
+                window=config.fft_window, nperseg=config.nperseg,
+                noverlap=int(config.nperseg * config.welch_overlap),
+                nfft=config.nperseg, scaling='spectrum',
+            )
+            assert config.n_fft_bins == len(freq), (
+                f'F_max={maxfreq} df={binsize}: n_fft_bins states '
+                f'{config.n_fft_bins}, spectrum has {len(freq)} lines'
+            )
+            # Stated bin width must be the one actually delivered, and must
+            # never be coarser than the user's request.
+            assert config.binsize_actual == pytest.approx(freq[1] - freq[0])
+            assert config.binsize_actual <= binsize * 1.0001
 
 
 def test_memory_bytes():
