@@ -5,7 +5,6 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 import yaml
 
 import rev80.config as cfg
@@ -179,7 +178,6 @@ class TestAcquisitionConfig:
 
     def test_roundtrip(self, tmp_path):
         vc = tmp_path / 'vc'
-        payload = cfg.load_acquisition_config.__wrapped__ if hasattr(cfg.load_acquisition_config, '__wrapped__') else None
         with patch('rev80.config.config_dir', return_value=vc):
             original = cfg.load_acquisition_config()
             original['acquisition']['maxfreq'] = 8000.0

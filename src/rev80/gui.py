@@ -4,6 +4,7 @@ import threading
 from pathlib import Path
 
 import dearpygui.dearpygui as dpg
+import h5py
 import numpy as np
 
 import rev80
@@ -1541,7 +1542,6 @@ class GUI:
                      date, time, n_channels, n_captures, n_bursts}
         Reads the folder from the _SB_FOLDER widget if it exists, else default.
         """
-        import h5py
         import json as _json
         if dpg.does_item_exist('_SB_FOLDER'):
             folder_str = dpg.get_value('_SB_FOLDER').strip()
@@ -1608,7 +1608,6 @@ class GUI:
 
     def _on_session_list_select(self, sender=None, data=None, user_data=None) -> None:
         """Load all interval frames from the selected session; populate burst table."""
-        import h5py
         import json
         # user_data carries the session dict when called from table row selectable
         entry = user_data
@@ -1753,7 +1752,12 @@ class GUI:
                         for k, v in scope_s.to_dict().items():
                             sg.attrs[k] = v
             log.info(f"Saved config to {session_h5.name}")
-        except Exception as exc:
+        except (OSError, KeyError) as exc:
+            # Narrow on purpose: this used to be a bare `except Exception`,
+            # which swallowed the NameError from a missing h5py import and
+            # reported it as a disk failure, misdirecting the user toward
+            # permissions. Only genuine I/O (OSError) and missing-group
+            # (KeyError) failures belong here; programming errors must surface.
             log.error(f"_on_sb_save_config: failed to patch {session_h5}: {exc}")
             return
         # Reprocess trend with the new config
@@ -3637,7 +3641,6 @@ class GUI:
         appropriate loader.  Called after the first render frame so all
         DPG plot series exist.
         """
-        import h5py
         p = Path(path_str.strip())
         if not p.exists():
             log.error(f"--from-file: path does not exist: {p}")
