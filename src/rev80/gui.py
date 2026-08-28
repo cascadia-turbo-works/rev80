@@ -2765,7 +2765,9 @@ class GUI:
 
     def _create_gui(self):
         dpg.create_context()
-        dpg.bind_font(icons.load())
+        _font = icons.load()
+        if _font is not None:      # None → font file absent, use DPG default
+            dpg.bind_font(_font)
 
         # ── Unified Config Dialog (Device / Sensors / Acquisition tabs) ───
         with dpg.window(
