@@ -23,6 +23,6 @@ installer/version.iss
 
 # ── Build & installer artifacts ───────────────────────────────────────────────
 dist/
-build/vibechecker/
+build/rev80/
 installer/Output/
 *.spec.bak
