@@ -6,16 +6,29 @@ authors = [
     { name="Henry Gotjen", email="hgotjen@gmail.com" }
 ]
 readme = "README.md"
-requires-python = ">=3.8"
+# 3.10 is a hard floor, not a preference:
+#   - PEP 604 unions in evaluated signatures (sensor.py `dict | None`) need 3.10
+#   - builtin generics in signatures (config.py `dict[str, Any]`) need 3.9
+#   - argparse.BooleanOptionalAction (__main__.py) needs 3.9
+# No module uses `from __future__ import annotations`, so every annotation is
+# evaluated at import time. On 3.8/3.9 pip installs fine and the app then dies
+# with TypeError on first import.
+requires-python = ">=3.10"
 dependencies = [
-    "numpy",
-    "scipy",
-    "pandas",
-    "matplotlib",
-    "pyyaml",
-    "h5py",
-    "plyer",
-    "pywin32; sys_platform == 'win32'",
+    # Lower bounds only — never exact pins. Unconstrained deps made a shipped
+    # installer's contents depend on whatever PyPI served that day. Bounds are
+    # the oldest releases that both support Python 3.10 and carry the APIs used
+    # here (scipy.signal.sosfilt/welch/decimate/find_peaks, scipy.fft).
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "pyyaml>=6.0",
+    "h5py>=3.8",
+    "plyer>=2.1",
+    # Imported at module scope by gui.py and icons.py, which the `rev80`
+    # console script reaches via __main__:main — so it is a hard runtime
+    # dependency, not an optional extra.
+    "dearpygui==2.0.0",
+    "pywin32>=305; sys_platform == 'win32'",
     "picosdk @ git+https://github.com/picotech/picosdk-python-wrappers.git@5d91a11b67a2c2ff9d6371d459e05e873106a2a3"
 ]
 
@@ -24,7 +37,10 @@ rev80-headless = "rev80.headless:main"
 rev80 = "rev80.__main__:main"
 
 [project.optional-dependencies]
-gui = ["dearpygui==2.0.0"]
+# `gui` is retained as an empty alias so existing `pip install rev80[gui]`
+# invocations and docs keep working; dearpygui moved into the required
+# dependencies above. Safe to delete once no caller references it.
+gui = []
 dev = ["pytest", "ipykernel", "pyinstaller", "ruff"]
 
 [tool.setuptools.packages.find]
