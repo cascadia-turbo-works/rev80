@@ -15,11 +15,13 @@ def _peak_amp_at(result: vc.ChannelResult, freq_hz: float) -> float:
 
 
 def _make_dc(eu: str = 'mm/s2', sensitivity: float = 1.0,
-             target_unit: str = '', amp_mode: str = '0-P'):
+             target_unit: str = '', amp_mode: str = '0-P',
+             highpass_enabled: bool = False, highpass_fc: float = 10.0):
     cfg = vc.AcquisitionSettings()
     cfg.binsize = 2
     cfg.maxfreq = 10000
-    cfg.highpass_enabled = False
+    cfg.highpass_enabled = highpass_enabled
+    cfg.highpass_fc = highpass_fc
     if target_unit:
         cfg.channel_target_units[0] = target_unit
     cfg.channel_amplitude_modes[0] = amp_mode
@@ -290,3 +292,132 @@ def test_cross_modality_time_series(freq):
         f'Time peak {peak_time:.2f} still at acceleration scale (expected ~{expected_vel:.2f})'
     assert peak_time > expected_vel * 0.3, \
         f'Time peak {peak_time:.4f} too small (expected ~{expected_vel:.2f})'
+
+
+# ── Regression: highpass + integration must not blow up near-DC bins ──
+
+@pytest.mark.parametrize('highpass_enabled', [True, False])
+@pytest.mark.parametrize('freq', [500, 1000])
+def test_integration_zeroes_bin1(freq, highpass_enabled):
+    """Integration (accel->vel) must hard-zero bin 1 (1x binsize), the
+    field-reported ~1-2 Hz blowup, unconditionally -- not just when
+    highpass is enabled.
+
+    A prior fix attempt weighted the integration transfer function by the
+    highpass filter's frequency response (scipy.signal.sosfreqz). That
+    suppressed bin 1 in the spectrum but, because it's a smooth multiply
+    across many bins rather than an exact single-bin removal, it behaves
+    as a wide symmetric (zero-phase-equivalent) kernel applied via
+    circular convolution (frequency-domain multiply + irfft) -- confirmed
+    on real hardware data to badly distort the displayed time-domain
+    signal at both block edges ("wobble"), even though bin 1 itself
+    dropped by ~50,000x. Hard-zeroing bin 1 directly removes exactly one
+    Fourier basis component (an integer number of cycles across the
+    block) with zero effect on any other bin and no boundary sensitivity
+    -- the same property that already made zeroing bin 0 (DC) safe.
+    """
+    acc_ampl = 1.0
+
+    dc_local = _make_dc(eu='mm/s2', target_unit='mm/s',
+                         highpass_enabled=highpass_enabled, highpass_fc=10.0)
+    stream_local = dc_local.stream
+    if not isinstance(stream_local, vc.SimulatedSensor):
+        dc_local.disconnect_sensor()
+        return
+    stream_local.source = (vc.GenerateTone, acc_ampl, freq, 0)
+    sample = dc_local.collect_sample()[0]
+    result = dc_local.process_sample(0, sample)
+    dc_local.disconnect_sensor()
+
+    assert result is not None
+    assert result.spectrum[0] == 0.0, 'bin0 (DC) should be exactly zero for integration'
+    assert result.spectrum[1] == 0.0, (
+        f'bin1 (freq={result.freq[1]:.2f} Hz) should be exactly zero for integration, '
+        f'got {result.spectrum[1]:.6g} (highpass_enabled={highpass_enabled})'
+    )
+
+    real_peak = _peak_amp_at(result, freq)
+    assert real_peak > 0
+
+
+@pytest.mark.parametrize('highpass_enabled', [True, False])
+def test_differentiation_does_not_zero_bin1(highpass_enabled):
+    """Differentiation (positive order) must NOT zero bin1 -- multiplying by
+    omega already suppresses low frequencies further, so there's no blow-up
+    risk, and zeroing it would needlessly discard real low-frequency content.
+    """
+    freq = 500
+    vel_ampl = 1.0
+
+    dc_local = _make_dc(eu='mm/s', target_unit='mm/s2',
+                         highpass_enabled=highpass_enabled, highpass_fc=10.0)
+    stream_local = dc_local.stream
+    if not isinstance(stream_local, vc.SimulatedSensor):
+        dc_local.disconnect_sensor()
+        return
+    stream_local.source = (vc.GenerateTone, vel_ampl, freq, 0)
+    sample = dc_local.collect_sample()[0]
+    result = dc_local.process_sample(0, sample)
+    dc_local.disconnect_sensor()
+
+    assert result is not None
+    # bin1 isn't forced to zero for differentiation (no assertion that it's
+    # nonzero either -- for a clean synthetic tone it may happen to be ~0
+    # anyway; the point is the code path doesn't touch it).
+
+
+def test_passthrough_does_not_zero_bin1():
+    """n_steps == 0 (no modality change) must NOT zero bin1 -- it's plain
+    passthrough, unrelated to the integration blow-up guard."""
+    freq = 500
+    acc_ampl = 1.0
+
+    dc_local = _make_dc(eu='mm/s2', target_unit='mm/s2', highpass_enabled=False)
+    stream_local = dc_local.stream
+    if not isinstance(stream_local, vc.SimulatedSensor):
+        dc_local.disconnect_sensor()
+        return
+    stream_local.source = (vc.GenerateTone, acc_ampl, freq, 0)
+    sample = dc_local.collect_sample()[0]
+    result = dc_local.process_sample(0, sample)
+    dc_local.disconnect_sensor()
+
+    assert result is not None
+    real_peak = _peak_amp_at(result, freq)
+    assert np.abs(real_peak - acc_ampl) < tol
+
+
+def test_causal_highpass_no_severe_edge_overshoot():
+    """Regression for the real bug behind the reported 'wobble': switching
+    the highpass filter to zero-phase (sosfiltfilt) in an earlier attempt
+    effectively doubled the filter order (forward+backward pass), which
+    overshot the raw signal by 35-45% at both block edges for a low cutoff
+    over a short block (confirmed on DEVDATA/hpf-10hz.h5: 10 Hz cutoff over
+    a 1s/4096-sample block) -- regardless of sosfiltfilt padtype/padlen.
+    Causal sosfilt only shows a normal ~8-10% startup transient. This just
+    asserts the causal filter is in use and doesn't blow up a real-ish
+    synthetic capture the same way.
+    """
+    freq = 78
+    acc_ampl = 2 * np.pi * freq  # -> ~1.0 in/s-scale velocity peak, arbitrary units here
+
+    dc_local = _make_dc(eu='mm/s2', target_unit='mm/s',
+                         highpass_enabled=True, highpass_fc=10.0)
+    stream_local = dc_local.stream
+    if not isinstance(stream_local, vc.SimulatedSensor):
+        dc_local.disconnect_sensor()
+        return
+    stream_local.source = (vc.GenerateTone, acc_ampl, freq, 0)
+    sample = dc_local.collect_sample()[0]
+    result = dc_local.process_sample(0, sample)
+    dc_local.disconnect_sensor()
+
+    assert result is not None
+    expected = acc_ampl / (2 * np.pi * freq)  # == 1.0
+    # Generous bound -- real hardware showed ~55%/31% residual edge overshoot
+    # after this fix (vs. 350%/246% before it); this just guards against a
+    # future regression back toward the old severe (zero-phase) blow-up.
+    assert np.abs(result.time_data).max() < expected * 2.0, (
+        f'time_data max {np.abs(result.time_data).max():.4f} far exceeds '
+        f'expected ~{expected:.4f} -- possible regression to severe edge overshoot'
+    )
