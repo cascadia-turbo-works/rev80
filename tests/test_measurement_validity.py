@@ -730,12 +730,18 @@ def test_f7_psd_cache_invalidates_on_samplerate_change():
     sample = make_sample(dc, tone(dc, 200.0, 1.0, n=dc.config.blocksize))
     first = dc.process_sample(0, sample)
 
-    # Same VibeSample object, re-tagged with a different capture rate.
+    df_first = float(first.freq[1] - first.freq[0])
+
+    # Same VibeSample object, re-tagged with a different capture rate. The bin
+    # width scales with fs for a fixed segment length, so it is the observable
+    # here — freq[-1] is not, since both spectra are now capped at maxfreq.
     sample.samplerate = dc.config.samplerate * 2
     second = dc.process_sample(0, sample)
+    df_second = float(second.freq[1] - second.freq[0])
 
-    assert float(second.freq[-1]) != pytest.approx(float(first.freq[-1])), (
-        'PSD cache reused across a samplerate change; the key omits samplerate'
+    assert df_second == pytest.approx(df_first * 2), (
+        f'sample rate doubled but bin width went {df_first} -> {df_second}; '
+        f'the PSD cache key omits samplerate'
     )
 
 
