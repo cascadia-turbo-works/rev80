@@ -8,6 +8,7 @@ import h5py
 import numpy as np
 
 import rev80
+from rev80 import peaks as rev80_peaks
 import rev80.config as _cfg
 import rev80.icons as icons
 from rev80.sample import AcquisitionSettings
@@ -72,6 +73,13 @@ _BTN_HALF = (CONTROLS_WIDTH - 30) // 2
 #   button    ≈ 28 px (24 px frame + 4 px spacing)
 #   card base ≈ 68 px (top/bottom WindowPadding + title + separator)
 _CARD_LINE_H = 20  # per text-line height estimate (font + spacing)
+
+# Clutter cap on the peaks table and the plot markers. Not a selection
+# rule -- rev80.peaks decides which lines are real, this only decides how
+# many of them fit on screen. Sized from the measured corpus counts at the
+# default threshold (median 40, p90 49, max 61 over 60 channel-spectra),
+# so in the normal case nothing is hidden.
+_DEFAULT_PEAK_DISPLAY_CAP = 50
 _CARD_BASE_H = 68  # card overhead: padding + title + separator + bottom pad
 _CARD_BTN_H = 28   # single button row height
 _CARD_H_DEVICE = _CARD_BASE_H + _CARD_LINE_H * 5  # disconnected baseline
@@ -389,8 +397,9 @@ class GUI:
         dpg.set_value(ui.plt_freq_series(ch), [freq.tolist(), spectrum.tolist()])
         if dpg.does_item_exist(ui.ch_overall_value(ch)):
             dpg.set_value(ui.ch_overall_value(ch), f"{result.overall:.4f}")
-        peak_limit = dpg.get_value(ui.FFT_PEAKS_DISPLAY_COUNT)
+        peak_limit = max(1, int(dpg.get_value(ui.FFT_PEAKS_DISPLAY_COUNT) or 1))
         peaks = result.peaks
+        self._update_peak_count_text(len(peaks), peak_limit)
         if len(peaks) > 0:
             top_peaks = peaks[:peak_limit]
             dpg.set_value(ui.plt_freq_peaks(ch), [freq[top_peaks].tolist(), spectrum[top_peaks].tolist()])
@@ -405,6 +414,24 @@ class GUI:
             self._update_fft_peaks_table(cols, rows, ch)
         else:
             dpg.set_value(ui.plt_freq_peaks(ch), [[], []])
+            self._update_fft_peaks_table(["Frequency (Hz)", "Amp."], [], ch)
+
+    def _update_peak_count_text(self, n_found: int, cap: int):
+        """Say how many lines passed the gate, and whether the cap is hiding any.
+
+        The count is now an output of the significance threshold rather than
+        something the user dialled in, so it has to be visible: without it a
+        capped table looks identical to a spectrum that genuinely had few
+        significant lines.
+        """
+        if not dpg.does_item_exist(ui.FFT_PEAKS_FOUND_TEXT):
+            return
+        if n_found == 0:
+            dpg.set_value(ui.FFT_PEAKS_FOUND_TEXT, "no significant peaks")
+        elif n_found > cap:
+            dpg.set_value(ui.FFT_PEAKS_FOUND_TEXT, f"{n_found} peaks, showing {cap}")
+        else:
+            dpg.set_value(ui.FFT_PEAKS_FOUND_TEXT, f"{n_found} peaks")
 
     def _update_trend_plot(self):
         """Refresh the trend plot; collector handles unit/sensitivity conversion."""
@@ -630,6 +657,23 @@ class GUI:
     def _redraw(self, sender=None, data=None):
         if not self.collector.is_streaming:
             self.collector.reprocess_last_block()
+
+    @staticmethod
+    def _tooltip(target, text: str, wrap: int = 320):
+        """Attach a wrapped hover tooltip to an already-created widget."""
+        with dpg.tooltip(parent=target):
+            dpg.add_text(text, wrap=wrap)
+
+    def _on_peak_threshold_change(self, sender=None, data=None):
+        """Push the significance threshold into the config and reprocess.
+
+        Unlike the old peak-count spinner this is not a display-only setting:
+        it changes which lines are selected, so the frame has to go back
+        through process_sample rather than just being re-drawn.
+        """
+        value = float(dpg.get_value(ui.FFT_PEAK_THRESHOLD_DB))
+        self.collector.config.peak_threshold_db = max(0.0, value)
+        self._redraw()
 
     # ------------------------------------------------------------------
     # Channel series management
@@ -2758,6 +2802,10 @@ class GUI:
         acq_dict = _cfg.load_acquisition_config().get("acquisition", {})
         if acq_dict:
             self.collector.config = AcquisitionSettings.from_dict(acq_dict)
+        # The peak significance widget lives in the results pane, not in the
+        # config dialog, so nothing else repopulates it when config is reloaded.
+        if dpg.does_item_exist(ui.FFT_PEAK_THRESHOLD_DB):
+            dpg.set_value(ui.FFT_PEAK_THRESHOLD_DB, self.collector.config.peak_threshold_db)
 
         if device_cfg is None:
             if self.collector.sensor is not None:
@@ -3554,13 +3602,50 @@ class GUI:
                             )
 
                     dpg.add_spacer(height=4)
-                    dpg.add_input_int(
-                        label="Peak Display",
+                    # Primary peak control. This replaced a plain "show the top
+                    # N by amplitude" spinner, which was the wrong knob: the
+                    # top of that list is monopolised by whichever part of the
+                    # band is loudest, so raising N was the only way to surface
+                    # a sideband family and raising N also pulled in ripple.
+                    _pk_thr = dpg.add_input_float(
+                        label="Peak Sig., dB",
+                        tag=ui.FFT_PEAK_THRESHOLD_DB,
+                        default_value=rev80_peaks.DEFAULT_THRESHOLD_DB,
+                        min_value=0.0,
+                        max_value=60.0,
+                        step=0.5,
+                        format="%.1f",
+                        callback=self._on_peak_threshold_change,
+                        width=100,
+                    )
+                    self._tooltip(
+                        _pk_thr,
+                        "How far a spectral line must rise above its own local noise "
+                        "floor before it is reported, in dB.\n\n"
+                        "The noise floor is estimated per bin, so a line in a quiet "
+                        "part of the band and a line in a loud one are judged by the "
+                        "same standard. Every line that passes is reported — the peak "
+                        "count is a result, not a setting.\n\n"
+                        "9.5 dB (3x) is the default. Lower admits more, and below "
+                        "about 7 dB it admits noise: on pure noise a 6 dB gate reports "
+                        "38 peaks per 2000 bins where 9.5 dB reports 0.8.",
+                    )
+                    _pk_cap = dpg.add_input_int(
+                        label="Max Shown",
                         tag=ui.FFT_PEAKS_DISPLAY_COUNT,
-                        default_value=6,
+                        default_value=_DEFAULT_PEAK_DISPLAY_CAP,
+                        min_value=1,
+                        max_value=500,
                         callback=self._redraw,
                         width=100,
                     )
+                    self._tooltip(
+                        _pk_cap,
+                        "Clutter cap on the table and the plot markers only. It hides "
+                        "the smallest of the lines that already passed the "
+                        "significance test; it does not decide which lines are real.",
+                    )
+                    dpg.add_text("", tag=ui.FFT_PEAKS_FOUND_TEXT, color=_c("MUTED"))
                     dpg.add_spacer(height=4)
 
                     # Frame metadata card — hidden until first frame arrives
