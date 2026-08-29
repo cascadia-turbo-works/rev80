@@ -613,11 +613,28 @@ class PicoScopeStream:
             log.debug(f'PicoScope actual raw sample rate: {actual_raw_fs} Hz '
                       f'(requested {raw_samplerate} Hz, osr={self._effective_osr})')
         self._actual_raw_samplerate = actual_raw_fs
-        # _actual_samplerate is the *target* rate reported downstream — always
-        # config.samplerate, regardless of oversampling. Downstream code
-        # (DataCollector, VibeSample, HDF5 persistence) must stay unaware that
-        # oversampling happened.
-        self._actual_samplerate = self.config.samplerate
+        self._actual_samplerate = self._report_samplerate(actual_raw_fs)
+
+    def _report_samplerate(self, actual_raw_fs: float) -> float:
+        """The true post-decimation sample rate, for everything downstream.
+
+        Oversampling itself *is* hidden from DataCollector / VibeSample / HDF5
+        — that is what dividing by the (exact, integer) decimation ratio does.
+        What must NOT be hidden is the rate the hardware actually ran at: the
+        driver rounds the streaming interval to a whole microsecond and writes
+        back what it used, which is generally not what was requested.
+
+        Reporting config.samplerate instead scaled every displayed frequency by
+        requested/actual. Measured at F_max=2000: requested 32768 Hz raw, driver
+        rounded 30.5 us down to 30 us -> 33333 Hz raw -> 8333.33 Hz decimated,
+        reported as 8192 Hz. A true 100 Hz tone displayed at 98.3 Hz and a
+        60 Hz line read 59.0 Hz, which breaks harmonic-family identification,
+        sideband spacing, and any BPFO/BPFI comparison against a nameplate.
+
+        Returned as a float: the true rate is generally not an integer, and
+        rounding it would reintroduce a (smaller) version of the same error.
+        """
+        return float(actual_raw_fs) / float(self._effective_osr)
 
     # ------------------------------------------------------------------
     # Streaming callback + poll loop (run on background thread)
