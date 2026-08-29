@@ -375,6 +375,12 @@ class ChannelResult:
     # is worse than an absent one.
     band_fmin:  float | None = None
     band_fmax:  float | None = None
+    # Impulsiveness scalars, computed on `time_data` -- the band-limited trace
+    # the analyst is actually looking at. Dimensionless, so they are unaffected
+    # by sensor sensitivity, display unit or amplitude mode. A broadband
+    # overall averages impulsiveness away completely; these are what see it.
+    crest_factor: float = 0.0
+    kurtosis:     float = 3.0
 
     @property
     def band(self) -> 'tuple[float, float] | None':

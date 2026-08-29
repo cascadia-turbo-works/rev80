@@ -201,10 +201,7 @@ class DataCollector:
         """
         enabled = set(self.config.enabled_channels)
         self.trend = {
-            ch: self.trend.get(ch, {
-                "rel_times": np.empty(0),
-                "orders":    np.empty((0, 5)),
-            }) for ch in sorted(enabled)
+            ch: self.trend.get(ch, self._empty_trend()) for ch in sorted(enabled)
         }
 
     # ------------------------------------------------------------------
@@ -358,22 +355,45 @@ class DataCollector:
         sample._filter_config_key = key
         return filtered
 
-    def update_trend(self, ch: int, rel_time: float, orders: np.ndarray) -> None:
-        """Append one timestamped 5-order overall vector (mV RMS) for a channel."""
+    @staticmethod
+    def _empty_trend() -> dict:
+        return {"rel_times": np.empty(0), "orders": np.empty((0, 5)),
+                "crest_factor": np.empty(0), "kurtosis": np.empty(0)}
+
+    def update_trend(self, ch: int, rel_time: float, orders: np.ndarray,
+                     crest_factor: float = np.nan,
+                     kurtosis: float = np.nan) -> None:
+        """Append one timestamped trend point for a channel.
+
+        `orders` is the 5-order overall vector in mV RMS. The two impulsiveness
+        scalars ride alongside rather than inside it because they are
+        dimensionless -- they are not a sixth integration order and must not be
+        unit-converted by get_trend_for_display.
+
+        One reading of kurtosis says little; watching it climb over weeks is
+        the actual diagnostic, which is why they are trended and not merely
+        displayed.
+        """
         if ch not in self.trend:
-            self.trend[ch] = {"rel_times": np.empty(0), "orders": np.empty((0, 5))}
+            self.trend[ch] = self._empty_trend()
         td = self.trend[ch]
-        td["rel_times"] = np.append(td["rel_times"], rel_time)
-        td["orders"]    = np.vstack([td["orders"], orders.reshape(1, 5)])
+        # Tolerate a trend dict built before these keys existed (loaded files).
+        for key in ("crest_factor", "kurtosis"):
+            if key not in td:
+                td[key] = np.full(len(td["rel_times"]), np.nan)
+        td["rel_times"]    = np.append(td["rel_times"], rel_time)
+        td["orders"]       = np.vstack([td["orders"], orders.reshape(1, 5)])
+        td["crest_factor"] = np.append(td["crest_factor"], crest_factor)
+        td["kurtosis"]     = np.append(td["kurtosis"], kurtosis)
         cap = self.config.trend_max_points
         if len(td["rel_times"]) > cap:
-            td["rel_times"] = td["rel_times"][-cap:]
-            td["orders"]    = td["orders"][-cap:]
+            for key in ("rel_times", "orders", "crest_factor", "kurtosis"):
+                td[key] = td[key][-cap:]
 
     def clear_trend(self) -> None:
         """Wipe all accumulated trend data."""
         for ch in self.trend:
-            self.trend[ch] = {"rel_times": np.empty(0), "orders": np.empty((0, 5))}
+            self.trend[ch] = self._empty_trend()
         log.debug("Trend data cleared.")
 
     def get_trend_for_display(self) -> dict[int, tuple[list[float], list[float]]]:
@@ -853,6 +873,11 @@ class DataCollector:
             time_data=time_signal, time_vec=time_vec, samplerate=samplerate,
             freq=freq_hz, spectrum=spectrum_amp, peaks=peaks, overall=overall,
             band_fmin=band_fmin, band_fmax=band_fmax,
+            # Computed on the trace being returned, not on the Hann-tapered
+            # array the overall uses: that taper is an amplitude envelope, so a
+            # peak-based statistic taken from it would be plainly wrong.
+            crest_factor=_dsp.crest_factor(time_signal),
+            kurtosis=_dsp.kurtosis(time_signal),
             timestamp=sample._timestamp, rel_time=sample.rel_time, status=sample.status,
         )
 
@@ -892,7 +917,9 @@ class DataCollector:
                     )
                 else:
                     self.update_trend(ch, result.rel_time,
-                                      sample.overall_ampl_by_integration_order)
+                                      sample.overall_ampl_by_integration_order,
+                                      crest_factor=result.crest_factor,
+                                      kurtosis=result.kurtosis)
             results.append(result)
         return results
 
@@ -931,6 +958,8 @@ class DataCollector:
             /frames/{i}/{ch}/data                   (N,) float64
             /trend/rel_times                        (M,) float64  (shared time axis)
             /trend/{ch}/data                        (M,) float64  (channel overall amplitude)
+            /trend/{ch}/crest_factor                (M,) float64  (dimensionless)
+            /trend/{ch}/kurtosis                    (M,) float64  (dimensionless)
         """
         frames = list(self.data["frame_cache"])
         log.info(f"Writing {len(frames)} frames to {target}")
@@ -1008,6 +1037,13 @@ class DataCollector:
                     cg = trend_grp.create_group(str(ch))
                     cg.create_dataset("rel_times", data=td["rel_times"].astype(np.float64))
                     cg.create_dataset("orders",    data=td["orders"].astype(np.float64))
+                    # Dimensionless, so they sit beside `orders` rather than as
+                    # extra columns of it -- they are not a sixth integration
+                    # order and must never be unit-converted.
+                    for key in ("crest_factor", "kurtosis"):
+                        vals = td.get(key)
+                        if vals is not None and len(vals) == len(td["rel_times"]):
+                            cg.create_dataset(key, data=np.asarray(vals, dtype=np.float64))
 
         log.info(f"Saved {len(frames)} frames to {target}")
 
@@ -1042,10 +1078,19 @@ class DataCollector:
                         if not ch_str.isdigit():
                             continue
                         ch = int(ch_str)
-                        self.trend[ch] = {
-                            "rel_times": np.array(cg["rel_times"][()], dtype=np.float64),
-                            "orders":    np.array(cg["orders"][()],    dtype=np.float64),
+                        rel_times = np.array(cg["rel_times"][()], dtype=np.float64)
+                        td = {
+                            "rel_times": rel_times,
+                            "orders":    np.array(cg["orders"][()], dtype=np.float64),
                         }
+                        # Absent in files written before the scalars existed;
+                        # NaN reads as "not recorded" and plots as a gap rather
+                        # than as a zero the analyst would read as a value.
+                        for key in ("crest_factor", "kurtosis"):
+                            td[key] = (np.array(cg[key][()], dtype=np.float64)
+                                       if key in cg
+                                       else np.full(len(rel_times), np.nan))
+                        self.trend[ch] = td
                 else:
                     # Shared time axis + per-channel scalar overalls; promote to (M,5)
                     shared_rel_times: list = []
@@ -1060,8 +1105,10 @@ class DataCollector:
                             orders = np.zeros((M, 5))
                             orders[:, 2] = np.array(overall)  # col 2 = order 0
                             self.trend[int(ch_str)] = {
-                                "rel_times": np.array(shared_rel_times),
-                                "orders":    orders,
+                                "rel_times":    np.array(shared_rel_times),
+                                "orders":       orders,
+                                "crest_factor": np.full(M, np.nan),
+                                "kurtosis":     np.full(M, np.nan),
                             }
 
         self._post_load()
