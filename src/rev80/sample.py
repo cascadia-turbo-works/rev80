@@ -152,9 +152,47 @@ class AcquisitionSettings:
         return np.arange(self.blocksize) * self.sampleperiod
 
     @property
+    def nperseg(self) -> int:
+        """Welch segment length — the whole block.
+
+        Previously the Welch call used nfft = int(samplerate / binsize) while
+        blocksize was nextpow2(samplerate / binsize) >= nfft, so the spectrum
+        had a different number of lines and a different bin width from the ones
+        the UI advertised. Across the preset grid 40 of 72 combinations were
+        wrong: F_max=200 / df=20 claimed 17 lines against an actual 13, at a
+        real resolution of 20.48 Hz rather than 20 (+2.4%); F_max=2000 / df=5
+        claimed 1025 lines against an actual 820.
+
+        Using the whole (power-of-two) block makes n_fft_bins, binsize_actual
+        and acquisition_period consistent by construction, and keeps the FFT a
+        power of two. Since blocksize = nextpow2(samplerate / binsize), the
+        delivered resolution is always at least as fine as the one requested.
+        """
+        return self.blocksize
+
+    @property
+    def binsize_actual(self) -> float:
+        """The bin width actually delivered — always <= the requested binsize."""
+        return self.samplerate / self.nperseg
+
+    @property
     def n_fft_bins(self) -> int:
-        """Number of frequency bins in the one-sided spectrum."""
-        return self.blocksize // 2 + 1
+        """Number of spectrum lines actually displayed: DC up to maxfreq.
+
+        Not nperseg // 2 + 1. That counts the full one-sided transform out to
+        fs/2, but the band between maxfreq and fs/2 is a guard band and is no
+        longer displayed (see DataCollector.process_sample step 6), so quoting
+        it as a line count overstated what the user can actually see by the
+        full 2.56/2 ratio.
+
+        Nominal: derived from config.samplerate. The live spectrum is built on
+        the rate the hardware actually achieved, which differs by up to ~1.7%
+        (see PicoScopeStream._report_samplerate), so the realised line count
+        can differ by a line or two.
+        """
+        df = self.binsize_actual
+        n_below = int(self._fm / df + 1e-9) + 1      # bins at 0, df, 2df … <= fm
+        return min(n_below, self.nperseg // 2 + 1)
 
     @property
     def memory_bytes(self) -> int:
@@ -165,7 +203,10 @@ class AcquisitionSettings:
 class VibeSample:
     status: str
     _timestamp: datetime
-    samplerate: int
+    # The rate the hardware actually achieved, post-decimation. Generally not
+    # an integer: the driver rounds the streaming interval to whole
+    # microseconds (see PicoScopeStream._report_samplerate).
+    samplerate: float
     unit: str
     overflow: bool
     degraded: bool = False
@@ -181,6 +222,14 @@ class VibeSample:
     psd_mv: np.ndarray | None     = field(default=None, repr=False)
     freq_hz: np.ndarray | None    = field(default=None, repr=False)
     _psd_config_key: tuple | None = field(default=None, repr=False)
+
+    # Highpass-filtered mV data, cached by DataCollector. Populated once per
+    # frame at ingestion (receive_data) so the filter's state can be carried
+    # across consecutive blocks of one continuous stream; recomputed
+    # statelessly, from a steady-state initial condition, when a stored frame
+    # is replayed or the filter config changed after capture.
+    filtered_mv: np.ndarray | None      = field(default=None, repr=False)
+    _filter_config_key: tuple | None    = field(default=None, repr=False)
 
     @classmethod
     def empty(cls):
@@ -224,7 +273,7 @@ class ChannelResult:
     degraded:   bool             # True if streaming rate was degraded during this block
     time_data:  np.ndarray       # (N,) signal in target unit
     time_vec:   np.ndarray       # (N,) seconds
-    samplerate: int
+    samplerate: float
     freq:       np.ndarray       # (K,) Hz
     spectrum:   np.ndarray       # (K,) amplitude in target unit + amp mode
     peaks:      np.ndarray       # indices into freq / spectrum, descending

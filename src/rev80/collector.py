@@ -11,22 +11,34 @@ import numpy as np
 import scipy.signal
 
 import rev80
+from rev80 import _dsp
 from rev80._paths import data_dir
 from rev80.scope_sensor import ScopeSensor
 
 log = rev80.get_logger("collector")
 
 
-def _write_channel_group(h5_grp, ch: int, sample: 'rev80.VibeSample') -> None:
+def _write_channel_group(h5_grp, ch: int, sample: 'rev80.VibeSample',
+                         compression: str | None = None,
+                         compression_opts: int | None = None) -> None:
     """Write one VibeSample's mV data into an h5py group.
 
-    Used by both DataCollector.save_data() and MonitorWriterThread.
+    THE single channel-group writer, used by both DataCollector.save_data()
+    and MonitorWriterThread. These were previously two separate functions that
+    had silently diverged: the monitor copy wrote no validity flags at all, so
+    every monitor session recorded clipped and rate-degraded captures as though
+    they were clean. Keep them unified.
     """
     cg = h5_grp.create_group(str(ch))
-    cg.create_dataset('data', data=np.asarray(sample.data, dtype=np.float64))
+    kw = {}
+    if compression is not None:
+        kw['compression'] = compression
+        if compression_opts is not None:
+            kw['compression_opts'] = compression_opts
+    cg.create_dataset('data', data=np.asarray(sample.data, dtype=np.float64), **kw)
     cg.attrs['timestamp']  = sample.timestamp
     cg.attrs['rel_time']   = float(sample.rel_time)
-    cg.attrs['samplerate'] = int(sample.samplerate)
+    cg.attrs['samplerate'] = float(sample.samplerate)
     cg.attrs['status']     = str(sample.status)
     cg.attrs['overflow']   = bool(sample.overflow)
     cg.attrs['degraded']   = bool(sample.degraded)
@@ -52,6 +64,13 @@ class DataCollector:
         sensor: Union[rev80.VibeSensor, None] = None,
         config: Union[rev80.AcquisitionSettings, None] = None,
     ):
+
+        # Per-channel highpass filter state, carried across consecutive blocks
+        # of one continuous stream (see filter_block). Keyed by channel; reset
+        # on stream start and whenever the filter config changes.
+        self._hp_zi: Dict[int, np.ndarray] = {}
+        self._hp_zi_key: tuple | None = None
+        self._hp_sos_cache: Dict[tuple, np.ndarray] = {}
 
         self.sensor: Union[rev80.VibeSensor, None] = None
         self.stream = None
@@ -187,6 +206,140 @@ class DataCollector:
             }) for ch in sorted(enabled)
         }
 
+    # ------------------------------------------------------------------
+    # Highpass filtering
+    # ------------------------------------------------------------------
+
+    def reset_filter_state(self) -> None:
+        """Drop carried highpass state (stream start / reconnect / config change)."""
+        self._hp_zi.clear()
+
+    def _filter_key(self, samplerate: float) -> tuple:
+        """Identity of the filter that would be applied at this rate."""
+        return (bool(self.config.highpass_enabled), float(self.config.highpass_fc),
+                int(self.config._BUTTER_ORDER), float(samplerate))
+
+    def _highpass_sos(self, samplerate: float) -> 'np.ndarray | None':
+        """Butterworth SOS for the current config, recomputed only when it changes."""
+        key = self._filter_key(samplerate)
+        if not self.config.highpass_enabled or self.config.highpass_fc >= samplerate / 2.0:
+            return None
+        cached = self._hp_sos_cache.get(key)
+        if cached is None:
+            cached = scipy.signal.butter(
+                self.config._BUTTER_ORDER, self.config.highpass_fc,
+                btype='highpass', fs=samplerate, output='sos',
+            )
+            self._hp_sos_cache.clear()      # only ever one live config
+            self._hp_sos_cache[key] = cached
+        return cached
+
+    def filter_block(self, ch: int, data: np.ndarray, samplerate: float,
+                     stateful: bool) -> np.ndarray:
+        """Highpass one block of mV data.
+
+        Causal (sosfilt), not zero-phase: sosfiltfilt effectively doubles the
+        filter order (forward + backward pass), which resonates badly for a low
+        cutoff relative to a short block (e.g. 10 Hz over a 1 s block — only 10
+        cutoff-cycles of margin). Confirmed on real hardware data: sosfiltfilt
+        overshot the raw signal by 35-45% at the block edges with any padtype.
+
+        But plain `sosfilt(sos, x)` with no initial condition restarts the
+        filter from rest at every block, injecting a startup transient into
+        every frame of a continuous stream. Measured on a 200 Hz tone, block 1
+        of 4, high-pass at 10 Hz:
+
+                                      no zi      steady-state zi + carry
+            waveform peak            +9.41%          -0.00%
+            RMS, 1000 mV DC offset  +14321.74%       -0.00%
+            displacement overall     +19.15%         +0.02%
+            ... with DC offset    +1472786.72%       +0.02%
+
+        Two regimes:
+
+        * ``stateful=True`` — consecutive blocks of one live stream. The final
+          filter state of each block seeds the next, so the boundary is
+          seamless. Only receive_data uses this, exactly once per frame and in
+          order.
+        * ``stateful=False`` — a stored frame replayed from HDF5, or a frame
+          re-filtered because the config changed after capture. These are NOT
+          a continuous stream and are re-processed out of order, so no state
+          may be carried between them or replay stops being deterministic.
+          The filter is instead seeded from the block's DC content — see
+          _seed_zi.
+        """
+        sos = self._highpass_sos(samplerate)
+        if sos is None:
+            return np.asarray(data, dtype=np.float64).copy()
+
+        x = np.ascontiguousarray(data, dtype=np.float64)
+        if stateful:
+            key = self._filter_key(samplerate)
+            zi = self._hp_zi.get(ch)
+            if zi is None or self._hp_zi_key != key:
+                if self._hp_zi_key != key:
+                    self._hp_zi.clear()
+                self._hp_zi_key = key
+                zi = self._seed_zi(sos, x)
+            y, self._hp_zi[ch] = scipy.signal.sosfilt(sos, x, zi=zi)
+            return y
+
+        y, _ = scipy.signal.sosfilt(sos, x, zi=self._seed_zi(sos, x))
+        return y
+
+    @staticmethod
+    def _seed_zi(sos: np.ndarray, x: np.ndarray) -> np.ndarray:
+        """Initial filter state for a block with no usable history.
+
+        Seeded from the block MEAN, not from x[0]. scipy's documented idiom is
+        sosfilt_zi(sos) * x[0], which is correct when the first sample
+        represents the signal's baseline — true for a step response, false for
+        anything oscillatory. A vibration block is a waveform swinging about
+        its DC level, so x[0] is an arbitrary point on that swing, and seeding
+        with it tells the high-pass that the signal has been sitting at that
+        value forever. The filter then decays a step that was never there.
+
+        Measured on four consecutive real captures (PicoScope 4424A, 447.3 Hz
+        loopback tone, 1 Vpp, fs=8333.25, 10 Hz high-pass). Block mean was
+        -0.06..-0.21 mV in every block — the true DC — while x[0] ranged over
+        36..305 mV. Error against a fully-settled continuous-filter reference:
+
+            order          zi * x[0]        zi * mean(x)     warm-up pass
+            acceleration     +0.39%           -0.00%           +0.00%
+            velocity        +23.01%           -0.06%           -0.07%
+            displacement  +4297.20%           -2.22%          +61.10%
+            waveform         57.63%            0.51%            6.37%
+
+        (worst block shown per row.) A warm-up pass — filtering the block once
+        and reusing its final state as the initial state — was also tried and
+        is measurably WORSE than the mean, because it imposes a periodic
+        assumption the block does not satisfy.
+
+        Residual displacement error on an isolated block is irreducible: at
+        447 Hz the doubly-integrated result is dominated by near-DC noise whose
+        continuation simply is not present in a single block. It only affects
+        block 0 of a stream and replayed frames; once state is carried, blocks
+        1+ match the settled reference to +-0.000%.
+        """
+        return scipy.signal.sosfilt_zi(sos) * float(np.mean(x))
+
+    def filtered_data_for(self, ch: int, sample: 'rev80.VibeSample') -> np.ndarray:
+        """Highpassed mV for a sample, using the ingestion-time result if valid.
+
+        receive_data pre-filters live frames with carried state. If that cached
+        result was produced by the filter config now in force, reuse it —
+        re-filtering here would be both wasteful and, for a streaming frame,
+        wrong (the state has already moved on). Otherwise the sample is being
+        replayed or the config changed since capture, so filter it statelessly.
+        """
+        key = self._filter_key(sample.samplerate)
+        if sample.filtered_mv is not None and sample._filter_config_key == key:
+            return sample.filtered_mv
+        filtered = self.filter_block(ch, sample.data, sample.samplerate, stateful=False)
+        sample.filtered_mv        = filtered
+        sample._filter_config_key = key
+        return filtered
+
     def update_trend(self, ch: int, rel_time: float, orders: np.ndarray) -> None:
         """Append one timestamped 5-order overall vector (mV RMS) for a channel."""
         if ch not in self.trend:
@@ -309,6 +462,9 @@ class DataCollector:
             return
         if not self.stream:
             return
+        # A new stream is a new continuous signal — drop any filter state
+        # carried over from the previous one.
+        self.reset_filter_state()
         try:
             self.stream.start()
         except Exception as e:
@@ -394,6 +550,12 @@ class DataCollector:
         for i, ch in enumerate(channels):
             col  = min(i, data_arr.shape[1] - 1)
             data = np.ascontiguousarray(data_arr[:, col], dtype=np.float64)
+            # Filter here, at ingestion: this runs exactly once per frame and
+            # in stream order, which is what carrying the filter state across
+            # block boundaries requires. process_sample may be called many
+            # times on the same frame (re-render, unit change) and in any
+            # order when browsing, so it must not advance the state.
+            filtered = self.filter_block(ch, data, samplerate, stateful=True)
             samples[ch] = rev80.VibeSample(
                 status=samp["status"],
                 _timestamp=samp["timestamp"],
@@ -404,6 +566,8 @@ class DataCollector:
                 data=data,
                 rel_time=samp["rel_time"],
                 label=f"Ch{chr(65 + ch)}",
+                filtered_mv=filtered,
+                _filter_config_key=self._filter_key(samplerate),
             )
 
         self._data_callback(samples)
@@ -450,40 +614,48 @@ class DataCollector:
         nyq            = samplerate / 2.0
 
         # ── 1. Butterworth filter ─────────────────────────────────────
-        # Lowpass is retired: mandatory anti-aliasing now happens upstream in
-        # PicoScopeStream, before this function ever sees the data.
-        #
-        # Causal (sosfilt), not zero-phase: sosfiltfilt effectively doubles the
-        # filter order (forward + backward pass), which resonates badly for a
-        # low cutoff relative to a short block (e.g. 10 Hz over a 1s block —
-        # only 10 cutoff-cycles of margin) -- confirmed on real hardware data,
-        # sosfiltfilt overshot the raw signal by 35-45% at the block edges
-        # (any padtype) vs. causal sosfilt's normal ~8-10% transient.
-        filtered_mv = sample.data.copy()
-        order = config._BUTTER_ORDER
-        if config.highpass_enabled and config.highpass_fc < nyq:
-            sos = scipy.signal.butter(order, config.highpass_fc,
-                                      btype='highpass', fs=samplerate, output='sos')
-            filtered_mv = scipy.signal.sosfilt(sos, filtered_mv)
+        # Filtering happens in filter_block(); see there for why the filter is
+        # causal-with-carried-state rather than zero-phase. Streaming frames
+        # arrive pre-filtered from receive_data (state carried across blocks);
+        # replayed frames are filtered here, statelessly.
+        filtered_mv = self.filtered_data_for(ch, sample)
 
-        # rfft is used in both step 3 (5-order overalls) and step 8 (time-domain output).
-        # Plain rfft — no window, no segment averaging — so irfft is an exact inverse.
+        # Frequency-domain integration/differentiation is done on a *tapered*
+        # block. The DFT treats the record as periodic, so an un-windowed block
+        # spanning a non-integer number of cycles carries a step discontinuity
+        # at the wrap point. That step's spectrum is broadband and
+        # low-frequency-weighted, and (j*omega)**n with n < 0 amplifies it by
+        # 1/omega**|n| — exactly where it is worst. Un-windowed, a 501 Hz tone
+        # read +4473.76% high in displacement overall; the on-bin case that the
+        # old test suite exercised exclusively was the one case with zero error.
+        # See rev80._dsp for the full measured table.
         N       = sample.blocksize
-        rfft_mv = np.fft.rfft(filtered_mv)
         freq_td = np.fft.rfftfreq(N, d=1.0 / samplerate)
 
+        # Hann taper for the scalar overalls (step 3): dividing the resulting
+        # RMS by the window's power gain recovers the unbiased broadband RMS.
+        hann_w, hann_gain = _dsp.hann_taper(N)
+        rfft_hann = np.fft.rfft(filtered_mv * hann_w)
+
         # ── 2. Welch PSD in mV² — compute once, cache on sample ──────
+        # binsize and samplerate BOTH change the transform, so both belong in
+        # the key. Without them, switching 2 Hz -> 0.5 Hz bins returned the
+        # identical cached 2049-point, 2 Hz spectrum: the user believed they had
+        # quadrupled the resolution and nothing had changed. Masked while
+        # streaming (each new VibeSample starts with psd_mv=None), so it bit in
+        # browse/offline mode and after loading a file.
         psd_key = (config.fft_window, config.welch_overlap,
-                   config.highpass_enabled, config.highpass_fc)
+                   config.highpass_enabled, config.highpass_fc,
+                   config.binsize, sample.samplerate)
         if sample.psd_mv is None or sample._psd_config_key != psd_key:
-            nfft     = int(samplerate / config.binsize)
-            nperseg  = min(nfft, len(filtered_mv))
-            nfft     = max(nfft, nperseg)
+            # Segment = the whole block, so the computed spectrum matches the
+            # line count and bin width the UI states. See config.nperseg.
+            nperseg  = min(config.nperseg, len(filtered_mv))
             noverlap = min(nperseg - 1, int(nperseg * config.welch_overlap))
             freq_hz, psd_mv = scipy.signal.welch(
                 filtered_mv, fs=float(samplerate),
                 window=config.fft_window, nperseg=nperseg, noverlap=noverlap,
-                nfft=nfft, scaling='spectrum', detrend='linear', average='mean',
+                nfft=nperseg, scaling='spectrum', detrend='linear', average='mean',
             )
             sample.psd_mv          = psd_mv
             sample.freq_hz         = freq_hz
@@ -492,32 +664,22 @@ class DataCollector:
             # ── 3. 5-order mV RMS overalls via time-domain IFFT ──────
             # Using sqrt(mean(x²)) on the IFFT signal avoids the Welch window
             # normalisation artifact (Hann leakage inflates sqrt(sum(psd)) by
-            # sqrt(3/2) for a pure tone). The irfft is an exact inverse of the
-            # plain rfft above, so the round-trip is lossless.
+            # sqrt(3/2) for a pure tone).
+            #
+            # Order 0 is a plain passthrough: no transform happens, so there is
+            # no wrap discontinuity to suppress and no window is applied. Every
+            # other order integrates or differentiates in the frequency domain
+            # and so runs on the Hann-tapered transform, with the window's power
+            # gain divided back out to leave the RMS unbiased.
             for i, n_ord in enumerate(range(-2, 3)):
                 if n_ord == 0:
-                    time_ord = filtered_mv          # passthrough — no IFFT needed
-                else:
-                    omega_i       = 2 * np.pi * freq_td   # new array each iteration
-                    omega_i[0]    = 1.0                    # avoid 0^n_ord; zeroed below
-                    transfer_i    = np.power(1j * omega_i, n_ord)
-                    transfer_i[0] = 0.0                    # kill DC for all int/diff orders
-                    if n_ord < 0:
-                        # Integration only: also kill the 1x-binsize bin. A single
-                        # time-domain highpass pass can't keep residual near-DC
-                        # energy (finite filter rolloff + FFT/window leakage) from
-                        # blowing up under 1/f^n integration -- confirmed on real
-                        # hardware, bin 1 dominated the whole spectrum. Zeroing an
-                        # exact FFT bin is lossless for every other frequency and,
-                        # unlike a smooth frequency-response weighting, introduces
-                        # no circular-convolution edge artifacts in the irfft
-                        # reconstruction. Unconditional (not gated on
-                        # highpass_enabled) -- bin 1 is essentially never real
-                        # signal of interest for integrated velocity/displacement.
-                        transfer_i[1] = 0.0
-                    time_ord      = np.fft.irfft(rfft_mv * transfer_i, n=N)
+                    sample.overall_ampl_by_integration_order[i] = float(
+                        np.sqrt(np.mean(np.square(filtered_mv)))
+                    )
+                    continue
+                time_ord = _dsp.integrate_rfft(rfft_hann, freq_td, n_ord, N)
                 sample.overall_ampl_by_integration_order[i] = float(
-                    np.sqrt(np.mean(np.square(time_ord)))
+                    np.sqrt(np.mean(np.square(time_ord))) / hann_gain
                 )
         else:
             freq_hz = sample.freq_hz
@@ -550,7 +712,18 @@ class DataCollector:
         amp_factor   = amplitude_scale(amp_mode)
         spectrum_amp = np.sqrt(np.maximum(calibrated_psd, 0.0)) * amp_factor
 
-        # ── 6. Peaks ──────────────────────────────────────────────────
+        # ── 6. Truncate at F_max, then find peaks ─────────────────────
+        # The whole point of the F_max = fs/2.56 convention is that the guard
+        # band between F_max and fs/2 is never displayed: that is where the
+        # anti-alias filter has not yet reached full attenuation. Measured
+        # rejection at the frequency folding into the top of the band is
+        # -21.8 dB, falling to effectively 0 dB at fs/2 — so content shown up
+        # there is not a measurement, and find_peaks was happily reporting it
+        # in the peaks table alongside real lines.
+        keep_band    = freq_hz <= config.maxfreq
+        freq_hz      = freq_hz[keep_band]
+        spectrum_amp = spectrum_amp[keep_band]
+
         peaks, _ = scipy.signal.find_peaks(spectrum_amp, distance=5)
         peaks     = np.array(peaks[np.argsort(-spectrum_amp[peaks])])
 
@@ -564,24 +737,35 @@ class DataCollector:
         )
 
         # ── 8. Time-domain signal — inline FFT integration ───────────
-        # rfft_mv / freq_td already computed above (reused from step 3).
-        eu_scale   = src_si / tgt_si / sensitivity_mv
+        # The displayed trace cannot use the step-3 Hann taper: the taper would
+        # be plainly visible as an amplitude envelope on the waveform the user
+        # is reading. Instead this is overlap-save — a Tukey window (flat across
+        # the middle, cosine-tapered at the edges) kills the wrap discontinuity,
+        # and only the flat middle is returned. Inside that region the window is
+        # exactly 1.0, so the returned samples are undistorted.
+        #
+        # Cost: for integrated/differentiated displays the trace covers the
+        # middle 50% of the block rather than all of it. time_vec is truncated
+        # to match, so it still carries true capture-relative timestamps.
+        # Un-truncated, a doubly-integrated 61 Hz tone overshot its true 0-peak
+        # amplitude by +1149%; this brings it to +1.47%.
+        eu_scale = src_si / tgt_si / sensitivity_mv
         if n_steps != 0:
-            omega_td    = 2 * np.pi * freq_td
-            omega_td[0] = 1.0
-            transfer       = np.power(1j * omega_td, n_steps)
-            transfer[0]    = 0.0
-            if n_steps < 0:
-                transfer[1] = 0.0   # also kill the 1x-binsize bin -- see step 3 comment
-            rfft_target    = rfft_mv * transfer * eu_scale
+            keep        = _dsp.tukey_keep_slice(N)
+            tukey_w     = _dsp.tukey_taper(N)
+            rfft_tukey  = np.fft.rfft(filtered_mv * tukey_w)
+            time_signal = _dsp.integrate_rfft(rfft_tukey, freq_td, n_steps, N)
+            time_signal = time_signal[keep] * eu_scale
+            time_vec    = sample.time_vec[keep]
         else:
-            rfft_target = rfft_mv * eu_scale
-        time_signal = np.fft.irfft(rfft_target, n=N)
+            # Passthrough: no transform, no wrap discontinuity, full record.
+            time_signal = filtered_mv * eu_scale
+            time_vec    = sample.time_vec
 
         return rev80.ChannelResult(
             channel=ch, unit=effective_tgt, overflow=sample.overflow,
             degraded=sample.degraded,
-            time_data=time_signal, time_vec=sample.time_vec, samplerate=samplerate,
+            time_data=time_signal, time_vec=time_vec, samplerate=samplerate,
             freq=freq_hz, spectrum=spectrum_amp, peaks=peaks, overall=overall,
             timestamp=sample._timestamp, rel_time=sample.rel_time, status=sample.status,
         )
@@ -609,8 +793,20 @@ class DataCollector:
             if result is None:
                 continue
             if self.is_streaming:
-                self.update_trend(ch, result.rel_time,
-                                  sample.overall_ampl_by_integration_order)
+                # A clipped or rate-degraded frame is not a measurement. Trending
+                # it records a step change that never happened on the machine,
+                # and the anomaly detector then fires a burst on it — the classic
+                # spurious-alarm mechanism. The frame is still returned for
+                # display (flagged), just never trended.
+                if result.overflow or result.degraded:
+                    log.debug(
+                        f'ch={ch} frame at rel_time={result.rel_time:.3f}s excluded '
+                        f'from trend (overflow={result.overflow}, '
+                        f'degraded={result.degraded})'
+                    )
+                else:
+                    self.update_trend(ch, result.rel_time,
+                                      sample.overall_ampl_by_integration_order)
             results.append(result)
         return results
 
@@ -871,7 +1067,7 @@ class DataCollector:
 
         ts_str     = decode(fg.attrs["timestamp"])
         rel_time   = float(fg.attrs["rel_time"])
-        samplerate = int(fg.attrs["samplerate"])
+        samplerate = float(fg.attrs["samplerate"])
         status     = decode(fg.attrs["status"])
         try:
             timestamp = datetime.fromisoformat(ts_str)
@@ -885,9 +1081,15 @@ class DataCollector:
             ch   = int(ch_str)
             data = np.ascontiguousarray(cg["data"][()], dtype=np.float64)
             unit = "mV" if version >= 4 else ch_units.get(ch, "mV")
+            # _write_channel_group has always stored these; they were simply
+            # never read back, so every reloaded file looked clean no matter
+            # what happened during capture. Older files predate the attrs.
+            overflow = bool(cg.attrs.get("overflow", False))
+            degraded = bool(cg.attrs.get("degraded", False))
             frame_samples[ch] = rev80.VibeSample(
                 status=status, _timestamp=timestamp, samplerate=samplerate,
-                unit=unit, overflow=False, data=data, rel_time=rel_time,
+                unit=unit, overflow=overflow, degraded=degraded,
+                data=data, rel_time=rel_time,
             )
         return frame_samples
 
@@ -902,7 +1104,7 @@ class DataCollector:
 
         # Sync enabled_channels from frame data and clamp maxfreq to file samplerate
         all_channels: set[int] = set()
-        file_samplerate: int = 0
+        file_samplerate: float = 0.0
         for frame in self.data["frame_cache"]:
             for k, v in frame.items():
                 if isinstance(k, int):

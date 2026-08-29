@@ -30,6 +30,26 @@ class AnomalyEvent:
     trigger_rel_time: float = 0.0   # session rel_time of the t=0 frame
 
 
+def valid_results(results: list) -> list:
+    """Drop frames that are not valid measurements.
+
+    A frame whose ADC clipped (overflow) reads high and carries harmonic
+    distortion that is an artifact of the clipping, not of the machine. A
+    frame captured while USB streaming was degraded is missing samples. Either
+    one looks exactly like a real step change in level, so feeding them to a
+    threshold detector is the classic spurious-alarm mechanism — and the
+    operator investigating has no way to tell, because the stored record used
+    to come back with the flags stripped (see collector._read_frame_group).
+
+    Flagged frames are excluded from both event evaluation and baseline
+    adaptation: letting one into an EWMA baseline poisons the reference for
+    the following ~33 frames just as surely as firing on it raises a false
+    alarm now.
+    """
+    return [r for r in results
+            if not (getattr(r, 'overflow', False) or getattr(r, 'degraded', False))]
+
+
 @runtime_checkable
 class AnomalyHook(Protocol):
     def on_results(self, results: list, frame_cache) -> 'AnomalyEvent | None': ...
@@ -103,6 +123,7 @@ class RmsThresholdHook:
         Called during burst frames so the baseline keeps adapting while
         suppressing spurious retriggers.
         """
+        results = valid_results(results)
         for r in results:
             ch = r.channel
             current = r.overall
@@ -121,6 +142,7 @@ class RmsThresholdHook:
             self._n_samples[ch] = n + 1
 
     def on_results(self, results: list, frame_cache) -> 'AnomalyEvent | None':
+        results = valid_results(results)
         for r in results:
             ch = r.channel
             current = r.overall
@@ -261,6 +283,7 @@ class SpectralThresholdHook:
 
     def update_baseline(self, results: list) -> None:
         """Update EWMA state without checking for trigger events."""
+        results = valid_results(results)
         for r in results:
             self._update_channel(r.channel, np.array(r.spectrum, dtype=float))
 
@@ -277,6 +300,7 @@ class SpectralThresholdHook:
         self._n_samples[ch] = n + 1
 
     def on_results(self, results: list, frame_cache) -> 'AnomalyEvent | None':
+        results = valid_results(results)
         for r in results:
             ch = r.channel
             spectrum = np.array(r.spectrum, dtype=float)
@@ -401,6 +425,7 @@ class FixedThresholdHook:
         return value * UNIT_TO_SI[from_unit] / UNIT_TO_SI[to_unit]
 
     def on_results(self, results: list, frame_cache) -> 'AnomalyEvent | None':
+        results = valid_results(results)
         for r in results:
             ch = r.channel
             current = r.overall
@@ -449,6 +474,7 @@ class CompositeAnomalyHook:
         self._hooks = list(hooks)
 
     def on_results(self, results: list, frame_cache) -> 'AnomalyEvent | None':
+        results = valid_results(results)
         for hook in self._hooks:
             event = hook.on_results(results, frame_cache)
             if event is not None:

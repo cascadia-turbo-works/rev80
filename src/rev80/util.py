@@ -86,7 +86,15 @@ def hex_to_rgba(hex_color: str, alpha: int = 255) -> tuple:
 # ── Spectrum preset values (quick-pick selections in the GUI) ────────────────
 # These are convenience presets, NOT hard constraints.  AcquisitionSettings
 # derives samplerate and blocksize arithmetically from maxfreq and binsize.
-MAXFREQ_PRESETS = [2e2, 5e2, 1e3, 2e3, 5e3, 1e4, 2e4, 5e4]
+# Gated so that every offered preset can actually be anti-alias filtered:
+# PicoScopeStream oversamples by an integer ratio and filters back down, so a
+# preset is only safe if samplerate * 2 <= STREAMING_CEILING_HZ (100 kHz, a
+# measured safe continuous-USB-streaming rate). The 20 kHz and 50 kHz presets
+# were removed for that reason -- both ran with NO anti-alias filter at all,
+# and the 50 kHz preset additionally requested 131072 Hz raw, 31% above the
+# ceiling, where the driver silently drops most samples while reporting
+# status='OKAY'. See picoscope.PicoScopeStream._choose_osr.
+MAXFREQ_PRESETS = [2e2, 5e2, 1e3, 2e3, 5e3, 1e4]
 BINSIZE_PRESETS = [0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0]
 
 # ── Unit taxonomy ──────────────────────────────────────────────────────────
