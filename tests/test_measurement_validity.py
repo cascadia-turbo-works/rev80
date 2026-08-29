@@ -750,6 +750,64 @@ def test_f5_overflow_mask_is_latched_across_accumulation():
     )
 
 
+def test_s09_overflow_warns_once_per_channel_per_stream(caplog):
+    """Sustained clipping must log once per channel, not once per callback.
+
+    The old `elif ch in self._overflow_warned: remove(ch)` fired precisely when
+    a channel was STILL clipping (the first branch being False only because it
+    had already been warned), re-arming the warning every other callback. At a
+    1 ms poll interval that floods the rotating log during exactly the event
+    being diagnosed, and contradicts the class docstring's "once per channel
+    per stream start".
+    """
+    import ctypes
+    import logging
+    from rev80.picoscope import PicoScopeStream
+
+    cfg = vc.AcquisitionSettings()
+    cfg.maxfreq = 200
+    cfg.binsize = 2.0
+    cfg.enabled_channels = [0, 1]
+
+    stream = PicoScopeStream(cfg, lambda samp: None)
+    stream._maxADC = ctypes.c_int16(32767)
+    stream._stream_start = 0.0
+    for ch in stream._driver_buffers:
+        stream._driver_buffers[ch][:] = 1000
+
+    def warnings_for(ch: int) -> int:
+        needle = f'ADC overflow on Channel {chr(65 + ch)}'
+        return sum(1 for r in caplog.records if needle in r.getMessage())
+
+    with caplog.at_level(logging.WARNING):
+        # Sustained clipping on channel 0 across many callbacks.
+        for _ in range(20):
+            stream._streaming_callback(None, 8, 0, 0b01, 0, 0, 0, None)
+        assert warnings_for(0) == 1, (
+            f'sustained clipping logged {warnings_for(0)} warnings; expected 1 '
+            f'per channel per stream'
+        )
+        assert warnings_for(1) == 0
+
+        # Channel 0 stops clipping: the inhibit must clear.
+        for _ in range(5):
+            stream._streaming_callback(None, 8, 0, 0b00, 0, 0, 0, None)
+        assert warnings_for(0) == 1
+
+        # A NEW overflow event on the same channel must warn again.
+        for _ in range(5):
+            stream._streaming_callback(None, 8, 0, 0b01, 0, 0, 0, None)
+        assert warnings_for(0) == 2, (
+            'a channel that stopped clipping and then clipped again must warn '
+            'a second time; the inhibit never cleared'
+        )
+
+        # And a different channel warns independently.
+        for _ in range(5):
+            stream._streaming_callback(None, 8, 0, 0b10, 0, 0, 0, None)
+        assert warnings_for(1) == 1
+
+
 # ===========================================================================
 # F-6 — The acquisition dialog computes sample rate with 2x, not 2.56x
 # ===========================================================================

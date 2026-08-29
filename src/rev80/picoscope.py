@@ -703,15 +703,30 @@ class PicoScopeStream:
 
         # Log ADC overflow (signal clipping) once per channel per stream.
         # overflow is a bitmask: bit n set → channel n clipped.
-        if overflow:
-            for ch in self._enabled_channels:
-                if (overflow & (1 << ch)) and ch not in self._overflow_warned:
-                    log.warning(
-                        f'PicoScopeStream: ADC overflow on Channel {chr(65 + ch)}'
-                    )
-                    self._overflow_warned.add(ch)
-                elif ch in self._overflow_warned:
-                    self._overflow_warned.remove(ch)
+        #
+        # Runs unconditionally, NOT under `if overflow:`. The inhibit is
+        # cleared when a channel stops clipping, and that can only be observed
+        # on a callback where the mask has gone back to zero — gating the loop
+        # on `if overflow` meant a channel that stopped clipping never left the
+        # set, so it was never warned about again for the rest of the stream.
+        for ch in self._enabled_channels:
+            clipping = bool(overflow & (1 << ch))
+            if clipping and ch not in self._overflow_warned:
+                log.warning(
+                    f'PicoScopeStream: ADC overflow on Channel {chr(65 + ch)}'
+                )
+                self._overflow_warned.add(ch)
+            elif not clipping:
+                # Only clear when the channel is genuinely no longer clipping.
+                # The previous `elif ch in self._overflow_warned` fired exactly
+                # when a channel was STILL clipping — the first branch was
+                # False only because the channel was already warned — so it
+                # removed the inhibit and re-armed the warning for the very
+                # next callback. With a 1 ms poll interval that is hundreds of
+                # identical WARNING lines per second into the rotating file
+                # handler, rolling every other diagnostic out of the log during
+                # exactly the run being diagnosed.
+                self._overflow_warned.discard(ch)
 
         # Convert ADC counts → mV for each enabled channel.
         # The driver treats the registered buffer as a circular ring, so
