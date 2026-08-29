@@ -115,7 +115,7 @@ def test_pretrigger_matches_posttrigger_for_steady_signal(tmp_path):
     ctrl._session = _session_with_sensor(tmp_path)
 
     # Post-trigger path: ChannelResult.overall is already in target EU.
-    post_json, _ = _compute_overall_peaks([_make_result(channel=0, overall=EXPECTED_G)])
+    post_json, _, _ = _compute_overall_peaks([_make_result(channel=0, overall=EXPECTED_G)])
     post = json.loads(post_json)['0']
 
     # Pre-trigger path: same physical signal, still in raw mV.

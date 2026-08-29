@@ -5,6 +5,7 @@
 #   PicoScopeStream      — streaming thread that replaces sounddevice.InputStream
 
 import ctypes
+import functools
 import math
 import threading
 import time
@@ -270,16 +271,70 @@ def FindPicoScope() -> list:
     return devices
 
 
+# Anti-alias kernel design.
+#
+# `scipy.signal.decimate(ftype='fir')` builds a 20*q+1 tap FIR with a HAMMING
+# window, whose sidelobes sit at about -53 dB. Measured end to end through the
+# real decimation path at q=4: worst-case stopband rejection -60.0 dB, and the
+# passband already 0.29% off at 0.05*fs_out. ISO 2954 and general analyzer
+# practice call for >= 80 dB, so that put a hard ~55-60 dB ceiling on usable
+# dynamic range regardless of the 14/16-bit resolution negotiated elsewhere.
+#
+# A Kaiser-windowed FIR reaches any specified attenuation; the cost is taps,
+# driven by the transition width. Measured at q=4 (fs_raw 32768 -> 8192):
+#
+#     design                       taps   worst stopband   passband @ F_max
+#     hamming 20q+1 (previous)       81         -60.0 dB          +0.27%
+#     kaiser 90 dB,  tw 0.20        231        -105.0 dB          +0.00%
+#     kaiser 100 dB, tw 0.20        259        -111.7 dB          +0.00%
+#     kaiser 100 dB, tw 0.25        207        -112.4 dB          -0.42%
+#
+# 100 dB at a 0.20 transition width is chosen: the wider 0.25 transition saves
+# 52 taps but starts eating the passband at F_max, which is exactly the region
+# the 2.56x oversampling convention exists to keep flat.
+#
+# The longer kernel does NOT cost block-edge accuracy, which was the obvious
+# worry given the filter runs per block. Measured on an in-band tone through a
+# single block, against the analytic RMS, at every shipped blocksize:
+# hamming +0.2416%, kaiser -0.0001%. The overall's Hann taper already
+# de-weights the block edges where the start-up transient lives, and the
+# Kaiser design's flatter passband wins by more than the longer transient
+# costs.
+_AA_STOPBAND_DB: float = 100.0
+_AA_TRANSITION_FRAC: float = 0.20
+
+
+@functools.lru_cache(maxsize=8)
+def _antialias_taps(factor: int) -> np.ndarray:
+    """Kaiser-windowed FIR decimation kernel for an integer decimation factor.
+
+    Cached: the design depends only on `factor`, and a stream re-runs this on
+    every block.
+    """
+    nyq_out = 0.5 / factor                      # normalised to the raw rate
+    f_pass  = nyq_out * (1.0 - _AA_TRANSITION_FRAC)
+    ntaps, beta = scipy.signal.kaiserord(_AA_STOPBAND_DB, (nyq_out - f_pass) * 2)
+    ntaps |= 1                                  # odd -> exact linear phase
+    cutoff = (f_pass + nyq_out) / 2.0
+    return scipy.signal.firwin(ntaps, cutoff * 2, window=('kaiser', beta))
+
+
 def antialias_decimate(raw_block: np.ndarray, factor: int) -> np.ndarray:
     """Anti-alias filter + decimate a (N, channels) raw block by an integer factor.
 
-    Zero-phase FIR decimation avoids introducing group delay into the
-    time-domain signal. factor=1 is a no-op (some maxfreq presets have no
-    streaming headroom for oversampling — see AcquisitionSettings docs).
+    Linear-phase polyphase FIR decimation: no group-delay distortion, and no
+    forward/backward pass to double the effective order. factor=1 is a no-op
+    (some maxfreq presets have no streaming headroom for oversampling — see
+    AcquisitionSettings docs).
+
+    See _antialias_taps and the constants above for why this no longer uses
+    scipy.signal.decimate's default Hamming kernel.
     """
     if factor <= 1:
         return raw_block
-    return scipy.signal.decimate(raw_block, factor, ftype='fir', zero_phase=True, axis=0)
+    return scipy.signal.resample_poly(
+        raw_block, 1, factor, axis=0, window=_antialias_taps(factor)
+    )
 
 
 class PicoScopeStream:
