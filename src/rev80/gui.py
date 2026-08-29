@@ -405,6 +405,11 @@ class GUI:
         dpg.set_value(ui.plt_freq_series(ch), [freq.tolist(), spectrum.tolist()])
         if dpg.does_item_exist(ui.ch_overall_value(ch)):
             dpg.set_value(ui.ch_overall_value(ch), f"{result.overall:.4f}")
+        if dpg.does_item_exist(ui.ch_scalars_text(ch)):
+            dpg.set_value(
+                ui.ch_scalars_text(ch),
+                f"Crest {result.crest_factor:.2f}   Kurt {result.kurtosis:.2f}",
+            )
         peak_limit = max(1, int(dpg.get_value(ui.FFT_PEAKS_DISPLAY_COUNT) or 1))
         peaks = result.peaks
         self._update_peak_count_text(len(peaks), peak_limit)
@@ -3829,6 +3834,22 @@ class GUI:
                                 default_value="0.0",
                                 width=RESULTS_WIDTH // 2,
                             )
+                            # Impulsiveness scalars. A broadband overall
+                            # averages impulsiveness away, so these are what
+                            # see a bearing before the overall moves.
+                            _sc = dpg.add_text("Crest -   Kurt -",
+                                               tag=ui.ch_scalars_text(_ch),
+                                               color=_c("MUTED"))
+                            self._tooltip(
+                                _sc,
+                                "Crest factor = peak / RMS: 1.41 for a pure sine, "
+                                "~3-4 for random noise, higher when the signal is "
+                                "impulsive. It rises early in a bearing defect's life "
+                                "and falls again once the defect spalls, so it is read "
+                                "alongside kurtosis rather than instead of it.\n\n"
+                                "Kurtosis = 3.0 for random noise, 1.5 for a pure sine. "
+                                "Above about 4 means impulsive -- repetitive impacts "
+                                "that a broadband overall averages away completely.")
                             dpg.add_table(
                                 header_row=True,
                                 row_background=True,

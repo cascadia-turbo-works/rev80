@@ -421,7 +421,7 @@ def test_monitor_writer_records_the_band_beside_the_overall():
     dc.config.band_fmax = 500.0
     r = dc.process_sample(0, make_sample(dc, tone(dc, 137.3)))
 
-    _, _, band_json = _compute_overall_peaks([r])
+    _, _, band_json, _ = _compute_overall_peaks([r])
     import json
     assert json.loads(band_json)['0'] == [10.0, 500.0]
 
@@ -441,7 +441,7 @@ def test_band_json_is_empty_when_results_carry_no_band():
         overall=1.0, timestamp=datetime.now(), rel_time=0.0, status='OKAY',
     )
     assert r.band is None
-    _, _, band_json = _compute_overall_peaks([r])
+    _, _, band_json, _ = _compute_overall_peaks([r])
     assert json.loads(band_json) == {}
 
 
