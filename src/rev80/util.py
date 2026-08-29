@@ -1,6 +1,46 @@
+import logging
+
 import numpy as np
 
 from rev80._paths import data_dir
+
+# Plain stdlib logger: rev80/__init__.py imports this module, so importing
+# rev80.get_logger here would be circular.
+log = logging.getLogger(__name__)
+
+# rev80/__init__.py does `from rev80.util import *`. Without __all__ that also
+# re-exported `np` and every other imported name into the top-level `rev80`
+# namespace, so `rev80.np` was part of the public surface by accident.
+# Listing names explicitly keeps that surface deliberate.
+#
+# `data_dir` is re-exported ON PURPOSE: it is imported here from rev80._paths
+# and six call sites in gui.py/headless.py reach it as `rev80.data_dir()`.
+# Dropping it from this list breaks them at runtime, not at import.
+__all__ = [
+    'data_dir',
+    # Theme / colour
+    'THEME_COLORS', 'hex_to_rgba',
+    # Acquisition presets
+    'MAXFREQ_PRESETS', 'BINSIZE_PRESETS',
+    # Unit taxonomy
+    'ACCELERATION_UNITS', 'VELOCITY_UNITS', 'DISPLACEMENT_UNITS', 'RAW_UNITS',
+    'EU_OPTIONS', 'MODALITY_ORDER', 'UNIT_TO_SI',
+    'modality_of', 'integration_steps',
+    # Amplitude modes
+    'AMPLITUDE_MODES', 'AMPLITUDE_SCALE', 'DEFAULT_AMPLITUDE_MODE',
+    'amplitude_scale',
+    # Storage
+    'SAVEDIR', 'EXT',
+    # Monitor mode
+    'MONITOR_INTERVAL_PRESETS', 'nearest_interval_preset',
+    'ANOMALY_HOOK_LABELS', 'DEFAULT_ANOMALY_HOOK_TYPE',
+    'canonical_hook_type', 'hook_type_label',
+    'DEFAULT_RMS_ALPHA', 'DEFAULT_SPEC_ALPHA',
+    # Misc helpers
+    'nextpow2', 'parse_sd_status',
+    # Exceptions / registries
+    'NoDevicesFound', 'FormatError', 'UI_Elements',
+]
 
 # ── GUI colour palette ──────────────────────────────────────────────────────
 # All colours defined as hex strings (#RRGGBB).  Use hex_to_rgba() to convert
@@ -80,6 +120,34 @@ AMPLITUDE_SCALE: dict = {
     '0-P': np.sqrt(2),
     'P-P': 2 * np.sqrt(2),
 }
+
+# Every call site normalises an unset mode with `or '0-P'` before looking it
+# up, so '0-P' is the established default and is what an unrecognised mode
+# must also resolve to.
+DEFAULT_AMPLITUDE_MODE = '0-P'
+
+
+def amplitude_scale(mode) -> float:
+    """Return the amplitude scale factor for `mode`.
+
+    Single source of truth for the unknown-mode fallback. Five call sites
+    previously used AMPLITUDE_SCALE.get() with two different defaults —
+    np.sqrt(2) in the live processing path (collector.py:231, :550) and 1.0 in
+    the reload/reconstruct path (collector.py:992, :1147,
+    monitor/controller.py:267). An unrecognised mode string therefore
+    reconstructed a loaded trend 1.414x off relative to the live trend it was
+    computed from, on the same plot.
+
+    Unknown modes are logged rather than silently absorbed.
+    """
+    try:
+        return AMPLITUDE_SCALE[mode]
+    except (KeyError, TypeError):
+        log.warning("Unknown amplitude mode %r — falling back to %r (%.4g). "
+                    "Expected one of %s.",
+                    mode, DEFAULT_AMPLITUDE_MODE,
+                    AMPLITUDE_SCALE[DEFAULT_AMPLITUDE_MODE], AMPLITUDE_MODES)
+        return AMPLITUDE_SCALE[DEFAULT_AMPLITUDE_MODE]
 
 # Modality ordering: acceleration=0, velocity=1, displacement=2
 # n_steps = src_order - tgt_order
