@@ -173,3 +173,44 @@ def band_rms(rfft_vals: np.ndarray, mask: np.ndarray, n: int) -> float:
     total = float(np.sum(power[mask] * weight[mask]))
     return float(np.sqrt(total)) / n
 
+
+def crest_factor(x: np.ndarray) -> float:
+    """Peak divided by RMS.
+
+    Dimensionless, so it is independent of sensor sensitivity, display unit and
+    amplitude mode. sqrt(2) for a sine, ~3-4 for Gaussian noise, and higher as
+    a signal becomes impulsive. It rises early in a bearing defect's life and
+    falls again once the defect spalls and the impulses give way to broadband
+    noise -- which is why it is read alongside kurtosis rather than instead
+    of it.
+
+    Returns 0.0 for an all-zero record rather than dividing by zero.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    if x.size == 0:
+        return 0.0
+    rms = float(np.sqrt(np.mean(x ** 2)))
+    if rms <= 0.0:
+        return 0.0
+    return float(np.max(np.abs(x)) / rms)
+
+
+def kurtosis(x: np.ndarray) -> float:
+    """Fourth standardised moment, NOT excess (Gaussian reads 3.0, not 0.0).
+
+    The non-excess convention is what condition-monitoring practice quotes --
+    "kurtosis above 4" is the usual impulsiveness flag -- so returning excess
+    kurtosis here would silently shift every threshold by 3.
+
+    A pure sine reads 1.5, Gaussian noise 3.0, an impulsive signal well above.
+    Returns 3.0 for a constant record: it is the value that asserts nothing,
+    which is the right answer when there is no variation to characterise.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    if x.size == 0:
+        return 3.0
+    var = float(np.var(x))
+    if var <= 0.0:
+        return 3.0
+    return float(np.mean((x - np.mean(x)) ** 4) / var ** 2)
+

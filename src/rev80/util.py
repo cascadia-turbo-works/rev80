@@ -514,6 +514,10 @@ class UI_Elements:
         return f'CH{ch}_OVERALL'
 
     @staticmethod
+    def ch_scalars_text(ch: int) -> str:
+        return f'CH{ch}_SCALARS'
+
+    @staticmethod
     def ch_peaks_table(ch: int) -> str:
         return f'CH{ch}_PEAKS_TABLE'
 
