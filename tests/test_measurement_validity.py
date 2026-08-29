@@ -682,23 +682,46 @@ def test_f6_dialog_preview_matches_acquisition_settings(maxfreq, binsize):
 # ===========================================================================
 
 def test_f7_psd_cache_invalidates_on_binsize_change():
-    """Switching 2 Hz → 0.5 Hz bins must actually change the spectrum."""
-    dc = make_collector(eu='mm/s2', target_unit='mm/s2', maxfreq=2000, binsize=2.0)
+    """Changing binsize must actually recompute the spectrum.
+
+    Exercised by going coarser (0.5 → 8 Hz). Going *finer* than the captured
+    record supports is physically impossible — a stored 0.5 s block cannot
+    yield 0.5 Hz bins no matter what is requested — so a coarsening change is
+    what actually distinguishes a live recompute from a stale cache hit.
+    """
+    dc = make_collector(eu='mm/s2', target_unit='mm/s2', maxfreq=2000, binsize=0.5)
     sample = make_sample(dc, tone(dc, 200.0, 1.0, n=dc.config.blocksize))
 
     first = dc.process_sample(0, sample)
     n_first = len(first.freq)
     df_first = float(first.freq[1] - first.freq[0])
+    assert df_first == pytest.approx(0.5)
 
-    dc.config.binsize = 0.5
+    dc.config.binsize = 8.0
     second = dc.process_sample(0, sample)
     df_second = float(second.freq[1] - second.freq[0])
 
-    assert df_second < df_first, (
-        f'binsize 2.0 → 0.5 left the resolution at {df_second} Hz/bin '
+    assert df_second > df_first, (
+        f'binsize 0.5 → 8.0 left the resolution at {df_second} Hz/bin '
         f'(was {df_first}); the PSD cache key ignores binsize'
     )
     assert len(second.freq) != n_first
+
+
+def test_f7_resolution_never_claimed_finer_than_the_record_supports():
+    """A stored block cannot be re-binned finer than its own length allows."""
+    dc = make_collector(eu='mm/s2', target_unit='mm/s2', maxfreq=2000, binsize=2.0)
+    sample = make_sample(dc, tone(dc, 200.0, 1.0, n=dc.config.blocksize))
+    captured_df = dc.config.samplerate / sample.blocksize
+
+    dc.config.binsize = 0.25          # ask for 8x finer than the record allows
+    result = dc.process_sample(0, sample)
+    df = float(result.freq[1] - result.freq[0])
+
+    assert df == pytest.approx(captured_df), (
+        f're-binning a {sample.blocksize}-sample record reported {df} Hz/bin; '
+        f'the record only supports {captured_df} Hz/bin'
+    )
 
 
 def test_f7_psd_cache_invalidates_on_samplerate_change():

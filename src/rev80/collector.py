@@ -604,17 +604,24 @@ class DataCollector:
         rfft_hann = np.fft.rfft(filtered_mv * hann_w)
 
         # ── 2. Welch PSD in mV² — compute once, cache on sample ──────
+        # binsize and samplerate BOTH change the transform, so both belong in
+        # the key. Without them, switching 2 Hz -> 0.5 Hz bins returned the
+        # identical cached 2049-point, 2 Hz spectrum: the user believed they had
+        # quadrupled the resolution and nothing had changed. Masked while
+        # streaming (each new VibeSample starts with psd_mv=None), so it bit in
+        # browse/offline mode and after loading a file.
         psd_key = (config.fft_window, config.welch_overlap,
-                   config.highpass_enabled, config.highpass_fc)
+                   config.highpass_enabled, config.highpass_fc,
+                   config.binsize, sample.samplerate)
         if sample.psd_mv is None or sample._psd_config_key != psd_key:
-            nfft     = int(samplerate / config.binsize)
-            nperseg  = min(nfft, len(filtered_mv))
-            nfft     = max(nfft, nperseg)
+            # Segment = the whole block, so the computed spectrum matches the
+            # line count and bin width the UI states. See config.nperseg.
+            nperseg  = min(config.nperseg, len(filtered_mv))
             noverlap = min(nperseg - 1, int(nperseg * config.welch_overlap))
             freq_hz, psd_mv = scipy.signal.welch(
                 filtered_mv, fs=float(samplerate),
                 window=config.fft_window, nperseg=nperseg, noverlap=noverlap,
-                nfft=nfft, scaling='spectrum', detrend='linear', average='mean',
+                nfft=nperseg, scaling='spectrum', detrend='linear', average='mean',
             )
             sample.psd_mv          = psd_mv
             sample.freq_hz         = freq_hz
