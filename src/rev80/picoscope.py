@@ -5,6 +5,7 @@
 #   PicoScopeStream      — streaming thread that replaces sounddevice.InputStream
 
 import ctypes
+import math
 import threading
 import time
 from datetime import datetime
@@ -316,9 +317,7 @@ class PicoScopeStream:
         # under STREAMING_CEILING_HZ at this target rate (see module docstring
         # comment above STREAMING_CEILING_HZ for the hardware measurements this
         # is based on).
-        self._effective_osr = max(1, int(min(
-            OSR_TARGET, STREAMING_CEILING_HZ / config.samplerate,
-        )))
+        self._effective_osr = self._choose_osr(config.samplerate)
 
         # One rolling driver buffer per enabled channel
         self._enabled_channels: list[int] = list(config.enabled_channels)
@@ -614,6 +613,42 @@ class PicoScopeStream:
                       f'(requested {raw_samplerate} Hz, osr={self._effective_osr})')
         self._actual_raw_samplerate = actual_raw_fs
         self._actual_samplerate = self._report_samplerate(actual_raw_fs)
+
+    @staticmethod
+    def _choose_osr(samplerate: float) -> int:
+        """Oversample ratio for a target rate, or 1 if none is achievable.
+
+        antialias_decimate() is a no-op at factor 1, so an osr of 1 means the
+        stream has NO anti-alias protection whatsoever. The previous
+        expression, max(1, int(min(OSR_TARGET, CEILING / samplerate))),
+        truncated 1.526 to 1 at F_max=20 kHz and 0.763 to 0 (then clamped to
+        1) at F_max=50 kHz, so both of the top presets ran completely
+        unfiltered — and the 50 kHz case additionally requested 131072 Hz raw,
+        31% above the measured STREAMING_CEILING_HZ, the exact condition the
+        module docstring says makes the driver silently drop most samples
+        while still reporting status='OKAY' with no overflow bit.
+
+        That matters because a general-purpose IEPE accelerometer has a
+        mounted resonance at 25-80 kHz with 20-30 dB of gain there. At
+        F_max=20 kHz an unfiltered 50 kHz component folds to 15536 Hz, inside
+        the displayed band and indistinguishable from real signal.
+
+        MAXFREQ_PRESETS is gated so every offered preset satisfies
+        samplerate * 2 <= STREAMING_CEILING_HZ. This function still degrades
+        gracefully, with a loud warning, for a maxfreq set outside the presets.
+        """
+        osr = int(math.floor(STREAMING_CEILING_HZ / float(samplerate)))
+        osr = min(OSR_TARGET, osr)
+        if osr < 2:
+            log.warning(
+                'ANTI-ALIAS DISABLED: sample rate %g Hz leaves no headroom under '
+                'the %d Hz safe streaming ceiling for even 2x oversampling. '
+                'Frequencies above %g Hz will alias into the displayed band and '
+                'cannot be distinguished from real signal. Reduce F_max.',
+                samplerate, STREAMING_CEILING_HZ, samplerate / 2.0,
+            )
+            return 1
+        return osr
 
     def _report_samplerate(self, actual_raw_fs: float) -> float:
         """The true post-decimation sample rate, for everything downstream.
