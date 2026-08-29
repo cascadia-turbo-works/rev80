@@ -6,6 +6,7 @@ import numpy as np
 import rev80
 from rev80 import nextpow2
 from rev80.config import DEFAULT_CACHE_FRAMES
+from rev80.peaks import DEFAULT_THRESHOLD_DB as PEAK_THRESHOLD_DB_DEFAULT
 
 log = rev80.get_logger(__name__)
 
@@ -35,6 +36,11 @@ class AcquisitionSettings:
     # FFT / Welch
     fft_window: str = 'hann'
     welch_overlap: float = 0.5     # 0.0–0.95 fraction of nperseg
+    # Peak selection — how far above its own local noise floor a spectral line
+    # must rise before it is reported. This replaced a fixed "report the top N
+    # by amplitude" rule, which ranked by how loud a line's neighbourhood was
+    # rather than by how far it stood out of it. See rev80.peaks.
+    peak_threshold_db: float = PEAK_THRESHOLD_DB_DEFAULT
     # Butterworth filters (applied per-channel in DataCollector.receive_data)
     highpass_enabled: bool = True
     highpass_fc: float = 10.0      # Hz
@@ -79,6 +85,7 @@ class AcquisitionSettings:
             'binsize':          self._df,
             'fft_window':       self.fft_window,
             'welch_overlap':    self.welch_overlap,
+            'peak_threshold_db': self.peak_threshold_db,
             'highpass_enabled': self.highpass_enabled,
             'highpass_fc':      self.highpass_fc,
             'trend_max_points': self.trend_max_points,
@@ -96,6 +103,7 @@ class AcquisitionSettings:
         if 'binsize'          in d: obj.binsize          = float(d['binsize'])          # noqa: E701
         if 'fft_window'       in d: obj.fft_window       = str(d['fft_window'])        # noqa: E701
         if 'welch_overlap'    in d: obj.welch_overlap    = float(d['welch_overlap'])   # noqa: E701
+        if 'peak_threshold_db' in d: obj.peak_threshold_db = float(d['peak_threshold_db'])  # noqa: E701
         if 'highpass_enabled' in d: obj.highpass_enabled = bool(d['highpass_enabled']) # noqa: E701
         if 'highpass_fc'      in d: obj.highpass_fc      = float(d['highpass_fc'])     # noqa: E701
         if 'trend_max_points' in d: obj.trend_max_points = int(d['trend_max_points'])  # noqa: E701
