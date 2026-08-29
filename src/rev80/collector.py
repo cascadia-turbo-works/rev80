@@ -11,6 +11,7 @@ import numpy as np
 import scipy.signal
 
 import rev80
+from rev80 import _dsp
 from rev80._paths import data_dir
 from rev80.scope_sensor import ScopeSensor
 
@@ -466,11 +467,22 @@ class DataCollector:
                                       btype='highpass', fs=samplerate, output='sos')
             filtered_mv = scipy.signal.sosfilt(sos, filtered_mv)
 
-        # rfft is used in both step 3 (5-order overalls) and step 8 (time-domain output).
-        # Plain rfft — no window, no segment averaging — so irfft is an exact inverse.
+        # Frequency-domain integration/differentiation is done on a *tapered*
+        # block. The DFT treats the record as periodic, so an un-windowed block
+        # spanning a non-integer number of cycles carries a step discontinuity
+        # at the wrap point. That step's spectrum is broadband and
+        # low-frequency-weighted, and (j*omega)**n with n < 0 amplifies it by
+        # 1/omega**|n| — exactly where it is worst. Un-windowed, a 501 Hz tone
+        # read +4473.76% high in displacement overall; the on-bin case that the
+        # old test suite exercised exclusively was the one case with zero error.
+        # See rev80._dsp for the full measured table.
         N       = sample.blocksize
-        rfft_mv = np.fft.rfft(filtered_mv)
         freq_td = np.fft.rfftfreq(N, d=1.0 / samplerate)
+
+        # Hann taper for the scalar overalls (step 3): dividing the resulting
+        # RMS by the window's power gain recovers the unbiased broadband RMS.
+        hann_w, hann_gain = _dsp.hann_taper(N)
+        rfft_hann = np.fft.rfft(filtered_mv * hann_w)
 
         # ── 2. Welch PSD in mV² — compute once, cache on sample ──────
         psd_key = (config.fft_window, config.welch_overlap,
@@ -492,32 +504,22 @@ class DataCollector:
             # ── 3. 5-order mV RMS overalls via time-domain IFFT ──────
             # Using sqrt(mean(x²)) on the IFFT signal avoids the Welch window
             # normalisation artifact (Hann leakage inflates sqrt(sum(psd)) by
-            # sqrt(3/2) for a pure tone). The irfft is an exact inverse of the
-            # plain rfft above, so the round-trip is lossless.
+            # sqrt(3/2) for a pure tone).
+            #
+            # Order 0 is a plain passthrough: no transform happens, so there is
+            # no wrap discontinuity to suppress and no window is applied. Every
+            # other order integrates or differentiates in the frequency domain
+            # and so runs on the Hann-tapered transform, with the window's power
+            # gain divided back out to leave the RMS unbiased.
             for i, n_ord in enumerate(range(-2, 3)):
                 if n_ord == 0:
-                    time_ord = filtered_mv          # passthrough — no IFFT needed
-                else:
-                    omega_i       = 2 * np.pi * freq_td   # new array each iteration
-                    omega_i[0]    = 1.0                    # avoid 0^n_ord; zeroed below
-                    transfer_i    = np.power(1j * omega_i, n_ord)
-                    transfer_i[0] = 0.0                    # kill DC for all int/diff orders
-                    if n_ord < 0:
-                        # Integration only: also kill the 1x-binsize bin. A single
-                        # time-domain highpass pass can't keep residual near-DC
-                        # energy (finite filter rolloff + FFT/window leakage) from
-                        # blowing up under 1/f^n integration -- confirmed on real
-                        # hardware, bin 1 dominated the whole spectrum. Zeroing an
-                        # exact FFT bin is lossless for every other frequency and,
-                        # unlike a smooth frequency-response weighting, introduces
-                        # no circular-convolution edge artifacts in the irfft
-                        # reconstruction. Unconditional (not gated on
-                        # highpass_enabled) -- bin 1 is essentially never real
-                        # signal of interest for integrated velocity/displacement.
-                        transfer_i[1] = 0.0
-                    time_ord      = np.fft.irfft(rfft_mv * transfer_i, n=N)
+                    sample.overall_ampl_by_integration_order[i] = float(
+                        np.sqrt(np.mean(np.square(filtered_mv)))
+                    )
+                    continue
+                time_ord = _dsp.integrate_rfft(rfft_hann, freq_td, n_ord, N)
                 sample.overall_ampl_by_integration_order[i] = float(
-                    np.sqrt(np.mean(np.square(time_ord)))
+                    np.sqrt(np.mean(np.square(time_ord))) / hann_gain
                 )
         else:
             freq_hz = sample.freq_hz
@@ -564,24 +566,35 @@ class DataCollector:
         )
 
         # ── 8. Time-domain signal — inline FFT integration ───────────
-        # rfft_mv / freq_td already computed above (reused from step 3).
-        eu_scale   = src_si / tgt_si / sensitivity_mv
+        # The displayed trace cannot use the step-3 Hann taper: the taper would
+        # be plainly visible as an amplitude envelope on the waveform the user
+        # is reading. Instead this is overlap-save — a Tukey window (flat across
+        # the middle, cosine-tapered at the edges) kills the wrap discontinuity,
+        # and only the flat middle is returned. Inside that region the window is
+        # exactly 1.0, so the returned samples are undistorted.
+        #
+        # Cost: for integrated/differentiated displays the trace covers the
+        # middle 50% of the block rather than all of it. time_vec is truncated
+        # to match, so it still carries true capture-relative timestamps.
+        # Un-truncated, a doubly-integrated 61 Hz tone overshot its true 0-peak
+        # amplitude by +1149%; this brings it to +1.47%.
+        eu_scale = src_si / tgt_si / sensitivity_mv
         if n_steps != 0:
-            omega_td    = 2 * np.pi * freq_td
-            omega_td[0] = 1.0
-            transfer       = np.power(1j * omega_td, n_steps)
-            transfer[0]    = 0.0
-            if n_steps < 0:
-                transfer[1] = 0.0   # also kill the 1x-binsize bin -- see step 3 comment
-            rfft_target    = rfft_mv * transfer * eu_scale
+            keep        = _dsp.tukey_keep_slice(N)
+            tukey_w     = _dsp.tukey_taper(N)
+            rfft_tukey  = np.fft.rfft(filtered_mv * tukey_w)
+            time_signal = _dsp.integrate_rfft(rfft_tukey, freq_td, n_steps, N)
+            time_signal = time_signal[keep] * eu_scale
+            time_vec    = sample.time_vec[keep]
         else:
-            rfft_target = rfft_mv * eu_scale
-        time_signal = np.fft.irfft(rfft_target, n=N)
+            # Passthrough: no transform, no wrap discontinuity, full record.
+            time_signal = filtered_mv * eu_scale
+            time_vec    = sample.time_vec
 
         return rev80.ChannelResult(
             channel=ch, unit=effective_tgt, overflow=sample.overflow,
             degraded=sample.degraded,
-            time_data=time_signal, time_vec=sample.time_vec, samplerate=samplerate,
+            time_data=time_signal, time_vec=time_vec, samplerate=samplerate,
             freq=freq_hz, spectrum=spectrum_amp, peaks=peaks, overall=overall,
             timestamp=sample._timestamp, rel_time=sample.rel_time, status=sample.status,
         )

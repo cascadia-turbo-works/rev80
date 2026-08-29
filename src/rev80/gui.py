@@ -342,6 +342,12 @@ class GUI:
             return
         time = result.time_vec * 1000.0  # convert s → ms (axis label is "Time, ms")
         signal = result.time_data
+        # Integrated/differentiated traces cover only the middle of the block
+        # (overlap-save — see collector.process_sample step 8), so the trace no
+        # longer necessarily starts at t=0. Remember where it does start so the
+        # fixed autoscale window lands on data rather than on empty axis.
+        if len(time):
+            self._last_time_x0_ms = float(time[0])
         dpg.set_value(ui.plt_time_series(ch), [time.tolist(), signal.tolist()])
 
     def _update_freq_plot(self, result: rev80.ChannelResult, ch: int):
@@ -879,6 +885,7 @@ class GUI:
     # so a typical 60 Hz fundamental fills the trace legibly on autoscale.
     _TIME_WINDOW_RANGE_MS: float = 300.0
     _TIME_WINDOW_OFFSET_MS: float = 200.0
+    _last_time_x0_ms: float = 0.0   # start of the most recently plotted trace
 
     def _autoscale_plots(self, sender=None, data=None):
         """Scale all plot axes to sensible initial bounds.
@@ -888,12 +895,14 @@ class GUI:
         afterwards.  Axes scaled with fit_axis_data are inherently one-shot and
         don't need unlocking.
         """
-        # Time Series X: fixed window for legibility (not fit-to-data)
+        # Time Series X: fixed window for legibility (not fit-to-data), anchored
+        # to where the trace actually begins.
         if self.collector.config.acquisition_period > 0.5 and dpg.does_item_exist(ui.PLT_SAMPLE_AX_TIME):
+            start = getattr(self, '_last_time_x0_ms', 0.0) + self._TIME_WINDOW_OFFSET_MS
             dpg.set_axis_limits(
                 ui.PLT_SAMPLE_AX_TIME,
-                self._TIME_WINDOW_OFFSET_MS,
-                self._TIME_WINDOW_OFFSET_MS + self._TIME_WINDOW_RANGE_MS,
+                start,
+                start + self._TIME_WINDOW_RANGE_MS,
             )
         else:
             # Acq period too small. Fit whole axis
