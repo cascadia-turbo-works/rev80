@@ -8,6 +8,7 @@ import h5py
 import numpy as np
 
 import rev80
+from rev80 import envelope as rev80_env
 from rev80 import peaks as rev80_peaks
 import rev80.config as _cfg
 import rev80.icons as icons
@@ -397,6 +398,72 @@ class GUI:
             self._last_time_x0_ms = float(time[0])
         dpg.set_value(ui.plt_time_series(ch), [time.tolist(), signal.tolist()])
 
+    def _env_band_for(self, result: 'rev80.ChannelResult'):
+        """Demodulation band to use: the typed one, else auto from this frame.
+
+        Returns (lo, hi) or None when no usable band can be formed -- a very
+        low F_max leaves no room above the machine orders for a resonance to
+        sit in, and inventing a band there would produce a confident-looking
+        plot of nothing.
+        """
+        lo = float(dpg.get_value(ui.ENV_BAND_LO) or 0.0)
+        hi = float(dpg.get_value(ui.ENV_BAND_HI) or 0.0)
+        if lo > 0 and hi > lo:
+            return (lo, hi)
+        try:
+            return rev80_env.suggest_band(
+                result.time_data, result.samplerate,
+                fmax=self.collector.config.band_fmax_resolved,
+            )
+        except (ValueError, IndexError):
+            return None
+
+    def _update_envelope_plot(self, result: 'rev80.ChannelResult', ch: int):
+        """Band-pass, demodulate, and plot the envelope spectrum for one channel."""
+        tag = ui.plt_env_series(ch)
+        if not dpg.does_item_exist(tag):
+            return
+        band = self._env_band_for(result)
+        if band is None:
+            dpg.set_value(tag, [[], []])
+            return
+        try:
+            freq, spec = rev80_env.envelope_spectrum(
+                result.time_data, result.samplerate, band=band)
+        except ValueError:
+            # An unusable band is a configuration problem, not a crash: clear
+            # the series and say why on the info line.
+            dpg.set_value(tag, [[], []])
+            if dpg.does_item_exist(ui.ENV_INFO_TEXT):
+                dpg.set_value(ui.ENV_INFO_TEXT,
+                              f"band {band[0]:.0f}-{band[1]:.0f} Hz is outside "
+                              f"this frame's usable range")
+            return
+        dpg.set_value(tag, [freq.tolist(), spec.tolist()])
+        if dpg.does_item_exist(ui.ENV_INFO_TEXT):
+            auto = '' if float(dpg.get_value(ui.ENV_BAND_LO) or 0.0) > 0 else '  (auto)'
+            dpg.set_value(
+                ui.ENV_INFO_TEXT,
+                f"demodulating {band[0]:.0f}-{band[1]:.0f} Hz{auto}   "
+                f"envelope to {freq[-1]:.0f} Hz" if len(freq) else "")
+
+    def _on_env_auto_band(self, sender=None, data=None):
+        """Fill the band fields from the current frame, then redraw.
+
+        Writing the numbers into the fields rather than leaving them blank is
+        deliberate: the analyst can see what was chosen and adjust it, and the
+        band then stays put across frames instead of drifting each time.
+        """
+        results = self.collector.process_samples()
+        if not results:
+            return
+        band = self._env_band_for(results[0])
+        if band is None:
+            return
+        dpg.set_value(ui.ENV_BAND_LO, float(band[0]))
+        dpg.set_value(ui.ENV_BAND_HI, float(band[1]))
+        self._redraw()
+
     def _update_freq_plot(self, result: rev80.ChannelResult, ch: int):
         if not dpg.does_item_exist(ui.plt_freq_series(ch)):
             return
@@ -622,6 +689,7 @@ class GUI:
                     n_overflow += 1
             self._update_time_plot(result, ch)
             self._update_freq_plot(result, ch)
+            self._update_envelope_plot(result, ch)
 
         if dpg.does_item_exist(ui.CH_WARNINGS_SECTION):
             dpg.configure_item(
@@ -704,6 +772,7 @@ class GUI:
         for tag, axis in [
             (ui.plt_time_series(ch), time_axis),
             (ui.plt_freq_series(ch), freq_axis),
+            (ui.plt_env_series(ch), ui.PLT_ENV_AX_AMPL),
             (ui.plt_trend_series(ch), trend_axis),
         ]:
             if not dpg.does_item_exist(tag):
@@ -716,7 +785,9 @@ class GUI:
                 dpg.bind_item_theme(peaks_tag, self._peak_themes[ch % len(self._peak_themes)])
 
     def _remove_channel_series(self, ch: int):
-        for tag in [ui.plt_time_series(ch), ui.plt_freq_series(ch), ui.plt_trend_series(ch), ui.plt_freq_peaks(ch)]:
+        for tag in [ui.plt_time_series(ch), ui.plt_freq_series(ch),
+                    ui.plt_env_series(ch), ui.plt_trend_series(ch),
+                    ui.plt_freq_peaks(ch)]:
             if dpg.does_item_exist(tag):
                 dpg.delete_item(tag)
 
@@ -3681,6 +3752,48 @@ class GUI:
                                 dpg.add_plot_axis(dpg.mvYAxis, label="", tag=ui.PLT_FREQ_AX_ACCEL)
                                 dpg.add_plot_axis(dpg.mvYAxis2, label="", tag=ui.PLT_FREQ_AX_2)
                                 dpg.hide_item(ui.PLT_FREQ_AX_2)
+                        with dpg.tab(label="Envelope"):
+                            # Demodulation band controls. A bearing defect's
+                            # impulses ring a housing resonance at 2-20 kHz and
+                            # are modulated at the defect rate; the raw spectrum
+                            # buries that under the 1x, the envelope of the
+                            # resonance shows it as a clean line.
+                            with dpg.group(horizontal=True):
+                                dpg.add_text("Band")
+                                dpg.add_input_float(
+                                    label="-", tag=ui.ENV_BAND_LO, default_value=0.0,
+                                    min_value=0.0, step=0, format="%.0f", width=80,
+                                    callback=self._redraw,
+                                )
+                                dpg.add_input_float(
+                                    label="Hz", tag=ui.ENV_BAND_HI, default_value=0.0,
+                                    min_value=0.0, step=0, format="%.0f", width=80,
+                                    callback=self._redraw,
+                                )
+                                _auto = dpg.add_button(label="Auto",
+                                                       tag=ui.ENV_BAND_AUTO,
+                                                       callback=self._on_env_auto_band)
+                                self._tooltip(
+                                    _auto,
+                                    "Pick a demodulation band from the current frame: "
+                                    "the strongest concentration of high-frequency "
+                                    "energy, which is where a housing resonance shows "
+                                    "up. Leave the band at 0 to auto-select every "
+                                    "frame.")
+                            dpg.add_text("", tag=ui.ENV_INFO_TEXT, color=_c("MUTED"))
+                            with dpg.plot(
+                                label="Envelope Spectrum",
+                                width=-1,
+                                height=-TIME_PLOT_HEIGHT,
+                                tag=ui.PLT_ENV,
+                                crosshairs=True,
+                            ):
+                                dpg.add_plot_legend(location=dpg.mvPlot_Location_East,
+                                                    tag=ui.PLT_ENV_LEGEND)
+                                dpg.add_plot_axis(dpg.mvXAxis, label="Modulation frequency, Hz",
+                                                  tag=ui.PLT_ENV_AX_FREQ)
+                                dpg.add_plot_axis(dpg.mvYAxis, label="Envelope amplitude",
+                                                  tag=ui.PLT_ENV_AX_AMPL)
                         with dpg.tab(label="Trend"):
                             with dpg.plot(
                                 label="Trend Series",
