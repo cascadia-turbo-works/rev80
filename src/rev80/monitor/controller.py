@@ -237,7 +237,7 @@ class MonitorController:
         snapshot to produce target-EU values matching the rest of overall_json.
         """
         import json as _json
-        from rev80.util import UNIT_TO_SI, AMPLITUDE_SCALE, integration_steps
+        from rev80.util import UNIT_TO_SI, amplitude_scale, integration_steps
 
         session = self._session
         if session is None:
@@ -281,7 +281,7 @@ class MonitorController:
                 col     = max(0, min(4, n_steps + 2))
                 src_si  = UNIT_TO_SI.get(sensor_eu, 1.0)
                 tgt_si  = UNIT_TO_SI.get(target_u,  1.0)
-                amp_f   = AMPLITUDE_SCALE.get(amp_mode, 1.0)
+                amp_f   = amplitude_scale(amp_mode)
                 scale   = src_si / tgt_si / sens_mv
 
                 raw_mv = float(sample.overall_ampl_by_integration_order[col])
