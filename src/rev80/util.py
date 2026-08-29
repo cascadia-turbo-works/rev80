@@ -21,7 +21,7 @@ __all__ = [
     # Theme / colour
     'THEME_COLORS', 'hex_to_rgba',
     # Acquisition presets
-    'MAXFREQ_PRESETS', 'BINSIZE_PRESETS',
+    'MAXFREQ_PRESETS', 'BINSIZE_PRESETS', 'ISO_BAND_PRESETS',
     # Unit taxonomy
     'ACCELERATION_UNITS', 'VELOCITY_UNITS', 'DISPLACEMENT_UNITS', 'RAW_UNITS',
     'EU_OPTIONS', 'MODALITY_ORDER', 'UNIT_TO_SI',
@@ -95,6 +95,24 @@ def hex_to_rgba(hex_color: str, alpha: int = 255) -> tuple:
 # ceiling, where the driver silently drops most samples while reporting
 # status='OKAY'. See picoscope.PicoScopeStream._choose_osr.
 MAXFREQ_PRESETS = [2e2, 5e2, 1e3, 2e3, 5e3, 1e4]
+
+# Declared measurement bands for the overall amplitude, as (fmin, fmax) in Hz.
+#
+# ISO 20816-1 evaluates broadband vibration on non-rotating parts over
+# 10-1000 Hz, dropping the lower edge to 2 Hz for machines running below
+# 600 rpm where the 1x itself would otherwise fall outside the band. Quoting a
+# velocity RMS against a zone boundary is only meaningful if it was measured
+# over the band the boundary is defined for -- which is why the band has to be
+# declared and stored with the data rather than being whatever the current
+# F_max preset implies.
+#
+# 'Full band' is the default: the high-pass edge up to F_max. It keeps the
+# bearing-band content above 1 kHz that a condition-monitoring user is
+# generally looking for, which the ISO bands deliberately exclude.
+ISO_BAND_PRESETS: dict[str, tuple[float, float]] = {
+    'ISO 20816 (10-1000 Hz)':        (10.0, 1000.0),
+    'ISO 20816 low speed (2-1000 Hz)': (2.0, 1000.0),
+}
 BINSIZE_PRESETS = [0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0]
 
 # ── Unit taxonomy ──────────────────────────────────────────────────────────

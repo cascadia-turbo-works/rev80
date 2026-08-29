@@ -249,22 +249,41 @@ def test_integration_still_exact_for_bin_centred_tones():
     assert abs(rel_err(result.overall, expected)) < 0.02
 
 
-def test_passthrough_overall_exact_for_off_bin_tone():
-    """n_steps == 0 needs no taper — the overall must be the record's exact RMS.
+def test_passthrough_overall_recovers_the_tone_rms_off_bin():
+    """n_steps == 0 must report the tone's RMS, not the record's arithmetic RMS.
 
-    Compared against the RMS of the actual samples rather than A/sqrt(2): an
-    off-bin tone spans a non-integer number of cycles, so the record's true
-    RMS differs from A/sqrt(2) by ~0.06% for physical reasons that are not a
-    defect.  The passthrough path must reproduce it exactly.
+    This test used to assert `overall == sqrt(mean(data**2))` to 1e-9, because
+    the passthrough path performed no transform at all. Band-limiting (M-06)
+    changed that premise: the band mask is a frequency-domain multiply, hence a
+    circular convolution in time, with exactly the wrap sensitivity the Hann
+    taper exists to control — so order 0 now runs the same tapered, masked path
+    as the other four, and all five describe one band.
 
-    Regression test for audit finding F-1.
+    The un-tapered alternative was measured. It stays exact for in-band content
+    but inherits a rectangular window's band edge, with -13 dB first sidelobes:
+    a 3x tone at 30 Hz against a 100 Hz lower edge leaked in at only -22 dB and
+    inflated the overall by +2.7%. Hann rejects that same tone by -84 dB, and by
+    -100 to -144 dB in the other cases measured.
+
+    What is asserted therefore changes from the record's arithmetic RMS to the
+    tone's true RMS, A/sqrt(2) — and the tapered estimate is the *better* answer
+    of the two. An off-bin tone spans a non-integer number of cycles, so the raw
+    record RMS carries a ~0.1% partial-cycle bias (here +0.097%) that is an
+    artefact of where the block happened to start, not a property of the signal.
+    The Hann estimate lands on A/sqrt(2) to 1e-9; the raw record RMS does not.
+
+    Regression test for audit findings F-1 and M-06.
     """
     dc = make_collector(eu='mm/s2', target_unit='mm/s2')
     data = tone(dc, 120.7, 1.0)
     result = dc.process_sample(0, make_sample(dc, data))
     assert result is not None
-    exact = float(np.sqrt(np.mean(data ** 2)))
-    assert abs(rel_err(result.overall, exact)) < 1e-9
+
+    assert abs(rel_err(result.overall, true_rms(1.0, 120.7, 0))) < 1e-9
+
+    # The record's own RMS is the biased quantity, and is measurably further off.
+    record_rms = float(np.sqrt(np.mean(data ** 2)))
+    assert abs(rel_err(record_rms, true_rms(1.0, 120.7, 0))) > 1e-4
 
 
 @pytest.mark.parametrize('frac', [0.37, 0.5])

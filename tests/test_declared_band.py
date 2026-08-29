@@ -23,7 +23,6 @@ import numpy as np
 import pytest
 
 import rev80 as vc
-from rev80 import _dsp
 
 from test_measurement_validity import (
     OFFBIN_FRACTIONS,
