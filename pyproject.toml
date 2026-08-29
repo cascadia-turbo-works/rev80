@@ -41,7 +41,9 @@ rev80 = "rev80.__main__:main"
 # invocations and docs keep working; dearpygui moved into the required
 # dependencies above. Safe to delete once no caller references it.
 gui = []
-dev = ["pytest", "ipykernel", "pyinstaller", "ruff"]
+# ruff is bounded: its default rule set and fix behaviour shift between
+# minor releases, so an unbounded `ruff` makes CI lint non-reproducible.
+dev = ["pytest", "ipykernel", "pyinstaller", "ruff>=0.15,<0.17"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -57,6 +59,14 @@ pythonpath = ["src"]
 line-length = 120
 
 [tool.ruff.lint]
+# Pin the rule set explicitly. Without `select`, ruff lints with whatever its
+# *current default* happens to be, and that default changes between releases:
+# ruff 0.15.10 reports 0 errors on this tree while 0.16.5 reports 167, none of
+# them from a code change. An explicit select makes `ruff check` reproducible
+# across versions and keeps CI from turning red on an untouched tree.
+# These four are ruff's historical defaults — the set this repo was written
+# against. Widening it is a deliberate, separate decision.
+select = ["E4", "E7", "E9", "F"]
 ignore = [
     "E402",   # module-level import not at top — intentional in picoscope.py (DLL guard)
     "E701",   # multiple statements on one line — used in from_dict for compact tabular style

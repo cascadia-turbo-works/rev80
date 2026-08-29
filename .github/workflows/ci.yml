@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# A new push to the same branch cancels the previous run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      # dearpygui's compiled extension links against libX11 at load time.
+      # The suite never creates a viewport, so no GL and no X server are
+      # needed — but `import dearpygui` itself fails without this library.
+      - name: Install X11 runtime library
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libx11-6
+
+      # picosdk is a git URL pinned to a commit; pip needs git, which the
+      # runner image already provides. The native PicoSDK driver (libps4000a)
+      # is deliberately NOT installed — picoscope.py degrades to
+      # PICOSDK_AVAILABLE = False and the suite runs against SimulatedSensor.
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Lint
+        run: python -m ruff check src/ tests/
+
+      # No DISPLAY on the runner. The GUI tests call dpg.create_context() and
+      # dpg.setup_dearpygui() but never dpg.create_viewport(), so they need no
+      # X server. Hardware tests self-skip when no PicoScope is present.
+      - name: Test
+        run: python -m pytest tests/ -q
