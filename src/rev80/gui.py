@@ -759,12 +759,18 @@ class GUI:
         fs_ks = cfg.samplerate / 1000
         t_col = cfg.acquisition_period
         hp = f"HP {cfg.highpass_fc:.0f} Hz" if cfg.highpass_enabled else "HP off"
-        aa = f"AA {cfg.samplerate / 2:.0f} Hz"
+        # Label F_max, not fs/2. Calling fs/2 the "AA" frequency read as a spec
+        # the instrument does not meet: measured alias rejection at the
+        # frequency folding into the top of the displayed band is -21.8 dB, and
+        # effectively 0 dB at fs/2. The band above F_max is a guard band and is
+        # no longer displayed at all (see collector.process_sample step 6).
+        fmax_lbl = f"F_max {cfg.maxfreq:.0f} Hz"
+        # Report the resolution actually delivered, not the one requested.
         info = (
-            f"{cfg.maxfreq:.0f} Hz max  |  {cfg.binsize:.2f} Hz/bin\n"
+            f"{cfg.maxfreq:.0f} Hz max  |  {cfg.binsize_actual:.2f} Hz/bin\n"
             f"{cfg.n_fft_bins} lines  |  {fs_ks:.1f} kS/s\n"
             f"Acq: {t_col:.3f} s  |  {cfg.fft_window}\n"
-            f"{hp}  |  {aa}"
+            f"{hp}  |  {fmax_lbl}"
         )
         if dpg.does_item_exist(ui.SPECTRUM_INFO_TEXT):
             dpg.set_value(ui.SPECTRUM_INFO_TEXT, info)

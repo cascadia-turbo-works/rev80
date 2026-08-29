@@ -678,7 +678,18 @@ class DataCollector:
         amp_factor   = AMPLITUDE_SCALE.get(amp_mode, np.sqrt(2))
         spectrum_amp = np.sqrt(np.maximum(calibrated_psd, 0.0)) * amp_factor
 
-        # ── 6. Peaks ──────────────────────────────────────────────────
+        # ── 6. Truncate at F_max, then find peaks ─────────────────────
+        # The whole point of the F_max = fs/2.56 convention is that the guard
+        # band between F_max and fs/2 is never displayed: that is where the
+        # anti-alias filter has not yet reached full attenuation. Measured
+        # rejection at the frequency folding into the top of the band is
+        # -21.8 dB, falling to effectively 0 dB at fs/2 — so content shown up
+        # there is not a measurement, and find_peaks was happily reporting it
+        # in the peaks table alongside real lines.
+        keep_band    = freq_hz <= config.maxfreq
+        freq_hz      = freq_hz[keep_band]
+        spectrum_amp = spectrum_amp[keep_band]
+
         peaks, _ = scipy.signal.find_peaks(spectrum_amp, distance=5)
         peaks     = np.array(peaks[np.argsort(-spectrum_amp[peaks])])
 

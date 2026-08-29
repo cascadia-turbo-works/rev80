@@ -177,8 +177,22 @@ class AcquisitionSettings:
 
     @property
     def n_fft_bins(self) -> int:
-        """Number of frequency bins in the one-sided spectrum."""
-        return self.nperseg // 2 + 1
+        """Number of spectrum lines actually displayed: DC up to maxfreq.
+
+        Not nperseg // 2 + 1. That counts the full one-sided transform out to
+        fs/2, but the band between maxfreq and fs/2 is a guard band and is no
+        longer displayed (see DataCollector.process_sample step 6), so quoting
+        it as a line count overstated what the user can actually see by the
+        full 2.56/2 ratio.
+
+        Nominal: derived from config.samplerate. The live spectrum is built on
+        the rate the hardware actually achieved, which differs by up to ~1.7%
+        (see PicoScopeStream._report_samplerate), so the realised line count
+        can differ by a line or two.
+        """
+        df = self.binsize_actual
+        n_below = int(self._fm / df + 1e-9) + 1      # bins at 0, df, 2df … <= fm
+        return min(n_below, self.nperseg // 2 + 1)
 
     @property
     def memory_bytes(self) -> int:

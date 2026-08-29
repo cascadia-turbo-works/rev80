@@ -105,9 +105,12 @@ def test_n_fft_bins():
                 noverlap=int(config.nperseg * config.welch_overlap),
                 nfft=config.nperseg, scaling='spectrum',
             )
-            assert config.n_fft_bins == len(freq), (
+            # Only the band up to maxfreq is displayed; the guard band between
+            # maxfreq and fs/2 is discarded in process_sample (F-9).
+            displayed = int((freq <= config.maxfreq).sum())
+            assert config.n_fft_bins == displayed, (
                 f'F_max={maxfreq} df={binsize}: n_fft_bins states '
-                f'{config.n_fft_bins}, spectrum has {len(freq)} lines'
+                f'{config.n_fft_bins}, displayed spectrum has {displayed} lines'
             )
             # Stated bin width must be the one actually delivered, and must
             # never be coarser than the user's request.
