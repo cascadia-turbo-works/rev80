@@ -27,7 +27,7 @@ def _write_channel_group(h5_grp, ch: int, sample: 'rev80.VibeSample') -> None:
     cg.create_dataset('data', data=np.asarray(sample.data, dtype=np.float64))
     cg.attrs['timestamp']  = sample.timestamp
     cg.attrs['rel_time']   = float(sample.rel_time)
-    cg.attrs['samplerate'] = int(sample.samplerate)
+    cg.attrs['samplerate'] = float(sample.samplerate)
     cg.attrs['status']     = str(sample.status)
     cg.attrs['overflow']   = bool(sample.overflow)
     cg.attrs['degraded']   = bool(sample.degraded)
@@ -884,7 +884,7 @@ class DataCollector:
 
         ts_str     = decode(fg.attrs["timestamp"])
         rel_time   = float(fg.attrs["rel_time"])
-        samplerate = int(fg.attrs["samplerate"])
+        samplerate = float(fg.attrs["samplerate"])
         status     = decode(fg.attrs["status"])
         try:
             timestamp = datetime.fromisoformat(ts_str)
@@ -915,7 +915,7 @@ class DataCollector:
 
         # Sync enabled_channels from frame data and clamp maxfreq to file samplerate
         all_channels: set[int] = set()
-        file_samplerate: int = 0
+        file_samplerate: float = 0.0
         for frame in self.data["frame_cache"]:
             for k, v in frame.items():
                 if isinstance(k, int):

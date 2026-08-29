@@ -165,7 +165,10 @@ class AcquisitionSettings:
 class VibeSample:
     status: str
     _timestamp: datetime
-    samplerate: int
+    # The rate the hardware actually achieved, post-decimation. Generally not
+    # an integer: the driver rounds the streaming interval to whole
+    # microseconds (see PicoScopeStream._report_samplerate).
+    samplerate: float
     unit: str
     overflow: bool
     degraded: bool = False
@@ -224,7 +227,7 @@ class ChannelResult:
     degraded:   bool             # True if streaming rate was degraded during this block
     time_data:  np.ndarray       # (N,) signal in target unit
     time_vec:   np.ndarray       # (N,) seconds
-    samplerate: int
+    samplerate: float
     freq:       np.ndarray       # (K,) Hz
     spectrum:   np.ndarray       # (K,) amplitude in target unit + amp mode
     peaks:      np.ndarray       # indices into freq / spectrum, descending
