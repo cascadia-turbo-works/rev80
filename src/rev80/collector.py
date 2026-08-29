@@ -12,6 +12,7 @@ import scipy.signal
 
 import rev80
 from rev80 import _dsp
+from rev80 import peaks as rev80_peaks
 from rev80._paths import data_dir
 from rev80.scope_sensor import ScopeSensor
 
@@ -723,8 +724,27 @@ class DataCollector:
         freq_hz      = freq_hz[keep_band]
         spectrum_amp = spectrum_amp[keep_band]
 
-        peaks, _ = scipy.signal.find_peaks(spectrum_amp, distance=5)
-        peaks     = np.array(peaks[np.argsort(-spectrum_amp[peaks])])
+        # Peak selection is significance-based, not top-N-by-amplitude: a line
+        # is reported when it rises config.peak_threshold_db above its own
+        # local noise floor, and the count is whatever that yields. The old
+        # rule ranked by how loud a line's neighbourhood was — on
+        # 'blower 4 - bearing DE.h5' ch2 it spent 6 of its top 12 on ripple in
+        # the noisy top of the band and pushed the 1034/1088 Hz bearing
+        # sidebands off a 6-row table. See rev80.peaks for the full rationale.
+        #
+        # n_segments feeds the median-to-mean correction on the floor estimate.
+        # It is 1 for every shipped preset (nperseg == blocksize), but it is
+        # derived rather than assumed: that invariant belongs to
+        # AcquisitionSettings, not to the statistics.
+        seg_len    = min(config.nperseg, len(filtered_mv))
+        seg_step   = max(1, seg_len - min(seg_len - 1, int(seg_len * config.welch_overlap)))
+        n_segments = 1 + max(0, len(filtered_mv) - seg_len) // seg_step
+        peaks = rev80_peaks.select_peaks(
+            spectrum_amp,
+            window=config.fft_window,
+            threshold_db=config.peak_threshold_db,
+            n_segments=n_segments,
+        )
 
         # ── 7. Overall amplitude in target unit ───────────────────────
         # Reuse the IFFT-based mV RMS cached in step 3; apply unit scale + amp mode.

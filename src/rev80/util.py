@@ -406,8 +406,13 @@ class UI_Elements:
     PLT_TREND_DATA         = 'PLT_TREND_DATA'
     PLT_TREND_CURSOR     = 'PLT_TREND_CURSOR'    # vertical line at browsed frame time
 
+    # Primary peak control: how far a line must stand out of its own local
+    # noise floor to be reported. FFT_PEAKS_DISPLAY_COUNT is now only a
+    # clutter cap on the table and the plot markers, not the selection rule.
+    FFT_PEAK_THRESHOLD_DB   = 'FFT_PEAK_THRESHOLD_DB'
     FFT_PEAKS_DISPLAY_COUNT = 'FFT_PEAK_DISPLAY_COUNT'
     FFT_PEAKS_TABLE         = 'FFT_PEAKS_TABLE'
+    FFT_PEAKS_FOUND_TEXT    = 'FFT_PEAKS_FOUND_TEXT'
 
     # ── Results pane ────────────────────────────────────────────────────────
     CH_WARNINGS_SECTION = 'CH_WARNINGS_SECTION'
