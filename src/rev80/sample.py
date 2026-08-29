@@ -152,9 +152,33 @@ class AcquisitionSettings:
         return np.arange(self.blocksize) * self.sampleperiod
 
     @property
+    def nperseg(self) -> int:
+        """Welch segment length — the whole block.
+
+        Previously the Welch call used nfft = int(samplerate / binsize) while
+        blocksize was nextpow2(samplerate / binsize) >= nfft, so the spectrum
+        had a different number of lines and a different bin width from the ones
+        the UI advertised. Across the preset grid 40 of 72 combinations were
+        wrong: F_max=200 / df=20 claimed 17 lines against an actual 13, at a
+        real resolution of 20.48 Hz rather than 20 (+2.4%); F_max=2000 / df=5
+        claimed 1025 lines against an actual 820.
+
+        Using the whole (power-of-two) block makes n_fft_bins, binsize_actual
+        and acquisition_period consistent by construction, and keeps the FFT a
+        power of two. Since blocksize = nextpow2(samplerate / binsize), the
+        delivered resolution is always at least as fine as the one requested.
+        """
+        return self.blocksize
+
+    @property
+    def binsize_actual(self) -> float:
+        """The bin width actually delivered — always <= the requested binsize."""
+        return self.samplerate / self.nperseg
+
+    @property
     def n_fft_bins(self) -> int:
         """Number of frequency bins in the one-sided spectrum."""
-        return self.blocksize // 2 + 1
+        return self.nperseg // 2 + 1
 
     @property
     def memory_bytes(self) -> int:
