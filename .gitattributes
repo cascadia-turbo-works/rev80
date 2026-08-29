@@ -1,0 +1,19 @@
+# Normalise line endings on commit. The tree is all-LF today; this keeps it that
+# way now that the project also builds on Windows (Inno Setup installer, PicoSDK
+# DLLs), where a contributor's core.autocrlf would otherwise reintroduce CRLF.
+# Two prior branches each converted picoscope.py CRLF->LF as a side effect of
+# their patch tooling, inflating one diff from 87 to ~1791 lines.
+* text=auto
+
+# Shell scripts must stay LF even when checked out on Windows (Git Bash).
+*.sh text eol=lf
+
+# Binary: never touched, never diffed as text.
+*.pdf binary
+*.h5  binary
+*.ico binary
+*.png binary
+*.jpg binary
+*.ttf binary
+*.otf binary
+*.dll binary
