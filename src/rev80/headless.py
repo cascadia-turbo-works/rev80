@@ -151,12 +151,13 @@ def _build_anomaly_hook(anom_cfg: dict, config, pre_buffer_s: float = 0.0):
         CompositeAnomalyHook, FixedThresholdHook, NullAnomalyHook,
         RmsThresholdHook, SpectralThresholdHook, ewma_alpha_from_time,
     )
+    from rev80.util import canonical_hook_type
 
     hooks: list = []
     warmup = int(anom_cfg.get("warmup", 10))
 
     if anom_cfg.get("enabled", False):
-        hook_type = anom_cfg.get("hook_type", "rms").lower()
+        hook_type = canonical_hook_type(anom_cfg.get("hook_type", "rms"))
 
         if hook_type in ("rms", "both"):
             period = config.acquisition_period

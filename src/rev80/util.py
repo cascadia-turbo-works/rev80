@@ -433,14 +433,66 @@ class UI_Elements:
 
 
 # Monitor Mode capture interval presets (seconds → display label)
+# 600 is present because config.py seeds interval_s: 600 as the shipped
+# default. When it was missing, the GUI combo fell back to the '1 h' label and
+# saving wrote 3600 back — silently changing a user's 10-minute logging
+# interval to one hour.
 MONITOR_INTERVAL_PRESETS: dict[int, str] = {
     5:      '5 s',
     30:     '30 s',
     60:     '1 min',
     300:    '5 min',
+    600:    '10 min',
     900:    '15 min',
     3600:   '1 h',
     21600:  '6 h',
     86400:  '1 day',
     172800: '2 days',
 }
+
+
+def nearest_interval_preset(seconds: float) -> int:
+    """Return the MONITOR_INTERVAL_PRESETS key closest to `seconds`.
+
+    Used when a stored interval is not itself a preset. Falling back to the
+    nearest option keeps the user near what they configured; the previous
+    hardcoded 3600 fallback turned any unrecognised value into 1 h.
+    """
+    try:
+        target = float(seconds)
+    except (TypeError, ValueError):
+        target = 3600.0
+    return min(MONITOR_INTERVAL_PRESETS, key=lambda k: abs(k - target))
+
+
+# ---------------------------------------------------------------------------
+# Anomaly hook type — canonical lowercase, with display labels for the GUI
+# ---------------------------------------------------------------------------
+# config.py seeds hook_type: 'rms' (lowercase) while the GUI combo items are
+# capitalised. The GUI compared raw strings with no normalisation, so a fresh
+# install's 'rms' matched neither 'RMS' nor 'Both': both hook groups were
+# hidden and zero anomaly hooks were built, silently disabling detection.
+# Storage is canonical lowercase; capitalisation exists only as a display label.
+ANOMALY_HOOK_LABELS: dict[str, str] = {
+    'rms':      'RMS',
+    'spectral': 'Spectral',
+    'both':     'Both',
+}
+DEFAULT_ANOMALY_HOOK_TYPE = 'rms'
+
+
+def canonical_hook_type(value) -> str:
+    """Normalise any spelling of a hook type to its canonical lowercase form."""
+    key = str(value).strip().lower()
+    return key if key in ANOMALY_HOOK_LABELS else DEFAULT_ANOMALY_HOOK_TYPE
+
+
+def hook_type_label(value) -> str:
+    """Return the GUI display label for a hook type, in any spelling."""
+    return ANOMALY_HOOK_LABELS[canonical_hook_type(value)]
+
+
+# Default EWMA smoothing factors, shared by the GUI and headless hook builders
+# so the two cannot drift apart. These mirror the values config.py seeds.
+DEFAULT_RMS_ALPHA  = 0.97
+DEFAULT_SPEC_ALPHA = 0.995
