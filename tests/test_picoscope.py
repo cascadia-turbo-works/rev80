@@ -10,7 +10,8 @@ Tests cover:
 
 import ctypes
 from datetime import datetime
-from unittest.mock import MagicMock, patch, call
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -66,6 +67,38 @@ def _fill_driver_buffers(stream, value=0, n=None):
 # ---------------------------------------------------------------------------
 
 class TestFindPicoScope:
+
+    @pytest.fixture(autouse=True)
+    def _driver_available(self, monkeypatch):
+        """Make these tests independent of whether the PicoSDK driver is installed.
+
+        picoscope.py degrades to `ps = None` / PICOSDK_AVAILABLE = False when
+        libps4000a is absent (CI, offline dev), and FindPicoScope() then
+        short-circuits to []. These are unit tests of FindPicoScope's logic
+        against a mocked driver — as the module docstring claims — so install a
+        stand-in `ps` and force the flag on. Without this they silently require
+        the native driver to be installed.
+        """
+        monkeypatch.setattr(pico_module, 'PICOSDK_AVAILABLE', True)
+        if pico_module.ps is None:
+            monkeypatch.setattr(pico_module, 'ps', SimpleNamespace(
+                ps4000aOpenUnit=lambda *a: 0,
+                ps4000aChangePowerSource=lambda *a: 0,
+                ps4000aEnumerateUnits=lambda *a: 0,
+                ps4000aGetUnitInfo=lambda *a: 0,
+                ps4000aSetChannel=lambda *a: 0,
+                ps4000aCloseUnit=lambda *a: 0,
+            ))
+
+    def test_missing_driver_returns_empty_list(self, monkeypatch):
+        """No PicoSDK driver → no devices reported, and no exception.
+
+        picosdk.ps4000a raises CannotFindPicoSDKError at *import* time when
+        libps4000a is absent, which used to make `import rev80.picoscope`
+        fatal on CI and offline dev machines.
+        """
+        monkeypatch.setattr(pico_module, 'PICOSDK_AVAILABLE', False)
+        assert pico_module.FindPicoScope() == []
 
     def test_no_hardware_returns_empty_list(self, monkeypatch):
         """When assert_pico_ok raises (PICO_NOT_FOUND), return []."""

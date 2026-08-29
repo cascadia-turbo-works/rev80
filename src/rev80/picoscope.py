@@ -15,8 +15,25 @@ import scipy.signal
 from rev80._pico_loader import ensure_pico_dlls_loadable
 ensure_pico_dlls_loadable()
 
-from picosdk.ps4000a import ps4000a as ps  # noqa: E402
-from picosdk.functions import adc2mV, assert_pico_ok  # noqa: E402
+# The PicoSDK *driver* (libps4000a) is a separate native install from the
+# picosdk Python wrapper. picosdk.ps4000a instantiates Ps4000alib() at import
+# time, which calls find_library('ps4000a') and raises CannotFindPicoSDKError
+# when the driver is absent. Importing this module therefore used to be fatal
+# on any machine without the driver — including CI and offline development,
+# both of which the project explicitly supports via SimulatedSensor. Degrade
+# to PICOSDK_AVAILABLE = False instead; FindPicoScope() reports no devices and
+# the simulated path is unaffected.
+try:
+    from picosdk.ps4000a import ps4000a as ps  # noqa: E402
+    from picosdk.functions import adc2mV, assert_pico_ok  # noqa: E402
+    PICOSDK_AVAILABLE = True
+    _PICOSDK_IMPORT_ERROR = None
+except Exception as _exc:   # CannotFindPicoSDKError, CannotOpenPicoSDKError, OSError
+    ps = None
+    adc2mV = None
+    assert_pico_ok = None
+    PICOSDK_AVAILABLE = False
+    _PICOSDK_IMPORT_ERROR = _exc
 
 import rev80  # noqa: E402
 
@@ -199,6 +216,11 @@ def FindPicoScope() -> list:
     Returns a list of dicts compatible with VibeSensor(**dev), one entry per
     detected unit.  Returns an empty list if no scope is found (does not raise).
     """
+    if not PICOSDK_AVAILABLE:
+        log.warning('FindPicoScope: PicoSDK driver unavailable (%s) — no hardware devices '
+                    'will be reported; use the simulated sensor', _PICOSDK_IMPORT_ERROR)
+        return []
+
     serials = _enumerate_serials()
     if not serials:
         # Fall back to open-any if enumeration yields nothing (driver quirk on first plug-in)

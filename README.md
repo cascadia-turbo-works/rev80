@@ -265,6 +265,24 @@ pytest tests/
 python -m rev80
 ```
 
+#### Install the git hooks (one-time, per clone)
+
+The repo ships a `pre-commit` hook in `.githooks/`. It is **not** installed
+automatically — `core.hooksPath` has to be pointed at it once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The hook runs `ruff check src/ tests/` and regenerates `src/rev80/_version.py`
+from `git describe --tags --long --always`, staging the result. Without it
+installed, `_version.py` silently goes stale and shipped builds report a
+version that cannot be tied back to a commit. `scripts/build.sh` re-stamps the
+same file at build time, so a release binary is always correct even if the hook
+was skipped — but development runs and `rev80 --version` are not.
+
+To bypass the hook for a single commit, use `git commit --no-verify`.
+
 ### Project layout
 
 ```
@@ -899,7 +917,7 @@ available for assignment in the GUI Channel Config panel or headless config:
 ```yaml
 - id: <uuid>
   name: PCB 352C33 Ch1
-  sensitivity_mv_per_eu: 10.2   # mV per engineering unit
+  sensitivity: 10.2             # mV per engineering unit
   engineering_units: g
   target_unit: in/s             # optional display unit override
 ```

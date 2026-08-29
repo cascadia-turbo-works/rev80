@@ -4,6 +4,7 @@ import threading
 from pathlib import Path
 
 import dearpygui.dearpygui as dpg
+import h5py
 import numpy as np
 
 import rev80
@@ -12,7 +13,14 @@ import rev80.icons as icons
 from rev80.sample import AcquisitionSettings
 from rev80.scope_sensor import ScopeSensor
 from rev80.scope_sensor_registry import ScopeSensorRegistry
-from rev80.util import UNIT_TO_SI
+from rev80.util import (
+    DEFAULT_RMS_ALPHA,
+    DEFAULT_SPEC_ALPHA,
+    UNIT_TO_SI,
+    canonical_hook_type,
+    hook_type_label,
+    nearest_interval_preset,
+)
 
 log = rev80.get_logger("gui")
 ui = rev80.UI_Elements()
@@ -1541,7 +1549,6 @@ class GUI:
                      date, time, n_channels, n_captures, n_bursts}
         Reads the folder from the _SB_FOLDER widget if it exists, else default.
         """
-        import h5py
         import json as _json
         if dpg.does_item_exist('_SB_FOLDER'):
             folder_str = dpg.get_value('_SB_FOLDER').strip()
@@ -1608,7 +1615,6 @@ class GUI:
 
     def _on_session_list_select(self, sender=None, data=None, user_data=None) -> None:
         """Load all interval frames from the selected session; populate burst table."""
-        import h5py
         import json
         # user_data carries the session dict when called from table row selectable
         entry = user_data
@@ -1753,7 +1759,12 @@ class GUI:
                         for k, v in scope_s.to_dict().items():
                             sg.attrs[k] = v
             log.info(f"Saved config to {session_h5.name}")
-        except Exception as exc:
+        except (OSError, KeyError) as exc:
+            # Narrow on purpose: this used to be a bare `except Exception`,
+            # which swallowed the NameError from a missing h5py import and
+            # reported it as a disk failure, misdirecting the user toward
+            # permissions. Only genuine I/O (OSError) and missing-group
+            # (KeyError) failures belong here; programming errors must surface.
             log.error(f"_on_sb_save_config: failed to patch {session_h5}: {exc}")
             return
         # Reprocess trend with the new config
@@ -2059,9 +2070,13 @@ class GUI:
         out_dir = mon.get("output_dir") or ""
         compress = mon.get("compression", "gzip") == "gzip"
 
+        # Fall back to the NEAREST preset, not a hardcoded 3600. config.py
+        # seeds interval_s: 600, which was not a preset member, so the widget
+        # showed '1 h' and saving wrote 3600 back — silently turning a
+        # 10-minute logging interval into an hourly one.
         interval_label = rev80.MONITOR_INTERVAL_PRESETS.get(
             int(interval_s),
-            rev80.MONITOR_INTERVAL_PRESETS[3600],
+            rev80.MONITOR_INTERVAL_PRESETS[nearest_interval_preset(interval_s)],
         )
         dpg.set_value(ui.MON_DLG_INTERVAL, interval_label)
         dpg.set_value(ui.MON_DLG_PRE_BUFFER, pre_buf_s)
@@ -2076,7 +2091,8 @@ class GUI:
             if dpg.does_item_exist(tag):
                 dpg.set_value(tag, val)
         _sv(ui.MON_ANOM_ENABLED,   bool(anom.get("enabled",    False)))
-        _sv(ui.MON_ANOM_HOOK,      str(anom.get("hook_type",  "RMS")))
+        # Stored canonically in lowercase; the combo shows the display label.
+        _sv(ui.MON_ANOM_HOOK,      hook_type_label(anom.get("hook_type", "rms")))
         _sv(ui.MON_ANOM_RMS_PCT,      float(anom.get("rms_pct",       10.0)))
         _sv(ui.MON_ANOM_RMS_S,        float(anom.get("rms_s",         3.0)))
         _sv(ui.MON_ANOM_RMS_EWMA_TIME, float(anom.get("rms_ewma_time", 60.0)))
@@ -2120,7 +2136,7 @@ class GUI:
             'compression_level': 4,
             'anomaly': {
                 'enabled':       bool(_get(ui.MON_ANOM_ENABLED,    False)),
-                'hook_type':     str(_get(ui.MON_ANOM_HOOK,        'RMS')),
+                'hook_type':     canonical_hook_type(_get(ui.MON_ANOM_HOOK, 'RMS')),
                 'rms_pct':       float(_get(ui.MON_ANOM_RMS_PCT,        10.0)),
                 'rms_s':         float(_get(ui.MON_ANOM_RMS_S,          3.0)),
                 'rms_ewma_time': float(_get(ui.MON_ANOM_RMS_EWMA_TIME,  60.0)),
@@ -2297,11 +2313,11 @@ class GUI:
         """Show/hide RMS/Spectral settings groups; refresh computed-alpha labels."""
         if not dpg.does_item_exist(ui.MON_ANOM_HOOK):
             return
-        hook = dpg.get_value(ui.MON_ANOM_HOOK)
+        hook = canonical_hook_type(dpg.get_value(ui.MON_ANOM_HOOK))
         if dpg.does_item_exist(ui.MON_ANOM_RMS_GROUP):
-            dpg.configure_item(ui.MON_ANOM_RMS_GROUP,  show=hook in ('RMS',  'Both'))
+            dpg.configure_item(ui.MON_ANOM_RMS_GROUP,  show=hook in ('rms',  'both'))
         if dpg.does_item_exist(ui.MON_ANOM_SPEC_GROUP):
-            dpg.configure_item(ui.MON_ANOM_SPEC_GROUP, show=hook in ('Spectral', 'Both'))
+            dpg.configure_item(ui.MON_ANOM_SPEC_GROUP, show=hook in ('spectral', 'both'))
         # Update α labels from ewma_time + current acquisition period
         from rev80.monitor.anomaly import ewma_alpha_from_time
         dt = self.collector.config.acquisition_period if self.collector else 1.0
@@ -2337,11 +2353,17 @@ class GUI:
 
         # ── EWMA-based hooks (RMS / Spectral) — gated by the main Enable switch
         if _get(ui.MON_ANOM_ENABLED, False):
-            hook_type = str(_get(ui.MON_ANOM_HOOK, 'RMS'))
-            warmup    = int(_get(ui.MON_ANOM_RMS_WARMUP, 30))
+            hook_type = canonical_hook_type(_get(ui.MON_ANOM_HOOK, 'RMS'))
+            # Default 10, matching config.py's seeded `warmup` and headless.
+            # This copy defaulted to 30, so a config missing the key produced
+            # a 3x longer baseline warm-up in the GUI than headless.
+            warmup    = int(_get(ui.MON_ANOM_RMS_WARMUP, 10))
+            # Hoisted above the hook_type chain: the spectral branch reads
+            # `period` unconditionally, so a Spectral-only config raised
+            # UnboundLocalError when it was bound inside the RMS branch.
+            period    = self.collector.config.acquisition_period
 
-            if hook_type in ('RMS', 'Both'):
-                period = self.collector.config.acquisition_period
+            if hook_type in ('rms', 'both'):
                 rms_s  = float(_get(ui.MON_ANOM_RMS_S, 3.0))
                 consecutive_n = max(1, round(rms_s / period) + 1) if period > 0 else 1
                 if rms_s > 0.25 * pre_buffer_s:
@@ -2352,7 +2374,8 @@ class GUI:
                         rms_s, pre_buffer_s,
                     )
                 rms_ewma_t = float(_get(ui.MON_ANOM_RMS_EWMA_TIME, 60.0))
-                rms_alpha  = ewma_alpha_from_time(rms_ewma_t, period) if period > 0 else 0.97
+                rms_alpha  = (ewma_alpha_from_time(rms_ewma_t, period)
+                              if period > 0 else DEFAULT_RMS_ALPHA)
                 hooks.append(RmsThresholdHook(
                     rms_threshold_pct    = float(_get(ui.MON_ANOM_RMS_PCT, 10.0)),
                     consecutive_n        = consecutive_n,
@@ -2361,14 +2384,17 @@ class GUI:
                     burst_duration_s     = burst_dur,
                 ))
 
-            if hook_type in ('Spectral', 'Both'):
+            if hook_type in ('spectral', 'both'):
                 fmin_v      = float(_get(ui.MON_ANOM_SPEC_FMIN, 0.0))
                 fmax_v      = float(_get(ui.MON_ANOM_SPEC_FMAX, 0.0))
                 spec_ewma_t = float(_get(ui.MON_ANOM_SPEC_EWMA_TIME, 300.0))
-                spec_alpha  = ewma_alpha_from_time(spec_ewma_t, period) if period > 0 else 0.995
+                spec_alpha  = (ewma_alpha_from_time(spec_ewma_t, period)
+                               if period > 0 else DEFAULT_SPEC_ALPHA)
                 hooks.append(SpectralThresholdHook(
                     spectral_threshold_pct = float(_get(ui.MON_ANOM_SPEC_PCT, 50.0)),
-                    consecutive_n          = int(_get(ui.MON_ANOM_SPEC_N,     3)),
+                    # Default 10, matching config.py's seeded `spec_n` and
+                    # headless. This copy defaulted to 3.
+                    consecutive_n          = int(_get(ui.MON_ANOM_SPEC_N,     10)),
                     baseline_alpha         = spec_alpha,
                     min_baseline_samples   = warmup,
                     fmin                   = fmin_v if fmin_v > 0 else None,
@@ -2761,7 +2787,9 @@ class GUI:
 
     def _create_gui(self):
         dpg.create_context()
-        dpg.bind_font(icons.load())
+        _font = icons.load()
+        if _font is not None:      # None → font file absent, use DPG default
+            dpg.bind_font(_font)
 
         # ── Unified Config Dialog (Device / Sensors / Acquisition tabs) ───
         with dpg.window(
@@ -3637,7 +3665,6 @@ class GUI:
         appropriate loader.  Called after the first render frame so all
         DPG plot series exist.
         """
-        import h5py
         p = Path(path_str.strip())
         if not p.exists():
             log.error(f"--from-file: path does not exist: {p}")

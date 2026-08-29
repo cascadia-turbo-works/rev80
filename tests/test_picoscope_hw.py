@@ -165,7 +165,8 @@ class TestPicoScopeHardwareStream:
 
     def test_save_load_roundtrip(self):
         """Hardware-captured sample survives DataCollector HDF5 round-trip unchanged."""
-        import tempfile, os
+        import tempfile
+        import os
         vs1 = self.sample
 
         # Push the captured sample into a DataCollector frame cache and save

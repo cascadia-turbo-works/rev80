@@ -11,9 +11,7 @@ from pathlib import Path
 
 import h5py
 import numpy as np
-import pytest
 
-import rev80 as vc
 from rev80.monitor.anomaly import AnomalyEvent
 from rev80.monitor.controller import MonitorController
 from rev80.monitor.session import MonitorSession

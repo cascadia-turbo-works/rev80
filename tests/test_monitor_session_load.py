@@ -20,7 +20,6 @@ import h5py
 import numpy as np
 import pytest
 
-import rev80 as vc
 from rev80.collector import DataCollector
 from rev80.monitor.controller import MonitorController
 from rev80.monitor.session import MonitorSession
@@ -125,7 +124,6 @@ def _record_session(session: MonitorSession, n_intervals: int = 6,
 
     # Drive enough interval captures
     deadline = time.monotonic() + INTERVAL_S * n_intervals * 1.5
-    burst_ids_before: list[str] = []
 
     triggered = 0
     while time.monotonic() < deadline:
