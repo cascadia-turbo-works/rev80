@@ -24,19 +24,28 @@ _FILE_VERSION: int = 5
 from rev80.collector import _write_channel_group  # noqa: E402
 
 
-def _compute_overall_peaks(results: list) -> tuple[str, str]:
-    """Return (overall_json, peaks_json) strings from a list of ChannelResult."""
+def _compute_overall_peaks(results: list) -> tuple[str, str, str]:
+    """Return (overall_json, peaks_json, band_json) strings from ChannelResults.
+
+    The band goes in beside the overall because an overall without the band it
+    was measured over cannot be compared with any other one -- it was the
+    absence of exactly this that let the same trend mix readings taken over
+    bands differing by a factor of two (M-06).
+    """
     overall: dict[str, float] = {}
     peaks: dict[str, list] = {}
+    band: dict[str, list] = {}
     for r in results:
         overall[str(r.channel)] = float(r.overall)
+        if r.band is not None:
+            band[str(r.channel)] = [float(r.band_fmin), float(r.band_fmax)]
         top10 = [
             (float(r.freq[i]), float(r.spectrum[i]))
             for i in r.peaks[:10]
             if i < len(r.freq)
         ]
         peaks[str(r.channel)] = top10
-    return json.dumps(overall), json.dumps(peaks)
+    return json.dumps(overall), json.dumps(peaks), json.dumps(band)
 
 
 class MonitorWriterThread:
@@ -196,7 +205,7 @@ class MonitorWriterThread:
         results       = item.get('results', [])
         rel_time      = float(item['rel_time'])
         timestamp_str = item['timestamp']
-        overall_json, peaks_json = _compute_overall_peaks(results)
+        overall_json, peaks_json, band_json = _compute_overall_peaks(results)
 
         n = self._monitor_count
 
@@ -215,6 +224,7 @@ class MonitorWriterThread:
             gate_grp.attrs['status']       = str(first_sample.status) if first_sample else ''
             gate_grp.attrs['overall_json'] = overall_json
             gate_grp.attrs['peaks_json']   = peaks_json
+            gate_grp.attrs['band_json']    = band_json
 
             for ch, sample in sorted(ch_samples.items()):
                 _write_channel_group(
@@ -238,7 +248,7 @@ class MonitorWriterThread:
         n_pretrigger        = int(item.get('n_pretrigger_frames', 0))
         all_results: list   = item.get('all_results', [])
         pre_overalls: list  = item.get('pre_overalls', [])  # overall_json strings for pre-trigger frames
-        overall_json, _     = _compute_overall_peaks(results)
+        overall_json, _, band_json = _compute_overall_peaks(results)
         n_frames          = len(frames)
         duration_s        = 0.0
         if n_frames >= 2:
@@ -258,6 +268,7 @@ class MonitorWriterThread:
             bid_grp.attrs['trigger_rel_time']    = rel_time        # session-relative trigger time
             bid_grp.attrs['burst_duration_s']    = duration_s
             bid_grp.attrs['max_overall_json']    = overall_json
+            bid_grp.attrs['band_json']           = band_json
             bid_grp.attrs['n_frames']            = n_frames
             bid_grp.attrs['n_pretrigger_frames'] = n_pretrigger
 
@@ -279,7 +290,7 @@ class MonitorWriterThread:
                 else:
                     frame_results = all_results[frame_index] if frame_index < len(all_results) else []
                     if frame_results:
-                        frame_overall, _ = _compute_overall_peaks(frame_results)
+                        frame_overall, _, _ = _compute_overall_peaks(frame_results)
                         fi_grp.attrs['overall_json'] = frame_overall
 
                 for ch, sample in sorted(ch_samples.items()):
