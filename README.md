@@ -917,7 +917,7 @@ available for assignment in the GUI Channel Config panel or headless config:
 ```yaml
 - id: <uuid>
   name: PCB 352C33 Ch1
-  sensitivity_mv_per_eu: 10.2   # mV per engineering unit
+  sensitivity: 10.2             # mV per engineering unit
   engineering_units: g
   target_unit: in/s             # optional display unit override
 ```
