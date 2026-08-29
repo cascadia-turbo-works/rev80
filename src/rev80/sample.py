@@ -185,6 +185,14 @@ class VibeSample:
     freq_hz: np.ndarray | None    = field(default=None, repr=False)
     _psd_config_key: tuple | None = field(default=None, repr=False)
 
+    # Highpass-filtered mV data, cached by DataCollector. Populated once per
+    # frame at ingestion (receive_data) so the filter's state can be carried
+    # across consecutive blocks of one continuous stream; recomputed
+    # statelessly, from a steady-state initial condition, when a stored frame
+    # is replayed or the filter config changed after capture.
+    filtered_mv: np.ndarray | None      = field(default=None, repr=False)
+    _filter_config_key: tuple | None    = field(default=None, repr=False)
+
     @classmethod
     def empty(cls):
         return VibeSample(status='EMPTY', _timestamp=datetime.now(),
