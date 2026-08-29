@@ -1,8 +1,10 @@
 # Rev80
 
-A Python desktop application for capturing, analyzing, and recording vibration data from industrial rotating equipment. Designed for predictive maintenance workflows using IEPE accelerometers and voltage-output sensors connected via USB oscilloscopes (PicoScope 4000A series) or USB audio interfaces (Digiducer legacy).
+A Python desktop application that puts the core vibration analysis toolkit into the hands of plant managers and maintenance technicians, at a far more approachable price than hiring a dedicated engineering firm. It captures, analyzes, and records vibration data from industrial rotating equipment using IEPE accelerometers connected via a PicoScope 4000A USB oscilloscope.
 
-> **Rev80** by Rev Engineering, LLC — solves 80% of your vibration needs for 10% of the cost.
+Two ways to use it: on-demand snapshot capture (overall + spectral levels) for route-based motor inspection and installation verification, and **Monitor Mode** for continuous logging over hours or years, with anomaly detection to catch rare events like motor coast-down or vibration spikes.
+
+> **Rev80** by Rev Engineering, LLC — 80% of the benefit of academic vibration analysis from a dedicated engineering firm, for a fraction of the cost.
 
 ---
 
