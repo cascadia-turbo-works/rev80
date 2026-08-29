@@ -211,7 +211,7 @@ class DataCollector:
         All unit/sensitivity/amplitude-mode conversion is handled here so the
         GUI never needs to import unit-conversion utilities.
         """
-        from rev80.util import UNIT_TO_SI, AMPLITUDE_SCALE, integration_steps
+        from rev80.util import UNIT_TO_SI, amplitude_scale, integration_steps
         out: dict[int, tuple[list[float], list[float]]] = {}
         for ch in self.config.enabled_channels:
             td        = self.trend.get(ch, {})
@@ -228,7 +228,7 @@ class DataCollector:
             amp_mode       = self.config.amplitude_mode_for(ch) or '0-P'
 
             n_steps    = integration_steps(sensor_eu, target_unit)
-            amp_factor = AMPLITUDE_SCALE.get(amp_mode, np.sqrt(2))
+            amp_factor = amplitude_scale(amp_mode)
             src_si     = UNIT_TO_SI.get(sensor_eu, 1.0)
             tgt_si     = UNIT_TO_SI.get(target_unit, 1.0)
             scale      = src_si / tgt_si / sensitivity_mv
@@ -434,7 +434,7 @@ class DataCollector:
           - psd_mv / freq_hz / _psd_config_key
           - overall_ampl_by_integration_order — (5,) RMS overalls in mV, orders −2…+2
         """
-        from rev80.util import UNIT_TO_SI, AMPLITUDE_SCALE, integration_steps
+        from rev80.util import UNIT_TO_SI, amplitude_scale, integration_steps
 
         if sample.blocksize <= 1:
             return None
@@ -547,7 +547,7 @@ class DataCollector:
         calibrated_psd = integrated_psd * (src_si / tgt_si / sensitivity_mv) ** 2
 
         # ── 5. Amplitude spectrum in target unit + amp mode ───────────
-        amp_factor   = AMPLITUDE_SCALE.get(amp_mode, np.sqrt(2))
+        amp_factor   = amplitude_scale(amp_mode)
         spectrum_amp = np.sqrt(np.maximum(calibrated_psd, 0.0)) * amp_factor
 
         # ── 6. Peaks ──────────────────────────────────────────────────
@@ -976,7 +976,7 @@ class DataCollector:
         # not raw mV.  get_trend_for_display() expects orders[:,col] in raw mV
         # (same as overall_ampl_by_integration_order), so we back-scale each
         # channel's values and place them in the correct column.
-        from rev80.util import UNIT_TO_SI, AMPLITUDE_SCALE, integration_steps
+        from rev80.util import UNIT_TO_SI, amplitude_scale, integration_steps
         for ch, rel_times in trend_rel_times.items():
             overalls    = np.array(trend_overalls[ch])
             sensor_cfg  = self._loaded_channel_sensor_configs.get(ch, {})
@@ -989,7 +989,7 @@ class DataCollector:
             col       = max(0, min(4, n_steps + 2))
             src_si    = UNIT_TO_SI.get(sensor_eu, 1.0)
             tgt_si    = UNIT_TO_SI.get(rec_tgt,   1.0)
-            amp_f     = AMPLITUDE_SCALE.get(amp_mode, 1.0)
+            amp_f     = amplitude_scale(amp_mode)
             scale     = src_si / tgt_si / sensitivity
 
             orders           = np.zeros((len(overalls), 5))
@@ -1127,7 +1127,7 @@ class DataCollector:
         # overall_json is in target EU — inverse-scale to raw mV so
         # get_trend_for_display() can apply the forward conversion correctly.
         import math as _math
-        from rev80.util import UNIT_TO_SI, AMPLITUDE_SCALE, integration_steps
+        from rev80.util import UNIT_TO_SI, amplitude_scale, integration_steps
         for ch, rel_times in trend_rel_times.items():
             overalls = trend_overalls[ch]
             valid = [(t, v) for t, v in zip(rel_times, overalls)
@@ -1144,7 +1144,7 @@ class DataCollector:
             col      = max(0, min(4, n_steps + 2))
             src_si   = UNIT_TO_SI.get(sensor_eu, 1.0)
             tgt_si   = UNIT_TO_SI.get(rec_tgt,   1.0)
-            amp_f    = AMPLITUDE_SCALE.get(amp_mode, 1.0)
+            amp_f    = amplitude_scale(amp_mode)
             scale    = src_si / tgt_si / sensitivity
             orders         = np.zeros((len(vv), 5))
             orders[:, col] = np.array(vv) / (scale * amp_f) if (scale * amp_f) != 0 else np.array(vv)
@@ -1163,7 +1163,7 @@ class DataCollector:
         """
         import json as _json
         from rev80.sample import VibeSample
-        from datetime import datetime as _dt
+        from datetime import datetime as _dt, timezone as _tz
 
         log.info(f"Reprocessing session trend in {session_h5.name}")
         with h5py.File(session_h5, "a") as f:
@@ -1184,7 +1184,11 @@ class DataCollector:
                     try:
                         ts_dt = _dt.fromisoformat(ts)
                     except ValueError:
-                        ts_dt = _dt.utcnow()
+                        # utcnow() is deprecated. Naive-UTC is preserved
+                        # deliberately: making this aware would change the
+                        # stored isoformat string and could raise TypeError
+                        # against the naive timestamps read alongside it.
+                        ts_dt = _dt.now(_tz.utc).replace(tzinfo=None)
                     sample = VibeSample(
                         status="OK", _timestamp=ts_dt,
                         samplerate=sr, unit="mV", overflow=False, data=data,
@@ -1218,7 +1222,8 @@ class DataCollector:
                             try:
                                 ts_dt = _dt.fromisoformat(ts)
                             except ValueError:
-                                ts_dt = _dt.utcnow()
+                                # See note above: deliberately naive-UTC.
+                                ts_dt = _dt.now(_tz.utc).replace(tzinfo=None)
                             sample = VibeSample(
                                 status="OK", _timestamp=ts_dt,
                                 samplerate=sr, unit="mV", overflow=False, data=data,

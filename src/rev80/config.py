@@ -156,7 +156,13 @@ def _atomic_yaml_write(path: Path, data: Any) -> None:
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix='.yaml.tmp')
     try:
         with os.fdopen(fd, 'w') as f:
-            yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
+            # safe_dump, not dump: the default Dumper serialises arbitrary
+            # Python objects as `!!python/object/apply:` tags, which every
+            # reader here (yaml.safe_load) then refuses to parse. That turned
+            # one unusual value into a config file that could never be read
+            # back. safe_dump fails loudly at write time instead, leaving the
+            # existing file untouched.
+            yaml.safe_dump(data, f, default_flow_style=False, allow_unicode=True)
         os.replace(tmp, path)
     except Exception:
         try:
