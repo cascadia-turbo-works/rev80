@@ -16,12 +16,11 @@ Defect IDs (F-1 … F-9) refer to the vibration-engineering audit; see
 BRANCH-NOTES.md for root causes and measured before/after numbers.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
-import scipy.signal
 
 import rev80 as vc
 from rev80.scope_sensor import ScopeSensor

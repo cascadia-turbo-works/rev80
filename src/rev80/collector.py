@@ -611,7 +611,6 @@ class DataCollector:
         effective_tgt  = target_unit if target_unit else sensor_eu
         config         = self.config
         samplerate     = sample.samplerate
-        nyq            = samplerate / 2.0
 
         # ── 1. Butterworth filter ─────────────────────────────────────
         # Filtering happens in filter_block(); see there for why the filter is

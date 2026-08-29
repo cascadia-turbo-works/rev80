@@ -813,7 +813,6 @@ class GUI:
             binsize = self.collector.config.binsize
         derived    = derive_acquisition_preview(maxfreq, binsize)
         samplerate = derived['samplerate']
-        blocksize  = derived['blocksize']
         n_fft_bins = derived['n_fft_bins']
         acq_time   = derived['acq_time']
         mem_bytes  = derived['mem_bytes']
