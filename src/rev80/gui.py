@@ -14,6 +14,8 @@ from rev80.sample import AcquisitionSettings
 from rev80.scope_sensor import ScopeSensor
 from rev80.scope_sensor_registry import ScopeSensorRegistry
 from rev80.util import (
+    DEFAULT_RMS_ALPHA,
+    DEFAULT_SPEC_ALPHA,
     UNIT_TO_SI,
     canonical_hook_type,
     hook_type_label,
@@ -2352,10 +2354,16 @@ class GUI:
         # ── EWMA-based hooks (RMS / Spectral) — gated by the main Enable switch
         if _get(ui.MON_ANOM_ENABLED, False):
             hook_type = canonical_hook_type(_get(ui.MON_ANOM_HOOK, 'RMS'))
-            warmup    = int(_get(ui.MON_ANOM_RMS_WARMUP, 30))
+            # Default 10, matching config.py's seeded `warmup` and headless.
+            # This copy defaulted to 30, so a config missing the key produced
+            # a 3x longer baseline warm-up in the GUI than headless.
+            warmup    = int(_get(ui.MON_ANOM_RMS_WARMUP, 10))
+            # Hoisted above the hook_type chain: the spectral branch reads
+            # `period` unconditionally, so a Spectral-only config raised
+            # UnboundLocalError when it was bound inside the RMS branch.
+            period    = self.collector.config.acquisition_period
 
             if hook_type in ('rms', 'both'):
-                period = self.collector.config.acquisition_period
                 rms_s  = float(_get(ui.MON_ANOM_RMS_S, 3.0))
                 consecutive_n = max(1, round(rms_s / period) + 1) if period > 0 else 1
                 if rms_s > 0.25 * pre_buffer_s:
@@ -2366,7 +2374,8 @@ class GUI:
                         rms_s, pre_buffer_s,
                     )
                 rms_ewma_t = float(_get(ui.MON_ANOM_RMS_EWMA_TIME, 60.0))
-                rms_alpha  = ewma_alpha_from_time(rms_ewma_t, period) if period > 0 else 0.97
+                rms_alpha  = (ewma_alpha_from_time(rms_ewma_t, period)
+                              if period > 0 else DEFAULT_RMS_ALPHA)
                 hooks.append(RmsThresholdHook(
                     rms_threshold_pct    = float(_get(ui.MON_ANOM_RMS_PCT, 10.0)),
                     consecutive_n        = consecutive_n,
@@ -2379,10 +2388,13 @@ class GUI:
                 fmin_v      = float(_get(ui.MON_ANOM_SPEC_FMIN, 0.0))
                 fmax_v      = float(_get(ui.MON_ANOM_SPEC_FMAX, 0.0))
                 spec_ewma_t = float(_get(ui.MON_ANOM_SPEC_EWMA_TIME, 300.0))
-                spec_alpha  = ewma_alpha_from_time(spec_ewma_t, period) if period > 0 else 0.995
+                spec_alpha  = (ewma_alpha_from_time(spec_ewma_t, period)
+                               if period > 0 else DEFAULT_SPEC_ALPHA)
                 hooks.append(SpectralThresholdHook(
                     spectral_threshold_pct = float(_get(ui.MON_ANOM_SPEC_PCT, 50.0)),
-                    consecutive_n          = int(_get(ui.MON_ANOM_SPEC_N,     3)),
+                    # Default 10, matching config.py's seeded `spec_n` and
+                    # headless. This copy defaulted to 3.
+                    consecutive_n          = int(_get(ui.MON_ANOM_SPEC_N,     10)),
                     baseline_alpha         = spec_alpha,
                     min_baseline_samples   = warmup,
                     fmin                   = fmin_v if fmin_v > 0 else None,
