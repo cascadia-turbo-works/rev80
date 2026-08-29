@@ -6,6 +6,7 @@ import rev80
 from rev80.monitor.anomaly import AnomalyEvent, AnomalyHook, NullAnomalyHook
 from rev80.monitor.gate import IntervalGate
 from rev80.monitor.session import MonitorSession
+from rev80.scope_sensor import ScopeSensor
 from rev80.monitor.writer import MonitorWriterThread
 
 log = rev80.get_logger(__name__)
@@ -243,7 +244,23 @@ class MonitorController:
             return ['{}'] * len(frames)
 
         ch_snap   = session.channel_snapshot   # {str(ch): {scope_sensor_id, ...}}
-        sens_snap = session.sensor_snapshot    # {sensor_id: {sensitivity_mv_per_eu, ...}}
+        sens_snap = session.sensor_snapshot    # {sensor_id: ScopeSensor.to_dict()}
+
+        # Rehydrate real ScopeSensor objects once, up front, rather than
+        # reading raw dict keys per frame. sensor_snapshot holds
+        # ScopeSensor.to_dict() output, so the field names must match
+        # ScopeSensor exactly — this previously read a key
+        # ('sensitivity_mv_per_eu') that to_dict() has never emitted, so the
+        # 1.0 default always won and the mV->EU division silently never
+        # happened. Going through from_dict() means the field name can only
+        # be wrong in one place.
+        sensors: dict = {}
+        for _sid, _cfg in sens_snap.items():
+            try:
+                sensors[_sid] = ScopeSensor.from_dict(_cfg)
+            except (KeyError, TypeError, ValueError) as exc:
+                log.warning('monitor: unusable sensor snapshot for %s (%s) — '
+                            'pre-trigger overalls for its channels stay in mV', _sid, exc)
 
         out: list[str] = []
         for frame_dict in frames:
@@ -253,10 +270,10 @@ class MonitorController:
                     continue
                 ch_cfg  = ch_snap.get(str(ch), {})
                 sid     = ch_cfg.get('scope_sensor_id')
-                s_cfg   = sens_snap.get(sid, {}) if sid else {}
 
-                sens_mv   = float(s_cfg.get('sensitivity_mv_per_eu', 1.0))
-                sensor_eu = s_cfg.get('engineering_units', 'mV')
+                scope_s   = sensors.get(sid) if sid else None
+                sens_mv   = scope_s.sensitivity if scope_s else 1.0
+                sensor_eu = scope_s.engineering_units if scope_s else 'mV'
                 target_u  = ch_cfg.get('target_unit') or sensor_eu
                 amp_mode  = ch_cfg.get('amplitude_mode', '0-P') or '0-P'
 
