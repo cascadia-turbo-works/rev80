@@ -94,6 +94,29 @@ _CH_COLORS = [
 
 # Spectrum dialog display labels — index-aligned with preset lists
 _MAXFREQ_LABELS = [f"{int(f)} Hz" for f in rev80.MAXFREQ_PRESETS]
+
+
+def derive_acquisition_preview(maxfreq: float, binsize: float) -> dict:
+    """Derived acquisition values for the settings dialog preview.
+
+    Delegates to AcquisitionSettings rather than recomputing. The dialog used
+    to duplicate the derivation and got it wrong — nextpow2(2 * maxfreq)
+    instead of nextpow2(2.56 * maxfreq) — so at the default F_max=2000 it
+    advertised 4.1 kS/s, 2049 lines, 1.000 s and half the true memory while
+    the instrument actually ran at 8.2 kS/s, 4097 lines and 0.500 s. Wrong for
+    the 500/1000/2000 Hz presets. Never duplicate the formula.
+    """
+    cfg = rev80.AcquisitionSettings()
+    cfg.maxfreq = maxfreq
+    cfg.binsize = binsize
+    return {
+        'samplerate': cfg.samplerate,
+        'blocksize':  cfg.blocksize,
+        'n_fft_bins': cfg.n_fft_bins,
+        'acq_time':   cfg.acquisition_period,
+        'mem_bytes':  cfg.memory_bytes,
+        'binsize_actual': cfg.binsize_actual,
+    }
 _BINSIZE_LABELS = [f"{b} Hz/bin" for b in rev80.BINSIZE_PRESETS]
 
 # Welch FFT window options (scipy.signal.welch 'window' argument strings)
@@ -774,11 +797,12 @@ class GUI:
             binsize = rev80.BINSIZE_PRESETS[_BINSIZE_LABELS.index(bs_str)]
         except (ValueError, IndexError):
             binsize = self.collector.config.binsize
-        samplerate = rev80.nextpow2(int(2 * maxfreq))
-        blocksize = rev80.nextpow2(int(samplerate / binsize))
-        n_fft_bins = blocksize // 2 + 1
-        acq_time = blocksize / samplerate
-        mem_bytes = blocksize * 8
+        derived    = derive_acquisition_preview(maxfreq, binsize)
+        samplerate = derived['samplerate']
+        blocksize  = derived['blocksize']
+        n_fft_bins = derived['n_fft_bins']
+        acq_time   = derived['acq_time']
+        mem_bytes  = derived['mem_bytes']
 
         cache_frames = (
             int(dpg.get_value(ui.ACQ_DLG_CACHE_FRAMES))
