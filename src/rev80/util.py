@@ -424,6 +424,16 @@ class UI_Elements:
     PLT_TREND_AX_TIME    = 'PLT_TREND_AX_TIME'
     PLT_TREND_AX_OVERALL   = 'PLT_TREND_AX_OVERALL'
     PLT_TREND_AX_OVERALL_2 = 'PLT_TREND_AX_OVERALL_2'
+    # Envelope / demodulation plot
+    PLT_ENV            = 'PLT_ENV'
+    PLT_ENV_LEGEND     = 'PLT_ENV_LEGEND'
+    PLT_ENV_AX_FREQ    = 'PLT_ENV_AX_FREQ'
+    PLT_ENV_AX_AMPL    = 'PLT_ENV_AX_AMPL'
+    ENV_BAND_LO        = 'ENV_BAND_LO'
+    ENV_BAND_HI        = 'ENV_BAND_HI'
+    ENV_BAND_AUTO      = 'ENV_BAND_AUTO'
+    ENV_INFO_TEXT      = 'ENV_INFO_TEXT'
+
     PLT_TREND_DATA         = 'PLT_TREND_DATA'
     PLT_TREND_CURSOR     = 'PLT_TREND_CURSOR'    # vertical line at browsed frame time
 
@@ -532,6 +542,10 @@ class UI_Elements:
     @staticmethod
     def plt_freq_peaks(ch: int) -> str:
         return f'PLT_FREQ_PEAKS_CH{ch}'
+
+    @staticmethod
+    def plt_env_series(ch: int) -> str:
+        return f'PLT_ENV_CH{ch}'
 
     @staticmethod
     def plt_trend_series(ch: int) -> str:
