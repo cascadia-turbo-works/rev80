@@ -18,13 +18,24 @@ from rev80.scope_sensor import ScopeSensor
 log = rev80.get_logger("collector")
 
 
-def _write_channel_group(h5_grp, ch: int, sample: 'rev80.VibeSample') -> None:
+def _write_channel_group(h5_grp, ch: int, sample: 'rev80.VibeSample',
+                         compression: str | None = None,
+                         compression_opts: int | None = None) -> None:
     """Write one VibeSample's mV data into an h5py group.
 
-    Used by both DataCollector.save_data() and MonitorWriterThread.
+    THE single channel-group writer, used by both DataCollector.save_data()
+    and MonitorWriterThread. These were previously two separate functions that
+    had silently diverged: the monitor copy wrote no validity flags at all, so
+    every monitor session recorded clipped and rate-degraded captures as though
+    they were clean. Keep them unified.
     """
     cg = h5_grp.create_group(str(ch))
-    cg.create_dataset('data', data=np.asarray(sample.data, dtype=np.float64))
+    kw = {}
+    if compression is not None:
+        kw['compression'] = compression
+        if compression_opts is not None:
+            kw['compression_opts'] = compression_opts
+    cg.create_dataset('data', data=np.asarray(sample.data, dtype=np.float64), **kw)
     cg.attrs['timestamp']  = sample.timestamp
     cg.attrs['rel_time']   = float(sample.rel_time)
     cg.attrs['samplerate'] = float(sample.samplerate)
@@ -730,8 +741,20 @@ class DataCollector:
             if result is None:
                 continue
             if self.is_streaming:
-                self.update_trend(ch, result.rel_time,
-                                  sample.overall_ampl_by_integration_order)
+                # A clipped or rate-degraded frame is not a measurement. Trending
+                # it records a step change that never happened on the machine,
+                # and the anomaly detector then fires a burst on it — the classic
+                # spurious-alarm mechanism. The frame is still returned for
+                # display (flagged), just never trended.
+                if result.overflow or result.degraded:
+                    log.debug(
+                        f'ch={ch} frame at rel_time={result.rel_time:.3f}s excluded '
+                        f'from trend (overflow={result.overflow}, '
+                        f'degraded={result.degraded})'
+                    )
+                else:
+                    self.update_trend(ch, result.rel_time,
+                                      sample.overall_ampl_by_integration_order)
             results.append(result)
         return results
 
@@ -1006,9 +1029,15 @@ class DataCollector:
             ch   = int(ch_str)
             data = np.ascontiguousarray(cg["data"][()], dtype=np.float64)
             unit = "mV" if version >= 4 else ch_units.get(ch, "mV")
+            # _write_channel_group has always stored these; they were simply
+            # never read back, so every reloaded file looked clean no matter
+            # what happened during capture. Older files predate the attrs.
+            overflow = bool(cg.attrs.get("overflow", False))
+            degraded = bool(cg.attrs.get("degraded", False))
             frame_samples[ch] = rev80.VibeSample(
                 status=status, _timestamp=timestamp, samplerate=samplerate,
-                unit=unit, overflow=False, data=data, rel_time=rel_time,
+                unit=unit, overflow=overflow, degraded=degraded,
+                data=data, rel_time=rel_time,
             )
         return frame_samples
 

@@ -346,6 +346,10 @@ class PicoScopeStream:
         self._last_data_time    = 0.0
         # Channels already warned about overflow this stream; cleared on start/recover
         self._overflow_warned: set[int] = set()
+        # Overflow bits are latched across the accumulation window: a callback
+        # can raise overflow without completing a block, and that clipping
+        # still corrupts the block it lands in. Cleared when a block is emitted.
+        self._overflow_latch: int = 0
 
         # Streaming-rate watchdog state (detects sustained under-delivery —
         # see _poll_loop and _streaming_callback).
@@ -382,6 +386,7 @@ class PicoScopeStream:
         self._stream_start    = time.monotonic()
         self._last_data_time  = time.monotonic()
         self._overflow_warned = set()   # reset per-channel overflow inhibit on each stream start
+        self._overflow_latch = 0
 
         # Reset streaming-rate watchdog state
         self._rate_window_samples = 0
@@ -690,6 +695,12 @@ class PicoScopeStream:
         # decimated output. Checked periodically in _poll_loop.
         self._rate_window_samples += noOfSamples
 
+        # Latch overflow for the block currently being accumulated. Without
+        # this, clipping reported by a callback that does not happen to
+        # complete a block was silently discarded, and the block it corrupted
+        # was emitted flagged clean.
+        self._overflow_latch |= int(overflow)
+
         # Log ADC overflow (signal clipping) once per channel per stream.
         # overflow is a bitmask: bit n set → channel n clipped.
         if overflow:
@@ -753,11 +764,15 @@ class PicoScopeStream:
             block = antialias_decimate(raw_block, self._effective_osr)
 
             rel_time = self._last_data_time - self._stream_start
-            status   = 'OVERFLOW' if overflow else 'OKAY'
+            # Consume the latch: it covers every callback that contributed to
+            # this block, not just the one that happened to complete it.
+            block_overflow = self._overflow_latch
+            self._overflow_latch = 0
+            status   = 'OVERFLOW' if block_overflow else 'OKAY'
 
             samp = {
                 'status':        status,
-                'overflow_mask': int(overflow),  # bitmask: bit n set → Ch n clipped
+                'overflow_mask': int(block_overflow),  # bitmask: bit n set → Ch n clipped
                 'rel_time':      rel_time,
                 'timestamp':     datetime.now(),
                 'unit':          ['mV'] * N,
