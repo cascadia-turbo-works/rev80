@@ -15,13 +15,16 @@ config.py seeds defaults that the GUI then silently rewrote:
     10-minute logging interval to one hour.
 """
 
+from types import SimpleNamespace
 import pytest
 
 import rev80.config as cfg
 from rev80.util import (
     ANOMALY_HOOK_LABELS,
     MONITOR_INTERVAL_PRESETS,
+    GUI_ANOMALY_HOOK_TYPES,
     canonical_hook_type,
+    gui_hook_type,
     hook_type_label,
     nearest_interval_preset,
 )
@@ -76,12 +79,65 @@ def test_label_round_trips_through_canonical(canonical, label):
     assert canonical_hook_type(label) == canonical
 
 
+def _save_hook_type(stored_hook_type, widget_value):
+    """Call GUI._hook_type_to_save without standing up a DPG context.
+
+    It touches only self._stored_hook_type, so a stub carrying that attribute
+    exercises the shipped method rather than a paraphrase of it.
+    """
+    from rev80.gui import GUI
+    stub = SimpleNamespace(_stored_hook_type=stored_hook_type)
+    return GUI._hook_type_to_save(stub, widget_value)
+
+
 def test_gui_combo_items_match_labels():
-    """The GUI combo items are exactly the display labels, so every one round-trips."""
-    combo_items = ['RMS', 'Spectral', 'Both']
-    assert combo_items == list(ANOMALY_HOOK_LABELS.values())
+    """The GUI combo items are exactly the display labels of the offered subset.
+
+    The GUI no longer offers every hook type -- 'spectral'/'both' were unwired
+    from the panel (see GUI_ANOMALY_HOOK_TYPES and R39) -- but every item it
+    does show must still round-trip through the label helpers, and every
+    canonical type must still have a label so headless configs stay readable.
+    """
+    combo_items = [ANOMALY_HOOK_LABELS[k] for k in GUI_ANOMALY_HOOK_TYPES]
     for item in combo_items:
         assert hook_type_label(canonical_hook_type(item)) == item
+    for canonical, label in ANOMALY_HOOK_LABELS.items():
+        assert canonical_hook_type(label) == canonical
+
+
+@pytest.mark.parametrize('stored', sorted(ANOMALY_HOOK_LABELS))
+def test_gui_hook_type_clamps_to_something_the_combo_lists(stored):
+    """Never hand the combo a value outside its own item list.
+
+    Setting a DPG combo to an absent item is the S-07 failure mode: it falls
+    back silently and the user never learns the setting was not applied.
+    """
+    assert gui_hook_type(stored) in GUI_ANOMALY_HOOK_TYPES
+
+
+@pytest.mark.parametrize('stored', sorted(ANOMALY_HOOK_LABELS))
+def test_opening_the_gui_dialog_does_not_rewrite_a_headless_hook_type(stored):
+    """Populate-then-save must preserve a hook type the GUI cannot display.
+
+    Headless still offers 'spectral'/'both'. Merely opening the monitor dialog
+    in the GUI -- which clamps them to 'rms' for display -- must not write that
+    stand-in back over the user's configuration.
+    """
+    shown_label = hook_type_label(gui_hook_type(stored))
+    saved = _save_hook_type(stored_hook_type=stored, widget_value=shown_label)
+    assert saved == stored
+
+
+def test_an_explicit_pick_beats_the_preserved_value():
+    """Preservation must only cover the untouched stand-in, not pin the field.
+
+    Constructed so the two rules disagree: 'both' is stored, the widget reads
+    'Spectral'. That is not the value 'both' clamps to, so it can only have
+    come from a deliberate selection and must win.
+    """
+    assert _save_hook_type(stored_hook_type='both', widget_value='Spectral') == 'spectral'
+    # And a type the GUI does offer is always written straight through.
+    assert _save_hook_type(stored_hook_type='rms', widget_value='RMS') == 'rms'
 
 
 # ---------------------------------------------------------------------------

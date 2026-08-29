@@ -33,8 +33,8 @@ __all__ = [
     'SAVEDIR', 'EXT',
     # Monitor mode
     'MONITOR_INTERVAL_PRESETS', 'nearest_interval_preset',
-    'ANOMALY_HOOK_LABELS', 'DEFAULT_ANOMALY_HOOK_TYPE',
-    'canonical_hook_type', 'hook_type_label',
+    'ANOMALY_HOOK_LABELS', 'DEFAULT_ANOMALY_HOOK_TYPE', 'GUI_ANOMALY_HOOK_TYPES',
+    'canonical_hook_type', 'hook_type_label', 'gui_hook_type',
     'DEFAULT_RMS_ALPHA', 'DEFAULT_SPEC_ALPHA',
     # Misc helpers
     'nextpow2', 'parse_sd_status',
@@ -561,11 +561,40 @@ ANOMALY_HOOK_LABELS: dict[str, str] = {
 }
 DEFAULT_ANOMALY_HOOK_TYPE = 'rms'
 
+# Hook types the GUI currently offers. 'spectral' and 'both' are deliberately
+# absent: SpectralThresholdHook triggers on
+#     np.any(|spec - baseline| / baseline > threshold)
+# across every bin in the band, while Welch runs a single segment in every
+# shipped preset (nperseg == blocksize), so each noise-floor bin is
+# chi-squared(2) with a standard deviation equal to its own mean. P(some bin
+# of ~2000 exceeds 1.5x) is ~1.0 on healthy data, which makes consecutive_n a
+# delay rather than a defence. Bins 0 and 1 are additionally hard-zeroed for
+# integration, so on any velocity/displacement channel they deviate by ~1e12
+# and fire permanently.
+#
+# The hook and the headless path are left fully intact -- this restriction is
+# the GUI surface only, and reviving it is a one-line change here. See R39 in
+# doc/PROGRESS.md for the fix-or-remove decision.
+GUI_ANOMALY_HOOK_TYPES: tuple[str, ...] = ('rms',)
+
 
 def canonical_hook_type(value) -> str:
     """Normalise any spelling of a hook type to its canonical lowercase form."""
     key = str(value).strip().lower()
     return key if key in ANOMALY_HOOK_LABELS else DEFAULT_ANOMALY_HOOK_TYPE
+
+
+def gui_hook_type(value) -> str:
+    """Clamp a hook type to one the GUI can actually offer.
+
+    Setting a combo to a value outside its own item list is the S-07 failure
+    mode -- the widget falls back silently and the user never learns their
+    setting was not applied -- so a stored 'spectral'/'both' is mapped to the
+    default for *display* here. Saving preserves the original; see
+    GUI._save_monitor_config.
+    """
+    key = canonical_hook_type(value)
+    return key if key in GUI_ANOMALY_HOOK_TYPES else DEFAULT_ANOMALY_HOOK_TYPE
 
 
 def hook_type_label(value) -> str:

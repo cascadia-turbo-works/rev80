@@ -15,10 +15,13 @@ from rev80.sample import AcquisitionSettings
 from rev80.scope_sensor import ScopeSensor
 from rev80.scope_sensor_registry import ScopeSensorRegistry
 from rev80.util import (
+    ANOMALY_HOOK_LABELS,
     DEFAULT_RMS_ALPHA,
     DEFAULT_SPEC_ALPHA,
+    GUI_ANOMALY_HOOK_TYPES,
     UNIT_TO_SI,
     canonical_hook_type,
+    gui_hook_type,
     hook_type_label,
     nearest_interval_preset,
 )
@@ -2174,7 +2177,11 @@ class GUI:
                 dpg.set_value(tag, val)
         _sv(ui.MON_ANOM_ENABLED,   bool(anom.get("enabled",    False)))
         # Stored canonically in lowercase; the combo shows the display label.
-        _sv(ui.MON_ANOM_HOOK,      hook_type_label(anom.get("hook_type", "rms")))
+        # gui_hook_type() clamps a stored 'spectral'/'both' — written by the
+        # headless front end, which still offers them — to something this combo
+        # actually lists. The stored value itself is preserved on save.
+        self._stored_hook_type = canonical_hook_type(anom.get("hook_type", "rms"))
+        _sv(ui.MON_ANOM_HOOK,      hook_type_label(gui_hook_type(self._stored_hook_type)))
         _sv(ui.MON_ANOM_RMS_PCT,      float(anom.get("rms_pct",       10.0)))
         _sv(ui.MON_ANOM_RMS_S,        float(anom.get("rms_s",         3.0)))
         _sv(ui.MON_ANOM_RMS_EWMA_TIME, float(anom.get("rms_ewma_time", 60.0)))
@@ -2197,6 +2204,23 @@ class GUI:
 
         self._on_anom_config_change()
 
+    def _hook_type_to_save(self, widget_value) -> str:
+        """Canonical hook type to persist, without clobbering a headless setting.
+
+        The combo cannot show 'spectral'/'both' (see GUI_ANOMALY_HOOK_TYPES), so
+        a config written by the headless front end loads as 'rms' for display.
+        Writing that back would silently rewrite the user's setting the first
+        time they merely opened this dialog — the S-07 failure mode. If the
+        stored value is one the GUI cannot offer, and the widget still shows the
+        clamped stand-in, keep what was stored.
+        """
+        shown = canonical_hook_type(widget_value)
+        stored = getattr(self, '_stored_hook_type', None)
+        if stored is not None and stored not in GUI_ANOMALY_HOOK_TYPES:
+            if shown == gui_hook_type(stored):
+                return stored
+        return shown
+
     def _save_monitor_config(self) -> None:
         """Persist monitor + anomaly config to acquisition.yaml."""
         def _get(tag, default):
@@ -2218,7 +2242,7 @@ class GUI:
             'compression_level': 4,
             'anomaly': {
                 'enabled':       bool(_get(ui.MON_ANOM_ENABLED,    False)),
-                'hook_type':     canonical_hook_type(_get(ui.MON_ANOM_HOOK, 'RMS')),
+                'hook_type':     self._hook_type_to_save(_get(ui.MON_ANOM_HOOK, 'RMS')),
                 'rms_pct':       float(_get(ui.MON_ANOM_RMS_PCT,        10.0)),
                 'rms_s':         float(_get(ui.MON_ANOM_RMS_S,          3.0)),
                 'rms_ewma_time': float(_get(ui.MON_ANOM_RMS_EWMA_TIME,  60.0)),
@@ -2466,6 +2490,12 @@ class GUI:
                     burst_duration_s     = burst_dur,
                 ))
 
+            # Unreachable from the GUI while GUI_ANOMALY_HOOK_TYPES excludes
+            # 'spectral'/'both': the combo cannot produce them and a stored value
+            # is clamped on load. Kept rather than deleted so this builder stays
+            # shape-compatible with the headless copy, which still offers the
+            # hook, and so tests/test_anomaly_hook_build.py keeps checking both
+            # copies for drift. Delete both together if R39 lands on "remove".
             if hook_type in ('spectral', 'both'):
                 fmin_v      = float(_get(ui.MON_ANOM_SPEC_FMIN, 0.0))
                 fmax_v      = float(_get(ui.MON_ANOM_SPEC_FMAX, 0.0))
@@ -3178,16 +3208,18 @@ class GUI:
                             )
                             _hook_combo = dpg.add_combo(
                                 label="Hook",
-                                items=["RMS", "Spectral", "Both"],
+                                items=[ANOMALY_HOOK_LABELS[k] for k in GUI_ANOMALY_HOOK_TYPES],
                                 tag=ui.MON_ANOM_HOOK,
-                                default_value="RMS",
+                                default_value=ANOMALY_HOOK_LABELS[GUI_ANOMALY_HOOK_TYPES[0]],
                                 callback=self._on_anom_config_change,
                                 width=_mon_w,
                             )
                             _tip(_hook_combo,
                                  "RMS: monitors overall vibration level. "
-                                 "Spectral: monitors the frequency-domain shape. "
-                                 "Both: either detector can trigger a burst independently.")
+                                 "The Spectral detector is temporarily unavailable here — it "
+                                 "fires on essentially every healthy frame, so it was unwired "
+                                 "from this panel pending a rework (see R39). It is unchanged "
+                                 "in the headless front end.")
 
                             with dpg.group(tag=ui.MON_ANOM_RMS_GROUP):
                                 dpg.add_text("RMS settings", color=_c("ON_SURFACE"))
