@@ -220,6 +220,20 @@ class DataCollector:
         return (bool(self.config.highpass_enabled), float(self.config.highpass_fc),
                 int(self.config._BUTTER_ORDER), float(samplerate))
 
+    def highpass_knee_hz(self, samplerate: float) -> float:
+        """The -3 dB corner the high-pass is actually designed at.
+
+        `config.highpass_fc` is the *declared band edge* -- the frequency at
+        which the response must still be within passband tolerance -- not the
+        knee. Designing the Butterworth at the edge put -3 dB (x0.707) exactly
+        on it, so the instrument read 29% low at the one frequency ISO 2954
+        names as the bottom of its declared band. The knee is therefore placed
+        below the edge; see _dsp.butter_knee_for_edge for the derivation.
+        """
+        return _dsp.butter_knee_for_edge(
+            float(self.config.highpass_fc), int(self.config._BUTTER_ORDER)
+        )
+
     def _highpass_sos(self, samplerate: float) -> 'np.ndarray | None':
         """Butterworth SOS for the current config, recomputed only when it changes."""
         key = self._filter_key(samplerate)
@@ -227,8 +241,11 @@ class DataCollector:
             return None
         cached = self._hp_sos_cache.get(key)
         if cached is None:
+            knee = self.highpass_knee_hz(samplerate)
+            if not (0.0 < knee < samplerate / 2.0):
+                return None
             cached = scipy.signal.butter(
-                self.config._BUTTER_ORDER, self.config.highpass_fc,
+                self.config._BUTTER_ORDER, knee,
                 btype='highpass', fs=samplerate, output='sos',
             )
             self._hp_sos_cache.clear()      # only ever one live config
@@ -637,6 +654,22 @@ class DataCollector:
         hann_w, hann_gain = _dsp.hann_taper(N)
         rfft_hann = np.fft.rfft(filtered_mv * hann_w)
 
+        # The declared measurement band. Everything the overall and the
+        # displayed waveform are built from is restricted to it.
+        #
+        # Before this, the overall was the RMS of the whole filtered block, so
+        # its band ran to fs/2 -- 1.28x to 2.56x maxfreq depending on where the
+        # power-of-two rounding in AcquisitionSettings.samplerate lands, and
+        # 2.048x at the 500/1000/2000 Hz presets. F-9 had already truncated the
+        # *spectrum* at maxfreq (step 6), so the number on the result card and
+        # the picture beside it described different bands. Content the user had
+        # explicitly excluded via F_max still reached the trend: 2 g RMS at
+        # 1500 Hz outside a 1000 Hz F_max inflated reported overall velocity by
+        # +25%, enough to move a machine across an ISO 20816 zone boundary on a
+        # reading that should never have included it.
+        band_fmin, band_fmax = config.band
+        band = _dsp.band_mask(freq_td, band_fmin, band_fmax)
+
         # ── 2. Welch PSD in mV² — compute once, cache on sample ──────
         # binsize and samplerate BOTH change the transform, so both belong in
         # the key. Without them, switching 2 Hz -> 0.5 Hz bins returned the
@@ -644,9 +677,13 @@ class DataCollector:
         # quadrupled the resolution and nothing had changed. Masked while
         # streaming (each new VibeSample starts with psd_mv=None), so it bit in
         # browse/offline mode and after loading a file.
+        # The band belongs in the key for the same reason binsize and samplerate
+        # do (M-09): the cached overalls are computed over it, so a band change
+        # with a stale cache silently returns the previous band's number.
         psd_key = (config.fft_window, config.welch_overlap,
                    config.highpass_enabled, config.highpass_fc,
-                   config.binsize, sample.samplerate)
+                   config.binsize, sample.samplerate,
+                   band_fmin, band_fmax)
         if sample.psd_mv is None or sample._psd_config_key != psd_key:
             # Segment = the whole block, so the computed spectrum matches the
             # line count and bin width the UI states. See config.nperseg.
@@ -671,13 +708,30 @@ class DataCollector:
             # other order integrates or differentiates in the frequency domain
             # and so runs on the Hann-tapered transform, with the window's power
             # gain divided back out to leave the RMS unbiased.
+            # All five orders now run the same way: Hann taper, band mask,
+            # back to the time domain, RMS with the window's power gain divided
+            # out. Order 0 used to skip the taper, on the grounds that a
+            # passthrough performs no transform-domain multiply and so has no
+            # wrap discontinuity to suppress. Band-limiting removes that
+            # premise -- the mask IS a transform-domain multiply, and therefore
+            # a circular convolution in time, with exactly the wrap sensitivity
+            # the taper exists to control.
+            #
+            # An un-tapered transform plus Parseval was measured as the
+            # alternative. It is exact for in-band content but its band edge is
+            # a rectangular window's, with -13 dB first sidelobes: a 3x tone at
+            # 30 Hz against a 100 Hz lower edge leaked in at only -22 dB,
+            # inflating the overall by +2.7%. Hann rejects the same tone by
+            # -84 dB, and -100 to -144 dB in the other cases measured, at a
+            # cost of 4.9e-4 worst-case in-band error over the preset grid.
+            # Band rejection is what an instrument needs here; the fifth
+            # decimal place is not.
+            masked_hann = np.where(band, rfft_hann, 0.0)
             for i, n_ord in enumerate(range(-2, 3)):
                 if n_ord == 0:
-                    sample.overall_ampl_by_integration_order[i] = float(
-                        np.sqrt(np.mean(np.square(filtered_mv)))
-                    )
-                    continue
-                time_ord = _dsp.integrate_rfft(rfft_hann, freq_td, n_ord, N)
+                    time_ord = np.fft.irfft(masked_hann, n=N)
+                else:
+                    time_ord = _dsp.integrate_rfft(masked_hann, freq_td, n_ord, N)
                 sample.overall_ampl_by_integration_order[i] = float(
                     np.sqrt(np.mean(np.square(time_ord))) / hann_gain
                 )
@@ -768,24 +822,37 @@ class DataCollector:
         # to match, so it still carries true capture-relative timestamps.
         # Un-truncated, a doubly-integrated 61 Hz tone overshot its true 0-peak
         # amplitude by +1149%; this brings it to +1.47%.
+        # The trace is band-limited to the same band as the overall. Showing a
+        # waveform that still contains content the overall excluded invites the
+        # analyst to reconcile two numbers that were never measuring the same
+        # thing.
         eu_scale = src_si / tgt_si / sensitivity_mv
+        keep        = _dsp.tukey_keep_slice(N)
+        tukey_w     = _dsp.tukey_taper(N)
+        rfft_tukey  = np.where(band, np.fft.rfft(filtered_mv * tukey_w), 0.0)
         if n_steps != 0:
-            keep        = _dsp.tukey_keep_slice(N)
-            tukey_w     = _dsp.tukey_taper(N)
-            rfft_tukey  = np.fft.rfft(filtered_mv * tukey_w)
             time_signal = _dsp.integrate_rfft(rfft_tukey, freq_td, n_steps, N)
             time_signal = time_signal[keep] * eu_scale
             time_vec    = sample.time_vec[keep]
-        else:
-            # Passthrough: no transform, no wrap discontinuity, full record.
+        elif band_fmin <= 0.0 and band_fmax >= samplerate / 2.0:
+            # Passthrough over the whole transform: no masking to do, so return
+            # the full record undisturbed rather than paying the Tukey path's
+            # 50% truncation for nothing.
             time_signal = filtered_mv * eu_scale
             time_vec    = sample.time_vec
+        else:
+            # Passthrough, but band-limited. Masking is a frequency-domain
+            # multiply, so it carries the same circular-wrap sensitivity the
+            # integrated orders have and needs the same overlap-save treatment.
+            time_signal = np.fft.irfft(rfft_tukey, n=N)[keep] * eu_scale
+            time_vec    = sample.time_vec[keep]
 
         return rev80.ChannelResult(
             channel=ch, unit=effective_tgt, overflow=sample.overflow,
             degraded=sample.degraded,
             time_data=time_signal, time_vec=time_vec, samplerate=samplerate,
             freq=freq_hz, spectrum=spectrum_amp, peaks=peaks, overall=overall,
+            band_fmin=band_fmin, band_fmax=band_fmax,
             timestamp=sample._timestamp, rel_time=sample.rel_time, status=sample.status,
         )
 

@@ -100,3 +100,76 @@ def integrate_rfft(rfft_vals: np.ndarray, freq: np.ndarray, n_ord: int,
     if n_ord < 0:
         transfer[1] = 0.0
     return np.fft.irfft(rfft_vals * transfer, n=n_out)
+
+
+# Passband amplitude tolerance at the declared band edge.
+#
+# ISO 2954 requires a broadband vibration-severity instrument to be within
+# +/-10% of the true amplitude across its declared band -- and "across" includes
+# the edges. A Butterworth high-pass designed *at* the declared edge is -3 dB
+# (x0.707) there, i.e. 29% low on the very frequency the standard names, which
+# is why `highpass_fc` is treated as the start of attenuation and the filter's
+# knee is placed below it.
+PASSBAND_TOLERANCE: float = 0.9      # -0.915 dB
+
+
+def butter_knee_for_edge(f_edge: float, order: int,
+                         tolerance: float = PASSBAND_TOLERANCE) -> float:
+    """-3 dB knee that puts an order-N Butterworth high-pass at `tolerance` on `f_edge`.
+
+    For a Butterworth high-pass of order N,
+
+        |H(f)|^2 = (f/fc)^(2N) / (1 + (f/fc)^(2N))
+
+    Setting |H(f_edge)| = A and solving for fc gives
+
+        r  = A^2 / (1 - A^2)
+        fc = f_edge * r ** (-1 / (2N))
+
+    At the shipped order 4 and A = 0.9 this is ``fc = 0.8342 * f_edge`` -- a
+    10 Hz declared edge designs at 8.34 Hz and reads -0.915 dB (x0.900) at
+    10 Hz, against -3.0 dB (x0.707) before.
+
+    Placing the knee lower is only safe because the overall is band-limited in
+    the frequency domain (see DataCollector.process_sample): the mask removes
+    sub-band energy exactly, so the 1/omega**2 blow-up the higher knee was
+    implicitly guarding against cannot reach the integrated result.
+    """
+    if f_edge <= 0:
+        return 0.0
+    a2 = float(tolerance) ** 2
+    r = a2 / (1.0 - a2)
+    return float(f_edge) * r ** (-1.0 / (2 * int(order)))
+
+
+def band_mask(freq: np.ndarray, fmin: float, fmax: float) -> np.ndarray:
+    """Boolean mask selecting the declared band from an rFFT frequency axis.
+
+    Inclusive at both edges so a tone sitting exactly on a bin centre at the
+    edge is retained rather than half-lost to floating-point comparison.
+    """
+    return (freq >= float(fmin)) & (freq <= float(fmax))
+
+
+def band_rms(rfft_vals: np.ndarray, mask: np.ndarray, n: int) -> float:
+    """Exact RMS of the masked band, by Parseval, from an UN-tapered rFFT.
+
+    No window is applied or corrected for. The taper in `hann_taper` exists to
+    stop a wrap discontinuity being amplified by ``(j*omega)**n`` with n < 0;
+    a passthrough does no such multiply, so there is nothing to suppress and a
+    window would only add its own broadening. Restricting an un-tapered
+    transform to a set of bins and summing their power *is* the definition of
+    band RMS, and it reproduces the exact full-band ``sqrt(mean(x**2))`` the
+    passthrough overall used before band-limiting existed.
+
+    The one-sided rFFT double-counts every bin except DC and, for even n, the
+    Nyquist bin -- hence the halving of those two.
+    """
+    power = np.abs(rfft_vals) ** 2
+    weight = np.full(power.shape, 2.0)
+    weight[0] = 1.0
+    if n % 2 == 0 and power.shape[0] > 1:
+        weight[-1] = 1.0
+    total = float(np.sum(power[mask] * weight[mask]))
+    return float(np.sqrt(total)) / n
+

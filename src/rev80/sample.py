@@ -10,6 +10,15 @@ from rev80.peaks import DEFAULT_THRESHOLD_DB as PEAK_THRESHOLD_DB_DEFAULT
 
 log = rev80.get_logger(__name__)
 
+
+def _opt_float(v) -> float | None:
+    """Coerce a config value to float, preserving None (and empty/0 as unset)."""
+    if v is None or v == '':
+        return None
+    f = float(v)
+    return f if f > 0 else None
+
+
 @dataclass
 class AcquisitionSettings:
     """Spectrum acquisition parameters.
@@ -43,7 +52,25 @@ class AcquisitionSettings:
     peak_threshold_db: float = PEAK_THRESHOLD_DB_DEFAULT
     # Butterworth filters (applied per-channel in DataCollector.receive_data)
     highpass_enabled: bool = True
+    # Lower edge of the declared measurement band, and the frequency at which
+    # the high-pass is required to still be within passband tolerance -- NOT
+    # the filter's -3 dB knee, which sits below it. See
+    # DataCollector.highpass_knee_hz().
     highpass_fc: float = 10.0      # Hz
+    # Declared measurement band for the overall amplitude. None means "derive":
+    # highpass_fc (or 0 with the high-pass off) up to maxfreq.
+    #
+    # Before this existed the overall was the RMS of the whole filtered block,
+    # so its band was highpass_fc ... fs/2 -- and fs/2 is 1.28x-2.56x maxfreq
+    # depending on where the power-of-two rounding in `samplerate` lands
+    # (2.048x at the 500/1000/2000 Hz presets). Content the user had explicitly
+    # excluded via F_max still reached the trend: 2 g RMS at 1500 Hz outside a
+    # 1000 Hz F_max inflated reported overall velocity by +25%, enough to move
+    # a machine from ISO 20816 zone B to zone C on a reading that should never
+    # have included it. Overalls were also not comparable across sessions taken
+    # at different F_max, which silently invalidates long-horizon trending.
+    band_fmin: float | None = None
+    band_fmax: float | None = None
     # Frame cache
     cache_frames: int = DEFAULT_CACHE_FRAMES  # depth of the ring cache in DataCollector
 
@@ -69,9 +96,20 @@ class AcquisitionSettings:
 
     @classmethod
     def copy(cls, settings: 'AcquisitionSettings') -> 'AcquisitionSettings':
-        c = cls()
-        c.maxfreq = settings.maxfreq
-        c.binsize = settings.binsize
+        """Duplicate a settings object.
+
+        This used to copy only maxfreq and binsize, silently dropping every
+        other field including all five per-channel dicts (audit H-08). Now it
+        round-trips through to_dict/from_dict for the scalars -- so a field
+        added there is carried here automatically, and cannot be forgotten --
+        and deep-copies the per-channel dicts so the copy is independent.
+        """
+        c = cls.from_dict(settings.to_dict())
+        c.coupling         = settings.coupling
+        c.enabled_channels = list(settings.enabled_channels)
+        for name in ('channel_voltage_ranges', 'channel_couplings', 'channel_names',
+                     'channel_target_units', 'channel_amplitude_modes'):
+            setattr(c, name, dict(getattr(settings, name)))
         return c
 
     def to_dict(self) -> dict:
@@ -88,6 +126,10 @@ class AcquisitionSettings:
             'peak_threshold_db': self.peak_threshold_db,
             'highpass_enabled': self.highpass_enabled,
             'highpass_fc':      self.highpass_fc,
+            # None must survive the round trip: writing the resolved value back
+            # would freeze the F_max in force at save time into the config.
+            'band_fmin':        self.band_fmin,
+            'band_fmax':        self.band_fmax,
             'trend_max_points': self.trend_max_points,
             'cache_frames':     self.cache_frames,
         }
@@ -106,6 +148,8 @@ class AcquisitionSettings:
         if 'peak_threshold_db' in d: obj.peak_threshold_db = float(d['peak_threshold_db'])  # noqa: E701
         if 'highpass_enabled' in d: obj.highpass_enabled = bool(d['highpass_enabled']) # noqa: E701
         if 'highpass_fc'      in d: obj.highpass_fc      = float(d['highpass_fc'])     # noqa: E701
+        if 'band_fmin'        in d: obj.band_fmin        = _opt_float(d['band_fmin'])  # noqa: E701
+        if 'band_fmax'        in d: obj.band_fmax        = _opt_float(d['band_fmax'])  # noqa: E701
         if 'trend_max_points' in d: obj.trend_max_points = int(d['trend_max_points'])  # noqa: E701
         if 'cache_frames'     in d: obj.cache_frames     = int(d['cache_frames'])           # noqa: E701
         return obj
@@ -146,6 +190,36 @@ class AcquisitionSettings:
     @binsize.setter
     def binsize(self, df: float):
         self._df = float(df)
+
+    @property
+    def band_fmin_resolved(self) -> float:
+        """Lower edge of the declared band, in Hz.
+
+        Defaults to the high-pass edge, since content below it has already been
+        attenuated and is not a measurement. Zero when the high-pass is off.
+        """
+        if self.band_fmin is not None:
+            return max(0.0, float(self.band_fmin))
+        return float(self.highpass_fc) if self.highpass_enabled else 0.0
+
+    @property
+    def band_fmax_resolved(self) -> float:
+        """Upper edge of the declared band, in Hz.
+
+        Defaults to maxfreq, and is clamped to it: the span between maxfreq and
+        fs/2 is the anti-alias filter's transition band, measured at -21.8 dB
+        at the folding frequency and effectively 0 dB at fs/2 itself. Content
+        there is not a measurement, which is why F-9 stopped displaying it --
+        and it must not reach the overall by another route.
+        """
+        if self.band_fmax is not None:
+            return min(float(self.band_fmax), float(self._fm))
+        return float(self._fm)
+
+    @property
+    def band(self) -> tuple[float, float]:
+        """The declared band as (fmin, fmax), both resolved."""
+        return self.band_fmin_resolved, self.band_fmax_resolved
 
     @property
     def sampleperiod(self) -> float:
@@ -285,7 +359,26 @@ class ChannelResult:
     freq:       np.ndarray       # (K,) Hz
     spectrum:   np.ndarray       # (K,) amplitude in target unit + amp mode
     peaks:      np.ndarray       # indices into freq / spectrum, descending
-    overall:    float            # broadband amplitude in target unit + amp mode
+    overall:    float            # band amplitude in target unit + amp mode
     timestamp:  datetime
     rel_time:   float
     status:     str
+    # The declared band `overall` was measured over, in Hz. Carried on the
+    # result so a stored number can be compared with another one: an overall
+    # taken over a different band is a different measurement, and before this
+    # existed there was nothing recording which band that was.
+    #
+    # None means "not declared" and appears only on results not built by
+    # process_sample -- synthetic test fixtures, and anything reconstructed
+    # from a file written before the band was stored. It is deliberately not
+    # defaulted to a plausible-looking band, because a wrong band declaration
+    # is worse than an absent one.
+    band_fmin:  float | None = None
+    band_fmax:  float | None = None
+
+    @property
+    def band(self) -> 'tuple[float, float] | None':
+        """The declared band as (fmin, fmax), or None if this result has none."""
+        if self.band_fmin is None or self.band_fmax is None:
+            return None
+        return (self.band_fmin, self.band_fmax)
