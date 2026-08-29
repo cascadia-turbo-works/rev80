@@ -7,6 +7,150 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — round 2: vibration-analysis integrity (2026-08-29)
+
+Second remediation round from the three-discipline audit, addressing the
+vibration-engineering findings the first round did not cover. Round 1 fixed
+*how* the numbers were computed; this round fixes *what they were computed
+over*, and adds the diagnostics an instrument in this class needs.
+
+### Added
+- **`envelope.py`** — envelope (demodulation) analysis, the audit's only
+  "blocks stated purpose" gap. `envelope_spectrum()` band-passes around a
+  structural resonance, takes the Hilbert magnitude, removes the DC term and
+  returns a coherent-gain-corrected amplitude spectrum; `suggest_band()` picks
+  a demodulation band from the frame. A bearing defect's impulses ring a
+  housing resonance at 2–20 kHz and are buried under the 1x in the raw
+  spectrum, but appear as a clean line at the defect rate with ±1x load-zone
+  sidebands in the envelope — months before the broadband overall moves.
+  Verified end to end against the simulated oracle: auto band 2546–5046 Hz
+  against a true 4000 Hz resonance, BPFO expected 325.8 Hz found at 324.0 Hz
+  (within one bin) at **125× SNR**, with the 1x and lower sideband next.
+  New **Envelope** plot tab with band controls and an Auto button.
+- **`_dsp.crest_factor()` / `_dsp.kurtosis()`** and `ChannelResult.crest_factor`
+  / `.kurtosis` — the two impulsiveness scalars a broadband overall averages
+  away entirely. Non-excess kurtosis (Gaussian = 3.0), which is what
+  condition-monitoring practice quotes. Computed on the band-limited displayed
+  trace, never on the Hann-tapered array the overall uses, whose taper is an
+  amplitude envelope that would corrupt any peak statistic. Trended, persisted
+  to HDF5 and to the monitor session, and shown on each result card.
+- **Declared measurement band** — `AcquisitionSettings.band_fmin`/`.band_fmax`
+  with resolved properties, `util.ISO_BAND_PRESETS` (ISO 20816 10–1000 Hz and
+  low-speed 2–1000 Hz), an acquisition-dialog preset combo plus editable edges,
+  `ChannelResult.band_fmin`/`.band_fmax`, HDF5 and monitor-writer persistence,
+  and the band shown on the result card and both trend axes.
+- **`simulation.GenerateBearingVibration()`** — a physically realistic
+  bearing-defect model: impulse train at the defect rate, each impulse ringing
+  a structural resonance, amplitude-modulated at the shaft rate by the load
+  zone, with cumulative slip jitter, and `severity=0` as the healthy negative
+  control. Now the default `SimulatedSensor` source.
+- **`tests/test_declared_band.py`** (46), **`test_bearing_oracle.py`** (20),
+  **`test_diagnostic_scalars.py`** (13), **`test_envelope.py`** (14).
+
+### Fixed
+- **M-06 — the overall was not band-limited.** It was the RMS of the whole
+  filtered block, so its band was `highpass_fc … fs/2`, and fs/2 is 1.28×–2.56×
+  maxfreq depending on where the power-of-two rounding in `samplerate` lands —
+  **2.048× at the 500/1000/2000 Hz presets**. F-9 had already truncated the
+  *spectrum* at maxfreq, so the number on the result card and the picture
+  beside it described different bands, and nothing recorded which. Content the
+  user had explicitly excluded via F_max still reached the trend (+25% on the
+  audit's case, enough to cross an ISO 20816 zone boundary), and overalls were
+  not comparable across sessions taken at different F_max — which silently
+  invalidates long-horizon trending.
+  - All five integration orders now share one masked, Hann-tapered path. Order
+    0 previously skipped the taper, correctly, because a passthrough performs
+    no transform-domain multiply. Band-limiting removes that premise: the mask
+    *is* such a multiply, hence a circular convolution in time.
+  - The un-tapered Parseval alternative was measured and rejected: exact in
+    band, but with a rectangular window's −13 dB sidelobes it let a 3× tone at
+    30 Hz past a 100 Hz edge at only **−22 dB**, inflating the overall +2.70%.
+    Hann rejects it by **−84 dB**, and −100 to −144 dB elsewhere, for 4.9e-4
+    worst-case in-band error.
+  - Hardware (4424A, AWG loopback, band 10–1000 Hz at F_max 2000): 800 Hz
+    +0.0 dB, 950 Hz −0.0 dB, 1000 Hz −3.1 dB, **1100 Hz −58.2 dB**, 1300 Hz
+    −58.6 dB, 1600 Hz −58.9 dB — a measured 58 dB cliff at the declared edge.
+- **ISO 2954 — the high-pass −3 dB point sat on the declared band edge.** A
+  4th-order Butterworth designed *at* 10 Hz reads 29% low at 10 Hz, the very
+  frequency the standard names as the bottom of its declared band.
+  `highpass_fc` is now the declared edge and the knee sits below it at
+  `f_edge * (A²/(1−A²))^(−1/2N)`; at N=4, A=0.9 that is `0.8342 × f_edge`, so
+  a 10 Hz edge designs at 8.34 Hz and reads −0.915 dB at 10 Hz. Safe only
+  because the band mask now removes sub-band energy exactly, so the `1/ω²`
+  blow-up the higher knee implicitly guarded against cannot reach the result.
+  Hardware: 100 Hz +0.00 dB, 20 Hz −0.04 dB, **10 Hz −1.05 dB** (was −3.0),
+  5 Hz −18.40 dB.
+- **M-12 — anti-alias stopband was ~55 dB against an ~80 dB expectation.**
+  `scipy.signal.decimate(ftype='fir')` uses a Hamming kernel; measured
+  **−60.0 dB** worst case, capping usable dynamic range regardless of the ADC
+  resolution negotiated elsewhere. Replaced with a cached Kaiser design
+  (100 dB, 0.20 transition, 259 taps at q=4): **−111.7 dB**, passband flat to
+  1e-4 at F_max. The wider 0.25 transition saves 52 taps but starts eating the
+  passband at F_max. The longer kernel costs nothing at block edges — measured
+  on one block against the analytic RMS, hamming +0.2416% vs kaiser −0.0001%,
+  because the overall's Hann taper already de-weights the edges where the
+  start-up transient lives. Hardware A/B on identical captured samples, q=8:
+  **+10.8 dB** at 2600 Hz and +10.3 dB at 3100 Hz where alias leakage rises
+  above the capture noise floor; below it both kernels sit under the floor.
+- **M-14 — the simulated bearing signal was not a valid oracle.** Ten pure
+  cosines plus white noise, kurtosis ~3, no impulsiveness, no resonance
+  carrier, no sidebands, no slip. Every diagnostic added this round keys on
+  exactly those properties, so it could not have validated any of them: a
+  broken envelope analyser and a correct one both return "nothing here" on ten
+  pure cosines. Also fixed the operator-precedence bug —
+  `int(freqs[-1] // bearing_multiple*running_rate)` binds left to right, giving
+  ~5000× too many iterations with every out-of-range harmonic collapsing onto
+  the last bin via `argmin`; extracted as `bearing_harmonic_count()` so the two
+  loops needing this arithmetic cannot disagree again.
+  - Two constants set by measurement, not from the textbook. **`resonance_q`**:
+    what governs impulsiveness is ring-down time over impulse period, and at
+    the textbook Q=40 the ring-down is *longer* than the gap between impulses,
+    so kurtosis reads 3.08 against a healthy 3.09 — the fault is undetectable.
+    Q=8 gives τ/period 0.21 and separates 5.28 from 3.09. **Harmonic phase**: a
+    single shared phase made healthy kurtosis swing 2.03–4.00 across seeds on
+    nothing but how the cosines lined up, overlapping the faulted range;
+    independent phases are both more physical and stable.
+  - The healthy control is correctly *sub-Gaussian* (1.54–3.04), not Gaussian:
+    a machine dominated by running-speed harmonics genuinely has kurtosis
+    below 3.
+- **S-12 — `SimulatedSensor` died silently above two channels.** `simulated()`
+  ships a 2-element `scale` while the generator emits one column per enabled
+  channel, so three channels raised a broadcast `ValueError` inside `_stream`,
+  which had no `try/except`: the thread died while `_running` stayed set and
+  `is_streaming` reported a healthy stream producing nothing, indefinitely. The
+  scale is now fitted to the data, `_stream` is guarded and clears `_running`
+  in a `finally`, and `_sample()` emits exactly one column per enabled channel
+  (the old `max(..., N_CHANNELS)` floor gave single-channel configs a phantom
+  second channel).
+- **H-08 — `AcquisitionSettings.copy()`** copied only maxfreq and binsize,
+  silently dropping every other field including all five per-channel dicts. It
+  now round-trips through `to_dict`/`from_dict`, so a field added there cannot
+  be forgotten here.
+
+### Changed
+- **The spectral anomaly hook is unwired from the GUI panel**
+  (`GUI_ANOMALY_HOOK_TYPES = ('rms',)`). It fires on essentially every healthy
+  frame: it triggers on `np.any(|spec − baseline| / baseline > threshold)`
+  across every bin while Welch runs a single segment in every shipped preset,
+  so each noise-floor bin is χ²(2) with a standard deviation equal to its own
+  mean and P(some bin of ~2000 exceeds 1.5×) is ~1.0 — `consecutive_n` is a
+  delay, not a defence. Bins 0 and 1 are hard-zeroed for integration, so on any
+  velocity/displacement channel they deviate by ~1e12 and fire permanently. The
+  hook, the config schema and the headless front end are untouched, and a
+  stored `spectral`/`both` is preserved rather than rewritten when the dialog
+  is merely opened. Tracked for a fix-or-remove decision as **R39**.
+- Stream pacing moved out of `GenerateBearingVibration_TemporalMethod` — a
+  signal generator should not contain a `time.sleep` — into
+  `SimulatedSensor._stream`, which paces against a deadline so the block rate
+  stays honest when generation is slow.
+- `doc/PROGRESS.md` gains **R34–R38** (standards conformance), **R39** and
+  **R40**. R40 records that IEPE bias monitoring is **not achievable on this
+  hardware**: the coupler has a DC blocking capacitor so the bias never reaches
+  the scope on either coupling setting, and the 4000A ranges only to ±20 V
+  against a 24 V supply, so even a direct pre-cap tap would over-range.
+
+---
+
 ## [Unreleased] — hotfix/claude-ultrareview (2026-08-29)
 
 Integration branch for the three-discipline audit remediation. Sections for the
