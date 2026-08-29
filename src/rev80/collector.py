@@ -265,9 +265,8 @@ class DataCollector:
           re-filtered because the config changed after capture. These are NOT
           a continuous stream and are re-processed out of order, so no state
           may be carried between them or replay stops being deterministic.
-          The filter is instead seeded with sosfilt_zi * x[0], the steady state
-          for a constant input at the block's first sample, which removes the
-          step transient without needing any history.
+          The filter is instead seeded from the block's DC content — see
+          _seed_zi.
         """
         sos = self._highpass_sos(samplerate)
         if sos is None:
@@ -281,13 +280,48 @@ class DataCollector:
                 if self._hp_zi_key != key:
                     self._hp_zi.clear()
                 self._hp_zi_key = key
-                zi = scipy.signal.sosfilt_zi(sos) * x[0]
+                zi = self._seed_zi(sos, x)
             y, self._hp_zi[ch] = scipy.signal.sosfilt(sos, x, zi=zi)
             return y
 
-        zi = scipy.signal.sosfilt_zi(sos) * x[0]
-        y, _ = scipy.signal.sosfilt(sos, x, zi=zi)
+        y, _ = scipy.signal.sosfilt(sos, x, zi=self._seed_zi(sos, x))
         return y
+
+    @staticmethod
+    def _seed_zi(sos: np.ndarray, x: np.ndarray) -> np.ndarray:
+        """Initial filter state for a block with no usable history.
+
+        Seeded from the block MEAN, not from x[0]. scipy's documented idiom is
+        sosfilt_zi(sos) * x[0], which is correct when the first sample
+        represents the signal's baseline — true for a step response, false for
+        anything oscillatory. A vibration block is a waveform swinging about
+        its DC level, so x[0] is an arbitrary point on that swing, and seeding
+        with it tells the high-pass that the signal has been sitting at that
+        value forever. The filter then decays a step that was never there.
+
+        Measured on four consecutive real captures (PicoScope 4424A, 447.3 Hz
+        loopback tone, 1 Vpp, fs=8333.25, 10 Hz high-pass). Block mean was
+        -0.06..-0.21 mV in every block — the true DC — while x[0] ranged over
+        36..305 mV. Error against a fully-settled continuous-filter reference:
+
+            order          zi * x[0]        zi * mean(x)     warm-up pass
+            acceleration     +0.39%           -0.00%           +0.00%
+            velocity        +23.01%           -0.06%           -0.07%
+            displacement  +4297.20%           -2.22%          +61.10%
+            waveform         57.63%            0.51%            6.37%
+
+        (worst block shown per row.) A warm-up pass — filtering the block once
+        and reusing its final state as the initial state — was also tried and
+        is measurably WORSE than the mean, because it imposes a periodic
+        assumption the block does not satisfy.
+
+        Residual displacement error on an isolated block is irreducible: at
+        447 Hz the doubly-integrated result is dominated by near-DC noise whose
+        continuation simply is not present in a single block. It only affects
+        block 0 of a stream and replayed frames; once state is carried, blocks
+        1+ match the settled reference to +-0.000%.
+        """
+        return scipy.signal.sosfilt_zi(sos) * float(np.mean(x))
 
     def filtered_data_for(self, ch: int, sample: 'rev80.VibeSample') -> np.ndarray:
         """Highpassed mV for a sample, using the ingestion-time result if valid.

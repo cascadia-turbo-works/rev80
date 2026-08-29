@@ -65,13 +65,33 @@ def make_sample(dc, data: np.ndarray, overflow: bool = False,
     )
 
 
+# Default starting phase for generated tones. Deliberately NOT 0.
+#
+# sin(0) == 0 makes x[0] equal the signal's DC level, which is a degenerate
+# case in exactly the same way bin-centred frequencies are: it happens to be
+# the one starting condition for which a high-pass seeded from x[0] behaves
+# correctly. Real captures do not oblige -- measured on four consecutive
+# PicoScope blocks of a 447.3 Hz loopback tone, x[0] ranged over 36..305 mV
+# while the true block mean was -0.06..-0.21 mV. An earlier version of these
+# tests used phase 0 throughout and passed against a seeding bug that made the
+# first block of every stream read +4297% high in displacement.
+DEFAULT_PHASE = 0.7
+
+
 def tone(dc, freq: float, amp: float = 1.0, offset: float = 0.0,
-         n: int | None = None, start_sample: int = 0) -> np.ndarray:
-    """A pure sine of `amp` (0-peak) at `freq`, sampled at the collector rate."""
+         n: int | None = None, start_sample: int = 0,
+         phase: float = DEFAULT_PHASE) -> np.ndarray:
+    """A pure sine of `amp` (0-peak) at `freq`, sampled at the collector rate.
+
+    `phase` (radians) shifts the start of the record. Amplitude, RMS and the
+    analytic integration results are all phase-independent, so every assertion
+    here holds for any phase -- which is precisely why the tests must not all
+    share the one phase that is arithmetically convenient.
+    """
     fs = dc.config.samplerate
     n = n if n is not None else dc.config.blocksize
     t = (np.arange(n) + start_sample) / fs
-    return amp * np.sin(2 * np.pi * freq * t) + offset
+    return amp * np.sin(2 * np.pi * freq * t + phase) + offset
 
 
 def true_rms(amp: float, freq: float, n_integrations: int) -> float:
@@ -365,6 +385,84 @@ def test_f4_replay_is_order_independent():
             f'frame {i} replayed out of order gave {reverse[i]:.9f}, '
             f'first pass gave {forward[i]:.9f} — replay is not deterministic'
         )
+
+
+@pytest.mark.parametrize('phase', [0.0, np.pi / 2, np.pi, 2.4, -np.pi / 2])
+@pytest.mark.parametrize('target', ['mm/s2', 'mm/s'])
+def test_f4_seed_independent_of_start_phase(phase, target):
+    """An isolated block must filter correctly whatever sample it starts on.
+
+    Seeding the high-pass with sosfilt_zi * x[0] treats the first sample as the
+    signal's DC baseline. That is true only when the record happens to start at
+    a zero crossing. At phase pi/2 the block starts at the positive peak, and
+    the filter then decays a step that was never in the signal.
+    """
+    dc = make_collector(eu='mm/s2', target_unit=target, maxfreq=2000,
+                        binsize=2.0, highpass_enabled=True, highpass_fc=10.0)
+    freq, amp = 200.0, 1.0
+    n_int = 0 if target == 'mm/s2' else 1
+
+    data = tone(dc, freq, amp, phase=phase)
+    result = dc.process_sample(0, make_sample(dc, data))
+    assert result is not None
+
+    expected = true_rms(amp, freq, n_int)
+    err = rel_err(result.overall, expected)
+    assert abs(err) < 0.01, (
+        f'{target} overall at start phase {phase:.3f} rad (x[0]={data[0]:+.4f}, '
+        f'mean={data.mean():+.4f}): expected {expected:.6e}, got '
+        f'{result.overall:.6e} ({err:+.2%}) -- filter seeded from x[0], not the '
+        f'block DC level'
+    )
+
+
+@pytest.mark.parametrize('phase', [np.pi / 2, -np.pi / 2])
+def test_f4_seed_with_phase_and_dc_offset(phase):
+    """Phase offset AND a real DC offset -- the case seeding exists to handle.
+
+    The seed must track the block's DC content (which the high-pass should
+    reject) and not the waveform excursion on top of it.
+    """
+    dc = make_collector(eu='mm/s2', target_unit='mm/s2', maxfreq=2000,
+                        binsize=2.0, highpass_enabled=True, highpass_fc=10.0)
+    freq, amp, offset = 200.0, 1.0, 1000.0
+
+    data = tone(dc, freq, amp, offset=offset, phase=phase)
+    result = dc.process_sample(0, make_sample(dc, data))
+    assert result is not None
+
+    expected = amp / np.sqrt(2)
+    err = rel_err(result.overall, expected)
+    # Tight: x[0]-seeding errs +1.017% here (the seed misses the DC level by
+    # the waveform excursion), mean-seeding by -0.000%.
+    assert abs(err) < 0.005, (
+        f'overall at phase {phase:.3f} with {offset} mV DC offset '
+        f'(x[0]={data[0]:.3f}, mean={data.mean():.3f}): expected '
+        f'{expected:.6f}, got {result.overall:.6f} ({err:+.2%})'
+    )
+
+
+def test_f4_streaming_first_block_seeded_from_dc_not_first_sample():
+    """Block 0 of a live stream is seeded, not carried -- the seed must be right."""
+    dc = as_streaming(make_collector(eu='mm/s2', target_unit='mm/s2',
+                                     maxfreq=2000, binsize=2.0,
+                                     highpass_enabled=True, highpass_fc=10.0))
+    N = dc.config.blocksize
+    # Start at the positive peak: worst case for x[0]-based seeding.
+    block = tone(dc, 200.0, 1.0, n=N, phase=np.pi / 2)
+    dc.receive_data({
+        'status': 'OKAY', 'overflow_mask': 0, 'rel_time': 0.0,
+        'timestamp': datetime.now(), 'unit': ['mV'], 'channels': [0],
+        'data': block[:, np.newaxis], 'samplerate': dc.config.samplerate,
+        'degraded': False,
+    })
+    result = dc.process_sample(0, dc.data['frame_cache'][-1][0])
+    expected = 1.0 / np.sqrt(2)
+    err = rel_err(result.overall, expected)
+    assert abs(err) < 0.01, (
+        f'first streaming block starting at the peak: overall={result.overall:.6f}, '
+        f'expected {expected:.6f} ({err:+.2%})'
+    )
 
 
 def test_f4_replay_has_no_startup_transient():
