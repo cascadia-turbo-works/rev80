@@ -18,17 +18,11 @@ _QUEUE_WARN_DEPTH: int = 50
 _FILE_VERSION: int = 5
 
 
-def _write_channel_group(h5_grp, ch: int, sample,
-                         compression: str = 'gzip',
-                         compression_opts: int = 4) -> None:
-    """Write one VibeSample's mV data into an h5py group named str(ch)."""
-    cg = h5_grp.create_group(str(ch))
-    cg.create_dataset(
-        'data',
-        data=np.asarray(sample.data, dtype=np.float64),
-        compression=compression,
-        compression_opts=compression_opts,
-    )
+# Deliberately the same function DataCollector.save_data uses, not a copy.
+# The previous local copy had drifted and wrote no overflow/degraded attrs,
+# so monitor sessions stored clipped captures indistinguishable from clean
+# ones. Importing it is what keeps the two write paths honest.
+from rev80.collector import _write_channel_group  # noqa: E402
 
 
 def _compute_overall_peaks(results: list) -> tuple[str, str]:

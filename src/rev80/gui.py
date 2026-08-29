@@ -102,6 +102,29 @@ _CH_COLORS = [
 
 # Spectrum dialog display labels — index-aligned with preset lists
 _MAXFREQ_LABELS = [f"{int(f)} Hz" for f in rev80.MAXFREQ_PRESETS]
+
+
+def derive_acquisition_preview(maxfreq: float, binsize: float) -> dict:
+    """Derived acquisition values for the settings dialog preview.
+
+    Delegates to AcquisitionSettings rather than recomputing. The dialog used
+    to duplicate the derivation and got it wrong — nextpow2(2 * maxfreq)
+    instead of nextpow2(2.56 * maxfreq) — so at the default F_max=2000 it
+    advertised 4.1 kS/s, 2049 lines, 1.000 s and half the true memory while
+    the instrument actually ran at 8.2 kS/s, 4097 lines and 0.500 s. Wrong for
+    the 500/1000/2000 Hz presets. Never duplicate the formula.
+    """
+    cfg = rev80.AcquisitionSettings()
+    cfg.maxfreq = maxfreq
+    cfg.binsize = binsize
+    return {
+        'samplerate': cfg.samplerate,
+        'blocksize':  cfg.blocksize,
+        'n_fft_bins': cfg.n_fft_bins,
+        'acq_time':   cfg.acquisition_period,
+        'mem_bytes':  cfg.memory_bytes,
+        'binsize_actual': cfg.binsize_actual,
+    }
 _BINSIZE_LABELS = [f"{b} Hz/bin" for b in rev80.BINSIZE_PRESETS]
 
 # Welch FFT window options (scipy.signal.welch 'window' argument strings)
@@ -350,6 +373,12 @@ class GUI:
             return
         time = result.time_vec * 1000.0  # convert s → ms (axis label is "Time, ms")
         signal = result.time_data
+        # Integrated/differentiated traces cover only the middle of the block
+        # (overlap-save — see collector.process_sample step 8), so the trace no
+        # longer necessarily starts at t=0. Remember where it does start so the
+        # fixed autoscale window lands on data rather than on empty axis.
+        if len(time):
+            self._last_time_x0_ms = float(time[0])
         dpg.set_value(ui.plt_time_series(ch), [time.tolist(), signal.tolist()])
 
     def _update_freq_plot(self, result: rev80.ChannelResult, ch: int):
@@ -738,12 +767,18 @@ class GUI:
         fs_ks = cfg.samplerate / 1000
         t_col = cfg.acquisition_period
         hp = f"HP {cfg.highpass_fc:.0f} Hz" if cfg.highpass_enabled else "HP off"
-        aa = f"AA {cfg.samplerate / 2:.0f} Hz"
+        # Label F_max, not fs/2. Calling fs/2 the "AA" frequency read as a spec
+        # the instrument does not meet: measured alias rejection at the
+        # frequency folding into the top of the displayed band is -21.8 dB, and
+        # effectively 0 dB at fs/2. The band above F_max is a guard band and is
+        # no longer displayed at all (see collector.process_sample step 6).
+        fmax_lbl = f"F_max {cfg.maxfreq:.0f} Hz"
+        # Report the resolution actually delivered, not the one requested.
         info = (
-            f"{cfg.maxfreq:.0f} Hz max  |  {cfg.binsize:.2f} Hz/bin\n"
+            f"{cfg.maxfreq:.0f} Hz max  |  {cfg.binsize_actual:.2f} Hz/bin\n"
             f"{cfg.n_fft_bins} lines  |  {fs_ks:.1f} kS/s\n"
             f"Acq: {t_col:.3f} s  |  {cfg.fft_window}\n"
-            f"{hp}  |  {aa}"
+            f"{hp}  |  {fmax_lbl}"
         )
         if dpg.does_item_exist(ui.SPECTRUM_INFO_TEXT):
             dpg.set_value(ui.SPECTRUM_INFO_TEXT, info)
@@ -776,11 +811,12 @@ class GUI:
             binsize = rev80.BINSIZE_PRESETS[_BINSIZE_LABELS.index(bs_str)]
         except (ValueError, IndexError):
             binsize = self.collector.config.binsize
-        samplerate = rev80.nextpow2(int(2 * maxfreq))
-        blocksize = rev80.nextpow2(int(samplerate / binsize))
-        n_fft_bins = blocksize // 2 + 1
-        acq_time = blocksize / samplerate
-        mem_bytes = blocksize * 8
+        derived    = derive_acquisition_preview(maxfreq, binsize)
+        samplerate = derived['samplerate']
+        blocksize  = derived['blocksize']
+        n_fft_bins = derived['n_fft_bins']
+        acq_time   = derived['acq_time']
+        mem_bytes  = derived['mem_bytes']
 
         cache_frames = (
             int(dpg.get_value(ui.ACQ_DLG_CACHE_FRAMES))
@@ -887,6 +923,7 @@ class GUI:
     # so a typical 60 Hz fundamental fills the trace legibly on autoscale.
     _TIME_WINDOW_RANGE_MS: float = 300.0
     _TIME_WINDOW_OFFSET_MS: float = 200.0
+    _last_time_x0_ms: float = 0.0   # start of the most recently plotted trace
 
     def _autoscale_plots(self, sender=None, data=None):
         """Scale all plot axes to sensible initial bounds.
@@ -896,12 +933,14 @@ class GUI:
         afterwards.  Axes scaled with fit_axis_data are inherently one-shot and
         don't need unlocking.
         """
-        # Time Series X: fixed window for legibility (not fit-to-data)
+        # Time Series X: fixed window for legibility (not fit-to-data), anchored
+        # to where the trace actually begins.
         if self.collector.config.acquisition_period > 0.5 and dpg.does_item_exist(ui.PLT_SAMPLE_AX_TIME):
+            start = getattr(self, '_last_time_x0_ms', 0.0) + self._TIME_WINDOW_OFFSET_MS
             dpg.set_axis_limits(
                 ui.PLT_SAMPLE_AX_TIME,
-                self._TIME_WINDOW_OFFSET_MS,
-                self._TIME_WINDOW_OFFSET_MS + self._TIME_WINDOW_RANGE_MS,
+                start,
+                start + self._TIME_WINDOW_RANGE_MS,
             )
         else:
             # Acq period too small. Fit whole axis

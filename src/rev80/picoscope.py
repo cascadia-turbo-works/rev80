@@ -5,6 +5,7 @@
 #   PicoScopeStream      — streaming thread that replaces sounddevice.InputStream
 
 import ctypes
+import math
 import threading
 import time
 from datetime import datetime
@@ -338,9 +339,7 @@ class PicoScopeStream:
         # under STREAMING_CEILING_HZ at this target rate (see module docstring
         # comment above STREAMING_CEILING_HZ for the hardware measurements this
         # is based on).
-        self._effective_osr = max(1, int(min(
-            OSR_TARGET, STREAMING_CEILING_HZ / config.samplerate,
-        )))
+        self._effective_osr = self._choose_osr(config.samplerate)
 
         # One rolling driver buffer per enabled channel
         self._enabled_channels: list[int] = list(config.enabled_channels)
@@ -369,6 +368,10 @@ class PicoScopeStream:
         self._last_data_time    = 0.0
         # Channels already warned about overflow this stream; cleared on start/recover
         self._overflow_warned: set[int] = set()
+        # Overflow bits are latched across the accumulation window: a callback
+        # can raise overflow without completing a block, and that clipping
+        # still corrupts the block it lands in. Cleared when a block is emitted.
+        self._overflow_latch: int = 0
 
         # Streaming-rate watchdog state (detects sustained under-delivery —
         # see _poll_loop and _streaming_callback).
@@ -405,6 +408,7 @@ class PicoScopeStream:
         self._stream_start    = time.monotonic()
         self._last_data_time  = time.monotonic()
         self._overflow_warned = set()   # reset per-channel overflow inhibit on each stream start
+        self._overflow_latch = 0
 
         # Reset streaming-rate watchdog state
         self._rate_window_samples = 0
@@ -635,11 +639,64 @@ class PicoScopeStream:
             log.debug(f'PicoScope actual raw sample rate: {actual_raw_fs} Hz '
                       f'(requested {raw_samplerate} Hz, osr={self._effective_osr})')
         self._actual_raw_samplerate = actual_raw_fs
-        # _actual_samplerate is the *target* rate reported downstream — always
-        # config.samplerate, regardless of oversampling. Downstream code
-        # (DataCollector, VibeSample, HDF5 persistence) must stay unaware that
-        # oversampling happened.
-        self._actual_samplerate = self.config.samplerate
+        self._actual_samplerate = self._report_samplerate(actual_raw_fs)
+
+    @staticmethod
+    def _choose_osr(samplerate: float) -> int:
+        """Oversample ratio for a target rate, or 1 if none is achievable.
+
+        antialias_decimate() is a no-op at factor 1, so an osr of 1 means the
+        stream has NO anti-alias protection whatsoever. The previous
+        expression, max(1, int(min(OSR_TARGET, CEILING / samplerate))),
+        truncated 1.526 to 1 at F_max=20 kHz and 0.763 to 0 (then clamped to
+        1) at F_max=50 kHz, so both of the top presets ran completely
+        unfiltered — and the 50 kHz case additionally requested 131072 Hz raw,
+        31% above the measured STREAMING_CEILING_HZ, the exact condition the
+        module docstring says makes the driver silently drop most samples
+        while still reporting status='OKAY' with no overflow bit.
+
+        That matters because a general-purpose IEPE accelerometer has a
+        mounted resonance at 25-80 kHz with 20-30 dB of gain there. At
+        F_max=20 kHz an unfiltered 50 kHz component folds to 15536 Hz, inside
+        the displayed band and indistinguishable from real signal.
+
+        MAXFREQ_PRESETS is gated so every offered preset satisfies
+        samplerate * 2 <= STREAMING_CEILING_HZ. This function still degrades
+        gracefully, with a loud warning, for a maxfreq set outside the presets.
+        """
+        osr = int(math.floor(STREAMING_CEILING_HZ / float(samplerate)))
+        osr = min(OSR_TARGET, osr)
+        if osr < 2:
+            log.warning(
+                'ANTI-ALIAS DISABLED: sample rate %g Hz leaves no headroom under '
+                'the %d Hz safe streaming ceiling for even 2x oversampling. '
+                'Frequencies above %g Hz will alias into the displayed band and '
+                'cannot be distinguished from real signal. Reduce F_max.',
+                samplerate, STREAMING_CEILING_HZ, samplerate / 2.0,
+            )
+            return 1
+        return osr
+
+    def _report_samplerate(self, actual_raw_fs: float) -> float:
+        """The true post-decimation sample rate, for everything downstream.
+
+        Oversampling itself *is* hidden from DataCollector / VibeSample / HDF5
+        — that is what dividing by the (exact, integer) decimation ratio does.
+        What must NOT be hidden is the rate the hardware actually ran at: the
+        driver rounds the streaming interval to a whole microsecond and writes
+        back what it used, which is generally not what was requested.
+
+        Reporting config.samplerate instead scaled every displayed frequency by
+        requested/actual. Measured at F_max=2000: requested 32768 Hz raw, driver
+        rounded 30.5 us down to 30 us -> 33333 Hz raw -> 8333.33 Hz decimated,
+        reported as 8192 Hz. A true 100 Hz tone displayed at 98.3 Hz and a
+        60 Hz line read 59.0 Hz, which breaks harmonic-family identification,
+        sideband spacing, and any BPFO/BPFI comparison against a nameplate.
+
+        Returned as a float: the true rate is generally not an integer, and
+        rounding it would reintroduce a (smaller) version of the same error.
+        """
+        return float(actual_raw_fs) / float(self._effective_osr)
 
     # ------------------------------------------------------------------
     # Streaming callback + poll loop (run on background thread)
@@ -660,17 +717,38 @@ class PicoScopeStream:
         # decimated output. Checked periodically in _poll_loop.
         self._rate_window_samples += noOfSamples
 
+        # Latch overflow for the block currently being accumulated. Without
+        # this, clipping reported by a callback that does not happen to
+        # complete a block was silently discarded, and the block it corrupted
+        # was emitted flagged clean.
+        self._overflow_latch |= int(overflow)
+
         # Log ADC overflow (signal clipping) once per channel per stream.
         # overflow is a bitmask: bit n set → channel n clipped.
-        if overflow:
-            for ch in self._enabled_channels:
-                if (overflow & (1 << ch)) and ch not in self._overflow_warned:
-                    log.warning(
-                        f'PicoScopeStream: ADC overflow on Channel {chr(65 + ch)}'
-                    )
-                    self._overflow_warned.add(ch)
-                elif ch in self._overflow_warned:
-                    self._overflow_warned.remove(ch)
+        #
+        # Runs unconditionally, NOT under `if overflow:`. The inhibit is
+        # cleared when a channel stops clipping, and that can only be observed
+        # on a callback where the mask has gone back to zero — gating the loop
+        # on `if overflow` meant a channel that stopped clipping never left the
+        # set, so it was never warned about again for the rest of the stream.
+        for ch in self._enabled_channels:
+            clipping = bool(overflow & (1 << ch))
+            if clipping and ch not in self._overflow_warned:
+                log.warning(
+                    f'PicoScopeStream: ADC overflow on Channel {chr(65 + ch)}'
+                )
+                self._overflow_warned.add(ch)
+            elif not clipping:
+                # Only clear when the channel is genuinely no longer clipping.
+                # The previous `elif ch in self._overflow_warned` fired exactly
+                # when a channel was STILL clipping — the first branch was
+                # False only because the channel was already warned — so it
+                # removed the inhibit and re-armed the warning for the very
+                # next callback. With a 1 ms poll interval that is hundreds of
+                # identical WARNING lines per second into the rotating file
+                # handler, rolling every other diagnostic out of the log during
+                # exactly the run being diagnosed.
+                self._overflow_warned.discard(ch)
 
         # Convert ADC counts → mV for each enabled channel.
         # The driver treats the registered buffer as a circular ring, so
@@ -723,11 +801,15 @@ class PicoScopeStream:
             block = antialias_decimate(raw_block, self._effective_osr)
 
             rel_time = self._last_data_time - self._stream_start
-            status   = 'OVERFLOW' if overflow else 'OKAY'
+            # Consume the latch: it covers every callback that contributed to
+            # this block, not just the one that happened to complete it.
+            block_overflow = self._overflow_latch
+            self._overflow_latch = 0
+            status   = 'OVERFLOW' if block_overflow else 'OKAY'
 
             samp = {
                 'status':        status,
-                'overflow_mask': int(overflow),  # bitmask: bit n set → Ch n clipped
+                'overflow_mask': int(block_overflow),  # bitmask: bit n set → Ch n clipped
                 'rel_time':      rel_time,
                 'timestamp':     datetime.now(),
                 'unit':          ['mV'] * N,
