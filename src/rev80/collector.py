@@ -54,6 +54,13 @@ class DataCollector:
         config: Union[rev80.AcquisitionSettings, None] = None,
     ):
 
+        # Per-channel highpass filter state, carried across consecutive blocks
+        # of one continuous stream (see filter_block). Keyed by channel; reset
+        # on stream start and whenever the filter config changes.
+        self._hp_zi: Dict[int, np.ndarray] = {}
+        self._hp_zi_key: tuple | None = None
+        self._hp_sos_cache: Dict[tuple, np.ndarray] = {}
+
         self.sensor: Union[rev80.VibeSensor, None] = None
         self.stream = None
         self.datadir: Path = data_dir()
@@ -188,6 +195,106 @@ class DataCollector:
             }) for ch in sorted(enabled)
         }
 
+    # ------------------------------------------------------------------
+    # Highpass filtering
+    # ------------------------------------------------------------------
+
+    def reset_filter_state(self) -> None:
+        """Drop carried highpass state (stream start / reconnect / config change)."""
+        self._hp_zi.clear()
+
+    def _filter_key(self, samplerate: float) -> tuple:
+        """Identity of the filter that would be applied at this rate."""
+        return (bool(self.config.highpass_enabled), float(self.config.highpass_fc),
+                int(self.config._BUTTER_ORDER), float(samplerate))
+
+    def _highpass_sos(self, samplerate: float) -> 'np.ndarray | None':
+        """Butterworth SOS for the current config, recomputed only when it changes."""
+        key = self._filter_key(samplerate)
+        if not self.config.highpass_enabled or self.config.highpass_fc >= samplerate / 2.0:
+            return None
+        cached = self._hp_sos_cache.get(key)
+        if cached is None:
+            cached = scipy.signal.butter(
+                self.config._BUTTER_ORDER, self.config.highpass_fc,
+                btype='highpass', fs=samplerate, output='sos',
+            )
+            self._hp_sos_cache.clear()      # only ever one live config
+            self._hp_sos_cache[key] = cached
+        return cached
+
+    def filter_block(self, ch: int, data: np.ndarray, samplerate: float,
+                     stateful: bool) -> np.ndarray:
+        """Highpass one block of mV data.
+
+        Causal (sosfilt), not zero-phase: sosfiltfilt effectively doubles the
+        filter order (forward + backward pass), which resonates badly for a low
+        cutoff relative to a short block (e.g. 10 Hz over a 1 s block — only 10
+        cutoff-cycles of margin). Confirmed on real hardware data: sosfiltfilt
+        overshot the raw signal by 35-45% at the block edges with any padtype.
+
+        But plain `sosfilt(sos, x)` with no initial condition restarts the
+        filter from rest at every block, injecting a startup transient into
+        every frame of a continuous stream. Measured on a 200 Hz tone, block 1
+        of 4, high-pass at 10 Hz:
+
+                                      no zi      steady-state zi + carry
+            waveform peak            +9.41%          -0.00%
+            RMS, 1000 mV DC offset  +14321.74%       -0.00%
+            displacement overall     +19.15%         +0.02%
+            ... with DC offset    +1472786.72%       +0.02%
+
+        Two regimes:
+
+        * ``stateful=True`` — consecutive blocks of one live stream. The final
+          filter state of each block seeds the next, so the boundary is
+          seamless. Only receive_data uses this, exactly once per frame and in
+          order.
+        * ``stateful=False`` — a stored frame replayed from HDF5, or a frame
+          re-filtered because the config changed after capture. These are NOT
+          a continuous stream and are re-processed out of order, so no state
+          may be carried between them or replay stops being deterministic.
+          The filter is instead seeded with sosfilt_zi * x[0], the steady state
+          for a constant input at the block's first sample, which removes the
+          step transient without needing any history.
+        """
+        sos = self._highpass_sos(samplerate)
+        if sos is None:
+            return np.asarray(data, dtype=np.float64).copy()
+
+        x = np.ascontiguousarray(data, dtype=np.float64)
+        if stateful:
+            key = self._filter_key(samplerate)
+            zi = self._hp_zi.get(ch)
+            if zi is None or self._hp_zi_key != key:
+                if self._hp_zi_key != key:
+                    self._hp_zi.clear()
+                self._hp_zi_key = key
+                zi = scipy.signal.sosfilt_zi(sos) * x[0]
+            y, self._hp_zi[ch] = scipy.signal.sosfilt(sos, x, zi=zi)
+            return y
+
+        zi = scipy.signal.sosfilt_zi(sos) * x[0]
+        y, _ = scipy.signal.sosfilt(sos, x, zi=zi)
+        return y
+
+    def filtered_data_for(self, ch: int, sample: 'rev80.VibeSample') -> np.ndarray:
+        """Highpassed mV for a sample, using the ingestion-time result if valid.
+
+        receive_data pre-filters live frames with carried state. If that cached
+        result was produced by the filter config now in force, reuse it —
+        re-filtering here would be both wasteful and, for a streaming frame,
+        wrong (the state has already moved on). Otherwise the sample is being
+        replayed or the config changed since capture, so filter it statelessly.
+        """
+        key = self._filter_key(sample.samplerate)
+        if sample.filtered_mv is not None and sample._filter_config_key == key:
+            return sample.filtered_mv
+        filtered = self.filter_block(ch, sample.data, sample.samplerate, stateful=False)
+        sample.filtered_mv        = filtered
+        sample._filter_config_key = key
+        return filtered
+
     def update_trend(self, ch: int, rel_time: float, orders: np.ndarray) -> None:
         """Append one timestamped 5-order overall vector (mV RMS) for a channel."""
         if ch not in self.trend:
@@ -310,6 +417,9 @@ class DataCollector:
             return
         if not self.stream:
             return
+        # A new stream is a new continuous signal — drop any filter state
+        # carried over from the previous one.
+        self.reset_filter_state()
         try:
             self.stream.start()
         except Exception as e:
@@ -395,6 +505,12 @@ class DataCollector:
         for i, ch in enumerate(channels):
             col  = min(i, data_arr.shape[1] - 1)
             data = np.ascontiguousarray(data_arr[:, col], dtype=np.float64)
+            # Filter here, at ingestion: this runs exactly once per frame and
+            # in stream order, which is what carrying the filter state across
+            # block boundaries requires. process_sample may be called many
+            # times on the same frame (re-render, unit change) and in any
+            # order when browsing, so it must not advance the state.
+            filtered = self.filter_block(ch, data, samplerate, stateful=True)
             samples[ch] = rev80.VibeSample(
                 status=samp["status"],
                 _timestamp=samp["timestamp"],
@@ -405,6 +521,8 @@ class DataCollector:
                 data=data,
                 rel_time=samp["rel_time"],
                 label=f"Ch{chr(65 + ch)}",
+                filtered_mv=filtered,
+                _filter_config_key=self._filter_key(samplerate),
             )
 
         self._data_callback(samples)
@@ -451,21 +569,11 @@ class DataCollector:
         nyq            = samplerate / 2.0
 
         # ── 1. Butterworth filter ─────────────────────────────────────
-        # Lowpass is retired: mandatory anti-aliasing now happens upstream in
-        # PicoScopeStream, before this function ever sees the data.
-        #
-        # Causal (sosfilt), not zero-phase: sosfiltfilt effectively doubles the
-        # filter order (forward + backward pass), which resonates badly for a
-        # low cutoff relative to a short block (e.g. 10 Hz over a 1s block —
-        # only 10 cutoff-cycles of margin) -- confirmed on real hardware data,
-        # sosfiltfilt overshot the raw signal by 35-45% at the block edges
-        # (any padtype) vs. causal sosfilt's normal ~8-10% transient.
-        filtered_mv = sample.data.copy()
-        order = config._BUTTER_ORDER
-        if config.highpass_enabled and config.highpass_fc < nyq:
-            sos = scipy.signal.butter(order, config.highpass_fc,
-                                      btype='highpass', fs=samplerate, output='sos')
-            filtered_mv = scipy.signal.sosfilt(sos, filtered_mv)
+        # Filtering happens in filter_block(); see there for why the filter is
+        # causal-with-carried-state rather than zero-phase. Streaming frames
+        # arrive pre-filtered from receive_data (state carried across blocks);
+        # replayed frames are filtered here, statelessly.
+        filtered_mv = self.filtered_data_for(ch, sample)
 
         # Frequency-domain integration/differentiation is done on a *tapered*
         # block. The DFT treats the record as periodic, so an un-windowed block
