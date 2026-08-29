@@ -39,6 +39,17 @@ def offbin(dc, nominal: float, frac: float) -> float:
     return nominal + frac * dc.config.binsize_actual
 
 
+def feed(dc, block: np.ndarray) -> None:
+    """Push one block through the ingestion path, as the hardware stream does."""
+    from datetime import datetime
+    dc.receive_data({
+        'status': 'OKAY', 'overflow_mask': 0, 'rel_time': 0.0,
+        'timestamp': datetime.now(), 'unit': ['mV'], 'channels': [0],
+        'data': block[:, np.newaxis], 'samplerate': dc.config.samplerate,
+        'degraded': False,
+    })
+
+
 # ===========================================================================
 # The band is declared, defaulted and persisted
 # ===========================================================================
@@ -365,3 +376,86 @@ def test_antialias_passband_is_not_attenuated():
         edge = len(y) // 8
         amp = np.sqrt(np.mean(y[edge:-edge] ** 2)) * np.sqrt(2)
         assert abs(amp - 1.0) < 0.02, f'{f:.1f} Hz passband amplitude {amp:.4f}'
+
+
+# ===========================================================================
+# The band travels with the data
+# ===========================================================================
+
+def test_band_survives_the_hdf5_round_trip(tmp_path):
+    """A stored overall is uninterpretable without the band it was taken over."""
+    dc = make_collector(eu='mm/s2', target_unit='mm/s', maxfreq=1000, binsize=2.0)
+    dc.config.band_fmin = 10.0
+    dc.config.band_fmax = 500.0
+    feed(dc, tone(dc, 137.3))
+
+    target = tmp_path / 'band.h5'
+    dc.save_data(target)
+
+    dc2 = make_collector(eu='mm/s2', target_unit='mm/s', maxfreq=1000, binsize=2.0)
+    dc2.load_data(target)
+    assert dc2.config.band_fmin == pytest.approx(10.0)
+    assert dc2.config.band_fmax == pytest.approx(500.0)
+
+
+def test_underived_band_survives_the_hdf5_round_trip_as_unset(tmp_path):
+    """None must not come back as a number: that would freeze the saving
+    session's F_max into every future reload of the file."""
+    dc = make_collector(eu='mm/s2', target_unit='mm/s', maxfreq=1000, binsize=2.0)
+    assert dc.config.band_fmin is None
+    feed(dc, tone(dc, 137.3))
+    target = tmp_path / 'noband.h5'
+    dc.save_data(target)
+
+    dc2 = make_collector(maxfreq=5000, binsize=2.0)
+    dc2.load_data(target)
+    assert dc2.config.band_fmin is None
+    assert dc2.config.band_fmax is None
+
+
+def test_monitor_writer_records_the_band_beside_the_overall():
+    from rev80.monitor.writer import _compute_overall_peaks
+
+    dc = make_collector(eu='mm/s2', target_unit='mm/s2', maxfreq=1000, binsize=2.0)
+    dc.config.band_fmin = 10.0
+    dc.config.band_fmax = 500.0
+    r = dc.process_sample(0, make_sample(dc, tone(dc, 137.3)))
+
+    _, _, band_json = _compute_overall_peaks([r])
+    import json
+    assert json.loads(band_json)['0'] == [10.0, 500.0]
+
+
+def test_band_json_is_empty_when_results_carry_no_band():
+    """A ChannelResult built outside process_sample declares no band, and the
+    writer must record that honestly rather than inventing one."""
+    import json
+    from datetime import datetime
+
+    from rev80.monitor.writer import _compute_overall_peaks
+
+    r = vc.ChannelResult(
+        channel=0, unit='mm/s', overflow=False, degraded=False,
+        time_data=np.zeros(4), time_vec=np.zeros(4), samplerate=1000.0,
+        freq=np.zeros(4), spectrum=np.zeros(4), peaks=np.array([], dtype=int),
+        overall=1.0, timestamp=datetime.now(), rel_time=0.0, status='OKAY',
+    )
+    assert r.band is None
+    _, _, band_json = _compute_overall_peaks([r])
+    assert json.loads(band_json) == {}
+
+
+def test_shipped_default_config_declares_no_band():
+    """A fresh install must derive the band, not pin it to today's F_max."""
+    import rev80.config as cfg
+    acq = cfg._BUILTIN_ACQ['acquisition']
+    assert acq['band_fmin'] is None
+    assert acq['band_fmax'] is None
+
+
+def test_default_config_round_trips_the_unset_band():
+    import rev80.config as cfg
+    settings = vc.AcquisitionSettings.from_dict(cfg._BUILTIN_ACQ['acquisition'])
+    assert settings.band_fmin is None
+    assert settings.band_fmax is None
+    assert settings.to_dict()['band_fmin'] is None

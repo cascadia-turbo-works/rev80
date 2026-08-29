@@ -65,7 +65,14 @@ _BUILTIN_ACQ: dict[str, Any] = {
         'fft_window':       'hann',
         'welch_overlap':    0.5,
         'highpass_enabled': True,
+        # The declared lower band edge, and the frequency the high-pass must
+        # still be within tolerance at -- not the filter's -3 dB knee, which
+        # sits below it. See DataCollector.highpass_knee_hz.
         'highpass_fc':      10.0,
+        # Declared measurement band for the overall. null = derive it from
+        # highpass_fc and maxfreq. See util.ISO_BAND_PRESETS.
+        'band_fmin':        None,
+        'band_fmax':        None,
         'trend_max_points': 5000,
         'cache_frames':     15,
     },

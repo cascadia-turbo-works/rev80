@@ -304,11 +304,13 @@ class GUI:
             mode = self._get_amplitude_mode(chs[0]) if chs else "0-P"
             dpg.set_item_label(ui.PLT_FREQ_AX_ACCEL, self._freq_axis_label(unit, chs))
             dpg.set_item_label(ui.PLT_SAMPLE_AX_ACCEL, f"Amplitude, {unit}")
-            dpg.set_item_label(ui.PLT_TREND_AX_OVERALL, f"Overall Vibration, {unit} {mode}")
+            band = self._band_suffix()
+            dpg.set_item_label(ui.PLT_TREND_AX_OVERALL,
+                               f"Overall Vibration, {unit} {mode}{band}")
             for ch in chs:
                 tag = ui.ch_overall_value(ch)
                 if dpg.does_item_exist(tag):
-                    dpg.configure_item(tag, label=f"Overall, {unit} {mode}")
+                    dpg.configure_item(tag, label=f"Overall, {unit} {mode}{band}")
         else:
             # ── Two units: show secondary axes and split channels ─────────
             dpg.show_item(ui.PLT_FREQ_AX_2)
@@ -324,8 +326,11 @@ class GUI:
             dpg.set_item_label(ui.PLT_SAMPLE_AX_ACCEL_2, f"Amplitude, {groups[1][0]}")
             mode0 = self._get_amplitude_mode(groups[0][1][0]) if groups[0][1] else "0-P"
             mode1 = self._get_amplitude_mode(groups[1][1][0]) if groups[1][1] else "0-P"
-            dpg.set_item_label(ui.PLT_TREND_AX_OVERALL, f"Overall, {groups[0][0]} {mode0}")
-            dpg.set_item_label(ui.PLT_TREND_AX_OVERALL_2, f"Overall, {groups[1][0]} {mode1}")
+            band = self._band_suffix()
+            dpg.set_item_label(ui.PLT_TREND_AX_OVERALL,
+                               f"Overall, {groups[0][0]} {mode0}{band}")
+            dpg.set_item_label(ui.PLT_TREND_AX_OVERALL_2,
+                               f"Overall, {groups[1][0]} {mode1}{band}")
             for unit, chs in groups:
                 mode = self._get_amplitude_mode(chs[0]) if chs else "0-P"
                 for ch in chs:
@@ -2068,9 +2073,53 @@ class GUI:
             dpg.set_value(ui.ACQ_DLG_HP_ENABLED, cfg.highpass_enabled)
         if dpg.does_item_exist(ui.ACQ_DLG_HP_FC):
             dpg.set_value(ui.ACQ_DLG_HP_FC, cfg.highpass_fc)
+        if dpg.does_item_exist(ui.ACQ_DLG_BAND_FMIN):
+            # 0 is the "unset" sentinel in the widget; None in the config.
+            dpg.set_value(ui.ACQ_DLG_BAND_FMIN, cfg.band_fmin or 0.0)
+            dpg.set_value(ui.ACQ_DLG_BAND_FMAX, cfg.band_fmax or 0.0)
+            dpg.set_value(ui.ACQ_DLG_BAND_PRESET, self._band_preset_label(cfg))
         if dpg.does_item_exist(ui.ACQ_DLG_CACHE_FRAMES):
             dpg.set_value(ui.ACQ_DLG_CACHE_FRAMES, cfg.cache_frames)
         self._update_acq_derived()
+
+    def _band_suffix(self) -> str:
+        """Compact ' 10-1000 Hz' qualifier for overall labels, or '' if unknown.
+
+        The band is part of what the number means -- two overalls taken over
+        different bands are not comparable -- so it rides on the label rather
+        than only in a tooltip.
+        """
+        cfg = self.collector.config if self.collector else None
+        if cfg is None:
+            return ''
+        lo, hi = cfg.band
+        lo_s = f'{lo:g}' if lo else '0'
+        return f'  {lo_s}-{hi:g} Hz'
+
+    @staticmethod
+    def _band_preset_label(cfg) -> str:
+        """Which band preset, if any, the config's explicit edges correspond to."""
+        if cfg.band_fmin is None and cfg.band_fmax is None:
+            return 'Full band (HP - F_max)'
+        for name, (lo, hi) in rev80.ISO_BAND_PRESETS.items():
+            if (cfg.band_fmin == lo) and (cfg.band_fmax == hi):
+                return name
+        return 'Custom'
+
+    def _on_band_preset(self, sender=None, data=None):
+        """Fill the band edge fields from the chosen preset.
+
+        The edges stay editable afterwards -- picking a preset is a shortcut for
+        typing two numbers, not a mode.
+        """
+        label = dpg.get_value(ui.ACQ_DLG_BAND_PRESET)
+        if label in rev80.ISO_BAND_PRESETS:
+            lo, hi = rev80.ISO_BAND_PRESETS[label]
+        else:
+            lo, hi = 0.0, 0.0          # 'Full band' / 'Custom' -> unset, i.e. derive
+        dpg.set_value(ui.ACQ_DLG_BAND_FMIN, float(lo))
+        dpg.set_value(ui.ACQ_DLG_BAND_FMAX, float(hi))
+        self._on_acq_preview()
 
     def _apply_acq_settings_from_widgets(self):
         """Read acquisition tab widgets and write values into collector.config.
@@ -2099,6 +2148,11 @@ class GUI:
             cfg.highpass_enabled = dpg.get_value(ui.ACQ_DLG_HP_ENABLED)
         if dpg.does_item_exist(ui.ACQ_DLG_HP_FC):
             cfg.highpass_fc = float(dpg.get_value(ui.ACQ_DLG_HP_FC))
+        if dpg.does_item_exist(ui.ACQ_DLG_BAND_FMIN):
+            fmin = float(dpg.get_value(ui.ACQ_DLG_BAND_FMIN))
+            fmax = float(dpg.get_value(ui.ACQ_DLG_BAND_FMAX))
+            cfg.band_fmin = fmin if fmin > 0 else None
+            cfg.band_fmax = fmax if fmax > 0 else None
         if dpg.does_item_exist(ui.ACQ_DLG_CACHE_FRAMES):
             n = max(1, int(dpg.get_value(ui.ACQ_DLG_CACHE_FRAMES)))
             cfg.cache_frames = n
@@ -3040,6 +3094,39 @@ class GUI:
                                 dpg.add_input_float(
                                     label="Hz", tag=ui.ACQ_DLG_HP_FC, default_value=10.0, min_value=0.1, width=100
                                 )
+                            # Control: declared measurement band for the overall.
+                            # Blank/0 means "derive": the highpass edge up to
+                            # F_max. Before this existed the overall spanned
+                            # highpass_fc..fs/2, i.e. up to 2.05x F_max, so it
+                            # included content the user had excluded via F_max
+                            # and was not comparable between two sessions taken
+                            # at different F_max.
+                            _band_items = ['Full band (HP - F_max)'] + list(rev80.ISO_BAND_PRESETS)
+                            _band_cmb = dpg.add_combo(
+                                label="Overall Band", items=_band_items,
+                                tag=ui.ACQ_DLG_BAND_PRESET,
+                                default_value=_band_items[0],
+                                callback=self._on_band_preset, width=_w,
+                            )
+                            self._tooltip(_band_cmb,
+                                "The frequency band the Overall amplitude is measured over, "
+                                "and stored with the data. 'Full band' follows the highpass "
+                                "setting and F_max. The ISO bands are what ISO 20816 zone "
+                                "limits are defined against -- a velocity RMS only means "
+                                "anything against a zone boundary if it was measured over "
+                                "the band that boundary assumes.")
+                            with dpg.group(horizontal=True):
+                                dpg.add_input_float(
+                                    label="min", tag=ui.ACQ_DLG_BAND_FMIN, default_value=0.0,
+                                    min_value=0.0, step=0, format="%.1f",
+                                    callback=self._on_acq_preview, width=90,
+                                )
+                                dpg.add_input_float(
+                                    label="max Hz", tag=ui.ACQ_DLG_BAND_FMAX, default_value=0.0,
+                                    min_value=0.0, step=0, format="%.1f",
+                                    callback=self._on_acq_preview, width=90,
+                                )
+
                             # Control: Frame cache depth
                             dpg.add_separator()
                             dpg.add_text("Recording Length")
