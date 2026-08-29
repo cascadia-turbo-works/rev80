@@ -6,7 +6,6 @@ import shutil
 import threading
 
 import h5py
-import numpy as np
 
 import rev80
 from rev80.monitor.session import MonitorSession
