@@ -92,7 +92,7 @@ class DataCollector:
 
         Returns 'mV' when no ScopeSensor is assigned — without a sensitivity
         value any unit conversion would be nonsensical.
-        Priority when a sensor is present: channel_target_units > sensor.effective_target_unit().
+        Priority when a sensor is present: channel_target_units > sensor.engineering_units.
         """
         scope_sensor = self.scope_sensors.get(ch)
         if scope_sensor is None:
@@ -100,7 +100,7 @@ class DataCollector:
         ch_tu = self.config.channel_target_units.get(ch, "")
         if ch_tu:
             return ch_tu
-        return scope_sensor.effective_target_unit()
+        return scope_sensor.engineering_units
 
     # ------------------------------------------------------------------
     # Stream state

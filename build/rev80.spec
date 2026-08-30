@@ -17,6 +17,7 @@ from PyInstaller.utils.hooks import collect_submodules, collect_data_files, coll
 ROOT = Path(SPECPATH).parent
 DRIVERS_DIR = ROOT / 'drivers'
 LOGGING_YAML = ROOT / 'src' / 'rev80' / 'logging.yaml'
+FONT_DIR = ROOT / 'src' / 'rev80' / 'assets' / 'fonts'
 ICON_FILE = ROOT / 'assets' / 'icons' / 'rev80.ico'
 
 # ── Version ──────────────────────────────────────────────────────────────────
@@ -60,8 +61,19 @@ hidden_imports = [
 
 datas = [
     (str(LOGGING_YAML), 'rev80'),                                  # → sys._MEIPASS/rev80/logging.yaml
-    (str(ROOT / 'assets'), 'assets'),                              # → sys._MEIPASS/assets/
+    (str(ROOT / 'assets'), 'assets'),                              # → sys._MEIPASS/assets/ (icons, etc.)
 ]
+
+# Font now lives under src/rev80/assets/ (package data for pip installs too;
+# see resource_path() in _paths.py) but still lands at the same
+# sys._MEIPASS/assets/fonts/ the frozen build has always used.
+if FONT_DIR.is_dir():
+    datas += [(str(FONT_DIR), 'assets/fonts')]                    # → sys._MEIPASS/assets/fonts/
+else:
+    print(
+        'WARNING: src/rev80/assets/fonts/ not found. '
+        'Run "./scripts/fetch_font.sh" first.'
+    )
 
 # Bundle PicoScope DLLs under drivers/ sub-directory
 if DRIVERS_DIR.is_dir():

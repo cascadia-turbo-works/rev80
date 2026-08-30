@@ -1,7 +1,12 @@
 """Icon registry — CommitMono Nerd Font (Codicons BMP PUA)."""
 from __future__ import annotations
+
 import dearpygui.dearpygui as dpg
+
+import rev80
 from rev80._paths import resource_path
+
+log = rev80.get_logger("icons")
 
 FONT_SIZE = 16  # 12pt @ 96 DPI
 
@@ -46,13 +51,25 @@ _font_tag: int | str | None = None
 
 
 def load() -> int | str:
-    """Register the font with DPG. Idempotent within one DPG context lifetime."""
+    """Register the font with DPG. Idempotent within one DPG context lifetime.
+
+    Falls back to DPG's default font (icon glyphs render as boxes rather
+    than crashing) if the bundled Nerd Font is missing — e.g. a wheel built
+    without running scripts/fetch_font.sh first.
+    """
     global _font_tag
     if _font_tag is not None:
         return _font_tag
-    font_path = str(resource_path('assets/fonts/CommitMonoNerdFont-Regular.otf'))
+    font_path = resource_path('assets/fonts/CommitMonoNerdFont-Regular.otf')
+    if not font_path.exists():
+        log.warning(
+            "Icon font not found at %s — toolbar icons will render as boxes. "
+            "Run scripts/fetch_font.sh and reinstall to fix.", font_path,
+        )
+        _font_tag = 0
+        return _font_tag
     with dpg.font_registry():
-        with dpg.font(font_path, FONT_SIZE) as tag:
+        with dpg.font(str(font_path), FONT_SIZE) as tag:
             dpg.add_font_range_hint(dpg.mvFontRangeHint_Default)
             dpg.add_font_range(0xe000, 0xffff)
     _font_tag = tag
