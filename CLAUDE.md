@@ -62,7 +62,7 @@ rate, it skips to the latest frame — all earlier frames remain in the
 | `util.py` | Constants (`MAXFREQ_PRESETS`, `BINSIZE_PRESETS`), unit taxonomy and SI conversion, amplitude mode scaling, `UI_Elements` tag registry |
 | `sensor.py` | `VibeSensor` dataclass — device metadata; `find()` enumerates PicoScopes; `simulated()` returns test sensor; `connect()` returns the appropriate stream |
 | `picoscope.py` | `FindPicoScope()` enumeration; `PicoScopeStream` acquisition thread — drives the ADC oversampled and applies a mandatory zero-phase anti-alias filter + decimate (`antialias_decimate()`) down to the configured rate; silence watchdog/recovery; a second, independent watchdog flags sustained USB streaming-rate degradation (`.degraded`) without triggering recovery; per-channel coupling and voltage range config; AWG signal generator control |
-| `scope_sensor.py` | `ScopeSensor` dataclass — IEPE sensor metadata: name, sensitivity (mV/EU), engineering units, optional target unit for frequency-domain integration |
+| `scope_sensor.py` | `ScopeSensor` dataclass — IEPE sensor metadata: name, sensitivity (mV/EU), engineering units |
 | `scope_sensor_registry.py` | `ScopeSensorRegistry` — YAML-backed global sensor library (`scope_sensors.yaml`); CRUD by ID/name; loaded from `~/.config/vibechecker/` |
 | `simulation.py` | `SimulatedSensor` (threading-based fake stream) + signal generators (`GenerateTone`, bearing-defect) for offline dev/test |
 | `sample.py` | `AcquisitionSettings` (derived samplerate/blocksize from maxfreq/binsize; per-channel names, target units, amplitude modes, couplings, voltage ranges) + `VibeSample` (HDF5 I/O, `process()` → `ChannelResult`) |
@@ -70,8 +70,9 @@ rate, it skips to the latest frame — all earlier frames remain in the
 | `config.py` | OS-aware device config directory (`~/.config/vibechecker/` on Linux, `%APPDATA%/vibechecker/` on Windows); per-device YAML persistence with atomic writes; default config fallback |
 | `gui.py` | `GUI` class — dearpygui 3-panel layout (controls / plots / results), `_poll_new_frames()` render loop, config dialogs (Device/Channels/Sensor/Spectrum/Siggen), spectrum FFT window/preset controls, per-channel result cards, trend plot, HDF5 file load/save |
 | `logger.py` | YAML-configured logging; rotating log files written to `log/` |
-| `_paths.py` | Runtime-safe path resolution — development vs. PyInstaller frozen bundle; `resource_path()`, `data_dir()`, `log_dir()` |
+| `_paths.py` | Runtime-safe path resolution — editable checkout, non-editable pip install, and PyInstaller frozen bundle all resolve correctly; `resource_path()`, `data_dir()`, `log_dir()` |
 | `_pico_loader.py` | Windows-only: registers PicoSDK DLL search path before `picosdk` import |
+| `desktop.py` | Linux-only: `install()`/`uninstall()` a `~/.local/share/applications/rev80.desktop` launcher entry + icon, driven by `rev80 --install-desktop-entry` / `--uninstall-desktop-entry` |
 
 ### Data flow details
 
@@ -79,7 +80,7 @@ rate, it skips to the latest frame — all earlier frames remain in the
 - `DataCollector.receive_data` looks up the `ScopeSensor` assigned to each channel, converts mV→EU via `sensitivity`, then wraps each channel in a `VibeSample` (carrying the frame's `overflow` and `degraded` flags). The per-channel Butterworth highpass filter is applied later, in `process_sample()`; anti-aliasing is no longer applied here at all — it happens upstream in `PicoScopeStream`, before the ADC's own Nyquist limit can fold high-frequency content into the passband, and is not user-configurable.
 - `DataCollector._data_callback` appends the frame to a 32-frame ring cache (deque) and sets `new_frame_event`. All consumers — GUI render loop, `collect_sample`, tests — read from `frame_cache` via `new_frame_event`; there is no separate callbacks fan-out.
 - `VibeSample.process()` uses `scipy.signal.welch` with configurable window/overlap. Cross-modality conversion (accel↔vel↔disp) uses frequency-domain integration via `(2πf)^n` scaling. Returns a `ChannelResult` frozen dataclass.
-- Data is saved as HDF5 (`.h5`) into `DEVDATA/`. File names include an ISO timestamp with `:` replaced by `-` for FAT32 compatibility.
+- Data is saved as HDF5 (`.h5`) into `_paths.data_dir()` — always `~/Documents/Rev80/data/`, in development and frozen builds alike (`./DEVDATA` is test scratch space only, hardcoded independently in `tests/`). File names include an ISO timestamp with `:` replaced by `-` for FAT32 compatibility.
 
 ### AcquisitionSettings interdependencies
 
@@ -99,7 +100,7 @@ Per-channel fields (`channel_names`, `channel_target_units`, `channel_amplitude_
 
 ### HDF5 measurement files (v3 format)
 
-Saved to `DEVDATA/*.h5`. Layout:
+Saved to `~/Documents/Rev80/data/*.h5` (via `_paths.data_dir()`). Layout:
 
 ```
 /metadata/
@@ -124,7 +125,7 @@ Per-device YAML at `~/.config/vibechecker/devices/{sanitized_serial}.yaml` (Linu
 
 ### Sensor library
 
-`~/.config/vibechecker/scope_sensors.yaml` — global IEPE sensor definitions shared across all devices. Managed via `ScopeSensorRegistry`. Each entry: `{id, name, sensitivity_mv_per_eu, engineering_units, target_unit}`.
+`~/.config/vibechecker/scope_sensors.yaml` — global IEPE sensor definitions shared across all devices. Managed via `ScopeSensorRegistry`. Each entry: `{id, name, sensitivity_mv_per_eu, engineering_units}`. The display/integration target unit is a per-channel setting (`channel_target_units`), not part of the sensor definition.
 
 ## Offline analysis
 
@@ -136,6 +137,8 @@ Per-device YAML at `~/.config/vibechecker/devices/{sanitized_serial}.yaml` (Linu
 ./scripts/build.sh   # run from Git Bash (Windows or Linux), from the repo root
 ```
 
-Build pipeline: collect PicoSDK DLLs → PyInstaller (`build/rev80.spec`, one-dir bundle) → Inno Setup installer (`installer/rev80.iss`, non-admin install).
+Build pipeline (Windows): collect PicoSDK DLLs → PyInstaller (`build/rev80.spec`, one-dir bundle) → Inno Setup installer (`installer/rev80.iss`, non-admin install).
 
-`_paths.py` must be used for all resource and data directory lookups — it handles the `sys._MEIPASS` path difference in frozen builds.
+Linux desktop install: `pip install --user .` (places `rev80`/`rev80-headless` in `~/.local/bin`) then `rev80 --install-desktop-entry` (writes an XDG `.desktop` entry + icon under `~/.local/share/`; see `desktop.py`). No separate build step — this is the same wheel as any other pip install.
+
+`_paths.py` must be used for all resource and data directory lookups — it handles the `sys._MEIPASS` path difference in frozen builds. Bundled resource files (e.g. `logging.yaml`, the icon font) must physically live under `src/rev80/` and be declared in `pyproject.toml`'s `[tool.setuptools.package-data]` to survive a non-editable `pip install`.
