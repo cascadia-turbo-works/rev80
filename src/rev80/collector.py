@@ -629,7 +629,91 @@ class DataCollector:
     # Sample processing
     # ------------------------------------------------------------------
 
-    def process_sample(self, ch: int, sample: 'rev80.VibeSample') -> 'rev80.ChannelResult | None':
+    def _psd_and_overalls_for(self, ch: int, sample: 'rev80.VibeSample'):
+        """Welch PSD (mV²) and the 5-order mV RMS overalls for one frame.
+
+        Both are cached on the sample under `_psd_config_key`, so repeated
+        renders of the same frame -- a unit change, a re-draw, stepping the
+        browse cursor back and forth -- cost nothing. Returns (freq, psd), or
+        (None, None) if the frame is too short to transform.
+        """
+        config = self.config
+        if sample.blocksize <= 1:
+            return None, None
+
+        filtered_mv = self.filtered_data_for(ch, sample)
+        samplerate  = sample.samplerate
+        N           = sample.blocksize
+        freq_td     = np.fft.rfftfreq(N, d=1.0 / samplerate)
+        band_fmin, band_fmax = config.band
+
+        # binsize and samplerate BOTH change the transform, so both belong in
+        # the key. Without them, switching 2 Hz -> 0.5 Hz bins returned the
+        # identical cached 2049-point, 2 Hz spectrum: the user believed they had
+        # quadrupled the resolution and nothing had changed (M-09). The band
+        # belongs there for the same reason -- the cached overalls are computed
+        # over it, so a band change with a stale cache silently returns the
+        # previous band's number.
+        psd_key = (config.fft_window, config.welch_overlap,
+                   config.highpass_enabled, config.highpass_fc,
+                   config.binsize, sample.samplerate,
+                   band_fmin, band_fmax)
+        if sample.psd_mv is not None and sample._psd_config_key == psd_key:
+            return sample.freq_hz, sample.psd_mv
+
+        # Segment = the whole block, so the computed spectrum matches the line
+        # count and bin width the UI states. See config.nperseg.
+        nperseg  = min(config.nperseg, len(filtered_mv))
+        noverlap = min(nperseg - 1, int(nperseg * config.welch_overlap))
+        freq_hz, psd_mv = scipy.signal.welch(
+            filtered_mv, fs=float(samplerate),
+            window=config.fft_window, nperseg=nperseg, noverlap=noverlap,
+            nfft=nperseg, scaling='spectrum', detrend='linear', average='mean',
+        )
+        sample.psd_mv          = psd_mv
+        sample.freq_hz         = freq_hz
+        sample._psd_config_key = psd_key
+
+        # 5-order mV RMS overalls via time-domain IFFT. sqrt(mean(x²)) on the
+        # IFFT signal avoids the Welch window normalisation artifact (Hann
+        # leakage inflates sqrt(sum(psd)) by sqrt(3/2) for a pure tone).
+        #
+        # All five orders run the same way: Hann taper, band mask, back to the
+        # time domain, RMS with the window's power gain divided out. Order 0
+        # used to skip the taper, on the grounds that a passthrough performs no
+        # transform-domain multiply and so has no wrap discontinuity to
+        # suppress. Band-limiting removed that premise -- the mask IS such a
+        # multiply, and therefore a circular convolution in time, with exactly
+        # the wrap sensitivity the taper exists to control.
+        #
+        # An un-tapered transform plus Parseval was measured as the
+        # alternative. It is exact for in-band content but its band edge is a
+        # rectangular window's, with -13 dB first sidelobes: a 3x tone at 30 Hz
+        # against a 100 Hz lower edge leaked in at only -22 dB, inflating the
+        # overall by +2.7%. Hann rejects the same tone by -84 dB, and -100 to
+        # -144 dB in the other cases measured, at a cost of 4.9e-4 worst-case
+        # in-band error over the preset grid. Band rejection is what an
+        # instrument needs here; the fifth decimal place is not.
+        hann_w, hann_gain = _dsp.hann_taper(N)
+        masked_hann = np.where(_dsp.band_mask(freq_td, band_fmin, band_fmax),
+                               np.fft.rfft(filtered_mv * hann_w), 0.0)
+        for i, n_ord in enumerate(range(-2, 3)):
+            if n_ord == 0:
+                time_ord = np.fft.irfft(masked_hann, n=N)
+            else:
+                time_ord = _dsp.integrate_rfft(masked_hann, freq_td, n_ord, N)
+            sample.overall_ampl_by_integration_order[i] = float(
+                np.sqrt(np.mean(np.square(time_ord))) / hann_gain
+            )
+        return freq_hz, psd_mv
+
+    def _psd_for(self, ch: int, sample: 'rev80.VibeSample'):
+        """Just the PSD of one frame, for the averaging accumulator."""
+        _, psd = self._psd_and_overalls_for(ch, sample)
+        return psd
+
+    def process_sample(self, ch: int, sample: 'rev80.VibeSample',
+                       history: 'list | None' = None) -> 'rev80.ChannelResult | None':
         """Filter, compute PSD, 5-order mV overalls, and convert to display units.
 
         Side-effects on sample (cached after first call per config):
@@ -669,11 +753,6 @@ class DataCollector:
         N       = sample.blocksize
         freq_td = np.fft.rfftfreq(N, d=1.0 / samplerate)
 
-        # Hann taper for the scalar overalls (step 3): dividing the resulting
-        # RMS by the window's power gain recovers the unbiased broadband RMS.
-        hann_w, hann_gain = _dsp.hann_taper(N)
-        rfft_hann = np.fft.rfft(filtered_mv * hann_w)
-
         # The declared measurement band. Everything the overall and the
         # displayed waveform are built from is restricted to it.
         #
@@ -690,74 +769,70 @@ class DataCollector:
         band_fmin, band_fmax = config.band
         band = _dsp.band_mask(freq_td, band_fmin, band_fmax)
 
-        # ── 2. Welch PSD in mV² — compute once, cache on sample ──────
-        # binsize and samplerate BOTH change the transform, so both belong in
-        # the key. Without them, switching 2 Hz -> 0.5 Hz bins returned the
-        # identical cached 2049-point, 2 Hz spectrum: the user believed they had
-        # quadrupled the resolution and nothing had changed. Masked while
-        # streaming (each new VibeSample starts with psd_mv=None), so it bit in
-        # browse/offline mode and after loading a file.
-        # The band belongs in the key for the same reason binsize and samplerate
-        # do (M-09): the cached overalls are computed over it, so a band change
-        # with a stale cache silently returns the previous band's number.
-        psd_key = (config.fft_window, config.welch_overlap,
-                   config.highpass_enabled, config.highpass_fc,
-                   config.binsize, sample.samplerate,
-                   band_fmin, band_fmax)
-        if sample.psd_mv is None or sample._psd_config_key != psd_key:
-            # Segment = the whole block, so the computed spectrum matches the
-            # line count and bin width the UI states. See config.nperseg.
-            nperseg  = min(config.nperseg, len(filtered_mv))
-            noverlap = min(nperseg - 1, int(nperseg * config.welch_overlap))
-            freq_hz, psd_mv = scipy.signal.welch(
-                filtered_mv, fs=float(samplerate),
-                window=config.fft_window, nperseg=nperseg, noverlap=noverlap,
-                nfft=nperseg, scaling='spectrum', detrend='linear', average='mean',
-            )
-            sample.psd_mv          = psd_mv
-            sample.freq_hz         = freq_hz
-            sample._psd_config_key = psd_key
+        # ── 2/3. Welch PSD + 5-order overalls, computed once per frame ──
+        # Extracted so the averaging step below can obtain the same quantities
+        # for earlier cached frames through exactly this code, rather than a
+        # second copy of it. Two divergent copies of one write path was the
+        # direct cause of M-05.
+        freq_hz, psd_mv = self._psd_and_overalls_for(ch, sample)
+        if psd_mv is None:
+            return None
 
-            # ── 3. 5-order mV RMS overalls via time-domain IFFT ──────
-            # Using sqrt(mean(x²)) on the IFFT signal avoids the Welch window
-            # normalisation artifact (Hann leakage inflates sqrt(sum(psd)) by
-            # sqrt(3/2) for a pure tone).
-            #
-            # Order 0 is a plain passthrough: no transform happens, so there is
-            # no wrap discontinuity to suppress and no window is applied. Every
-            # other order integrates or differentiates in the frequency domain
-            # and so runs on the Hann-tapered transform, with the window's power
-            # gain divided back out to leave the RMS unbiased.
-            # All five orders now run the same way: Hann taper, band mask,
-            # back to the time domain, RMS with the window's power gain divided
-            # out. Order 0 used to skip the taper, on the grounds that a
-            # passthrough performs no transform-domain multiply and so has no
-            # wrap discontinuity to suppress. Band-limiting removes that
-            # premise -- the mask IS a transform-domain multiply, and therefore
-            # a circular convolution in time, with exactly the wrap sensitivity
-            # the taper exists to control.
-            #
-            # An un-tapered transform plus Parseval was measured as the
-            # alternative. It is exact for in-band content but its band edge is
-            # a rectangular window's, with -13 dB first sidelobes: a 3x tone at
-            # 30 Hz against a 100 Hz lower edge leaked in at only -22 dB,
-            # inflating the overall by +2.7%. Hann rejects the same tone by
-            # -84 dB, and -100 to -144 dB in the other cases measured, at a
-            # cost of 4.9e-4 worst-case in-band error over the preset grid.
-            # Band rejection is what an instrument needs here; the fifth
-            # decimal place is not.
-            masked_hann = np.where(band, rfft_hann, 0.0)
-            for i, n_ord in enumerate(range(-2, 3)):
-                if n_ord == 0:
-                    time_ord = np.fft.irfft(masked_hann, n=N)
+        # ── 3b. Linear power averaging over recent frames ────────────
+        # Sits ABOVE the per-frame cache, deliberately: each frame's psd_mv
+        # stays cached exactly as computed, and the average is a cheap sum over
+        # them. So changing N invalidates no per-frame work and does not have
+        # to join psd_key.
+        #
+        # Power domain, not amplitude: averaging magnitudes biases low (a
+        # Rayleigh magnitude has mean sigma*sqrt(pi/2), not the RMS) and
+        # discards the chi-squared statistics that make the 1/sqrt(N) variance
+        # reduction predictable. The overall is combined the same way -- RMS of
+        # the per-frame RMS values -- because it is a power-like quantity too.
+        n_avg = 1
+        overalls = sample.overall_ampl_by_integration_order
+        if config.averaging_enabled:
+            # Newest first. The displayed frame leads the list only if it is
+            # itself valid: a clipped record reads high with harmonic
+            # distortion, and averaging it in would contaminate an estimate the
+            # analyst will read as clean. Analyzer practice is to reject the
+            # overloaded record from the average and light the overload
+            # indicator -- which is exactly what happens here, since the
+            # waveform, the scalars and the overflow flag still come from this
+            # frame. Only the spectral estimate is protected.
+            candidates = []
+            if not (sample.overflow or sample.degraded):
+                candidates.append(sample)
+            candidates.extend(reversed(history))
+
+            psd_sum   = None
+            order_sum = None
+            count     = 0
+            want      = config.n_averages_effective
+            for frame_sample in candidates:
+                if count >= want:
+                    break
+                frame_psd = self._psd_for(ch, frame_sample)
+                if frame_psd is None or frame_psd.shape != psd_mv.shape:
+                    # A settings change mid-cache gives a different transform;
+                    # frames from before it are not the same measurement.
+                    break
+                orders = np.square(np.asarray(
+                    frame_sample.overall_ampl_by_integration_order, dtype=np.float64))
+                if psd_sum is None:
+                    psd_sum, order_sum = np.array(frame_psd, dtype=np.float64), orders
                 else:
-                    time_ord = _dsp.integrate_rfft(masked_hann, freq_td, n_ord, N)
-                sample.overall_ampl_by_integration_order[i] = float(
-                    np.sqrt(np.mean(np.square(time_ord))) / hann_gain
-                )
-        else:
-            freq_hz = sample.freq_hz
-            psd_mv  = sample.psd_mv
+                    psd_sum   = psd_sum + frame_psd
+                    order_sum = order_sum + orders
+                count += 1
+
+            if count > 0:
+                n_avg    = count
+                psd_mv   = psd_sum / count
+                overalls = np.sqrt(order_sum / count)
+            # count == 0 means this frame is invalid and has no valid
+            # predecessors. Show it as itself rather than nothing; it is
+            # flagged, so nothing is being passed off as a measurement.
 
         # ── 4. Integrate / scale mV² PSD → target-unit² PSD ─────────
         n_steps = integration_steps(sensor_eu, effective_tgt)
@@ -824,7 +899,7 @@ class DataCollector:
         # Reuse the IFFT-based mV RMS cached in step 3; apply unit scale + amp mode.
         col_idx = n_steps + 2
         overall = float(
-            sample.overall_ampl_by_integration_order[col_idx]
+            overalls[col_idx]
             * (src_si / tgt_si / sensitivity_mv)
             * amp_factor
         )
@@ -876,8 +951,12 @@ class DataCollector:
             # Computed on the trace being returned, not on the Hann-tapered
             # array the overall uses: that taper is an amplitude envelope, so a
             # peak-based statistic taken from it would be plainly wrong.
+            # Deliberately NOT averaged. Averaging is for steady-state
+            # estimation; these exist to catch the frame that is not steady, so
+            # diluting one impulsive record across N would defeat them.
             crest_factor=_dsp.crest_factor(time_signal),
             kurtosis=_dsp.kurtosis(time_signal),
+            n_averages=n_avg,
             timestamp=sample._timestamp, rel_time=sample.rel_time, status=sample.status,
         )
 
@@ -895,12 +974,36 @@ class DataCollector:
             self._cache_cursor = min(self._cache_cursor, len(cache) - 1)
         idx   = -1 if self.is_streaming else -1 - self._cache_cursor
         frame = cache[idx]
+
+        # Frames preceding the displayed one, oldest first, for the averaging
+        # accumulator. One rule for both modes: the average is the N most
+        # recent valid frames up to and INCLUDING the frame being displayed.
+        # Live that is the last N received; browsing it is
+        # frames[cursor-N+1 .. cursor]. Because it is one rule, stepping
+        # forward through a loaded file reproduces exactly what the live
+        # display showed at that moment -- the same replay-fidelity property
+        # F-4 established for the high-pass.
+        history: list = []
+        if self.config.averaging_enabled:
+            stop = len(cache) + idx              # index of the displayed frame
+            want = self.config.n_averages_effective
+            history = list(cache)[max(0, stop - want + 1):stop]
+
         results: list[rev80.ChannelResult] = []
         for ch in sorted(self.config.enabled_channels):
             sample = frame.get(ch)
             if sample is None or sample.blocksize <= 1:
                 continue
-            result = self.process_sample(ch, sample)
+            # A clipped or rate-degraded frame is not a measurement, so it must
+            # not enter an average that will be read as one -- the same reason
+            # F-5 keeps it out of the trend. The displayed frame itself is
+            # always shown, flagged, because it is what the user asked to see.
+            ch_history = [
+                f[ch] for f in history
+                if ch in f and f[ch] is not None
+                and not (f[ch].overflow or f[ch].degraded)
+            ]
+            result = self.process_sample(ch, sample, history=ch_history)
             if result is None:
                 continue
             if self.is_streaming:
