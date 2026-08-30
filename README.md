@@ -37,17 +37,22 @@ Two ways to use it: on-demand snapshot capture (overall + spectral levels) for r
 - Welch-based power spectral density with configurable window (Hann, Blackman-Harris, Flattop, Hamming, etc.)
 - Velocity and displacement spectra derived from acceleration via frequency-domain integration
 - Single-shot and continuous streaming capture modes
-- Per-channel zero-phase 4th-order Butterworth highpass filter
-- Mandatory hardware-level anti-aliasing (oversample + zero-phase decimate) on every capture, plus a streaming-rate watchdog that flags degraded USB throughput
+- Per-channel 4th-order Butterworth highpass filter, causal with state carried across streaming blocks; `highpass_fc` is the declared band edge (response within ±10% there), not the −3 dB knee
+- Mandatory hardware-level anti-aliasing (oversample + linear-phase Kaiser FIR decimate, measured −111.7 dB stopband) on every capture, plus a streaming-rate watchdog that flags degraded USB throughput
 - Configurable IEPE sensor library: sensitivity (mV/EU), modality, engineering units
 - PicoScope 4000A built-in signal generator for excitation testing
 - HDF5 file save/load for post-processing and archiving (v4 format)
 - Configurable frame cache depth (default 32 frames) with backward browse
+- **Declared measurement band** — the overall is measured over a configurable band (default: highpass edge to F_max) with ISO 20816 presets, and the band is stored with the data so two readings can be compared
+- **Linear power spectral averaging** over N frames, to pull small lines out of a noisy floor (off by default)
+- **Envelope (demodulation) analysis** — band-pass around a structural resonance, Hilbert magnitude, envelope spectrum; the standard early-warning diagnostic for rolling-element bearing defects, with automatic demodulation-band selection
+- **Crest factor and kurtosis** per channel — impulsiveness scalars that a broadband overall averages away
+- Significance-based spectral peak selection: a line is reported when it stands a configurable number of dB above its own local noise floor, rather than by a fixed top-N amplitude ranking
 - Trend plot: overall vibration amplitude over time per channel
-- Simulated sensor (bearing-defect signal generator) for offline development and CI testing
+- Simulated sensor for offline development and CI testing — a physically realistic bearing-defect model (impulse train at the defect rate ringing a structural resonance, load-zone amplitude modulation, slip jitter) with a healthy negative control
 - Configurable amplitude modes: RMS, 0-P, P-P
 - Configurable units: acceleration (g, mm/s², in/s²), velocity (mm/s, in/s, mil/s), displacement (mm, in, mil)
-- **Monitor Mode** — interval datalogger: captures frames at a configurable interval (5 s – 2 days) into a single session HDF5; anomaly-triggered burst capture with three independent detection modes (EWMA-RMS broadband, EWMA-Spectral frequency-shape, and fixed-level upper/lower thresholds); configurable post-burst cooldown gate; manual "Record Burst" button
+- **Monitor Mode** — interval datalogger: captures frames at a configurable interval (5 s – 2 days) into a single session HDF5; anomaly-triggered burst capture with two independent detection modes (EWMA-RMS broadband and fixed-level upper/lower thresholds; the EWMA-Spectral detector is temporarily unavailable in the GUI pending rework — see R39 — and remains reachable from the headless front end); configurable post-burst cooldown gate; manual "Record Burst" button
 - **Session browser** — load and browse historical monitor sessions; burst events displayed as vertical markers on the vibration trend
 
 ---
@@ -448,10 +453,13 @@ When the GUI is slower than the hardware data rate it skips to the latest frame 
 | `picoscope.py` | `FindPicoScope()` — enumerates PS4000A units; `PicoScopeStream` — polling thread, ADC→mV, overflow detection, anti-alias oversample/decimate (`antialias_decimate()`), streaming-rate degradation watchdog, silence-watchdog recovery, signal generator setup |
 | `scope_sensor.py` | `ScopeSensor` dataclass — IEPE sensor metadata: name, sensitivity (mV/EU), engineering units, amplitude mode, UUID |
 | `scope_sensor_registry.py` | `ScopeSensorRegistry` — YAML-backed CRUD for user sensor library and per-channel assignments |
-| `sample.py` | `AcquisitionSettings` — spectrum, filter, and cache config with derived properties; `VibeSample` — single-channel time-domain block; `ChannelResult` — frozen display-ready result from `process_sample()` |
+| `_dsp.py` | Windowing and band helpers for frequency-domain integration: Hann/Tukey tapers with their measured error tables, `band_mask()`, `integrate_rfft()`, `butter_knee_for_edge()`, `crest_factor()`, `kurtosis()` |
+| `peaks.py` | Significance-based spectral peak selection — per-bin local noise floor via a running median, array-valued `height`/`prominence` into a single `find_peaks` call |
+| `envelope.py` | Envelope (demodulation) analysis — `envelope_spectrum()` (band-pass → Hilbert magnitude → DC removal → amplitude spectrum) and `suggest_band()` for automatic demodulation-band selection |
+| `sample.py` | `AcquisitionSettings` — spectrum, filter, band, averaging and cache config with derived properties; `VibeSample` — single-channel time-domain block; `ChannelResult` — frozen display-ready result from `process_sample()` |
 | `config.py` | OS-aware config directory; per-device YAML persistence (channels, acquisition settings, monitor defaults); atomic writes; fallback to built-in defaults |
-| `collector.py` | `DataCollector` — multi-channel acquisition state machine: stream lifecycle, per-channel zero-phase Butterworth highpass filtering, mV→EU conversion, frame ring cache, `new_frame_event` signal, DSP via `process_sample()` / `process_samples()`, trend accumulation, HDF5 save/load, monitor session loaders |
-| `simulation.py` | `SimulatedSensor` (daemon thread) + signal generators: `GenerateTone`, `GenerateNoise`, `GenerateBearingVibration_SpectralMethod`, `GenerateBearingVibration_TemporalMethod` |
+| `collector.py` | `DataCollector` — multi-channel acquisition state machine: stream lifecycle, per-channel causal Butterworth highpass filtering with state carried across blocks, mV→EU conversion, frame ring cache, `new_frame_event` signal, DSP via `process_sample()` / `process_samples()`, trend accumulation, HDF5 save/load, monitor session loaders |
+| `simulation.py` | `SimulatedSensor` (daemon thread, paced against a deadline) + signal generators. `GenerateBearingVibration` is the default: a physically realistic defect model (impulse train, resonance carrier, load-zone AM, slip jitter) with `severity=0` as the healthy control. `GenerateTone`, `GenerateNoise` and the two older pure-tone generators remain for regression coverage |
 | `gui.py` | `GUI` class — dearpygui three-column layout with manual render loop (`_poll_new_frames`), all config dialogs, spectrum/time/trend plots, file I/O, monitor card, session browser |
 | `monitor/__init__.py` | Re-exports: `MonitorController`, `MonitorSession` |
 | `monitor/session.py` | `MonitorSession` frozen dataclass — session parameters, config snapshots, and cooldown settings |
@@ -466,7 +474,7 @@ When the GUI is slower than the hardware data rate it skips to the latest frame 
 
 ### 1. Acquisition — `PicoScopeStream` (`picoscope.py`)
 
-`PicoScopeStream` is a background polling thread that wraps `ps4000aRunStreaming`. The ADC is always driven faster than the requested `maxfreq` — at an oversampling ratio (up to 4×, capped by a measured safe continuous-streaming ceiling for this hardware) — so a zero-phase digital anti-alias filter can reject content above the target Nyquist *before* decimating down to the configured rate; this is mandatory and not user-configurable. On each poll:
+`PicoScopeStream` is a background polling thread that wraps `ps4000aRunStreaming`. The ADC is always driven faster than the requested `maxfreq` — at an oversampling ratio (up to 4×, capped by a measured safe continuous-streaming ceiling for this hardware) — so a linear-phase Kaiser-windowed FIR anti-alias filter (designed for ≥100 dB stopband; measured −111.7 dB worst case, against −60.0 dB for scipy's default Hamming kernel) can reject content above the target Nyquist *before* decimating down to the configured rate; this is mandatory and not user-configurable. On each poll:
 
 1. Converts ADC counts → mV via `adc2mV()` for all enabled channels
 2. Detects ADC overflow per channel via the overflow bitmask
@@ -496,7 +504,7 @@ A watchdog thread monitors for >5 s silence and attempts up to 3 reconnect cycle
 
 1. For each enabled channel, extracts the channel column from `frame['data']`
 2. Converts mV → engineering units using `ScopeSensor.sensitivity` (if a sensor is assigned)
-3. Optionally applies a **4th-order Butterworth highpass** filter (default 10 Hz cutoff), zero-phase (`sosfiltfilt`) when the block is long enough, falling back to causal (`sosfilt`) for very short blocks
+3. Optionally applies a **4th-order Butterworth highpass** filter (default 10 Hz declared band edge). Causal (`sosfilt`) with filter state carried across consecutive streaming blocks, seeded from the block mean on the first block; zero-phase `sosfiltfilt` was tried and reverted — its forward+backward pass effectively doubles the order and overshot both block edges by 35–45% for a low cutoff over a short block
 4. Wraps each channel's data in a `VibeSample` (anti-aliasing is no longer applied here — it happens upstream in `PicoScopeStream`, before the ADC's own Nyquist limit can fold high-frequency content into the passband)
 5. Assembles a frame dict `{ch: VibeSample, 'overflow': mask}` and appends it to the frame ring cache (configurable depth via `AcquisitionSettings.cache_frames`, default 32)
 6. Sets `new_frame_event` to signal the GUI render loop
@@ -505,10 +513,12 @@ A watchdog thread monitors for >5 s silence and attempts up to 3 reconnect cycle
 
 `DataCollector.process_sample(ch, sample)` computes and returns a `ChannelResult`:
 
-- **Welch PSD** — `scipy.signal.welch` with configurable window function, 50% overlap, and bin size controlled by `AcquisitionSettings.binsize`
+- **Welch PSD** — `scipy.signal.welch` with a configurable window function, one segment per frame (`nperseg = blocksize`, so the delivered line count and bin width match what the UI states), and bin size controlled by `AcquisitionSettings.binsize`
+- **Spectral averaging** (optional) — the N most recent *valid* frames up to and including the one displayed are averaged in the **power** domain. Overloaded and rate-degraded frames are rejected from the average. Since the HDF5 stores individual raw frames, averaging is recomputed on load and N can be changed after the fact
 - **Frequency-domain integration** — when the assigned `ScopeSensor.engineering_units` modality differs from the target display unit, integration is applied by multiplying the spectrum by `(1j·2πf)^n` where `n` is the number of integration steps (negative = integrate, positive = differentiate)
-- **Peak detection** — `scipy.signal.find_peaks` sorted descending by amplitude
-- **Overall amplitude** — broadband RMS/0-P/P-P computed from time-domain data
+- **Peak detection** — `rev80.peaks.select_peaks`: a per-bin local noise floor is estimated with a running median, and array-valued `height`/`prominence` admit a line when it rises `peak_threshold_db` above its *own* neighbourhood. Ranking stays by descending amplitude; the reported value is the maximum bin's amplitude, with no interpolation or energy summation
+- **Overall amplitude** — RMS/0-P/P-P over the **declared band**, not the whole block. Computed from a Hann-tapered, band-masked transform so all five integration orders describe one band
+- **Crest factor and kurtosis** — computed on the band-limited displayed trace. Deliberately *not* averaged: they exist to catch the frame that is not steady
 
 ### 4. Visualisation — `GUI._poll_new_frames()` / `_display_frame()` (`gui.py`)
 
@@ -535,16 +545,19 @@ The GUI uses a manual render loop (`while dpg.is_dearpygui_running()`). Each tic
 | `samplerate` | **Derived** — minimum samplerate ≥ 2.56 × maxfreq (the 28% margin above 2× Nyquist gives the mandatory anti-alias filter a real transition band — same ratio commercial FFT vibration analyzers use) |
 | `blocksize` | **Derived** — next power of 2 satisfying samplerate / blocksize ≤ binsize |
 | `acquisition_period` | **Derived** — blocksize / samplerate (seconds) |
-| `n_fft_bins` | **Derived** — number of Welch output bins |
+| `n_fft_bins` | **Derived** — number of spectrum lines actually displayed, DC up to `maxfreq`. Not the full one-sided transform: the band between `maxfreq` and fs/2 is the anti-alias guard band and is not shown |
 | `fft_window` | Welch window function: `'hann'` (default), `'blackmanharris'`, `'flattop'`, `'hamming'`, `'boxcar'`, `'bartlett'` |
-| `welch_overlap` | Welch segment overlap fraction (default 0.5) |
+| `welch_overlap` | Welch segment overlap fraction (default 0.5). Currently inert: `nperseg == blocksize`, so there is exactly one segment per frame |
+| `band_fmin` / `band_fmax` | Declared measurement band for the overall amplitude (Hz). `None` = derive: `highpass_fc` up to `maxfreq`. ISO 20816 presets are offered in the acquisition dialog. Stored with the data — an overall taken over a different band is a different measurement |
+| `averaging_enabled` / `n_averages` | Linear power averaging of the spectrum over N frames (default off, N = 8). Cuts noise-floor scatter as 1/√N; does **not** lower the floor's level, and assumes the machine is steady across the window. Clamped by `cache_frames` |
+| `peak_threshold_db` | How far a spectral line must rise above its own local noise floor to be reported (default 9.5 dB) |
 
 ### Filter settings
 
 | Property | Description |
 | --- | --- |
-| `highpass_enabled` | Enable 4th-order Butterworth highpass filter (zero-phase) |
-| `highpass_fc` | Highpass cutoff frequency (Hz) |
+| `highpass_enabled` | Enable the 4th-order Butterworth highpass filter. Causal (`sosfilt`) with filter state carried across consecutive streaming blocks; replayed frames are filtered statelessly from a settled initial condition, so browsing is order-independent |
+| `highpass_fc` | Lower edge of the declared measurement band (Hz) — the frequency at which the response must still be within ±10% (ISO 2954), **not** the −3 dB knee. The Butterworth knee is placed below it at `f_edge × (A²/(1−A²))^(−1/2N)`, which is `0.834 × f_edge` at the shipped order 4 |
 
 Anti-aliasing is no longer a user-configurable lowpass — it's a mandatory
 filter applied at capture time in `PicoScopeStream`, automatically derived
