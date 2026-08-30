@@ -480,6 +480,7 @@ class GUI:
         peak_limit = max(1, int(dpg.get_value(ui.FFT_PEAKS_DISPLAY_COUNT) or 1))
         peaks = result.peaks
         self._update_peak_count_text(len(peaks), peak_limit)
+        self._update_avg_count_text(result)
         if len(peaks) > 0:
             top_peaks = peaks[:peak_limit]
             dpg.set_value(ui.plt_freq_peaks(ch), [freq[top_peaks].tolist(), spectrum[top_peaks].tolist()])
@@ -495,6 +496,25 @@ class GUI:
         else:
             dpg.set_value(ui.plt_freq_peaks(ch), [[], []])
             self._update_fft_peaks_table(["Frequency (Hz)", "Amp."], [], ch)
+
+    def _update_avg_count_text(self, result: 'rev80.ChannelResult'):
+        """Report how many frames were actually averaged, not how many were asked for.
+
+        Early in a capture there are fewer than N; frames rejected for overload
+        or a degraded stream lower it further. Stating the configured N while
+        delivering fewer is the F-8 failure mode -- what is claimed has to be
+        what was computed.
+        """
+        if not dpg.does_item_exist(ui.FFT_AVG_COUNT_TEXT):
+            return
+        cfg = self.collector.config
+        if not cfg.averaging_enabled:
+            dpg.set_value(ui.FFT_AVG_COUNT_TEXT, "")
+            return
+        want = cfg.n_averages_effective
+        got = int(result.n_averages)
+        suffix = "" if got >= want else f" of {want}"
+        dpg.set_value(ui.FFT_AVG_COUNT_TEXT, f"averaging {got}{suffix} frames")
 
     def _update_peak_count_text(self, n_found: int, cap: int):
         """Say how many lines passed the gate, and whether the cap is hiding any.
@@ -960,6 +980,20 @@ class GUI:
             mem_str = f"{total_mem / 1024:.1f} KB"
         else:
             mem_str = f"{total_mem} B"
+
+        # Averaging window, in seconds. N alone is hard to reason about; what
+        # the analyst actually needs to know is how long the machine has to
+        # stay steady, and how long they will wait for the estimate to fill.
+        # A frame is exactly 1/binsize seconds, so the window is N/binsize.
+        if dpg.does_item_exist(ui.ACQ_DLG_AVG_TIME):
+            if dpg.get_value(ui.ACQ_DLG_AVG_ENABLED):
+                n_req = max(1, int(dpg.get_value(ui.ACQ_DLG_AVG_N)))
+                n_eff = min(n_req, cache_frames)
+                capped = '' if n_eff == n_req else f'  (capped by {cache_frames}-frame cache)'
+                dpg.set_value(ui.ACQ_DLG_AVG_TIME,
+                              f"{n_eff} x {acq_time:.3g} s = {n_eff * acq_time:.3g} s{capped}")
+            else:
+                dpg.set_value(ui.ACQ_DLG_AVG_TIME, "off")
 
         if dpg.does_item_exist(ui.ACQ_DLG_SAMPLERATE):
             dpg.set_value(ui.ACQ_DLG_SAMPLERATE, f"{samplerate / 1000:.1f} kS/s")
@@ -2149,6 +2183,9 @@ class GUI:
             dpg.set_value(ui.ACQ_DLG_HP_ENABLED, cfg.highpass_enabled)
         if dpg.does_item_exist(ui.ACQ_DLG_HP_FC):
             dpg.set_value(ui.ACQ_DLG_HP_FC, cfg.highpass_fc)
+        if dpg.does_item_exist(ui.ACQ_DLG_AVG_ENABLED):
+            dpg.set_value(ui.ACQ_DLG_AVG_ENABLED, cfg.averaging_enabled)
+            dpg.set_value(ui.ACQ_DLG_AVG_N, cfg.n_averages)
         if dpg.does_item_exist(ui.ACQ_DLG_BAND_FMIN):
             # 0 is the "unset" sentinel in the widget; None in the config.
             dpg.set_value(ui.ACQ_DLG_BAND_FMIN, cfg.band_fmin or 0.0)
@@ -2224,6 +2261,9 @@ class GUI:
             cfg.highpass_enabled = dpg.get_value(ui.ACQ_DLG_HP_ENABLED)
         if dpg.does_item_exist(ui.ACQ_DLG_HP_FC):
             cfg.highpass_fc = float(dpg.get_value(ui.ACQ_DLG_HP_FC))
+        if dpg.does_item_exist(ui.ACQ_DLG_AVG_ENABLED):
+            cfg.averaging_enabled = bool(dpg.get_value(ui.ACQ_DLG_AVG_ENABLED))
+            cfg.n_averages = max(1, int(dpg.get_value(ui.ACQ_DLG_AVG_N)))
         if dpg.does_item_exist(ui.ACQ_DLG_BAND_FMIN):
             fmin = float(dpg.get_value(ui.ACQ_DLG_BAND_FMIN))
             fmax = float(dpg.get_value(ui.ACQ_DLG_BAND_FMAX))
@@ -3170,6 +3210,45 @@ class GUI:
                                 dpg.add_input_float(
                                     label="Hz", tag=ui.ACQ_DLG_HP_FC, default_value=10.0, min_value=0.1, width=100
                                 )
+                            # Control: linear power averaging of the spectrum.
+                            _avg_en = dpg.add_checkbox(
+                                label="Average spectrum",
+                                tag=ui.ACQ_DLG_AVG_ENABLED,
+                                default_value=False,
+                                callback=self._on_acq_preview,
+                            )
+                            self._tooltip(
+                                _avg_en,
+                                "Average the spectrum over several successive frames. "
+                                "Each bin of a single frame has a standard deviation "
+                                "equal to its own mean, so the floor looks rough and a "
+                                "small line is hard to pick out; averaging N frames cuts "
+                                "that scatter by sqrt(N).\n\n"
+                                "It does NOT lower the noise floor -- only the "
+                                "uncertainty of it. To separate two close lines you need "
+                                "a finer bin size instead.\n\n"
+                                "Assumes the machine is steady over the window. If the "
+                                "speed drifts, lines smear across bins and averaging "
+                                "blurs them rather than sharpening them.")
+                            _avg_n = dpg.add_input_int(
+                                label="Averages", tag=ui.ACQ_DLG_AVG_N,
+                                default_value=8, min_value=1, max_value=512,
+                                callback=self._on_acq_preview, width=_w,
+                            )
+                            self._tooltip(
+                                _avg_n,
+                                "Number of frames to average. Diminishing returns past "
+                                "about 16, since the benefit goes as sqrt(N): 4 halves "
+                                "the scatter, 16 quarters it, 64 only halves it again.\n\n"
+                                "Capped by the frame cache below -- you cannot average "
+                                "more frames than are kept. Frames rejected for ADC "
+                                "overload or a degraded stream are skipped, so the count "
+                                "actually achieved is shown beside the spectrum.")
+                            dpg.add_input_text(
+                                label="Avg. Window", tag=ui.ACQ_DLG_AVG_TIME,
+                                readonly=True, width=_w,
+                            )
+
                             # Control: declared measurement band for the overall.
                             # Blank/0 means "derive": the highpass edge up to
                             # F_max. Before this existed the overall spanned
@@ -3883,6 +3962,7 @@ class GUI:
                         "significance test; it does not decide which lines are real.",
                     )
                     dpg.add_text("", tag=ui.FFT_PEAKS_FOUND_TEXT, color=_c("MUTED"))
+                    dpg.add_text("", tag=ui.FFT_AVG_COUNT_TEXT, color=_c("MUTED"))
                     dpg.add_spacer(height=4)
 
                     # Frame metadata card — hidden until first frame arrives

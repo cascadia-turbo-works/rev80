@@ -45,6 +45,18 @@ class AcquisitionSettings:
     # FFT / Welch
     fft_window: str = 'hann'
     welch_overlap: float = 0.5     # 0.0–0.95 fraction of nperseg
+    # Spectral averaging. Welch's method IS linear power averaging, but since
+    # nperseg == blocksize it runs exactly one segment per frame, so each bin is
+    # chi-squared(2) with a standard deviation equal to its own mean. Averaging
+    # N frames cuts that scatter as 1/sqrt(N) -- which is what makes a small
+    # line distinguishable from floor roughness. It does NOT lower the floor's
+    # expected level, only the uncertainty of the estimate.
+    #
+    # Off by default: it changes what the displayed number means, and assumes
+    # the machine is steady over the window. If speed drifts, lines smear
+    # across bins and averaging blurs them rather than sharpening them.
+    averaging_enabled: bool = False
+    n_averages: int = 8
     # Peak selection — how far above its own local noise floor a spectral line
     # must rise before it is reported. This replaced a fixed "report the top N
     # by amplitude" rule, which ranked by how loud a line's neighbourhood was
@@ -124,6 +136,8 @@ class AcquisitionSettings:
             'fft_window':       self.fft_window,
             'welch_overlap':    self.welch_overlap,
             'peak_threshold_db': self.peak_threshold_db,
+            'averaging_enabled': self.averaging_enabled,
+            'n_averages':       self.n_averages,
             'highpass_enabled': self.highpass_enabled,
             'highpass_fc':      self.highpass_fc,
             # None must survive the round trip: writing the resolved value back
@@ -146,6 +160,8 @@ class AcquisitionSettings:
         if 'fft_window'       in d: obj.fft_window       = str(d['fft_window'])        # noqa: E701
         if 'welch_overlap'    in d: obj.welch_overlap    = float(d['welch_overlap'])   # noqa: E701
         if 'peak_threshold_db' in d: obj.peak_threshold_db = float(d['peak_threshold_db'])  # noqa: E701
+        if 'averaging_enabled' in d: obj.averaging_enabled = bool(d['averaging_enabled'])  # noqa: E701
+        if 'n_averages'       in d: obj.n_averages       = int(d['n_averages'])        # noqa: E701
         if 'highpass_enabled' in d: obj.highpass_enabled = bool(d['highpass_enabled']) # noqa: E701
         if 'highpass_fc'      in d: obj.highpass_fc      = float(d['highpass_fc'])     # noqa: E701
         if 'band_fmin'        in d: obj.band_fmin        = _opt_float(d['band_fmin'])  # noqa: E701
@@ -190,6 +206,19 @@ class AcquisitionSettings:
     @binsize.setter
     def binsize(self, df: float):
         self._df = float(df)
+
+    @property
+    def n_averages_effective(self) -> int:
+        """Averages actually achievable: the request, clamped to the ring cache.
+
+        You cannot average more frames than are retained, and quietly averaging
+        fewer than the dialog states is the F-8 failure mode -- stated has to
+        match delivered. Clamping here keeps the advertised value honest at the
+        one place the limit is knowable; the count actually used in any given
+        frame is reported separately on the result, since early frames and
+        excluded (overflow/degraded) frames lower it further.
+        """
+        return max(1, min(int(self.n_averages), int(self.cache_frames)))
 
     @property
     def band_fmin_resolved(self) -> float:
@@ -381,6 +410,10 @@ class ChannelResult:
     # overall averages impulsiveness away completely; these are what see it.
     crest_factor: float = 0.0
     kurtosis:     float = 3.0
+    # Number of frames actually averaged into `spectrum` and `overall`. 1 means
+    # no averaging. Reported rather than assumed from config: early frames and
+    # frames excluded for overflow/degraded both lower it.
+    n_averages:   int = 1
 
     @property
     def band(self) -> 'tuple[float, float] | None':
