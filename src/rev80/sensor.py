@@ -63,7 +63,35 @@ class VibeSensor:
         except (TypeError, ValueError):
             rel_time = 0.0
 
-        data = raw_data.copy() * self.scale
+        data = raw_data.copy()
+        # `scale` is per-channel, but its length comes from the device record
+        # while the column count comes from however many channels are enabled.
+        # simulated() ships a 2-element scale, so three enabled channels raised
+        # a broadcast ValueError inside SimulatedSensor._stream -- which had no
+        # try/except, so the acquisition thread died while _running stayed set
+        # and is_streaming reported a healthy stream that produced nothing,
+        # indefinitely (audit S-12). Fit the scale to the data instead.
+        if data.ndim == 2:
+            scale = np.asarray(self.scale, dtype=np.float64).ravel()
+            n_ch = data.shape[1]
+            if scale.size != n_ch:
+                if scale.size == 0:
+                    scale = np.ones(n_ch)
+                elif scale.size < n_ch:
+                    # Only worth warning about when padding actually guesses.
+                    # A uniform scale extends to any channel count with nothing
+                    # lost, which is the ordinary simulated-sensor case.
+                    if not np.all(scale == scale[0]):
+                        log.warning(
+                            'sensor %r has %d differing scale factors for %d '
+                            'channels; padding with the last value (%g)',
+                            self.serial_number, scale.size, n_ch, scale[-1])
+                    scale = np.concatenate([scale, np.full(n_ch - scale.size, scale[-1])])
+                else:
+                    scale = scale[:n_ch]
+            data = data * scale
+        else:
+            data = data * np.asarray(self.scale, dtype=np.float64).ravel()[0]
 
         # Derive channel list from data shape (columns = sequential channels).
         # Data is 2-D (frames, channels); SimulatedSensor matches this layout.

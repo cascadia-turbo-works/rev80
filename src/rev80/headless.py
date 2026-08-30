@@ -151,15 +151,21 @@ def _build_anomaly_hook(anom_cfg: dict, config, pre_buffer_s: float = 0.0):
         CompositeAnomalyHook, FixedThresholdHook, NullAnomalyHook,
         RmsThresholdHook, SpectralThresholdHook, ewma_alpha_from_time,
     )
+    from rev80.util import DEFAULT_RMS_ALPHA, DEFAULT_SPEC_ALPHA, canonical_hook_type
 
     hooks: list = []
     warmup = int(anom_cfg.get("warmup", 10))
 
     if anom_cfg.get("enabled", False):
-        hook_type = anom_cfg.get("hook_type", "rms").lower()
+        hook_type = canonical_hook_type(anom_cfg.get("hook_type", "rms"))
+        # Hoisted above the hook_type chain: the spectral branch reads
+        # `period` unconditionally, so a Spectral-only config raised
+        # UnboundLocalError when it was bound inside the RMS branch. In
+        # headless this fired AFTER collector.start_stream(), killing the
+        # process with the PicoScope still streaming and never closed.
+        period = config.acquisition_period
 
         if hook_type in ("rms", "both"):
-            period = config.acquisition_period
             rms_s  = float(anom_cfg.get("rms_s", 3.0))
             consecutive_n = max(1, round(rms_s / period) + 1) if period > 0 else 1
             if rms_s > 0.25 * pre_buffer_s:
@@ -171,7 +177,7 @@ def _build_anomaly_hook(anom_cfg: dict, config, pre_buffer_s: float = 0.0):
             if "rms_ewma_time" in anom_cfg and period > 0:
                 rms_alpha = ewma_alpha_from_time(float(anom_cfg["rms_ewma_time"]), period)
             else:
-                rms_alpha = float(anom_cfg.get("rms_alpha", 0.97))
+                rms_alpha = float(anom_cfg.get("rms_alpha", DEFAULT_RMS_ALPHA))
             hooks.append(RmsThresholdHook(
                 rms_threshold_pct    = float(anom_cfg.get("rms_pct", 10.0)),
                 consecutive_n        = consecutive_n,
@@ -182,7 +188,7 @@ def _build_anomaly_hook(anom_cfg: dict, config, pre_buffer_s: float = 0.0):
             if "spec_ewma_time" in anom_cfg and period > 0:
                 spec_alpha = ewma_alpha_from_time(float(anom_cfg["spec_ewma_time"]), period)
             else:
-                spec_alpha = float(anom_cfg.get("spec_alpha", 0.995))
+                spec_alpha = float(anom_cfg.get("spec_alpha", DEFAULT_SPEC_ALPHA))
             hooks.append(SpectralThresholdHook(
                 spectral_threshold_pct = float(anom_cfg.get("spec_pct",   50.0)),
                 consecutive_n          = int(anom_cfg.get("spec_n",       10)),

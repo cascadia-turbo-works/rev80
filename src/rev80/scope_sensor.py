@@ -20,6 +20,37 @@ from dataclasses import dataclass, field
 import uuid
 
 
+# ---------------------------------------------------------------------------
+# Field coercion helpers
+# ---------------------------------------------------------------------------
+
+# Anything not in here is a container or an arbitrary object and must not be
+# silently str()'d into a field — that is how junk reaches the YAML writer.
+_SCALARS = (str, int, float, bool)
+
+
+def _scalar_str(d: dict, key: str, required: bool = False) -> str:
+    """Return d[key] coerced to str. Rejects non-scalars."""
+    if key not in d or d[key] is None:
+        if required:
+            raise KeyError(key)
+        return ''
+    v = d[key]
+    if not isinstance(v, _SCALARS):
+        raise TypeError(f'{key!r} must be a scalar, got {type(v).__name__}: {v!r}')
+    return str(v)
+
+
+def _scalar_float(d: dict, key: str) -> float:
+    """Return d[key] coerced to float. Rejects non-scalars and bad numbers."""
+    if key not in d or d[key] is None:
+        raise KeyError(key)
+    v = d[key]
+    if isinstance(v, bool) or not isinstance(v, _SCALARS):
+        raise TypeError(f'{key!r} must be a number, got {type(v).__name__}: {v!r}')
+    return float(v)   # raises ValueError on a non-numeric string
+
+
 @dataclass
 class ScopeSensor:
     name: str
@@ -45,12 +76,24 @@ class ScopeSensor:
 
     @classmethod
     def from_dict(cls, d: dict) -> 'ScopeSensor':
+        """Build a ScopeSensor from a plain dict, coercing and validating fields.
+
+        Every value is coerced to its declared type and non-scalars are
+        rejected. Sensor definitions arrive from YAML written by other
+        installs and from HDF5 attributes in measurement files shared between
+        machines, so the values are not trustworthy. An uncoerced dict/list
+        reaching a field used to survive all the way to the YAML writer, which
+        then emitted a `!!python/object/apply:` tag that no reader could parse
+        — corrupting the whole sensor library.
+        """
+        if not isinstance(d, dict):
+            raise TypeError(f'sensor entry must be a mapping, got {type(d).__name__}')
         return cls(
-            name=d['name'],
-            engineering_units=d['engineering_units'],
-            sensitivity=float(d['sensitivity']),
-            target_unit=d.get('target_unit', ''),
-            id=d.get('id', str(uuid.uuid4())),
-            notes=d.get('notes', ''),
+            name=_scalar_str(d, 'name', required=True),
+            engineering_units=_scalar_str(d, 'engineering_units', required=True),
+            sensitivity=_scalar_float(d, 'sensitivity'),
+            target_unit=_scalar_str(d, 'target_unit'),
+            id=_scalar_str(d, 'id') or str(uuid.uuid4()),
+            notes=_scalar_str(d, 'notes'),
             # 'modality' key in old YAML files is silently ignored
         )

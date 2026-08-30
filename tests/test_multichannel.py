@@ -4,7 +4,6 @@ Verifies that data is correctly returned for various channel enable/disable
 configurations without requiring physical hardware (SimulatedSensor used).
 """
 
-import time
 from datetime import datetime
 
 import numpy as np
