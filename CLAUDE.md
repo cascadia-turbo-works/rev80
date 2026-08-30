@@ -124,7 +124,7 @@ Per-device YAML at `~/.config/vibechecker/devices/{sanitized_serial}.yaml` (Linu
 
 ### Sensor library
 
-`~/.config/vibechecker/scope_sensors.yaml` — global IEPE sensor definitions shared across all devices. Managed via `ScopeSensorRegistry`. Each entry: `{id, name, sensitivity_mv_per_eu, engineering_units, target_unit}`.
+`~/.config/vibechecker/scope_sensors.yaml` — global IEPE sensor definitions shared across all devices. Managed via `ScopeSensorRegistry`. Each entry: `{id, name, sensitivity, engineering_units, target_unit}` (`sensitivity` is mV per engineering unit; the key name must match `ScopeSensor.to_dict()`).
 
 ## Offline analysis
 

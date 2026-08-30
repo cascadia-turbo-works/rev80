@@ -4,15 +4,28 @@ import threading
 from pathlib import Path
 
 import dearpygui.dearpygui as dpg
+import h5py
 import numpy as np
 
 import rev80
+from rev80 import envelope as rev80_env
+from rev80 import peaks as rev80_peaks
 import rev80.config as _cfg
 import rev80.icons as icons
 from rev80.sample import AcquisitionSettings
 from rev80.scope_sensor import ScopeSensor
 from rev80.scope_sensor_registry import ScopeSensorRegistry
-from rev80.util import UNIT_TO_SI
+from rev80.util import (
+    ANOMALY_HOOK_LABELS,
+    DEFAULT_RMS_ALPHA,
+    DEFAULT_SPEC_ALPHA,
+    GUI_ANOMALY_HOOK_TYPES,
+    UNIT_TO_SI,
+    canonical_hook_type,
+    gui_hook_type,
+    hook_type_label,
+    nearest_interval_preset,
+)
 
 log = rev80.get_logger("gui")
 ui = rev80.UI_Elements()
@@ -64,6 +77,13 @@ _BTN_HALF = (CONTROLS_WIDTH - 30) // 2
 #   button    ≈ 28 px (24 px frame + 4 px spacing)
 #   card base ≈ 68 px (top/bottom WindowPadding + title + separator)
 _CARD_LINE_H = 20  # per text-line height estimate (font + spacing)
+
+# Clutter cap on the peaks table and the plot markers. Not a selection
+# rule -- rev80.peaks decides which lines are real, this only decides how
+# many of them fit on screen. Sized from the measured corpus counts at the
+# default threshold (median 40, p90 49, max 61 over 60 channel-spectra),
+# so in the normal case nothing is hidden.
+_DEFAULT_PEAK_DISPLAY_CAP = 50
 _CARD_BASE_H = 68  # card overhead: padding + title + separator + bottom pad
 _CARD_BTN_H = 28   # single button row height
 _CARD_H_DEVICE = _CARD_BASE_H + _CARD_LINE_H * 5  # disconnected baseline
@@ -94,6 +114,29 @@ _CH_COLORS = [
 
 # Spectrum dialog display labels — index-aligned with preset lists
 _MAXFREQ_LABELS = [f"{int(f)} Hz" for f in rev80.MAXFREQ_PRESETS]
+
+
+def derive_acquisition_preview(maxfreq: float, binsize: float) -> dict:
+    """Derived acquisition values for the settings dialog preview.
+
+    Delegates to AcquisitionSettings rather than recomputing. The dialog used
+    to duplicate the derivation and got it wrong — nextpow2(2 * maxfreq)
+    instead of nextpow2(2.56 * maxfreq) — so at the default F_max=2000 it
+    advertised 4.1 kS/s, 2049 lines, 1.000 s and half the true memory while
+    the instrument actually ran at 8.2 kS/s, 4097 lines and 0.500 s. Wrong for
+    the 500/1000/2000 Hz presets. Never duplicate the formula.
+    """
+    cfg = rev80.AcquisitionSettings()
+    cfg.maxfreq = maxfreq
+    cfg.binsize = binsize
+    return {
+        'samplerate': cfg.samplerate,
+        'blocksize':  cfg.blocksize,
+        'n_fft_bins': cfg.n_fft_bins,
+        'acq_time':   cfg.acquisition_period,
+        'mem_bytes':  cfg.memory_bytes,
+        'binsize_actual': cfg.binsize_actual,
+    }
 _BINSIZE_LABELS = [f"{b} Hz/bin" for b in rev80.BINSIZE_PRESETS]
 
 # Welch FFT window options (scipy.signal.welch 'window' argument strings)
@@ -262,11 +305,13 @@ class GUI:
             mode = self._get_amplitude_mode(chs[0]) if chs else "0-P"
             dpg.set_item_label(ui.PLT_FREQ_AX_ACCEL, self._freq_axis_label(unit, chs))
             dpg.set_item_label(ui.PLT_SAMPLE_AX_ACCEL, f"Amplitude, {unit}")
-            dpg.set_item_label(ui.PLT_TREND_AX_OVERALL, f"Overall Vibration, {unit} {mode}")
+            band = self._band_suffix()
+            dpg.set_item_label(ui.PLT_TREND_AX_OVERALL,
+                               f"Overall Vibration, {unit} {mode}{band}")
             for ch in chs:
                 tag = ui.ch_overall_value(ch)
                 if dpg.does_item_exist(tag):
-                    dpg.configure_item(tag, label=f"Overall, {unit} {mode}")
+                    dpg.configure_item(tag, label=f"Overall, {unit} {mode}{band}")
         else:
             # ── Two units: show secondary axes and split channels ─────────
             dpg.show_item(ui.PLT_FREQ_AX_2)
@@ -282,8 +327,11 @@ class GUI:
             dpg.set_item_label(ui.PLT_SAMPLE_AX_ACCEL_2, f"Amplitude, {groups[1][0]}")
             mode0 = self._get_amplitude_mode(groups[0][1][0]) if groups[0][1] else "0-P"
             mode1 = self._get_amplitude_mode(groups[1][1][0]) if groups[1][1] else "0-P"
-            dpg.set_item_label(ui.PLT_TREND_AX_OVERALL, f"Overall, {groups[0][0]} {mode0}")
-            dpg.set_item_label(ui.PLT_TREND_AX_OVERALL_2, f"Overall, {groups[1][0]} {mode1}")
+            band = self._band_suffix()
+            dpg.set_item_label(ui.PLT_TREND_AX_OVERALL,
+                               f"Overall, {groups[0][0]} {mode0}{band}")
+            dpg.set_item_label(ui.PLT_TREND_AX_OVERALL_2,
+                               f"Overall, {groups[1][0]} {mode1}{band}")
             for unit, chs in groups:
                 mode = self._get_amplitude_mode(chs[0]) if chs else "0-P"
                 for ch in chs:
@@ -342,7 +390,79 @@ class GUI:
             return
         time = result.time_vec * 1000.0  # convert s → ms (axis label is "Time, ms")
         signal = result.time_data
+        # Integrated/differentiated traces cover only the middle of the block
+        # (overlap-save — see collector.process_sample step 8), so the trace no
+        # longer necessarily starts at t=0. Remember where it does start so the
+        # fixed autoscale window lands on data rather than on empty axis.
+        if len(time):
+            self._last_time_x0_ms = float(time[0])
         dpg.set_value(ui.plt_time_series(ch), [time.tolist(), signal.tolist()])
+
+    def _env_band_for(self, result: 'rev80.ChannelResult'):
+        """Demodulation band to use: the typed one, else auto from this frame.
+
+        Returns (lo, hi) or None when no usable band can be formed -- a very
+        low F_max leaves no room above the machine orders for a resonance to
+        sit in, and inventing a band there would produce a confident-looking
+        plot of nothing.
+        """
+        lo = float(dpg.get_value(ui.ENV_BAND_LO) or 0.0)
+        hi = float(dpg.get_value(ui.ENV_BAND_HI) or 0.0)
+        if lo > 0 and hi > lo:
+            return (lo, hi)
+        try:
+            return rev80_env.suggest_band(
+                result.time_data, result.samplerate,
+                fmax=self.collector.config.band_fmax_resolved,
+            )
+        except (ValueError, IndexError):
+            return None
+
+    def _update_envelope_plot(self, result: 'rev80.ChannelResult', ch: int):
+        """Band-pass, demodulate, and plot the envelope spectrum for one channel."""
+        tag = ui.plt_env_series(ch)
+        if not dpg.does_item_exist(tag):
+            return
+        band = self._env_band_for(result)
+        if band is None:
+            dpg.set_value(tag, [[], []])
+            return
+        try:
+            freq, spec = rev80_env.envelope_spectrum(
+                result.time_data, result.samplerate, band=band)
+        except ValueError:
+            # An unusable band is a configuration problem, not a crash: clear
+            # the series and say why on the info line.
+            dpg.set_value(tag, [[], []])
+            if dpg.does_item_exist(ui.ENV_INFO_TEXT):
+                dpg.set_value(ui.ENV_INFO_TEXT,
+                              f"band {band[0]:.0f}-{band[1]:.0f} Hz is outside "
+                              f"this frame's usable range")
+            return
+        dpg.set_value(tag, [freq.tolist(), spec.tolist()])
+        if dpg.does_item_exist(ui.ENV_INFO_TEXT):
+            auto = '' if float(dpg.get_value(ui.ENV_BAND_LO) or 0.0) > 0 else '  (auto)'
+            dpg.set_value(
+                ui.ENV_INFO_TEXT,
+                f"demodulating {band[0]:.0f}-{band[1]:.0f} Hz{auto}   "
+                f"envelope to {freq[-1]:.0f} Hz" if len(freq) else "")
+
+    def _on_env_auto_band(self, sender=None, data=None):
+        """Fill the band fields from the current frame, then redraw.
+
+        Writing the numbers into the fields rather than leaving them blank is
+        deliberate: the analyst can see what was chosen and adjust it, and the
+        band then stays put across frames instead of drifting each time.
+        """
+        results = self.collector.process_samples()
+        if not results:
+            return
+        band = self._env_band_for(results[0])
+        if band is None:
+            return
+        dpg.set_value(ui.ENV_BAND_LO, float(band[0]))
+        dpg.set_value(ui.ENV_BAND_HI, float(band[1]))
+        self._redraw()
 
     def _update_freq_plot(self, result: rev80.ChannelResult, ch: int):
         if not dpg.does_item_exist(ui.plt_freq_series(ch)):
@@ -352,8 +472,15 @@ class GUI:
         dpg.set_value(ui.plt_freq_series(ch), [freq.tolist(), spectrum.tolist()])
         if dpg.does_item_exist(ui.ch_overall_value(ch)):
             dpg.set_value(ui.ch_overall_value(ch), f"{result.overall:.4f}")
-        peak_limit = dpg.get_value(ui.FFT_PEAKS_DISPLAY_COUNT)
+        if dpg.does_item_exist(ui.ch_scalars_text(ch)):
+            dpg.set_value(
+                ui.ch_scalars_text(ch),
+                f"Crest {result.crest_factor:.2f}   Kurt {result.kurtosis:.2f}",
+            )
+        peak_limit = max(1, int(dpg.get_value(ui.FFT_PEAKS_DISPLAY_COUNT) or 1))
         peaks = result.peaks
+        self._update_peak_count_text(len(peaks), peak_limit)
+        self._update_avg_count_text(result)
         if len(peaks) > 0:
             top_peaks = peaks[:peak_limit]
             dpg.set_value(ui.plt_freq_peaks(ch), [freq[top_peaks].tolist(), spectrum[top_peaks].tolist()])
@@ -368,6 +495,43 @@ class GUI:
             self._update_fft_peaks_table(cols, rows, ch)
         else:
             dpg.set_value(ui.plt_freq_peaks(ch), [[], []])
+            self._update_fft_peaks_table(["Frequency (Hz)", "Amp."], [], ch)
+
+    def _update_avg_count_text(self, result: 'rev80.ChannelResult'):
+        """Report how many frames were actually averaged, not how many were asked for.
+
+        Early in a capture there are fewer than N; frames rejected for overload
+        or a degraded stream lower it further. Stating the configured N while
+        delivering fewer is the F-8 failure mode -- what is claimed has to be
+        what was computed.
+        """
+        if not dpg.does_item_exist(ui.FFT_AVG_COUNT_TEXT):
+            return
+        cfg = self.collector.config
+        if not cfg.averaging_enabled:
+            dpg.set_value(ui.FFT_AVG_COUNT_TEXT, "")
+            return
+        want = cfg.n_averages_effective
+        got = int(result.n_averages)
+        suffix = "" if got >= want else f" of {want}"
+        dpg.set_value(ui.FFT_AVG_COUNT_TEXT, f"averaging {got}{suffix} frames")
+
+    def _update_peak_count_text(self, n_found: int, cap: int):
+        """Say how many lines passed the gate, and whether the cap is hiding any.
+
+        The count is now an output of the significance threshold rather than
+        something the user dialled in, so it has to be visible: without it a
+        capped table looks identical to a spectrum that genuinely had few
+        significant lines.
+        """
+        if not dpg.does_item_exist(ui.FFT_PEAKS_FOUND_TEXT):
+            return
+        if n_found == 0:
+            dpg.set_value(ui.FFT_PEAKS_FOUND_TEXT, "no significant peaks")
+        elif n_found > cap:
+            dpg.set_value(ui.FFT_PEAKS_FOUND_TEXT, f"{n_found} peaks, showing {cap}")
+        else:
+            dpg.set_value(ui.FFT_PEAKS_FOUND_TEXT, f"{n_found} peaks")
 
     def _update_trend_plot(self):
         """Refresh the trend plot; collector handles unit/sensitivity conversion."""
@@ -545,6 +709,7 @@ class GUI:
                     n_overflow += 1
             self._update_time_plot(result, ch)
             self._update_freq_plot(result, ch)
+            self._update_envelope_plot(result, ch)
 
         if dpg.does_item_exist(ui.CH_WARNINGS_SECTION):
             dpg.configure_item(
@@ -594,6 +759,23 @@ class GUI:
         if not self.collector.is_streaming:
             self.collector.reprocess_last_block()
 
+    @staticmethod
+    def _tooltip(target, text: str, wrap: int = 320):
+        """Attach a wrapped hover tooltip to an already-created widget."""
+        with dpg.tooltip(parent=target):
+            dpg.add_text(text, wrap=wrap)
+
+    def _on_peak_threshold_change(self, sender=None, data=None):
+        """Push the significance threshold into the config and reprocess.
+
+        Unlike the old peak-count spinner this is not a display-only setting:
+        it changes which lines are selected, so the frame has to go back
+        through process_sample rather than just being re-drawn.
+        """
+        value = float(dpg.get_value(ui.FFT_PEAK_THRESHOLD_DB))
+        self.collector.config.peak_threshold_db = max(0.0, value)
+        self._redraw()
+
     # ------------------------------------------------------------------
     # Channel series management
     # ------------------------------------------------------------------
@@ -610,6 +792,7 @@ class GUI:
         for tag, axis in [
             (ui.plt_time_series(ch), time_axis),
             (ui.plt_freq_series(ch), freq_axis),
+            (ui.plt_env_series(ch), ui.PLT_ENV_AX_AMPL),
             (ui.plt_trend_series(ch), trend_axis),
         ]:
             if not dpg.does_item_exist(tag):
@@ -622,7 +805,9 @@ class GUI:
                 dpg.bind_item_theme(peaks_tag, self._peak_themes[ch % len(self._peak_themes)])
 
     def _remove_channel_series(self, ch: int):
-        for tag in [ui.plt_time_series(ch), ui.plt_freq_series(ch), ui.plt_trend_series(ch), ui.plt_freq_peaks(ch)]:
+        for tag in [ui.plt_time_series(ch), ui.plt_freq_series(ch),
+                    ui.plt_env_series(ch), ui.plt_trend_series(ch),
+                    ui.plt_freq_peaks(ch)]:
             if dpg.does_item_exist(tag):
                 dpg.delete_item(tag)
 
@@ -730,12 +915,18 @@ class GUI:
         fs_ks = cfg.samplerate / 1000
         t_col = cfg.acquisition_period
         hp = f"HP {cfg.highpass_fc:.0f} Hz" if cfg.highpass_enabled else "HP off"
-        aa = f"AA {cfg.samplerate / 2:.0f} Hz"
+        # Label F_max, not fs/2. Calling fs/2 the "AA" frequency read as a spec
+        # the instrument does not meet: measured alias rejection at the
+        # frequency folding into the top of the displayed band is -21.8 dB, and
+        # effectively 0 dB at fs/2. The band above F_max is a guard band and is
+        # no longer displayed at all (see collector.process_sample step 6).
+        fmax_lbl = f"F_max {cfg.maxfreq:.0f} Hz"
+        # Report the resolution actually delivered, not the one requested.
         info = (
-            f"{cfg.maxfreq:.0f} Hz max  |  {cfg.binsize:.2f} Hz/bin\n"
+            f"{cfg.maxfreq:.0f} Hz max  |  {cfg.binsize_actual:.2f} Hz/bin\n"
             f"{cfg.n_fft_bins} lines  |  {fs_ks:.1f} kS/s\n"
             f"Acq: {t_col:.3f} s  |  {cfg.fft_window}\n"
-            f"{hp}  |  {aa}"
+            f"{hp}  |  {fmax_lbl}"
         )
         if dpg.does_item_exist(ui.SPECTRUM_INFO_TEXT):
             dpg.set_value(ui.SPECTRUM_INFO_TEXT, info)
@@ -768,11 +959,11 @@ class GUI:
             binsize = rev80.BINSIZE_PRESETS[_BINSIZE_LABELS.index(bs_str)]
         except (ValueError, IndexError):
             binsize = self.collector.config.binsize
-        samplerate = rev80.nextpow2(int(2 * maxfreq))
-        blocksize = rev80.nextpow2(int(samplerate / binsize))
-        n_fft_bins = blocksize // 2 + 1
-        acq_time = blocksize / samplerate
-        mem_bytes = blocksize * 8
+        derived    = derive_acquisition_preview(maxfreq, binsize)
+        samplerate = derived['samplerate']
+        n_fft_bins = derived['n_fft_bins']
+        acq_time   = derived['acq_time']
+        mem_bytes  = derived['mem_bytes']
 
         cache_frames = (
             int(dpg.get_value(ui.ACQ_DLG_CACHE_FRAMES))
@@ -789,6 +980,20 @@ class GUI:
             mem_str = f"{total_mem / 1024:.1f} KB"
         else:
             mem_str = f"{total_mem} B"
+
+        # Averaging window, in seconds. N alone is hard to reason about; what
+        # the analyst actually needs to know is how long the machine has to
+        # stay steady, and how long they will wait for the estimate to fill.
+        # A frame is exactly 1/binsize seconds, so the window is N/binsize.
+        if dpg.does_item_exist(ui.ACQ_DLG_AVG_TIME):
+            if dpg.get_value(ui.ACQ_DLG_AVG_ENABLED):
+                n_req = max(1, int(dpg.get_value(ui.ACQ_DLG_AVG_N)))
+                n_eff = min(n_req, cache_frames)
+                capped = '' if n_eff == n_req else f'  (capped by {cache_frames}-frame cache)'
+                dpg.set_value(ui.ACQ_DLG_AVG_TIME,
+                              f"{n_eff} x {acq_time:.3g} s = {n_eff * acq_time:.3g} s{capped}")
+            else:
+                dpg.set_value(ui.ACQ_DLG_AVG_TIME, "off")
 
         if dpg.does_item_exist(ui.ACQ_DLG_SAMPLERATE):
             dpg.set_value(ui.ACQ_DLG_SAMPLERATE, f"{samplerate / 1000:.1f} kS/s")
@@ -879,6 +1084,7 @@ class GUI:
     # so a typical 60 Hz fundamental fills the trace legibly on autoscale.
     _TIME_WINDOW_RANGE_MS: float = 300.0
     _TIME_WINDOW_OFFSET_MS: float = 200.0
+    _last_time_x0_ms: float = 0.0   # start of the most recently plotted trace
 
     def _autoscale_plots(self, sender=None, data=None):
         """Scale all plot axes to sensible initial bounds.
@@ -888,12 +1094,14 @@ class GUI:
         afterwards.  Axes scaled with fit_axis_data are inherently one-shot and
         don't need unlocking.
         """
-        # Time Series X: fixed window for legibility (not fit-to-data)
+        # Time Series X: fixed window for legibility (not fit-to-data), anchored
+        # to where the trace actually begins.
         if self.collector.config.acquisition_period > 0.5 and dpg.does_item_exist(ui.PLT_SAMPLE_AX_TIME):
+            start = getattr(self, '_last_time_x0_ms', 0.0) + self._TIME_WINDOW_OFFSET_MS
             dpg.set_axis_limits(
                 ui.PLT_SAMPLE_AX_TIME,
-                self._TIME_WINDOW_OFFSET_MS,
-                self._TIME_WINDOW_OFFSET_MS + self._TIME_WINDOW_RANGE_MS,
+                start,
+                start + self._TIME_WINDOW_RANGE_MS,
             )
         else:
             # Acq period too small. Fit whole axis
@@ -1541,7 +1749,6 @@ class GUI:
                      date, time, n_channels, n_captures, n_bursts}
         Reads the folder from the _SB_FOLDER widget if it exists, else default.
         """
-        import h5py
         import json as _json
         if dpg.does_item_exist('_SB_FOLDER'):
             folder_str = dpg.get_value('_SB_FOLDER').strip()
@@ -1608,7 +1815,6 @@ class GUI:
 
     def _on_session_list_select(self, sender=None, data=None, user_data=None) -> None:
         """Load all interval frames from the selected session; populate burst table."""
-        import h5py
         import json
         # user_data carries the session dict when called from table row selectable
         entry = user_data
@@ -1753,7 +1959,12 @@ class GUI:
                         for k, v in scope_s.to_dict().items():
                             sg.attrs[k] = v
             log.info(f"Saved config to {session_h5.name}")
-        except Exception as exc:
+        except (OSError, KeyError) as exc:
+            # Narrow on purpose: this used to be a bare `except Exception`,
+            # which swallowed the NameError from a missing h5py import and
+            # reported it as a disk failure, misdirecting the user toward
+            # permissions. Only genuine I/O (OSError) and missing-group
+            # (KeyError) failures belong here; programming errors must surface.
             log.error(f"_on_sb_save_config: failed to patch {session_h5}: {exc}")
             return
         # Reprocess trend with the new config
@@ -1972,9 +2183,56 @@ class GUI:
             dpg.set_value(ui.ACQ_DLG_HP_ENABLED, cfg.highpass_enabled)
         if dpg.does_item_exist(ui.ACQ_DLG_HP_FC):
             dpg.set_value(ui.ACQ_DLG_HP_FC, cfg.highpass_fc)
+        if dpg.does_item_exist(ui.ACQ_DLG_AVG_ENABLED):
+            dpg.set_value(ui.ACQ_DLG_AVG_ENABLED, cfg.averaging_enabled)
+            dpg.set_value(ui.ACQ_DLG_AVG_N, cfg.n_averages)
+        if dpg.does_item_exist(ui.ACQ_DLG_BAND_FMIN):
+            # 0 is the "unset" sentinel in the widget; None in the config.
+            dpg.set_value(ui.ACQ_DLG_BAND_FMIN, cfg.band_fmin or 0.0)
+            dpg.set_value(ui.ACQ_DLG_BAND_FMAX, cfg.band_fmax or 0.0)
+            dpg.set_value(ui.ACQ_DLG_BAND_PRESET, self._band_preset_label(cfg))
         if dpg.does_item_exist(ui.ACQ_DLG_CACHE_FRAMES):
             dpg.set_value(ui.ACQ_DLG_CACHE_FRAMES, cfg.cache_frames)
         self._update_acq_derived()
+
+    def _band_suffix(self) -> str:
+        """Compact ' 10-1000 Hz' qualifier for overall labels, or '' if unknown.
+
+        The band is part of what the number means -- two overalls taken over
+        different bands are not comparable -- so it rides on the label rather
+        than only in a tooltip.
+        """
+        cfg = self.collector.config if self.collector else None
+        if cfg is None:
+            return ''
+        lo, hi = cfg.band
+        lo_s = f'{lo:g}' if lo else '0'
+        return f'  {lo_s}-{hi:g} Hz'
+
+    @staticmethod
+    def _band_preset_label(cfg) -> str:
+        """Which band preset, if any, the config's explicit edges correspond to."""
+        if cfg.band_fmin is None and cfg.band_fmax is None:
+            return 'Full band (HP - F_max)'
+        for name, (lo, hi) in rev80.ISO_BAND_PRESETS.items():
+            if (cfg.band_fmin == lo) and (cfg.band_fmax == hi):
+                return name
+        return 'Custom'
+
+    def _on_band_preset(self, sender=None, data=None):
+        """Fill the band edge fields from the chosen preset.
+
+        The edges stay editable afterwards -- picking a preset is a shortcut for
+        typing two numbers, not a mode.
+        """
+        label = dpg.get_value(ui.ACQ_DLG_BAND_PRESET)
+        if label in rev80.ISO_BAND_PRESETS:
+            lo, hi = rev80.ISO_BAND_PRESETS[label]
+        else:
+            lo, hi = 0.0, 0.0          # 'Full band' / 'Custom' -> unset, i.e. derive
+        dpg.set_value(ui.ACQ_DLG_BAND_FMIN, float(lo))
+        dpg.set_value(ui.ACQ_DLG_BAND_FMAX, float(hi))
+        self._on_acq_preview()
 
     def _apply_acq_settings_from_widgets(self):
         """Read acquisition tab widgets and write values into collector.config.
@@ -2003,6 +2261,14 @@ class GUI:
             cfg.highpass_enabled = dpg.get_value(ui.ACQ_DLG_HP_ENABLED)
         if dpg.does_item_exist(ui.ACQ_DLG_HP_FC):
             cfg.highpass_fc = float(dpg.get_value(ui.ACQ_DLG_HP_FC))
+        if dpg.does_item_exist(ui.ACQ_DLG_AVG_ENABLED):
+            cfg.averaging_enabled = bool(dpg.get_value(ui.ACQ_DLG_AVG_ENABLED))
+            cfg.n_averages = max(1, int(dpg.get_value(ui.ACQ_DLG_AVG_N)))
+        if dpg.does_item_exist(ui.ACQ_DLG_BAND_FMIN):
+            fmin = float(dpg.get_value(ui.ACQ_DLG_BAND_FMIN))
+            fmax = float(dpg.get_value(ui.ACQ_DLG_BAND_FMAX))
+            cfg.band_fmin = fmin if fmin > 0 else None
+            cfg.band_fmax = fmax if fmax > 0 else None
         if dpg.does_item_exist(ui.ACQ_DLG_CACHE_FRAMES):
             n = max(1, int(dpg.get_value(ui.ACQ_DLG_CACHE_FRAMES)))
             cfg.cache_frames = n
@@ -2059,9 +2325,13 @@ class GUI:
         out_dir = mon.get("output_dir") or ""
         compress = mon.get("compression", "gzip") == "gzip"
 
+        # Fall back to the NEAREST preset, not a hardcoded 3600. config.py
+        # seeds interval_s: 600, which was not a preset member, so the widget
+        # showed '1 h' and saving wrote 3600 back — silently turning a
+        # 10-minute logging interval into an hourly one.
         interval_label = rev80.MONITOR_INTERVAL_PRESETS.get(
             int(interval_s),
-            rev80.MONITOR_INTERVAL_PRESETS[3600],
+            rev80.MONITOR_INTERVAL_PRESETS[nearest_interval_preset(interval_s)],
         )
         dpg.set_value(ui.MON_DLG_INTERVAL, interval_label)
         dpg.set_value(ui.MON_DLG_PRE_BUFFER, pre_buf_s)
@@ -2076,7 +2346,12 @@ class GUI:
             if dpg.does_item_exist(tag):
                 dpg.set_value(tag, val)
         _sv(ui.MON_ANOM_ENABLED,   bool(anom.get("enabled",    False)))
-        _sv(ui.MON_ANOM_HOOK,      str(anom.get("hook_type",  "RMS")))
+        # Stored canonically in lowercase; the combo shows the display label.
+        # gui_hook_type() clamps a stored 'spectral'/'both' — written by the
+        # headless front end, which still offers them — to something this combo
+        # actually lists. The stored value itself is preserved on save.
+        self._stored_hook_type = canonical_hook_type(anom.get("hook_type", "rms"))
+        _sv(ui.MON_ANOM_HOOK,      hook_type_label(gui_hook_type(self._stored_hook_type)))
         _sv(ui.MON_ANOM_RMS_PCT,      float(anom.get("rms_pct",       10.0)))
         _sv(ui.MON_ANOM_RMS_S,        float(anom.get("rms_s",         3.0)))
         _sv(ui.MON_ANOM_RMS_EWMA_TIME, float(anom.get("rms_ewma_time", 60.0)))
@@ -2099,6 +2374,23 @@ class GUI:
 
         self._on_anom_config_change()
 
+    def _hook_type_to_save(self, widget_value) -> str:
+        """Canonical hook type to persist, without clobbering a headless setting.
+
+        The combo cannot show 'spectral'/'both' (see GUI_ANOMALY_HOOK_TYPES), so
+        a config written by the headless front end loads as 'rms' for display.
+        Writing that back would silently rewrite the user's setting the first
+        time they merely opened this dialog — the S-07 failure mode. If the
+        stored value is one the GUI cannot offer, and the widget still shows the
+        clamped stand-in, keep what was stored.
+        """
+        shown = canonical_hook_type(widget_value)
+        stored = getattr(self, '_stored_hook_type', None)
+        if stored is not None and stored not in GUI_ANOMALY_HOOK_TYPES:
+            if shown == gui_hook_type(stored):
+                return stored
+        return shown
+
     def _save_monitor_config(self) -> None:
         """Persist monitor + anomaly config to acquisition.yaml."""
         def _get(tag, default):
@@ -2120,7 +2412,7 @@ class GUI:
             'compression_level': 4,
             'anomaly': {
                 'enabled':       bool(_get(ui.MON_ANOM_ENABLED,    False)),
-                'hook_type':     str(_get(ui.MON_ANOM_HOOK,        'RMS')),
+                'hook_type':     self._hook_type_to_save(_get(ui.MON_ANOM_HOOK, 'RMS')),
                 'rms_pct':       float(_get(ui.MON_ANOM_RMS_PCT,        10.0)),
                 'rms_s':         float(_get(ui.MON_ANOM_RMS_S,          3.0)),
                 'rms_ewma_time': float(_get(ui.MON_ANOM_RMS_EWMA_TIME,  60.0)),
@@ -2297,11 +2589,11 @@ class GUI:
         """Show/hide RMS/Spectral settings groups; refresh computed-alpha labels."""
         if not dpg.does_item_exist(ui.MON_ANOM_HOOK):
             return
-        hook = dpg.get_value(ui.MON_ANOM_HOOK)
+        hook = canonical_hook_type(dpg.get_value(ui.MON_ANOM_HOOK))
         if dpg.does_item_exist(ui.MON_ANOM_RMS_GROUP):
-            dpg.configure_item(ui.MON_ANOM_RMS_GROUP,  show=hook in ('RMS',  'Both'))
+            dpg.configure_item(ui.MON_ANOM_RMS_GROUP,  show=hook in ('rms',  'both'))
         if dpg.does_item_exist(ui.MON_ANOM_SPEC_GROUP):
-            dpg.configure_item(ui.MON_ANOM_SPEC_GROUP, show=hook in ('Spectral', 'Both'))
+            dpg.configure_item(ui.MON_ANOM_SPEC_GROUP, show=hook in ('spectral', 'both'))
         # Update α labels from ewma_time + current acquisition period
         from rev80.monitor.anomaly import ewma_alpha_from_time
         dt = self.collector.config.acquisition_period if self.collector else 1.0
@@ -2337,11 +2629,17 @@ class GUI:
 
         # ── EWMA-based hooks (RMS / Spectral) — gated by the main Enable switch
         if _get(ui.MON_ANOM_ENABLED, False):
-            hook_type = str(_get(ui.MON_ANOM_HOOK, 'RMS'))
-            warmup    = int(_get(ui.MON_ANOM_RMS_WARMUP, 30))
+            hook_type = canonical_hook_type(_get(ui.MON_ANOM_HOOK, 'RMS'))
+            # Default 10, matching config.py's seeded `warmup` and headless.
+            # This copy defaulted to 30, so a config missing the key produced
+            # a 3x longer baseline warm-up in the GUI than headless.
+            warmup    = int(_get(ui.MON_ANOM_RMS_WARMUP, 10))
+            # Hoisted above the hook_type chain: the spectral branch reads
+            # `period` unconditionally, so a Spectral-only config raised
+            # UnboundLocalError when it was bound inside the RMS branch.
+            period    = self.collector.config.acquisition_period
 
-            if hook_type in ('RMS', 'Both'):
-                period = self.collector.config.acquisition_period
+            if hook_type in ('rms', 'both'):
                 rms_s  = float(_get(ui.MON_ANOM_RMS_S, 3.0))
                 consecutive_n = max(1, round(rms_s / period) + 1) if period > 0 else 1
                 if rms_s > 0.25 * pre_buffer_s:
@@ -2352,7 +2650,8 @@ class GUI:
                         rms_s, pre_buffer_s,
                     )
                 rms_ewma_t = float(_get(ui.MON_ANOM_RMS_EWMA_TIME, 60.0))
-                rms_alpha  = ewma_alpha_from_time(rms_ewma_t, period) if period > 0 else 0.97
+                rms_alpha  = (ewma_alpha_from_time(rms_ewma_t, period)
+                              if period > 0 else DEFAULT_RMS_ALPHA)
                 hooks.append(RmsThresholdHook(
                     rms_threshold_pct    = float(_get(ui.MON_ANOM_RMS_PCT, 10.0)),
                     consecutive_n        = consecutive_n,
@@ -2361,14 +2660,23 @@ class GUI:
                     burst_duration_s     = burst_dur,
                 ))
 
-            if hook_type in ('Spectral', 'Both'):
+            # Unreachable from the GUI while GUI_ANOMALY_HOOK_TYPES excludes
+            # 'spectral'/'both': the combo cannot produce them and a stored value
+            # is clamped on load. Kept rather than deleted so this builder stays
+            # shape-compatible with the headless copy, which still offers the
+            # hook, and so tests/test_anomaly_hook_build.py keeps checking both
+            # copies for drift. Delete both together if R39 lands on "remove".
+            if hook_type in ('spectral', 'both'):
                 fmin_v      = float(_get(ui.MON_ANOM_SPEC_FMIN, 0.0))
                 fmax_v      = float(_get(ui.MON_ANOM_SPEC_FMAX, 0.0))
                 spec_ewma_t = float(_get(ui.MON_ANOM_SPEC_EWMA_TIME, 300.0))
-                spec_alpha  = ewma_alpha_from_time(spec_ewma_t, period) if period > 0 else 0.995
+                spec_alpha  = (ewma_alpha_from_time(spec_ewma_t, period)
+                               if period > 0 else DEFAULT_SPEC_ALPHA)
                 hooks.append(SpectralThresholdHook(
                     spectral_threshold_pct = float(_get(ui.MON_ANOM_SPEC_PCT, 50.0)),
-                    consecutive_n          = int(_get(ui.MON_ANOM_SPEC_N,     3)),
+                    # Default 10, matching config.py's seeded `spec_n` and
+                    # headless. This copy defaulted to 3.
+                    consecutive_n          = int(_get(ui.MON_ANOM_SPEC_N,     10)),
                     baseline_alpha         = spec_alpha,
                     min_baseline_samples   = warmup,
                     fmin                   = fmin_v if fmin_v > 0 else None,
@@ -2694,6 +3002,10 @@ class GUI:
         acq_dict = _cfg.load_acquisition_config().get("acquisition", {})
         if acq_dict:
             self.collector.config = AcquisitionSettings.from_dict(acq_dict)
+        # The peak significance widget lives in the results pane, not in the
+        # config dialog, so nothing else repopulates it when config is reloaded.
+        if dpg.does_item_exist(ui.FFT_PEAK_THRESHOLD_DB):
+            dpg.set_value(ui.FFT_PEAK_THRESHOLD_DB, self.collector.config.peak_threshold_db)
 
         if device_cfg is None:
             if self.collector.sensor is not None:
@@ -2761,7 +3073,9 @@ class GUI:
 
     def _create_gui(self):
         dpg.create_context()
-        dpg.bind_font(icons.load())
+        _font = icons.load()
+        if _font is not None:      # None → font file absent, use DPG default
+            dpg.bind_font(_font)
 
         # ── Unified Config Dialog (Device / Sensors / Acquisition tabs) ───
         with dpg.window(
@@ -2896,6 +3210,78 @@ class GUI:
                                 dpg.add_input_float(
                                     label="Hz", tag=ui.ACQ_DLG_HP_FC, default_value=10.0, min_value=0.1, width=100
                                 )
+                            # Control: linear power averaging of the spectrum.
+                            _avg_en = dpg.add_checkbox(
+                                label="Average spectrum",
+                                tag=ui.ACQ_DLG_AVG_ENABLED,
+                                default_value=False,
+                                callback=self._on_acq_preview,
+                            )
+                            self._tooltip(
+                                _avg_en,
+                                "Average the spectrum over several successive frames. "
+                                "Each bin of a single frame has a standard deviation "
+                                "equal to its own mean, so the floor looks rough and a "
+                                "small line is hard to pick out; averaging N frames cuts "
+                                "that scatter by sqrt(N).\n\n"
+                                "It does NOT lower the noise floor -- only the "
+                                "uncertainty of it. To separate two close lines you need "
+                                "a finer bin size instead.\n\n"
+                                "Assumes the machine is steady over the window. If the "
+                                "speed drifts, lines smear across bins and averaging "
+                                "blurs them rather than sharpening them.")
+                            _avg_n = dpg.add_input_int(
+                                label="Averages", tag=ui.ACQ_DLG_AVG_N,
+                                default_value=8, min_value=1, max_value=512,
+                                callback=self._on_acq_preview, width=_w,
+                            )
+                            self._tooltip(
+                                _avg_n,
+                                "Number of frames to average. Diminishing returns past "
+                                "about 16, since the benefit goes as sqrt(N): 4 halves "
+                                "the scatter, 16 quarters it, 64 only halves it again.\n\n"
+                                "Capped by the frame cache below -- you cannot average "
+                                "more frames than are kept. Frames rejected for ADC "
+                                "overload or a degraded stream are skipped, so the count "
+                                "actually achieved is shown beside the spectrum.")
+                            dpg.add_input_text(
+                                label="Avg. Window", tag=ui.ACQ_DLG_AVG_TIME,
+                                readonly=True, width=_w,
+                            )
+
+                            # Control: declared measurement band for the overall.
+                            # Blank/0 means "derive": the highpass edge up to
+                            # F_max. Before this existed the overall spanned
+                            # highpass_fc..fs/2, i.e. up to 2.05x F_max, so it
+                            # included content the user had excluded via F_max
+                            # and was not comparable between two sessions taken
+                            # at different F_max.
+                            _band_items = ['Full band (HP - F_max)'] + list(rev80.ISO_BAND_PRESETS)
+                            _band_cmb = dpg.add_combo(
+                                label="Overall Band", items=_band_items,
+                                tag=ui.ACQ_DLG_BAND_PRESET,
+                                default_value=_band_items[0],
+                                callback=self._on_band_preset, width=_w,
+                            )
+                            self._tooltip(_band_cmb,
+                                "The frequency band the Overall amplitude is measured over, "
+                                "and stored with the data. 'Full band' follows the highpass "
+                                "setting and F_max. The ISO bands are what ISO 20816 zone "
+                                "limits are defined against -- a velocity RMS only means "
+                                "anything against a zone boundary if it was measured over "
+                                "the band that boundary assumes.")
+                            with dpg.group(horizontal=True):
+                                dpg.add_input_float(
+                                    label="min", tag=ui.ACQ_DLG_BAND_FMIN, default_value=0.0,
+                                    min_value=0.0, step=0, format="%.1f",
+                                    callback=self._on_acq_preview, width=90,
+                                )
+                                dpg.add_input_float(
+                                    label="max Hz", tag=ui.ACQ_DLG_BAND_FMAX, default_value=0.0,
+                                    min_value=0.0, step=0, format="%.1f",
+                                    callback=self._on_acq_preview, width=90,
+                                )
+
                             # Control: Frame cache depth
                             dpg.add_separator()
                             dpg.add_text("Recording Length")
@@ -3064,16 +3450,18 @@ class GUI:
                             )
                             _hook_combo = dpg.add_combo(
                                 label="Hook",
-                                items=["RMS", "Spectral", "Both"],
+                                items=[ANOMALY_HOOK_LABELS[k] for k in GUI_ANOMALY_HOOK_TYPES],
                                 tag=ui.MON_ANOM_HOOK,
-                                default_value="RMS",
+                                default_value=ANOMALY_HOOK_LABELS[GUI_ANOMALY_HOOK_TYPES[0]],
                                 callback=self._on_anom_config_change,
                                 width=_mon_w,
                             )
                             _tip(_hook_combo,
                                  "RMS: monitors overall vibration level. "
-                                 "Spectral: monitors the frequency-domain shape. "
-                                 "Both: either detector can trigger a burst independently.")
+                                 "The Spectral detector is temporarily unavailable here — it "
+                                 "fires on essentially every healthy frame, so it was unwired "
+                                 "from this panel pending a rework (see R39). It is unchanged "
+                                 "in the headless front end.")
 
                             with dpg.group(tag=ui.MON_ANOM_RMS_GROUP):
                                 dpg.add_text("RMS settings", color=_c("ON_SURFACE"))
@@ -3443,6 +3831,48 @@ class GUI:
                                 dpg.add_plot_axis(dpg.mvYAxis, label="", tag=ui.PLT_FREQ_AX_ACCEL)
                                 dpg.add_plot_axis(dpg.mvYAxis2, label="", tag=ui.PLT_FREQ_AX_2)
                                 dpg.hide_item(ui.PLT_FREQ_AX_2)
+                        with dpg.tab(label="Envelope"):
+                            # Demodulation band controls. A bearing defect's
+                            # impulses ring a housing resonance at 2-20 kHz and
+                            # are modulated at the defect rate; the raw spectrum
+                            # buries that under the 1x, the envelope of the
+                            # resonance shows it as a clean line.
+                            with dpg.group(horizontal=True):
+                                dpg.add_text("Band")
+                                dpg.add_input_float(
+                                    label="-", tag=ui.ENV_BAND_LO, default_value=0.0,
+                                    min_value=0.0, step=0, format="%.0f", width=80,
+                                    callback=self._redraw,
+                                )
+                                dpg.add_input_float(
+                                    label="Hz", tag=ui.ENV_BAND_HI, default_value=0.0,
+                                    min_value=0.0, step=0, format="%.0f", width=80,
+                                    callback=self._redraw,
+                                )
+                                _auto = dpg.add_button(label="Auto",
+                                                       tag=ui.ENV_BAND_AUTO,
+                                                       callback=self._on_env_auto_band)
+                                self._tooltip(
+                                    _auto,
+                                    "Pick a demodulation band from the current frame: "
+                                    "the strongest concentration of high-frequency "
+                                    "energy, which is where a housing resonance shows "
+                                    "up. Leave the band at 0 to auto-select every "
+                                    "frame.")
+                            dpg.add_text("", tag=ui.ENV_INFO_TEXT, color=_c("MUTED"))
+                            with dpg.plot(
+                                label="Envelope Spectrum",
+                                width=-1,
+                                height=-TIME_PLOT_HEIGHT,
+                                tag=ui.PLT_ENV,
+                                crosshairs=True,
+                            ):
+                                dpg.add_plot_legend(location=dpg.mvPlot_Location_East,
+                                                    tag=ui.PLT_ENV_LEGEND)
+                                dpg.add_plot_axis(dpg.mvXAxis, label="Modulation frequency, Hz",
+                                                  tag=ui.PLT_ENV_AX_FREQ)
+                                dpg.add_plot_axis(dpg.mvYAxis, label="Envelope amplitude",
+                                                  tag=ui.PLT_ENV_AX_AMPL)
                         with dpg.tab(label="Trend"):
                             with dpg.plot(
                                 label="Trend Series",
@@ -3488,13 +3918,51 @@ class GUI:
                             )
 
                     dpg.add_spacer(height=4)
-                    dpg.add_input_int(
-                        label="Peak Display",
+                    # Primary peak control. This replaced a plain "show the top
+                    # N by amplitude" spinner, which was the wrong knob: the
+                    # top of that list is monopolised by whichever part of the
+                    # band is loudest, so raising N was the only way to surface
+                    # a sideband family and raising N also pulled in ripple.
+                    _pk_thr = dpg.add_input_float(
+                        label="Peak Sig., dB",
+                        tag=ui.FFT_PEAK_THRESHOLD_DB,
+                        default_value=rev80_peaks.DEFAULT_THRESHOLD_DB,
+                        min_value=0.0,
+                        max_value=60.0,
+                        step=0.5,
+                        format="%.1f",
+                        callback=self._on_peak_threshold_change,
+                        width=100,
+                    )
+                    self._tooltip(
+                        _pk_thr,
+                        "How far a spectral line must rise above its own local noise "
+                        "floor before it is reported, in dB.\n\n"
+                        "The noise floor is estimated per bin, so a line in a quiet "
+                        "part of the band and a line in a loud one are judged by the "
+                        "same standard. Every line that passes is reported — the peak "
+                        "count is a result, not a setting.\n\n"
+                        "9.5 dB (3x) is the default. Lower admits more, and below "
+                        "about 7 dB it admits noise: on pure noise a 6 dB gate reports "
+                        "38 peaks per 2000 bins where 9.5 dB reports 0.8.",
+                    )
+                    _pk_cap = dpg.add_input_int(
+                        label="Max Shown",
                         tag=ui.FFT_PEAKS_DISPLAY_COUNT,
-                        default_value=6,
+                        default_value=_DEFAULT_PEAK_DISPLAY_CAP,
+                        min_value=1,
+                        max_value=500,
                         callback=self._redraw,
                         width=100,
                     )
+                    self._tooltip(
+                        _pk_cap,
+                        "Clutter cap on the table and the plot markers only. It hides "
+                        "the smallest of the lines that already passed the "
+                        "significance test; it does not decide which lines are real.",
+                    )
+                    dpg.add_text("", tag=ui.FFT_PEAKS_FOUND_TEXT, color=_c("MUTED"))
+                    dpg.add_text("", tag=ui.FFT_AVG_COUNT_TEXT, color=_c("MUTED"))
                     dpg.add_spacer(height=4)
 
                     # Frame metadata card — hidden until first frame arrives
@@ -3559,6 +4027,22 @@ class GUI:
                                 default_value="0.0",
                                 width=RESULTS_WIDTH // 2,
                             )
+                            # Impulsiveness scalars. A broadband overall
+                            # averages impulsiveness away, so these are what
+                            # see a bearing before the overall moves.
+                            _sc = dpg.add_text("Crest -   Kurt -",
+                                               tag=ui.ch_scalars_text(_ch),
+                                               color=_c("MUTED"))
+                            self._tooltip(
+                                _sc,
+                                "Crest factor = peak / RMS: 1.41 for a pure sine, "
+                                "~3-4 for random noise, higher when the signal is "
+                                "impulsive. It rises early in a bearing defect's life "
+                                "and falls again once the defect spalls, so it is read "
+                                "alongside kurtosis rather than instead of it.\n\n"
+                                "Kurtosis = 3.0 for random noise, 1.5 for a pure sine. "
+                                "Above about 4 means impulsive -- repetitive impacts "
+                                "that a broadband overall averages away completely.")
                             dpg.add_table(
                                 header_row=True,
                                 row_background=True,
@@ -3637,7 +4121,6 @@ class GUI:
         appropriate loader.  Called after the first render frame so all
         DPG plot series exist.
         """
-        import h5py
         p = Path(path_str.strip())
         if not p.exists():
             log.error(f"--from-file: path does not exist: {p}")

@@ -5,7 +5,6 @@ FFT peak validation via siggen loopback) live in test_picoscope_hw.py.
 """
 
 import time
-import yaml
 import h5py
 import numpy as np
 import pytest
@@ -171,7 +170,7 @@ def test_load_offline_adjusts_maxfreq():
     high_freq_config = AcquisitionSettings()
     high_freq_config.maxfreq = 50000.0  # → samplerate = 131072
     collector = DataCollector(sim_sensor, high_freq_config)
-    result = collector.collect_sample()
+    collector.collect_sample()   # populates frame_cache; return value unused
     collector.disconnect_sensor()
 
     DATADIR.mkdir(parents=True, exist_ok=True)
@@ -191,6 +190,12 @@ def test_load_offline_adjusts_maxfreq():
     assert offline.config.samplerate >= high_freq_config.samplerate, (
         f'samplerate {offline.config.samplerate} should be >= '
         f'{high_freq_config.samplerate} after loading high-freq file'
+    )
+    # ...and strictly upward from where it started, which is the behaviour the
+    # test is named for but never actually checked.
+    assert offline.config.samplerate > old_sr, (
+        f'samplerate should have been raised from {old_sr}, '
+        f'got {offline.config.samplerate}'
     )
 
     fname.unlink(missing_ok=True)
@@ -380,7 +385,7 @@ def test_resize_frame_cache_preserves_last_n_frames():
     collector = DataCollector(sim_sensor, acq_settings)
     # Collect multiple frames
     for _ in range(4):
-        frame = collector.collect_sample()
+        collector.collect_sample()   # populates frame_cache; return value unused
     collector.disconnect_sensor()
 
     cache_before = list(collector.data['frame_cache'])

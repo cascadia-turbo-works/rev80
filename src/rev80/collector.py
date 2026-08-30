@@ -11,22 +11,35 @@ import numpy as np
 import scipy.signal
 
 import rev80
+from rev80 import _dsp
+from rev80 import peaks as rev80_peaks
 from rev80._paths import data_dir
 from rev80.scope_sensor import ScopeSensor
 
 log = rev80.get_logger("collector")
 
 
-def _write_channel_group(h5_grp, ch: int, sample: 'rev80.VibeSample') -> None:
+def _write_channel_group(h5_grp, ch: int, sample: 'rev80.VibeSample',
+                         compression: str | None = None,
+                         compression_opts: int | None = None) -> None:
     """Write one VibeSample's mV data into an h5py group.
 
-    Used by both DataCollector.save_data() and MonitorWriterThread.
+    THE single channel-group writer, used by both DataCollector.save_data()
+    and MonitorWriterThread. These were previously two separate functions that
+    had silently diverged: the monitor copy wrote no validity flags at all, so
+    every monitor session recorded clipped and rate-degraded captures as though
+    they were clean. Keep them unified.
     """
     cg = h5_grp.create_group(str(ch))
-    cg.create_dataset('data', data=np.asarray(sample.data, dtype=np.float64))
+    kw = {}
+    if compression is not None:
+        kw['compression'] = compression
+        if compression_opts is not None:
+            kw['compression_opts'] = compression_opts
+    cg.create_dataset('data', data=np.asarray(sample.data, dtype=np.float64), **kw)
     cg.attrs['timestamp']  = sample.timestamp
     cg.attrs['rel_time']   = float(sample.rel_time)
-    cg.attrs['samplerate'] = int(sample.samplerate)
+    cg.attrs['samplerate'] = float(sample.samplerate)
     cg.attrs['status']     = str(sample.status)
     cg.attrs['overflow']   = bool(sample.overflow)
     cg.attrs['degraded']   = bool(sample.degraded)
@@ -52,6 +65,13 @@ class DataCollector:
         sensor: Union[rev80.VibeSensor, None] = None,
         config: Union[rev80.AcquisitionSettings, None] = None,
     ):
+
+        # Per-channel highpass filter state, carried across consecutive blocks
+        # of one continuous stream (see filter_block). Keyed by channel; reset
+        # on stream start and whenever the filter config changes.
+        self._hp_zi: Dict[int, np.ndarray] = {}
+        self._hp_zi_key: tuple | None = None
+        self._hp_sos_cache: Dict[tuple, np.ndarray] = {}
 
         self.sensor: Union[rev80.VibeSensor, None] = None
         self.stream = None
@@ -181,28 +201,199 @@ class DataCollector:
         """
         enabled = set(self.config.enabled_channels)
         self.trend = {
-            ch: self.trend.get(ch, {
-                "rel_times": np.empty(0),
-                "orders":    np.empty((0, 5)),
-            }) for ch in sorted(enabled)
+            ch: self.trend.get(ch, self._empty_trend()) for ch in sorted(enabled)
         }
 
-    def update_trend(self, ch: int, rel_time: float, orders: np.ndarray) -> None:
-        """Append one timestamped 5-order overall vector (mV RMS) for a channel."""
+    # ------------------------------------------------------------------
+    # Highpass filtering
+    # ------------------------------------------------------------------
+
+    def reset_filter_state(self) -> None:
+        """Drop carried highpass state (stream start / reconnect / config change)."""
+        self._hp_zi.clear()
+
+    def _filter_key(self, samplerate: float) -> tuple:
+        """Identity of the filter that would be applied at this rate."""
+        return (bool(self.config.highpass_enabled), float(self.config.highpass_fc),
+                int(self.config._BUTTER_ORDER), float(samplerate))
+
+    def highpass_knee_hz(self, samplerate: float) -> float:
+        """The -3 dB corner the high-pass is actually designed at.
+
+        `config.highpass_fc` is the *declared band edge* -- the frequency at
+        which the response must still be within passband tolerance -- not the
+        knee. Designing the Butterworth at the edge put -3 dB (x0.707) exactly
+        on it, so the instrument read 29% low at the one frequency ISO 2954
+        names as the bottom of its declared band. The knee is therefore placed
+        below the edge; see _dsp.butter_knee_for_edge for the derivation.
+        """
+        return _dsp.butter_knee_for_edge(
+            float(self.config.highpass_fc), int(self.config._BUTTER_ORDER)
+        )
+
+    def _highpass_sos(self, samplerate: float) -> 'np.ndarray | None':
+        """Butterworth SOS for the current config, recomputed only when it changes."""
+        key = self._filter_key(samplerate)
+        if not self.config.highpass_enabled or self.config.highpass_fc >= samplerate / 2.0:
+            return None
+        cached = self._hp_sos_cache.get(key)
+        if cached is None:
+            knee = self.highpass_knee_hz(samplerate)
+            if not (0.0 < knee < samplerate / 2.0):
+                return None
+            cached = scipy.signal.butter(
+                self.config._BUTTER_ORDER, knee,
+                btype='highpass', fs=samplerate, output='sos',
+            )
+            self._hp_sos_cache.clear()      # only ever one live config
+            self._hp_sos_cache[key] = cached
+        return cached
+
+    def filter_block(self, ch: int, data: np.ndarray, samplerate: float,
+                     stateful: bool) -> np.ndarray:
+        """Highpass one block of mV data.
+
+        Causal (sosfilt), not zero-phase: sosfiltfilt effectively doubles the
+        filter order (forward + backward pass), which resonates badly for a low
+        cutoff relative to a short block (e.g. 10 Hz over a 1 s block — only 10
+        cutoff-cycles of margin). Confirmed on real hardware data: sosfiltfilt
+        overshot the raw signal by 35-45% at the block edges with any padtype.
+
+        But plain `sosfilt(sos, x)` with no initial condition restarts the
+        filter from rest at every block, injecting a startup transient into
+        every frame of a continuous stream. Measured on a 200 Hz tone, block 1
+        of 4, high-pass at 10 Hz:
+
+                                      no zi      steady-state zi + carry
+            waveform peak            +9.41%          -0.00%
+            RMS, 1000 mV DC offset  +14321.74%       -0.00%
+            displacement overall     +19.15%         +0.02%
+            ... with DC offset    +1472786.72%       +0.02%
+
+        Two regimes:
+
+        * ``stateful=True`` — consecutive blocks of one live stream. The final
+          filter state of each block seeds the next, so the boundary is
+          seamless. Only receive_data uses this, exactly once per frame and in
+          order.
+        * ``stateful=False`` — a stored frame replayed from HDF5, or a frame
+          re-filtered because the config changed after capture. These are NOT
+          a continuous stream and are re-processed out of order, so no state
+          may be carried between them or replay stops being deterministic.
+          The filter is instead seeded from the block's DC content — see
+          _seed_zi.
+        """
+        sos = self._highpass_sos(samplerate)
+        if sos is None:
+            return np.asarray(data, dtype=np.float64).copy()
+
+        x = np.ascontiguousarray(data, dtype=np.float64)
+        if stateful:
+            key = self._filter_key(samplerate)
+            zi = self._hp_zi.get(ch)
+            if zi is None or self._hp_zi_key != key:
+                if self._hp_zi_key != key:
+                    self._hp_zi.clear()
+                self._hp_zi_key = key
+                zi = self._seed_zi(sos, x)
+            y, self._hp_zi[ch] = scipy.signal.sosfilt(sos, x, zi=zi)
+            return y
+
+        y, _ = scipy.signal.sosfilt(sos, x, zi=self._seed_zi(sos, x))
+        return y
+
+    @staticmethod
+    def _seed_zi(sos: np.ndarray, x: np.ndarray) -> np.ndarray:
+        """Initial filter state for a block with no usable history.
+
+        Seeded from the block MEAN, not from x[0]. scipy's documented idiom is
+        sosfilt_zi(sos) * x[0], which is correct when the first sample
+        represents the signal's baseline — true for a step response, false for
+        anything oscillatory. A vibration block is a waveform swinging about
+        its DC level, so x[0] is an arbitrary point on that swing, and seeding
+        with it tells the high-pass that the signal has been sitting at that
+        value forever. The filter then decays a step that was never there.
+
+        Measured on four consecutive real captures (PicoScope 4424A, 447.3 Hz
+        loopback tone, 1 Vpp, fs=8333.25, 10 Hz high-pass). Block mean was
+        -0.06..-0.21 mV in every block — the true DC — while x[0] ranged over
+        36..305 mV. Error against a fully-settled continuous-filter reference:
+
+            order          zi * x[0]        zi * mean(x)     warm-up pass
+            acceleration     +0.39%           -0.00%           +0.00%
+            velocity        +23.01%           -0.06%           -0.07%
+            displacement  +4297.20%           -2.22%          +61.10%
+            waveform         57.63%            0.51%            6.37%
+
+        (worst block shown per row.) A warm-up pass — filtering the block once
+        and reusing its final state as the initial state — was also tried and
+        is measurably WORSE than the mean, because it imposes a periodic
+        assumption the block does not satisfy.
+
+        Residual displacement error on an isolated block is irreducible: at
+        447 Hz the doubly-integrated result is dominated by near-DC noise whose
+        continuation simply is not present in a single block. It only affects
+        block 0 of a stream and replayed frames; once state is carried, blocks
+        1+ match the settled reference to +-0.000%.
+        """
+        return scipy.signal.sosfilt_zi(sos) * float(np.mean(x))
+
+    def filtered_data_for(self, ch: int, sample: 'rev80.VibeSample') -> np.ndarray:
+        """Highpassed mV for a sample, using the ingestion-time result if valid.
+
+        receive_data pre-filters live frames with carried state. If that cached
+        result was produced by the filter config now in force, reuse it —
+        re-filtering here would be both wasteful and, for a streaming frame,
+        wrong (the state has already moved on). Otherwise the sample is being
+        replayed or the config changed since capture, so filter it statelessly.
+        """
+        key = self._filter_key(sample.samplerate)
+        if sample.filtered_mv is not None and sample._filter_config_key == key:
+            return sample.filtered_mv
+        filtered = self.filter_block(ch, sample.data, sample.samplerate, stateful=False)
+        sample.filtered_mv        = filtered
+        sample._filter_config_key = key
+        return filtered
+
+    @staticmethod
+    def _empty_trend() -> dict:
+        return {"rel_times": np.empty(0), "orders": np.empty((0, 5)),
+                "crest_factor": np.empty(0), "kurtosis": np.empty(0)}
+
+    def update_trend(self, ch: int, rel_time: float, orders: np.ndarray,
+                     crest_factor: float = np.nan,
+                     kurtosis: float = np.nan) -> None:
+        """Append one timestamped trend point for a channel.
+
+        `orders` is the 5-order overall vector in mV RMS. The two impulsiveness
+        scalars ride alongside rather than inside it because they are
+        dimensionless -- they are not a sixth integration order and must not be
+        unit-converted by get_trend_for_display.
+
+        One reading of kurtosis says little; watching it climb over weeks is
+        the actual diagnostic, which is why they are trended and not merely
+        displayed.
+        """
         if ch not in self.trend:
-            self.trend[ch] = {"rel_times": np.empty(0), "orders": np.empty((0, 5))}
+            self.trend[ch] = self._empty_trend()
         td = self.trend[ch]
-        td["rel_times"] = np.append(td["rel_times"], rel_time)
-        td["orders"]    = np.vstack([td["orders"], orders.reshape(1, 5)])
+        # Tolerate a trend dict built before these keys existed (loaded files).
+        for key in ("crest_factor", "kurtosis"):
+            if key not in td:
+                td[key] = np.full(len(td["rel_times"]), np.nan)
+        td["rel_times"]    = np.append(td["rel_times"], rel_time)
+        td["orders"]       = np.vstack([td["orders"], orders.reshape(1, 5)])
+        td["crest_factor"] = np.append(td["crest_factor"], crest_factor)
+        td["kurtosis"]     = np.append(td["kurtosis"], kurtosis)
         cap = self.config.trend_max_points
         if len(td["rel_times"]) > cap:
-            td["rel_times"] = td["rel_times"][-cap:]
-            td["orders"]    = td["orders"][-cap:]
+            for key in ("rel_times", "orders", "crest_factor", "kurtosis"):
+                td[key] = td[key][-cap:]
 
     def clear_trend(self) -> None:
         """Wipe all accumulated trend data."""
         for ch in self.trend:
-            self.trend[ch] = {"rel_times": np.empty(0), "orders": np.empty((0, 5))}
+            self.trend[ch] = self._empty_trend()
         log.debug("Trend data cleared.")
 
     def get_trend_for_display(self) -> dict[int, tuple[list[float], list[float]]]:
@@ -211,7 +402,7 @@ class DataCollector:
         All unit/sensitivity/amplitude-mode conversion is handled here so the
         GUI never needs to import unit-conversion utilities.
         """
-        from rev80.util import UNIT_TO_SI, AMPLITUDE_SCALE, integration_steps
+        from rev80.util import UNIT_TO_SI, amplitude_scale, integration_steps
         out: dict[int, tuple[list[float], list[float]]] = {}
         for ch in self.config.enabled_channels:
             td        = self.trend.get(ch, {})
@@ -228,7 +419,7 @@ class DataCollector:
             amp_mode       = self.config.amplitude_mode_for(ch) or '0-P'
 
             n_steps    = integration_steps(sensor_eu, target_unit)
-            amp_factor = AMPLITUDE_SCALE.get(amp_mode, np.sqrt(2))
+            amp_factor = amplitude_scale(amp_mode)
             src_si     = UNIT_TO_SI.get(sensor_eu, 1.0)
             tgt_si     = UNIT_TO_SI.get(target_unit, 1.0)
             scale      = src_si / tgt_si / sensitivity_mv
@@ -309,6 +500,9 @@ class DataCollector:
             return
         if not self.stream:
             return
+        # A new stream is a new continuous signal — drop any filter state
+        # carried over from the previous one.
+        self.reset_filter_state()
         try:
             self.stream.start()
         except Exception as e:
@@ -394,6 +588,12 @@ class DataCollector:
         for i, ch in enumerate(channels):
             col  = min(i, data_arr.shape[1] - 1)
             data = np.ascontiguousarray(data_arr[:, col], dtype=np.float64)
+            # Filter here, at ingestion: this runs exactly once per frame and
+            # in stream order, which is what carrying the filter state across
+            # block boundaries requires. process_sample may be called many
+            # times on the same frame (re-render, unit change) and in any
+            # order when browsing, so it must not advance the state.
+            filtered = self.filter_block(ch, data, samplerate, stateful=True)
             samples[ch] = rev80.VibeSample(
                 status=samp["status"],
                 _timestamp=samp["timestamp"],
@@ -404,6 +604,8 @@ class DataCollector:
                 data=data,
                 rel_time=samp["rel_time"],
                 label=f"Ch{chr(65 + ch)}",
+                filtered_mv=filtered,
+                _filter_config_key=self._filter_key(samplerate),
             )
 
         self._data_callback(samples)
@@ -427,14 +629,98 @@ class DataCollector:
     # Sample processing
     # ------------------------------------------------------------------
 
-    def process_sample(self, ch: int, sample: 'rev80.VibeSample') -> 'rev80.ChannelResult | None':
+    def _psd_and_overalls_for(self, ch: int, sample: 'rev80.VibeSample'):
+        """Welch PSD (mV²) and the 5-order mV RMS overalls for one frame.
+
+        Both are cached on the sample under `_psd_config_key`, so repeated
+        renders of the same frame -- a unit change, a re-draw, stepping the
+        browse cursor back and forth -- cost nothing. Returns (freq, psd), or
+        (None, None) if the frame is too short to transform.
+        """
+        config = self.config
+        if sample.blocksize <= 1:
+            return None, None
+
+        filtered_mv = self.filtered_data_for(ch, sample)
+        samplerate  = sample.samplerate
+        N           = sample.blocksize
+        freq_td     = np.fft.rfftfreq(N, d=1.0 / samplerate)
+        band_fmin, band_fmax = config.band
+
+        # binsize and samplerate BOTH change the transform, so both belong in
+        # the key. Without them, switching 2 Hz -> 0.5 Hz bins returned the
+        # identical cached 2049-point, 2 Hz spectrum: the user believed they had
+        # quadrupled the resolution and nothing had changed (M-09). The band
+        # belongs there for the same reason -- the cached overalls are computed
+        # over it, so a band change with a stale cache silently returns the
+        # previous band's number.
+        psd_key = (config.fft_window, config.welch_overlap,
+                   config.highpass_enabled, config.highpass_fc,
+                   config.binsize, sample.samplerate,
+                   band_fmin, band_fmax)
+        if sample.psd_mv is not None and sample._psd_config_key == psd_key:
+            return sample.freq_hz, sample.psd_mv
+
+        # Segment = the whole block, so the computed spectrum matches the line
+        # count and bin width the UI states. See config.nperseg.
+        nperseg  = min(config.nperseg, len(filtered_mv))
+        noverlap = min(nperseg - 1, int(nperseg * config.welch_overlap))
+        freq_hz, psd_mv = scipy.signal.welch(
+            filtered_mv, fs=float(samplerate),
+            window=config.fft_window, nperseg=nperseg, noverlap=noverlap,
+            nfft=nperseg, scaling='spectrum', detrend='linear', average='mean',
+        )
+        sample.psd_mv          = psd_mv
+        sample.freq_hz         = freq_hz
+        sample._psd_config_key = psd_key
+
+        # 5-order mV RMS overalls via time-domain IFFT. sqrt(mean(x²)) on the
+        # IFFT signal avoids the Welch window normalisation artifact (Hann
+        # leakage inflates sqrt(sum(psd)) by sqrt(3/2) for a pure tone).
+        #
+        # All five orders run the same way: Hann taper, band mask, back to the
+        # time domain, RMS with the window's power gain divided out. Order 0
+        # used to skip the taper, on the grounds that a passthrough performs no
+        # transform-domain multiply and so has no wrap discontinuity to
+        # suppress. Band-limiting removed that premise -- the mask IS such a
+        # multiply, and therefore a circular convolution in time, with exactly
+        # the wrap sensitivity the taper exists to control.
+        #
+        # An un-tapered transform plus Parseval was measured as the
+        # alternative. It is exact for in-band content but its band edge is a
+        # rectangular window's, with -13 dB first sidelobes: a 3x tone at 30 Hz
+        # against a 100 Hz lower edge leaked in at only -22 dB, inflating the
+        # overall by +2.7%. Hann rejects the same tone by -84 dB, and -100 to
+        # -144 dB in the other cases measured, at a cost of 4.9e-4 worst-case
+        # in-band error over the preset grid. Band rejection is what an
+        # instrument needs here; the fifth decimal place is not.
+        hann_w, hann_gain = _dsp.hann_taper(N)
+        masked_hann = np.where(_dsp.band_mask(freq_td, band_fmin, band_fmax),
+                               np.fft.rfft(filtered_mv * hann_w), 0.0)
+        for i, n_ord in enumerate(range(-2, 3)):
+            if n_ord == 0:
+                time_ord = np.fft.irfft(masked_hann, n=N)
+            else:
+                time_ord = _dsp.integrate_rfft(masked_hann, freq_td, n_ord, N)
+            sample.overall_ampl_by_integration_order[i] = float(
+                np.sqrt(np.mean(np.square(time_ord))) / hann_gain
+            )
+        return freq_hz, psd_mv
+
+    def _psd_for(self, ch: int, sample: 'rev80.VibeSample'):
+        """Just the PSD of one frame, for the averaging accumulator."""
+        _, psd = self._psd_and_overalls_for(ch, sample)
+        return psd
+
+    def process_sample(self, ch: int, sample: 'rev80.VibeSample',
+                       history: 'list | None' = None) -> 'rev80.ChannelResult | None':
         """Filter, compute PSD, 5-order mV overalls, and convert to display units.
 
         Side-effects on sample (cached after first call per config):
           - psd_mv / freq_hz / _psd_config_key
           - overall_ampl_by_integration_order — (5,) RMS overalls in mV, orders −2…+2
         """
-        from rev80.util import UNIT_TO_SI, AMPLITUDE_SCALE, integration_steps
+        from rev80.util import UNIT_TO_SI, amplitude_scale, integration_steps
 
         if sample.blocksize <= 1:
             return None
@@ -447,81 +733,106 @@ class DataCollector:
         effective_tgt  = target_unit if target_unit else sensor_eu
         config         = self.config
         samplerate     = sample.samplerate
-        nyq            = samplerate / 2.0
 
         # ── 1. Butterworth filter ─────────────────────────────────────
-        # Lowpass is retired: mandatory anti-aliasing now happens upstream in
-        # PicoScopeStream, before this function ever sees the data.
-        #
-        # Causal (sosfilt), not zero-phase: sosfiltfilt effectively doubles the
-        # filter order (forward + backward pass), which resonates badly for a
-        # low cutoff relative to a short block (e.g. 10 Hz over a 1s block —
-        # only 10 cutoff-cycles of margin) -- confirmed on real hardware data,
-        # sosfiltfilt overshot the raw signal by 35-45% at the block edges
-        # (any padtype) vs. causal sosfilt's normal ~8-10% transient.
-        filtered_mv = sample.data.copy()
-        order = config._BUTTER_ORDER
-        if config.highpass_enabled and config.highpass_fc < nyq:
-            sos = scipy.signal.butter(order, config.highpass_fc,
-                                      btype='highpass', fs=samplerate, output='sos')
-            filtered_mv = scipy.signal.sosfilt(sos, filtered_mv)
+        # Filtering happens in filter_block(); see there for why the filter is
+        # causal-with-carried-state rather than zero-phase. Streaming frames
+        # arrive pre-filtered from receive_data (state carried across blocks);
+        # replayed frames are filtered here, statelessly.
+        filtered_mv = self.filtered_data_for(ch, sample)
 
-        # rfft is used in both step 3 (5-order overalls) and step 8 (time-domain output).
-        # Plain rfft — no window, no segment averaging — so irfft is an exact inverse.
+        # Frequency-domain integration/differentiation is done on a *tapered*
+        # block. The DFT treats the record as periodic, so an un-windowed block
+        # spanning a non-integer number of cycles carries a step discontinuity
+        # at the wrap point. That step's spectrum is broadband and
+        # low-frequency-weighted, and (j*omega)**n with n < 0 amplifies it by
+        # 1/omega**|n| — exactly where it is worst. Un-windowed, a 501 Hz tone
+        # read +4473.76% high in displacement overall; the on-bin case that the
+        # old test suite exercised exclusively was the one case with zero error.
+        # See rev80._dsp for the full measured table.
         N       = sample.blocksize
-        rfft_mv = np.fft.rfft(filtered_mv)
         freq_td = np.fft.rfftfreq(N, d=1.0 / samplerate)
 
-        # ── 2. Welch PSD in mV² — compute once, cache on sample ──────
-        psd_key = (config.fft_window, config.welch_overlap,
-                   config.highpass_enabled, config.highpass_fc)
-        if sample.psd_mv is None or sample._psd_config_key != psd_key:
-            nfft     = int(samplerate / config.binsize)
-            nperseg  = min(nfft, len(filtered_mv))
-            nfft     = max(nfft, nperseg)
-            noverlap = min(nperseg - 1, int(nperseg * config.welch_overlap))
-            freq_hz, psd_mv = scipy.signal.welch(
-                filtered_mv, fs=float(samplerate),
-                window=config.fft_window, nperseg=nperseg, noverlap=noverlap,
-                nfft=nfft, scaling='spectrum', detrend='linear', average='mean',
-            )
-            sample.psd_mv          = psd_mv
-            sample.freq_hz         = freq_hz
-            sample._psd_config_key = psd_key
+        # The declared measurement band. Everything the overall and the
+        # displayed waveform are built from is restricted to it.
+        #
+        # Before this, the overall was the RMS of the whole filtered block, so
+        # its band ran to fs/2 -- 1.28x to 2.56x maxfreq depending on where the
+        # power-of-two rounding in AcquisitionSettings.samplerate lands, and
+        # 2.048x at the 500/1000/2000 Hz presets. F-9 had already truncated the
+        # *spectrum* at maxfreq (step 6), so the number on the result card and
+        # the picture beside it described different bands. Content the user had
+        # explicitly excluded via F_max still reached the trend: 2 g RMS at
+        # 1500 Hz outside a 1000 Hz F_max inflated reported overall velocity by
+        # +25%, enough to move a machine across an ISO 20816 zone boundary on a
+        # reading that should never have included it.
+        band_fmin, band_fmax = config.band
+        band = _dsp.band_mask(freq_td, band_fmin, band_fmax)
 
-            # ── 3. 5-order mV RMS overalls via time-domain IFFT ──────
-            # Using sqrt(mean(x²)) on the IFFT signal avoids the Welch window
-            # normalisation artifact (Hann leakage inflates sqrt(sum(psd)) by
-            # sqrt(3/2) for a pure tone). The irfft is an exact inverse of the
-            # plain rfft above, so the round-trip is lossless.
-            for i, n_ord in enumerate(range(-2, 3)):
-                if n_ord == 0:
-                    time_ord = filtered_mv          # passthrough — no IFFT needed
+        # ── 2/3. Welch PSD + 5-order overalls, computed once per frame ──
+        # Extracted so the averaging step below can obtain the same quantities
+        # for earlier cached frames through exactly this code, rather than a
+        # second copy of it. Two divergent copies of one write path was the
+        # direct cause of M-05.
+        freq_hz, psd_mv = self._psd_and_overalls_for(ch, sample)
+        if psd_mv is None:
+            return None
+
+        # ── 3b. Linear power averaging over recent frames ────────────
+        # Sits ABOVE the per-frame cache, deliberately: each frame's psd_mv
+        # stays cached exactly as computed, and the average is a cheap sum over
+        # them. So changing N invalidates no per-frame work and does not have
+        # to join psd_key.
+        #
+        # Power domain, not amplitude: averaging magnitudes biases low (a
+        # Rayleigh magnitude has mean sigma*sqrt(pi/2), not the RMS) and
+        # discards the chi-squared statistics that make the 1/sqrt(N) variance
+        # reduction predictable. The overall is combined the same way -- RMS of
+        # the per-frame RMS values -- because it is a power-like quantity too.
+        n_avg = 1
+        overalls = sample.overall_ampl_by_integration_order
+        if config.averaging_enabled:
+            # Newest first. The displayed frame leads the list only if it is
+            # itself valid: a clipped record reads high with harmonic
+            # distortion, and averaging it in would contaminate an estimate the
+            # analyst will read as clean. Analyzer practice is to reject the
+            # overloaded record from the average and light the overload
+            # indicator -- which is exactly what happens here, since the
+            # waveform, the scalars and the overflow flag still come from this
+            # frame. Only the spectral estimate is protected.
+            candidates = []
+            if not (sample.overflow or sample.degraded):
+                candidates.append(sample)
+            candidates.extend(reversed(history))
+
+            psd_sum   = None
+            order_sum = None
+            count     = 0
+            want      = config.n_averages_effective
+            for frame_sample in candidates:
+                if count >= want:
+                    break
+                frame_psd = self._psd_for(ch, frame_sample)
+                if frame_psd is None or frame_psd.shape != psd_mv.shape:
+                    # A settings change mid-cache gives a different transform;
+                    # frames from before it are not the same measurement.
+                    break
+                orders = np.square(np.asarray(
+                    frame_sample.overall_ampl_by_integration_order, dtype=np.float64))
+                if psd_sum is None:
+                    psd_sum, order_sum = np.array(frame_psd, dtype=np.float64), orders
                 else:
-                    omega_i       = 2 * np.pi * freq_td   # new array each iteration
-                    omega_i[0]    = 1.0                    # avoid 0^n_ord; zeroed below
-                    transfer_i    = np.power(1j * omega_i, n_ord)
-                    transfer_i[0] = 0.0                    # kill DC for all int/diff orders
-                    if n_ord < 0:
-                        # Integration only: also kill the 1x-binsize bin. A single
-                        # time-domain highpass pass can't keep residual near-DC
-                        # energy (finite filter rolloff + FFT/window leakage) from
-                        # blowing up under 1/f^n integration -- confirmed on real
-                        # hardware, bin 1 dominated the whole spectrum. Zeroing an
-                        # exact FFT bin is lossless for every other frequency and,
-                        # unlike a smooth frequency-response weighting, introduces
-                        # no circular-convolution edge artifacts in the irfft
-                        # reconstruction. Unconditional (not gated on
-                        # highpass_enabled) -- bin 1 is essentially never real
-                        # signal of interest for integrated velocity/displacement.
-                        transfer_i[1] = 0.0
-                    time_ord      = np.fft.irfft(rfft_mv * transfer_i, n=N)
-                sample.overall_ampl_by_integration_order[i] = float(
-                    np.sqrt(np.mean(np.square(time_ord)))
-                )
-        else:
-            freq_hz = sample.freq_hz
-            psd_mv  = sample.psd_mv
+                    psd_sum   = psd_sum + frame_psd
+                    order_sum = order_sum + orders
+                count += 1
+
+            if count > 0:
+                n_avg    = count
+                psd_mv   = psd_sum / count
+                overalls = np.sqrt(order_sum / count)
+            # count == 0 means this frame is invalid and has no valid
+            # predecessors. Show it as itself rather than nothing; it is
+            # flagged, so nothing is being passed off as a measurement.
 
         # ── 4. Integrate / scale mV² PSD → target-unit² PSD ─────────
         n_steps = integration_steps(sensor_eu, effective_tgt)
@@ -547,42 +858,105 @@ class DataCollector:
         calibrated_psd = integrated_psd * (src_si / tgt_si / sensitivity_mv) ** 2
 
         # ── 5. Amplitude spectrum in target unit + amp mode ───────────
-        amp_factor   = AMPLITUDE_SCALE.get(amp_mode, np.sqrt(2))
+        amp_factor   = amplitude_scale(amp_mode)
         spectrum_amp = np.sqrt(np.maximum(calibrated_psd, 0.0)) * amp_factor
 
-        # ── 6. Peaks ──────────────────────────────────────────────────
-        peaks, _ = scipy.signal.find_peaks(spectrum_amp, distance=5)
-        peaks     = np.array(peaks[np.argsort(-spectrum_amp[peaks])])
+        # ── 6. Truncate at F_max, then find peaks ─────────────────────
+        # The whole point of the F_max = fs/2.56 convention is that the guard
+        # band between F_max and fs/2 is never displayed: that is where the
+        # anti-alias filter has not yet reached full attenuation. Measured
+        # rejection at the frequency folding into the top of the band is
+        # -21.8 dB, falling to effectively 0 dB at fs/2 — so content shown up
+        # there is not a measurement, and find_peaks was happily reporting it
+        # in the peaks table alongside real lines.
+        keep_band    = freq_hz <= config.maxfreq
+        freq_hz      = freq_hz[keep_band]
+        spectrum_amp = spectrum_amp[keep_band]
+
+        # Peak selection is significance-based, not top-N-by-amplitude: a line
+        # is reported when it rises config.peak_threshold_db above its own
+        # local noise floor, and the count is whatever that yields. The old
+        # rule ranked by how loud a line's neighbourhood was — on
+        # 'blower 4 - bearing DE.h5' ch2 it spent 6 of its top 12 on ripple in
+        # the noisy top of the band and pushed the 1034/1088 Hz bearing
+        # sidebands off a 6-row table. See rev80.peaks for the full rationale.
+        #
+        # n_segments feeds the median-to-mean correction on the floor estimate.
+        # It is 1 for every shipped preset (nperseg == blocksize), but it is
+        # derived rather than assumed: that invariant belongs to
+        # AcquisitionSettings, not to the statistics.
+        seg_len    = min(config.nperseg, len(filtered_mv))
+        seg_step   = max(1, seg_len - min(seg_len - 1, int(seg_len * config.welch_overlap)))
+        n_segments = 1 + max(0, len(filtered_mv) - seg_len) // seg_step
+        peaks = rev80_peaks.select_peaks(
+            spectrum_amp,
+            window=config.fft_window,
+            threshold_db=config.peak_threshold_db,
+            n_segments=n_segments,
+        )
 
         # ── 7. Overall amplitude in target unit ───────────────────────
         # Reuse the IFFT-based mV RMS cached in step 3; apply unit scale + amp mode.
         col_idx = n_steps + 2
         overall = float(
-            sample.overall_ampl_by_integration_order[col_idx]
+            overalls[col_idx]
             * (src_si / tgt_si / sensitivity_mv)
             * amp_factor
         )
 
         # ── 8. Time-domain signal — inline FFT integration ───────────
-        # rfft_mv / freq_td already computed above (reused from step 3).
-        eu_scale   = src_si / tgt_si / sensitivity_mv
+        # The displayed trace cannot use the step-3 Hann taper: the taper would
+        # be plainly visible as an amplitude envelope on the waveform the user
+        # is reading. Instead this is overlap-save — a Tukey window (flat across
+        # the middle, cosine-tapered at the edges) kills the wrap discontinuity,
+        # and only the flat middle is returned. Inside that region the window is
+        # exactly 1.0, so the returned samples are undistorted.
+        #
+        # Cost: for integrated/differentiated displays the trace covers the
+        # middle 50% of the block rather than all of it. time_vec is truncated
+        # to match, so it still carries true capture-relative timestamps.
+        # Un-truncated, a doubly-integrated 61 Hz tone overshot its true 0-peak
+        # amplitude by +1149%; this brings it to +1.47%.
+        # The trace is band-limited to the same band as the overall. Showing a
+        # waveform that still contains content the overall excluded invites the
+        # analyst to reconcile two numbers that were never measuring the same
+        # thing.
+        eu_scale = src_si / tgt_si / sensitivity_mv
+        keep        = _dsp.tukey_keep_slice(N)
+        tukey_w     = _dsp.tukey_taper(N)
+        rfft_tukey  = np.where(band, np.fft.rfft(filtered_mv * tukey_w), 0.0)
         if n_steps != 0:
-            omega_td    = 2 * np.pi * freq_td
-            omega_td[0] = 1.0
-            transfer       = np.power(1j * omega_td, n_steps)
-            transfer[0]    = 0.0
-            if n_steps < 0:
-                transfer[1] = 0.0   # also kill the 1x-binsize bin -- see step 3 comment
-            rfft_target    = rfft_mv * transfer * eu_scale
+            time_signal = _dsp.integrate_rfft(rfft_tukey, freq_td, n_steps, N)
+            time_signal = time_signal[keep] * eu_scale
+            time_vec    = sample.time_vec[keep]
+        elif band_fmin <= 0.0 and band_fmax >= samplerate / 2.0:
+            # Passthrough over the whole transform: no masking to do, so return
+            # the full record undisturbed rather than paying the Tukey path's
+            # 50% truncation for nothing.
+            time_signal = filtered_mv * eu_scale
+            time_vec    = sample.time_vec
         else:
-            rfft_target = rfft_mv * eu_scale
-        time_signal = np.fft.irfft(rfft_target, n=N)
+            # Passthrough, but band-limited. Masking is a frequency-domain
+            # multiply, so it carries the same circular-wrap sensitivity the
+            # integrated orders have and needs the same overlap-save treatment.
+            time_signal = np.fft.irfft(rfft_tukey, n=N)[keep] * eu_scale
+            time_vec    = sample.time_vec[keep]
 
         return rev80.ChannelResult(
             channel=ch, unit=effective_tgt, overflow=sample.overflow,
             degraded=sample.degraded,
-            time_data=time_signal, time_vec=sample.time_vec, samplerate=samplerate,
+            time_data=time_signal, time_vec=time_vec, samplerate=samplerate,
             freq=freq_hz, spectrum=spectrum_amp, peaks=peaks, overall=overall,
+            band_fmin=band_fmin, band_fmax=band_fmax,
+            # Computed on the trace being returned, not on the Hann-tapered
+            # array the overall uses: that taper is an amplitude envelope, so a
+            # peak-based statistic taken from it would be plainly wrong.
+            # Deliberately NOT averaged. Averaging is for steady-state
+            # estimation; these exist to catch the frame that is not steady, so
+            # diluting one impulsive record across N would defeat them.
+            crest_factor=_dsp.crest_factor(time_signal),
+            kurtosis=_dsp.kurtosis(time_signal),
+            n_averages=n_avg,
             timestamp=sample._timestamp, rel_time=sample.rel_time, status=sample.status,
         )
 
@@ -600,17 +974,55 @@ class DataCollector:
             self._cache_cursor = min(self._cache_cursor, len(cache) - 1)
         idx   = -1 if self.is_streaming else -1 - self._cache_cursor
         frame = cache[idx]
+
+        # Frames preceding the displayed one, oldest first, for the averaging
+        # accumulator. One rule for both modes: the average is the N most
+        # recent valid frames up to and INCLUDING the frame being displayed.
+        # Live that is the last N received; browsing it is
+        # frames[cursor-N+1 .. cursor]. Because it is one rule, stepping
+        # forward through a loaded file reproduces exactly what the live
+        # display showed at that moment -- the same replay-fidelity property
+        # F-4 established for the high-pass.
+        history: list = []
+        if self.config.averaging_enabled:
+            stop = len(cache) + idx              # index of the displayed frame
+            want = self.config.n_averages_effective
+            history = list(cache)[max(0, stop - want + 1):stop]
+
         results: list[rev80.ChannelResult] = []
         for ch in sorted(self.config.enabled_channels):
             sample = frame.get(ch)
             if sample is None or sample.blocksize <= 1:
                 continue
-            result = self.process_sample(ch, sample)
+            # A clipped or rate-degraded frame is not a measurement, so it must
+            # not enter an average that will be read as one -- the same reason
+            # F-5 keeps it out of the trend. The displayed frame itself is
+            # always shown, flagged, because it is what the user asked to see.
+            ch_history = [
+                f[ch] for f in history
+                if ch in f and f[ch] is not None
+                and not (f[ch].overflow or f[ch].degraded)
+            ]
+            result = self.process_sample(ch, sample, history=ch_history)
             if result is None:
                 continue
             if self.is_streaming:
-                self.update_trend(ch, result.rel_time,
-                                  sample.overall_ampl_by_integration_order)
+                # A clipped or rate-degraded frame is not a measurement. Trending
+                # it records a step change that never happened on the machine,
+                # and the anomaly detector then fires a burst on it — the classic
+                # spurious-alarm mechanism. The frame is still returned for
+                # display (flagged), just never trended.
+                if result.overflow or result.degraded:
+                    log.debug(
+                        f'ch={ch} frame at rel_time={result.rel_time:.3f}s excluded '
+                        f'from trend (overflow={result.overflow}, '
+                        f'degraded={result.degraded})'
+                    )
+                else:
+                    self.update_trend(ch, result.rel_time,
+                                      sample.overall_ampl_by_integration_order,
+                                      crest_factor=result.crest_factor,
+                                      kurtosis=result.kurtosis)
             results.append(result)
         return results
 
@@ -649,6 +1061,8 @@ class DataCollector:
             /frames/{i}/{ch}/data                   (N,) float64
             /trend/rel_times                        (M,) float64  (shared time axis)
             /trend/{ch}/data                        (M,) float64  (channel overall amplitude)
+            /trend/{ch}/crest_factor                (M,) float64  (dimensionless)
+            /trend/{ch}/kurtosis                    (M,) float64  (dimensionless)
         """
         frames = list(self.data["frame_cache"])
         log.info(f"Writing {len(frames)} frames to {target}")
@@ -726,6 +1140,13 @@ class DataCollector:
                     cg = trend_grp.create_group(str(ch))
                     cg.create_dataset("rel_times", data=td["rel_times"].astype(np.float64))
                     cg.create_dataset("orders",    data=td["orders"].astype(np.float64))
+                    # Dimensionless, so they sit beside `orders` rather than as
+                    # extra columns of it -- they are not a sixth integration
+                    # order and must never be unit-converted.
+                    for key in ("crest_factor", "kurtosis"):
+                        vals = td.get(key)
+                        if vals is not None and len(vals) == len(td["rel_times"]):
+                            cg.create_dataset(key, data=np.asarray(vals, dtype=np.float64))
 
         log.info(f"Saved {len(frames)} frames to {target}")
 
@@ -760,10 +1181,19 @@ class DataCollector:
                         if not ch_str.isdigit():
                             continue
                         ch = int(ch_str)
-                        self.trend[ch] = {
-                            "rel_times": np.array(cg["rel_times"][()], dtype=np.float64),
-                            "orders":    np.array(cg["orders"][()],    dtype=np.float64),
+                        rel_times = np.array(cg["rel_times"][()], dtype=np.float64)
+                        td = {
+                            "rel_times": rel_times,
+                            "orders":    np.array(cg["orders"][()], dtype=np.float64),
                         }
+                        # Absent in files written before the scalars existed;
+                        # NaN reads as "not recorded" and plots as a gap rather
+                        # than as a zero the analyst would read as a value.
+                        for key in ("crest_factor", "kurtosis"):
+                            td[key] = (np.array(cg[key][()], dtype=np.float64)
+                                       if key in cg
+                                       else np.full(len(rel_times), np.nan))
+                        self.trend[ch] = td
                 else:
                     # Shared time axis + per-channel scalar overalls; promote to (M,5)
                     shared_rel_times: list = []
@@ -778,8 +1208,10 @@ class DataCollector:
                             orders = np.zeros((M, 5))
                             orders[:, 2] = np.array(overall)  # col 2 = order 0
                             self.trend[int(ch_str)] = {
-                                "rel_times": np.array(shared_rel_times),
-                                "orders":    orders,
+                                "rel_times":    np.array(shared_rel_times),
+                                "orders":       orders,
+                                "crest_factor": np.full(M, np.nan),
+                                "kurtosis":     np.full(M, np.nan),
                             }
 
         self._post_load()
@@ -871,7 +1303,7 @@ class DataCollector:
 
         ts_str     = decode(fg.attrs["timestamp"])
         rel_time   = float(fg.attrs["rel_time"])
-        samplerate = int(fg.attrs["samplerate"])
+        samplerate = float(fg.attrs["samplerate"])
         status     = decode(fg.attrs["status"])
         try:
             timestamp = datetime.fromisoformat(ts_str)
@@ -885,9 +1317,15 @@ class DataCollector:
             ch   = int(ch_str)
             data = np.ascontiguousarray(cg["data"][()], dtype=np.float64)
             unit = "mV" if version >= 4 else ch_units.get(ch, "mV")
+            # _write_channel_group has always stored these; they were simply
+            # never read back, so every reloaded file looked clean no matter
+            # what happened during capture. Older files predate the attrs.
+            overflow = bool(cg.attrs.get("overflow", False))
+            degraded = bool(cg.attrs.get("degraded", False))
             frame_samples[ch] = rev80.VibeSample(
                 status=status, _timestamp=timestamp, samplerate=samplerate,
-                unit=unit, overflow=False, data=data, rel_time=rel_time,
+                unit=unit, overflow=overflow, degraded=degraded,
+                data=data, rel_time=rel_time,
             )
         return frame_samples
 
@@ -902,7 +1340,7 @@ class DataCollector:
 
         # Sync enabled_channels from frame data and clamp maxfreq to file samplerate
         all_channels: set[int] = set()
-        file_samplerate: int = 0
+        file_samplerate: float = 0.0
         for frame in self.data["frame_cache"]:
             for k, v in frame.items():
                 if isinstance(k, int):
@@ -976,7 +1414,7 @@ class DataCollector:
         # not raw mV.  get_trend_for_display() expects orders[:,col] in raw mV
         # (same as overall_ampl_by_integration_order), so we back-scale each
         # channel's values and place them in the correct column.
-        from rev80.util import UNIT_TO_SI, AMPLITUDE_SCALE, integration_steps
+        from rev80.util import UNIT_TO_SI, amplitude_scale, integration_steps
         for ch, rel_times in trend_rel_times.items():
             overalls    = np.array(trend_overalls[ch])
             sensor_cfg  = self._loaded_channel_sensor_configs.get(ch, {})
@@ -989,7 +1427,7 @@ class DataCollector:
             col       = max(0, min(4, n_steps + 2))
             src_si    = UNIT_TO_SI.get(sensor_eu, 1.0)
             tgt_si    = UNIT_TO_SI.get(rec_tgt,   1.0)
-            amp_f     = AMPLITUDE_SCALE.get(amp_mode, 1.0)
+            amp_f     = amplitude_scale(amp_mode)
             scale     = src_si / tgt_si / sensitivity
 
             orders           = np.zeros((len(overalls), 5))
@@ -1127,7 +1565,7 @@ class DataCollector:
         # overall_json is in target EU — inverse-scale to raw mV so
         # get_trend_for_display() can apply the forward conversion correctly.
         import math as _math
-        from rev80.util import UNIT_TO_SI, AMPLITUDE_SCALE, integration_steps
+        from rev80.util import UNIT_TO_SI, amplitude_scale, integration_steps
         for ch, rel_times in trend_rel_times.items():
             overalls = trend_overalls[ch]
             valid = [(t, v) for t, v in zip(rel_times, overalls)
@@ -1144,7 +1582,7 @@ class DataCollector:
             col      = max(0, min(4, n_steps + 2))
             src_si   = UNIT_TO_SI.get(sensor_eu, 1.0)
             tgt_si   = UNIT_TO_SI.get(rec_tgt,   1.0)
-            amp_f    = AMPLITUDE_SCALE.get(amp_mode, 1.0)
+            amp_f    = amplitude_scale(amp_mode)
             scale    = src_si / tgt_si / sensitivity
             orders         = np.zeros((len(vv), 5))
             orders[:, col] = np.array(vv) / (scale * amp_f) if (scale * amp_f) != 0 else np.array(vv)
@@ -1163,7 +1601,7 @@ class DataCollector:
         """
         import json as _json
         from rev80.sample import VibeSample
-        from datetime import datetime as _dt
+        from datetime import datetime as _dt, timezone as _tz
 
         log.info(f"Reprocessing session trend in {session_h5.name}")
         with h5py.File(session_h5, "a") as f:
@@ -1184,7 +1622,11 @@ class DataCollector:
                     try:
                         ts_dt = _dt.fromisoformat(ts)
                     except ValueError:
-                        ts_dt = _dt.utcnow()
+                        # utcnow() is deprecated. Naive-UTC is preserved
+                        # deliberately: making this aware would change the
+                        # stored isoformat string and could raise TypeError
+                        # against the naive timestamps read alongside it.
+                        ts_dt = _dt.now(_tz.utc).replace(tzinfo=None)
                     sample = VibeSample(
                         status="OK", _timestamp=ts_dt,
                         samplerate=sr, unit="mV", overflow=False, data=data,
@@ -1218,7 +1660,8 @@ class DataCollector:
                             try:
                                 ts_dt = _dt.fromisoformat(ts)
                             except ValueError:
-                                ts_dt = _dt.utcnow()
+                                # See note above: deliberately naive-UTC.
+                                ts_dt = _dt.now(_tz.utc).replace(tzinfo=None)
                             sample = VibeSample(
                                 status="OK", _timestamp=ts_dt,
                                 samplerate=sr, unit="mV", overflow=False, data=data,

@@ -65,7 +65,14 @@ _BUILTIN_ACQ: dict[str, Any] = {
         'fft_window':       'hann',
         'welch_overlap':    0.5,
         'highpass_enabled': True,
+        # The declared lower band edge, and the frequency the high-pass must
+        # still be within tolerance at -- not the filter's -3 dB knee, which
+        # sits below it. See DataCollector.highpass_knee_hz.
         'highpass_fc':      10.0,
+        # Declared measurement band for the overall. null = derive it from
+        # highpass_fc and maxfreq. See util.ISO_BAND_PRESETS.
+        'band_fmin':        None,
+        'band_fmax':        None,
         'trend_max_points': 5000,
         'cache_frames':     15,
     },
@@ -156,7 +163,13 @@ def _atomic_yaml_write(path: Path, data: Any) -> None:
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix='.yaml.tmp')
     try:
         with os.fdopen(fd, 'w') as f:
-            yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
+            # safe_dump, not dump: the default Dumper serialises arbitrary
+            # Python objects as `!!python/object/apply:` tags, which every
+            # reader here (yaml.safe_load) then refuses to parse. That turned
+            # one unusual value into a config file that could never be read
+            # back. safe_dump fails loudly at write time instead, leaving the
+            # existing file untouched.
+            yaml.safe_dump(data, f, default_flow_style=False, allow_unicode=True)
         os.replace(tmp, path)
     except Exception:
         try:
