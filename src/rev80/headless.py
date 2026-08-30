@@ -3,15 +3,18 @@ rev80 headless mode — interval datalogger with no GUI.
 
 Discovers a PicoScope (or uses the simulated sensor), loads the saved device
 config, and runs Monitor Mode indefinitely.  All captured data is written to
-DEVDATA/monitor/{session_id}/session.h5 in the same v5 format as the GUI.
-Sessions can be browsed and loaded in the GUI session browser afterwards.
+~/Documents/Rev80/data/monitor/{session_id}/session.h5 (override with
+--output) in the same v5 format as the GUI. Sessions can be browsed and
+loaded in the GUI session browser afterwards.
 
 Usage
 -----
     python -m rev80.headless [options]
     rev80-headless [options]       # if installed via pip
+    rev80 headless [options]       # equivalent, via the unified `rev80` CLI
 
-Quick info commands (return immediately, no hardware required):
+Quick info commands (return immediately, no hardware required — also
+available on the top-level `rev80` command, without the GUI launching):
     rev80-headless --list-devices
     rev80-headless --list-sensors
     rev80-headless --edit-config
@@ -59,13 +62,12 @@ def _list_sensors() -> int:
         print(f"  Edit: {config_dir() / 'scope_sensors.yaml'}")
         return 0
     print(f"Sensor library — {len(sensors)} sensor(s):\n")
-    hdr = f"  {'Name':<28}  {'Sensitivity':>14}  {'Units':<8}  Target"
+    hdr = f"  {'Name':<28}  {'Sensitivity':>14}  Engineering Units"
     print(hdr)
     print("  " + "─" * (len(hdr) - 2))
     for s in sensors:
-        target = f"→ {s.target_unit}" if s.target_unit else ""
-        sens   = f"{s.sensitivity} mV/{s.engineering_units}"
-        print(f"  {s.name:<28}  {sens:>14}  {s.engineering_units:<8}  {target}")
+        sens = f"{s.sensitivity} mV/{s.engineering_units}"
+        print(f"  {s.name:<28}  {sens:>14}  {s.engineering_units}")
     print()
     return 0
 
@@ -551,18 +553,9 @@ def run(args: argparse.Namespace) -> int:
 
 # ── Argument parser ────────────────────────────────────────────────────────────
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        prog="rev80-headless",
-        description="Rev80 interval datalogger — no GUI required",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=(
-            "Quick info commands (return immediately, no hardware required):\n"
-            "  --list-devices    enumerate connected PicoScopes\n"
-            "  --list-sensors    show IEPE sensor library\n"
-            "  --edit-config     open default.yaml in $EDITOR"
-        ),
-    )
+def build_option_parser() -> argparse.ArgumentParser:
+    """Argument definitions shared by `rev80-headless` and the `rev80 headless` subcommand."""
+    parser = argparse.ArgumentParser(add_help=False)
 
     # Info commands — handled before any heavy import
     info = parser.add_argument_group("info commands")
@@ -603,18 +596,21 @@ def main() -> None:
     acq.add_argument("--debug",    action="store_true",
                      help="Verbose logging to stderr")
 
-    args = parser.parse_args()
+    return parser
 
+
+def run_headless(args: argparse.Namespace) -> int:
+    """Dispatch a parsed headless namespace: info command, or a full monitor session."""
     # Info commands: minimal imports, return immediately
     if args.init_config:
         from rev80.__main__ import _init_config
-        sys.exit(_init_config())
+        return _init_config()
     if args.list_devices:
-        sys.exit(_list_devices())
+        return _list_devices()
     if args.list_sensors:
-        sys.exit(_list_sensors())
+        return _list_sensors()
     if args.edit_config:
-        sys.exit(_edit_config())
+        return _edit_config()
 
     # Full session: now pull in everything
     import rev80
@@ -624,7 +620,24 @@ def main() -> None:
     sys.excepthook = rev80.exception_handler
     rev80.get_logger().info("rev80 headless started")
 
-    sys.exit(run(args))
+    return run(args)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        prog="rev80-headless",
+        description="Rev80 interval datalogger — no GUI required",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Quick info commands (return immediately, no hardware required):\n"
+            "  --list-devices    enumerate connected PicoScopes\n"
+            "  --list-sensors    show IEPE sensor library\n"
+            "  --edit-config     open default.yaml in $EDITOR"
+        ),
+        parents=[build_option_parser()],
+    )
+    args = parser.parse_args()
+    sys.exit(run_headless(args))
 
 
 if __name__ == "__main__":
