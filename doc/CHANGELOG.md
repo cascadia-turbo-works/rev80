@@ -7,6 +7,90 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — feature/spectral-averaging (2026-08-29)
+
+### Added
+- **Linear power averaging of the spectrum over N frames**, with an enable
+  checkbox and N in the acquisition dialog (off by default). Welch's method
+  *is* linear power averaging, but since the F-8 fix set `nperseg = blocksize`
+  it runs exactly one segment per frame — so there was no averaging anywhere in
+  the chain, and `welch_overlap` had nothing to act on. Each bin of a
+  single-segment estimate is χ²(2), with a standard deviation equal to its own
+  mean, which is why the floor looks rough and a small line is hard to pick out
+  of it.
+  - `AcquisitionSettings.averaging_enabled` / `.n_averages` /
+    `.n_averages_effective` (clamped to `cache_frames` — you cannot average
+    more frames than are retained); `ChannelResult.n_averages` reports the
+    count **actually achieved**.
+  - A derived **Avg. Window** field reading `16 x 0.5 s = 8 s`, flagged when
+    capped by the cache: N alone is hard to reason about, and how long the
+    machine must stay steady is what the analyst actually needs to know. A
+    frame is exactly `1/binsize` seconds.
+  - A live "averaging 12 of 16 frames" line beside the peak count, showing
+    "of N" only when the delivered count falls short.
+  - `DataCollector._psd_and_overalls_for()` — the per-frame Welch PSD and
+    5-order overalls, extracted from `process_sample` so the averaging
+    accumulator reaches earlier frames through exactly that code rather than a
+    second copy. Two divergent copies of one path was the direct cause of M-05.
+  - `tests/test_spectral_averaging.py` — 19 tests.
+
+### The rule tying live and replay together
+The average is the N most recent **valid** frames up to and including the frame
+being displayed. Live that is the last N received; browsing it is
+`frames[cursor-N+1 … cursor]`. One rule, so stepping forward through a loaded
+file reproduces exactly what the live display showed at that moment — the same
+replay-fidelity property F-4 established for the high-pass.
+
+**Nothing is baked into the file.** The HDF5 stores individual raw frames, so a
+capture taken with averaging *off* can be given 16 averages after loading, and
+changing N recomputes without reloading. Averaging is a view on stored data,
+not a property of it.
+
+### Decisions, each pinned by a test
+- **Power domain, never amplitude.** Average |X|², then sqrt at the end. On a
+  coherent line the two are identical, which is exactly why this is easy to get
+  wrong and stay green — it shows only on the noise floor, where averaging
+  magnitudes converges about **11% low** (a Rayleigh magnitude has mean
+  0.886·√μ against the RMS). The overall combines as `sqrt(mean(squares))` for
+  the same reason.
+- **Above the per-frame PSD cache**, so changing N invalidates no per-frame
+  work and does not have to join `psd_key`.
+- **Overloaded records are rejected from the average**, including when the
+  displayed frame is the overloaded one — analyzer practice, and the same
+  reasoning F-5 used to keep them out of the trend. The waveform, the scalars
+  and the overflow flag still come from the displayed frame, so nothing is
+  hidden; only the spectral estimate is protected.
+- **Crest factor and kurtosis are NOT averaged.** Averaging is for steady-state
+  estimation; those exist to catch the frame that is *not* steady.
+
+> Recorded because it is the point of the whole exercise: the first
+> revert-check pass showed that swapping power averaging for amplitude
+> averaging **passed all 17 tests**, despite the design note calling it the one
+> thing that must be right. Two tests were added asserting against *both*
+> candidate answers so the wrong one cannot pass.
+
+### Measured
+Noise plus a 300 Hz line, F_max 1000 / df 2:
+
+| N | floor CV | 1/√N predicted | floor level | line amplitude |
+|---|---|---|---|---|
+|  1 | 0.5260 | 0.5260 | 0.03387 | 0.22366 |
+|  4 | 0.2248 | 0.2630 | 0.03626 | 0.22183 |
+| 16 | 0.1189 | 0.1315 | 0.03740 | 0.21965 |
+| 64 | 0.0604 | 0.0657 | 0.03800 | 0.21878 |
+
+Scatter tracks 1/√N; the line is untouched at −2% across a 64× change. The
+floor *level* rises 12% over that range — not drift, but the
+Rayleigh-mean-to-RMS convergence the power-domain argument predicts, and the
+clearest confirmation that the average is being taken correctly.
+
+### Still open
+`welch_overlap` remains inert: averaging across frames does not overlap
+segments *within* a frame. Making it real would roughly double the available
+averages for the same wall time.
+
+---
+
 ## [Unreleased] — round 2: vibration-analysis integrity (2026-08-29)
 
 Second remediation round from the three-discipline audit, addressing the
