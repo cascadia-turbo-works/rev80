@@ -47,6 +47,15 @@ class MonitorController:
         self._burst_trigger_rel:    float     = 0.0  # session rel_time at trigger
         self._last_frame_cache:     deque | None = None
 
+        # Resource trail. An OOM kill is SIGKILL: no traceback, no atexit, no
+        # log line — the process simply vanishes, which is exactly the
+        # "crashed with no evidence" report. The only way to attribute one
+        # afterwards is a trail written BEFORE it, so an unattended session
+        # logs memory, thread count, burst retention and writer queue depth on
+        # a slow cadence. Cheap, and it turns an unexplained disappearance into
+        # a readable ramp.
+        self._last_trail_mono: float = 0.0
+
     # ------------------------------------------------------------------
     # Public API — recording lifecycle
     # ------------------------------------------------------------------
@@ -150,6 +159,34 @@ class MonitorController:
     # Main callback
     # ------------------------------------------------------------------
 
+    #: How often the unattended resource trail is written, in seconds.
+    #: Slow on purpose — this is a trend to read after the fact, not telemetry.
+    TRAIL_INTERVAL_S: float = 300.0
+
+    def _log_resource_trail(self, now: float) -> None:
+        """Periodically record memory, threads, retention and queue depth.
+
+        Never raises: a diagnostic that takes down the session it is
+        diagnosing is worse than no diagnostic.
+        """
+        if now - self._last_trail_mono < self.TRAIL_INTERVAL_S:
+            return
+        self._last_trail_mono = now
+        try:
+            from rev80.logger import format_resource_snapshot, resource_snapshot
+            writer = getattr(self, '_writer', None)
+            log.info(
+                'monitor trail: %s',
+                format_resource_snapshot(
+                    resource_snapshot(),
+                    burst_frames=len(self._burst_frames),
+                    queue=getattr(writer, 'queue_depth', -1),
+                    captures=self._monitor_count if hasattr(self, '_monitor_count') else -1,
+                ),
+            )
+        except Exception:                                    # noqa: BLE001
+            log.debug('resource trail failed', exc_info=True)
+
     def on_results(self, results: list, frame_cache: deque) -> None:
         """Called from GUI thread after process_samples(). Non-blocking."""
         if not self._recording or not results:
@@ -158,6 +195,8 @@ class MonitorController:
         self._last_frame_cache = frame_cache  # for trigger_burst() pre-trigger snapshot
         now      = time.monotonic()
         rel_time = now - self._start_mono
+
+        self._log_resource_trail(now)
 
         if self._in_burst:
             self._handle_burst_frame(results, frame_cache, now, rel_time)
