@@ -2826,12 +2826,10 @@ class GUI:
         name = dpg.get_value(ui.SREG_FIELD_NAME).strip()
         if not name:
             return
-        existing = self.registry.find_by_id(self._editing_scope_sensor_id)
         sensor = ScopeSensor(
             name=name,
             engineering_units=dpg.get_value(ui.SREG_FIELD_UNITS),
             sensitivity=float(dpg.get_value(ui.SREG_FIELD_SENS)),
-            target_unit=existing.target_unit if existing else "",
             id=self._editing_scope_sensor_id,
             notes=dpg.get_value(ui.SREG_FIELD_NOTES).strip(),
         )
@@ -2850,7 +2848,7 @@ class GUI:
 
     def _on_registry_add(self, sender=None, data=None):
         self._save_registry_sensor_fields()
-        new_sensor = ScopeSensor(name="New Sensor", engineering_units="g", sensitivity=100.0, target_unit="g")
+        new_sensor = ScopeSensor(name="New Sensor", engineering_units="g", sensitivity=100.0)
         self.registry.add(new_sensor)
         self._refresh_registry_dialog_list()
         self._editing_scope_sensor_id = new_sensor.id
@@ -3415,7 +3413,7 @@ class GUI:
                             dpg.add_input_text(
                                 tag=ui.MON_DLG_OUTPUT_DIR,
                                 default_value="",
-                                hint="Default: DEVDATA/monitor/",
+                                hint=f"Default: {rev80.data_dir() / 'monitor'}",
                                 width=-1,
                                 callback=self._on_monitor_config_change,
                             )

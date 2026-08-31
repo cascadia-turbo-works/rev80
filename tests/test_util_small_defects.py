@@ -15,7 +15,7 @@ import pytest
 
 import rev80
 import rev80.util as util
-from rev80._paths import resource_path
+from rev80._paths import project_path, resource_path
 from rev80._pico_loader import _drivers_dir
 from rev80.util import (
     AMPLITUDE_MODES,
@@ -32,8 +32,14 @@ from rev80.util import (
 class TestDriversDir:
 
     def test_resolves_to_repo_root_drivers(self):
-        """The development path must be <repo root>/drivers, not src/drivers."""
-        expected = resource_path('drivers')
+        """The development path must be <repo root>/drivers, not src/rev80/drivers.
+
+        drivers/ holds PicoSDK DLLs collected at the repo root by
+        build/collect_pico_dlls.py and bundled by build/rev80.spec as a
+        top-level directory — it is a build artifact, not package data.
+        """
+        expected = project_path('drivers')
+        assert not str(expected).endswith('src/rev80/drivers')
         assert not str(expected).endswith('src/drivers')
         got = _drivers_dir()
         # drivers/ is checked into the repo, so this must resolve in a clone.
@@ -45,7 +51,18 @@ class TestDriversDir:
 
     def test_agrees_with_paths_module(self):
         """_pico_loader must not re-derive what _paths already resolves."""
-        assert _drivers_dir() == resource_path('drivers')
+        assert _drivers_dir() == project_path('drivers')
+
+    def test_does_not_resolve_through_package_data(self):
+        """resource_path() is for package data and must NOT find drivers/.
+
+        Narrowing resource_path() to the installed package is correct for
+        logging.yaml and the icon font, but routing drivers/ through it
+        reintroduces audit X-06 in a new shape: it resolves to a directory
+        that never exists and the loader silently degrades to walking %PATH%.
+        """
+        assert not resource_path('drivers').is_dir()
+        assert project_path('drivers') != resource_path('drivers')
 
 
 # ---------------------------------------------------------------------------

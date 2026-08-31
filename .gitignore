@@ -1,6 +1,6 @@
-# ── Fonts (not tracked — place CommitMonoNerdFont-Regular.otf in
-#    assets/fonts/ on each dev machine) ───────────────────────────────────────
-assets/fonts/
+# ── Fonts (not tracked — fetched by scripts/fetch_font.sh into
+#    src/rev80/assets/fonts/ on each dev machine) ─────────────────────────────
+src/rev80/assets/fonts/
 
 # ── Data ──────────────────────────────────────────────────────────────────────
 DEVDATA/
