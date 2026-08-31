@@ -418,11 +418,45 @@ class GUI:
         except (ValueError, IndexError):
             return None
 
+    def _update_env_fmax_warning(self, result: 'rev80.ChannelResult'):
+        """Warn when F_max leaves too little bandwidth for envelope analysis to work.
+
+        The mandatory anti-alias filter upstream has already removed
+        everything above Nyquist before this data was acquired -- a bearing
+        housing resonance (typically 2-20 kHz) that doesn't fit under Nyquist
+        isn't in the block at all, at any band setting. Below that, Auto (or
+        a hand-typed band) can only center on ordinary machine content, which
+        looks like a normal envelope plot but isn't measuring what it claims
+        to.
+        """
+        if not dpg.does_item_exist(ui.ENV_FMAX_WARNING):
+            return
+        nyquist = result.samplerate / 2.0
+        if nyquist < rev80_env.MIN_USEFUL_NYQUIST_HZ:
+            dpg.set_value(
+                ui.ENV_FMAX_WARNING,
+                f"F_max ({self.collector.config.maxfreq:.0f} Hz) gives only "
+                f"{nyquist:.0f} Hz of bandwidth -- a bearing resonance "
+                f"(typically 2-20 kHz) may not fit under Nyquist at all. "
+                f"Raise F_max in the Acquisition dialog for genuine defect "
+                f"detection.")
+            dpg.configure_item(ui.ENV_FMAX_WARNING, show=True)
+        else:
+            dpg.configure_item(ui.ENV_FMAX_WARNING, show=False)
+
     def _update_envelope_plot(self, result: 'rev80.ChannelResult', ch: int):
-        """Band-pass, demodulate, and plot the envelope spectrum for one channel."""
+        """Band-pass, demodulate, and plot the envelope spectrum for one channel.
+
+        Skipped entirely when the tab is disabled -- not every job is a
+        bearing job, and there's no point band-pass filtering and running a
+        Hilbert transform every frame for a plot nobody can see.
+        """
+        if not self.collector.config.envelope_enabled:
+            return
         tag = ui.plt_env_series(ch)
         if not dpg.does_item_exist(tag):
             return
+        self._update_env_fmax_warning(result)
         band = self._env_band_for(result)
         if band is None:
             dpg.set_value(tag, [[], []])
@@ -684,12 +718,29 @@ class GUI:
             dpg.configure_item(ui.PLT_TREND_CURSOR, show=False)
 
     def _update_results_section_visibility(self):
-        """Show per-channel result sections only for enabled channels."""
+        """Show per-channel result sections only for enabled channels, and the
+        Envelope tab only when AcquisitionSettings.envelope_enabled."""
         enabled = set(self.collector.config.enabled_channels)
         for ch in range(_MAX_CHANNELS):
             tag = ui.ch_result_section(ch)
             if dpg.does_item_exist(tag):
                 dpg.configure_item(tag, show=(ch in enabled))
+        self._update_envelope_tab_visibility()
+
+    def _update_envelope_tab_visibility(self):
+        """Show/hide the Envelope tab per AcquisitionSettings.envelope_enabled.
+
+        Not every job is a bearing job, and the demodulation controls + plot
+        are dead weight -- and a source of "what does this mean?" confusion
+        -- on ones that aren't.
+        """
+        if dpg.does_item_exist(ui.TAB_ENVELOPE):
+            dpg.configure_item(ui.TAB_ENVELOPE, show=self.collector.config.envelope_enabled)
+
+    def _on_envelope_enabled_change(self, sender=None, data=None):
+        """Live-toggle the Envelope tab from the dialog checkbox, ahead of Apply/Close."""
+        if dpg.does_item_exist(ui.TAB_ENVELOPE):
+            dpg.configure_item(ui.TAB_ENVELOPE, show=bool(dpg.get_value(ui.ACQ_DLG_ENV_ENABLED)))
 
     def _display_frame(self):
         """Process the current frame via collector and update all GUI plots."""
@@ -2193,6 +2244,8 @@ class GUI:
             dpg.set_value(ui.ACQ_DLG_BAND_PRESET, self._band_preset_label(cfg))
         if dpg.does_item_exist(ui.ACQ_DLG_CACHE_FRAMES):
             dpg.set_value(ui.ACQ_DLG_CACHE_FRAMES, cfg.cache_frames)
+        if dpg.does_item_exist(ui.ACQ_DLG_ENV_ENABLED):
+            dpg.set_value(ui.ACQ_DLG_ENV_ENABLED, cfg.envelope_enabled)
         self._update_acq_derived()
 
     def _band_suffix(self) -> str:
@@ -2273,6 +2326,8 @@ class GUI:
             n = max(1, int(dpg.get_value(ui.ACQ_DLG_CACHE_FRAMES)))
             cfg.cache_frames = n
             self.collector.resize_frame_cache(n)
+        if dpg.does_item_exist(ui.ACQ_DLG_ENV_ENABLED):
+            cfg.envelope_enabled = bool(dpg.get_value(ui.ACQ_DLG_ENV_ENABLED))
 
     def _on_acq_apply(self, sender=None, data=None):
         was_streaming = self.collector.is_streaming
@@ -3247,6 +3302,21 @@ class GUI:
                                 readonly=True, width=_w,
                             )
 
+                            dpg.add_separator()
+                            dpg.add_text("Analysis Tabs")
+                            _env_en = dpg.add_checkbox(
+                                label="Envelope/Demodulation (bearing analysis)",
+                                tag=ui.ACQ_DLG_ENV_ENABLED,
+                                default_value=False,
+                                callback=self._on_envelope_enabled_change,
+                            )
+                            self._tooltip(
+                                _env_en,
+                                "Shows the Envelope tab, which demodulates a housing "
+                                "resonance to reveal rolling-element bearing defects. "
+                                "Not every job is a bearing job -- turn this off to "
+                                "keep it from cluttering ones that aren't.")
+
                             # Control: declared measurement band for the overall.
                             # Blank/0 means "derive": the highpass edge up to
                             # F_max. Before this existed the overall spanned
@@ -3829,12 +3899,13 @@ class GUI:
                                 dpg.add_plot_axis(dpg.mvYAxis, label="", tag=ui.PLT_FREQ_AX_ACCEL)
                                 dpg.add_plot_axis(dpg.mvYAxis2, label="", tag=ui.PLT_FREQ_AX_2)
                                 dpg.hide_item(ui.PLT_FREQ_AX_2)
-                        with dpg.tab(label="Envelope"):
+                        with dpg.tab(label="Envelope", tag=ui.TAB_ENVELOPE, show=False):
                             # Demodulation band controls. A bearing defect's
                             # impulses ring a housing resonance at 2-20 kHz and
                             # are modulated at the defect rate; the raw spectrum
                             # buries that under the 1x, the envelope of the
                             # resonance shows it as a clean line.
+                            dpg.add_text("", tag=ui.ENV_FMAX_WARNING, color=_c("YELLOW"), show=False, wrap=0)
                             with dpg.group(horizontal=True):
                                 dpg.add_text("Band")
                                 dpg.add_input_float(

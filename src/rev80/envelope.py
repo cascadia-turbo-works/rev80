@@ -48,6 +48,16 @@ DEFAULT_ENVELOPE_FMAX: float = 500.0
 #: band-pass still rejects the 1x.
 SUGGEST_BAND_FRAC: float = 0.25
 
+#: Below this Nyquist frequency, envelope analysis is unlikely to have a real
+#: housing resonance (typically 2-20 kHz) to work with at all -- the mandatory
+#: anti-alias filter upstream has already removed everything above Nyquist
+#: before the data reaches here, so there is nothing a wider demodulation band
+#: could recover. suggest_band() will still return *a* band below this line,
+#: but it can only be centred on ordinary machine content (1x, gear mesh),
+#: which is exactly what demodulation exists to escape -- see the GUI's
+#: F_max warning in the Envelope tab.
+MIN_USEFUL_NYQUIST_HZ: float = 5000.0
+
 
 def envelope_spectrum(x: np.ndarray, fs: float, band: tuple[float, float],
                       env_fmax: float = DEFAULT_ENVELOPE_FMAX,

@@ -83,6 +83,11 @@ class AcquisitionSettings:
     # at different F_max, which silently invalidates long-horizon trending.
     band_fmin: float | None = None
     band_fmax: float | None = None
+    # Envelope/demodulation analysis is bearing-specific: not every job is a
+    # bearing job, and the tab is dead weight (and a source of "what does
+    # this mean?" confusion) on ones that aren't. Off by default -- opt in
+    # per job rather than opt out.
+    envelope_enabled: bool = False
     # Frame cache
     cache_frames: int = DEFAULT_CACHE_FRAMES  # depth of the ring cache in DataCollector
 
@@ -144,6 +149,7 @@ class AcquisitionSettings:
             # would freeze the F_max in force at save time into the config.
             'band_fmin':        self.band_fmin,
             'band_fmax':        self.band_fmax,
+            'envelope_enabled': self.envelope_enabled,
             'trend_max_points': self.trend_max_points,
             'cache_frames':     self.cache_frames,
         }
@@ -166,6 +172,7 @@ class AcquisitionSettings:
         if 'highpass_fc'      in d: obj.highpass_fc      = float(d['highpass_fc'])     # noqa: E701
         if 'band_fmin'        in d: obj.band_fmin        = _opt_float(d['band_fmin'])  # noqa: E701
         if 'band_fmax'        in d: obj.band_fmax        = _opt_float(d['band_fmax'])  # noqa: E701
+        if 'envelope_enabled' in d: obj.envelope_enabled = bool(d['envelope_enabled'])  # noqa: E701
         if 'trend_max_points' in d: obj.trend_max_points = int(d['trend_max_points'])  # noqa: E701
         if 'cache_frames'     in d: obj.cache_frames     = int(d['cache_frames'])           # noqa: E701
         return obj

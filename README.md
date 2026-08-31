@@ -18,6 +18,7 @@ Looking to build, package, or contribute to Rev80? See **[CONTRIBUTING.md](CONTR
 - [Installing from Source (any OS)](#installing-from-source-any-os)
 - [Configuration and Persistence](#configuration-and-persistence)
 - [Monitor Mode](#monitor-mode)
+- [Envelope-Demodulation Analysis (Bearing Diagnostics)](#envelope-demodulation-analysis-bearing-diagnostics)
 - [Signal Generator](#signal-generator)
 - [Simulated Sensor](#simulated-sensor)
 - [Architecture](#architecture)
@@ -511,6 +512,41 @@ Upper and lower limits are independent. A channel with no sensor/EU assigned (ra
 #### Cooldown gate
 
 After any burst fires (automatic or manual), the controller optionally blocks further automatic triggers for `cooldown_s` seconds. Interval captures are unaffected. Use this to prevent a sustained fault from generating many overlapping burst files.
+
+---
+
+## Envelope-Demodulation Analysis (Bearing Diagnostics)
+
+The **Envelope** tab is for one specific job: catching rolling-element bearing defects — inner race, outer race, ball, or cage — early, before they show up as broadband vibration. It's off by default (enable it in the Acquisition dialog under **Analysis Tabs → Envelope/Demodulation (bearing analysis)**).
+
+### Why the raw spectrum misses this
+
+A bearing defect doesn't announce itself as a clean line at its own defect frequency. Every time a rolling element rolls over the defect it produces a sharp mechanical impulse, and that impulse rings a structural resonance of the bearing housing — typically somewhere in the 2–20 kHz range, well above anything the machine itself does mechanically (running speed, gear mesh, blade pass). In the raw spectrum that impulse energy is smeared thinly across the whole width of that resonance, and it sits *underneath* the 1x running-speed line and its harmonics, which are usually orders of magnitude larger. You can stare at the raw spectrum with a fresh defect right in front of you and see nothing but the same 1x/2x/3x peaks you always see.
+
+What actually carries the diagnosis isn't *where* the energy is — it's *how it's modulated*. The impulses repeat at a steady rate (the defect rate), so the resonance's amplitude keeps swelling and dying back at that rate. Recovering that swell-and-die pattern — the **envelope** — turns "energy smeared across a resonance" into a clean, discrete line at the defect rate, usually with sidebands at ±1x (running speed) on either side from the load zone modulating the impact severity as the shaft turns. This is the same technique sold as CSI PeakVue, SKF Enveloped acceleration (gE), or "shock pulse" analysis — the name changes, the physics doesn't.
+
+### Reading the envelope spectrum
+
+The Envelope plot looks like an ordinary spectrum, but the x-axis is **modulation frequency**, not vibration frequency, and the content on it means something different:
+
+- **A clean line at (or near) a known bearing defect frequency is the signature.** If you have the bearing's geometry (or a manufacturer table), compute BPFO, BPFI, BSF, or FTF for the actual running speed and compare — a line within a percent or two of one of those, that wasn't there on a healthy baseline, is the finding. Rev80 doesn't compute these for you; it gives you the clean line to compare against numbers you already have.
+- **±1x sidebands around a defect line** (spaced at running speed) are corroborating, not optional extra credit — they're the mechanism (load-zone modulation) showing up exactly where theory says it should. A defect-rate line with no sidebands is worth a second look before you commit to a bearing call.
+- **A rising forest of harmonics of the defect rate** (1x, 2x, 3x... of BPFO, say) as a fault progresses from a point defect toward spalling is a normal severity progression — more harmonics and a higher noise floor between them, not just a taller first line.
+- **A line at 1x running speed itself** (not a defect frequency) usually means the demodulation band leaked some of the machine's own vibration through the band-pass — see below — rather than a real finding.
+- **No lines at all, just a low, structureless floor** is the actual healthy-bearing picture. Resist the urge to read something into floor texture; the whole point of this technique is that a real defect stands out as a discrete line, not a shape.
+
+Trending matters here as much as it does for overall amplitude: a defect-rate line that grows session over session is a much stronger case than a single reading, and it's how you tell a marginal-but-stable indication from one that's headed toward failure.
+
+### Choosing the demodulation band
+
+The **Band** fields set the low/high edges (Hz) of the band-pass filter applied before demodulation — this is the single most consequential choice in the whole technique, because everything downstream is only as good as the resonance you picked:
+
+- **Leave both fields at 0 and click Auto**, or leave them at 0 and just let it re-run every frame — this searches the upper 75% of your configured frequency range (above F_max/4) for the frequency region carrying the most energy, smoothed over the width of the proposed band so a single tall harmonic can't fool it into centering on machine content instead of a resonance. This is deliberately restricted to the *upper* part of the range: the whole reason to demodulate is to escape the 1x/2x/gear-mesh content that dominates the lower part, so a band centered down there would just recover that content again, which is worse than doing nothing.
+- **Type an explicit band once you know where the resonance actually is.** The Auto suggestion is a reasonable first look, not necessarily the right answer — a housing or bearing has more than one structural resonance, and the one that rings loudest under a hammer tap or a bump test isn't guaranteed to be the one Auto finds from operating data alone. If you've identified the real resonance (bump test, or Auto's suggestion drifting frame to frame because there isn't one dominant peak), type it in and it stays fixed.
+- **Width matters as much as center.** Too narrow and you lose modulation sidebands and impulse energy the resonance actually carries — the band needs to be wide enough to pass the resonance's own bandwidth, typically several hundred Hz to a few kHz depending on how lightly damped it is. Too wide and you start letting the 1x/2x machine lines back in at the band edges, which shows up as that spurious 1x line in the envelope mentioned above.
+- **The band must sit strictly inside your acquisition range** (`0 < low < high < Nyquist`) and — since a bearing resonance is a structural, not running-speed-dependent, frequency — well above your highest expected running-speed harmonic. `F_max` sets Nyquist (roughly 1.3–2.6× `F_max`, depending on power-of-two rounding), and the mandatory anti-alias filter has already discarded everything above Nyquist *before* it reaches the demodulation step — so if a resonance doesn't fit under Nyquist, no band choice recovers it. General-route `F_max` presets like 1000–2000 Hz (Nyquist ≈ 2–4 kHz) usually don't reach a housing resonance at all; 5000–10000 Hz (Nyquist ≈ 8–16 kHz) is the realistic range for genuine bearing diagnostics.
+- **Rev80 warns you when this is the case**: if Nyquist is below ~5 kHz, the Envelope tab shows a banner saying so — Auto will still center a band on *something*, but below that ceiling it can only be ordinary machine content, not a resonance, so raise `F_max` in the Acquisition dialog rather than trust the plot.
+- The info line under the Band controls reports the resolved band and the resulting envelope's frequency ceiling for the current frame, so you can see what Auto actually picked.
 
 ---
 
