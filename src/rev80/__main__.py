@@ -104,7 +104,11 @@ def main():
 
     rev80.setup_logging(debug=args.debug)
     rev80.log_system_info()
-    sys.excepthook = rev80.exception_handler
+    # Installs sys.excepthook AND threading.excepthook AND faulthandler.
+    # The thread hook is the one that was missing: everything interesting
+    # in this app runs off the main thread, and those deaths went to
+    # stderr, which is nowhere when launched from a desktop entry.
+    rev80.install_excepthooks()
     rev80.get_logger().info('Rev80 Launched')
     app = rev80.GUI()
     app.initialize()
