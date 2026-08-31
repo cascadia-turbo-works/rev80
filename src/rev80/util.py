@@ -438,6 +438,7 @@ class UI_Elements:
     ENV_BAND_HI        = 'ENV_BAND_HI'
     ENV_BAND_AUTO      = 'ENV_BAND_AUTO'
     ENV_INFO_TEXT      = 'ENV_INFO_TEXT'
+    ENV_FMAX_WARNING   = 'ENV_FMAX_WARNING'
 
     PLT_TREND_DATA         = 'PLT_TREND_DATA'
     PLT_TREND_CURSOR     = 'PLT_TREND_CURSOR'    # vertical line at browsed frame time
