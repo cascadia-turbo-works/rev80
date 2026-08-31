@@ -418,6 +418,32 @@ class GUI:
         except (ValueError, IndexError):
             return None
 
+    def _update_env_fmax_warning(self, result: 'rev80.ChannelResult'):
+        """Warn when F_max leaves too little bandwidth for envelope analysis to work.
+
+        The mandatory anti-alias filter upstream has already removed
+        everything above Nyquist before this data was acquired -- a bearing
+        housing resonance (typically 2-20 kHz) that doesn't fit under Nyquist
+        isn't in the block at all, at any band setting. Below that, Auto (or
+        a hand-typed band) can only center on ordinary machine content, which
+        looks like a normal envelope plot but isn't measuring what it claims
+        to.
+        """
+        if not dpg.does_item_exist(ui.ENV_FMAX_WARNING):
+            return
+        nyquist = result.samplerate / 2.0
+        if nyquist < rev80_env.MIN_USEFUL_NYQUIST_HZ:
+            dpg.set_value(
+                ui.ENV_FMAX_WARNING,
+                f"F_max ({self.collector.config.maxfreq:.0f} Hz) gives only "
+                f"{nyquist:.0f} Hz of bandwidth -- a bearing resonance "
+                f"(typically 2-20 kHz) may not fit under Nyquist at all. "
+                f"Raise F_max in the Acquisition dialog for genuine defect "
+                f"detection.")
+            dpg.configure_item(ui.ENV_FMAX_WARNING, show=True)
+        else:
+            dpg.configure_item(ui.ENV_FMAX_WARNING, show=False)
+
     def _update_envelope_plot(self, result: 'rev80.ChannelResult', ch: int):
         """Band-pass, demodulate, and plot the envelope spectrum for one channel.
 
@@ -430,6 +456,7 @@ class GUI:
         tag = ui.plt_env_series(ch)
         if not dpg.does_item_exist(tag):
             return
+        self._update_env_fmax_warning(result)
         band = self._env_band_for(result)
         if band is None:
             dpg.set_value(tag, [[], []])
@@ -3878,6 +3905,7 @@ class GUI:
                             # are modulated at the defect rate; the raw spectrum
                             # buries that under the 1x, the envelope of the
                             # resonance shows it as a clean line.
+                            dpg.add_text("", tag=ui.ENV_FMAX_WARNING, color=_c("YELLOW"), show=False, wrap=0)
                             with dpg.group(horizontal=True):
                                 dpg.add_text("Band")
                                 dpg.add_input_float(
