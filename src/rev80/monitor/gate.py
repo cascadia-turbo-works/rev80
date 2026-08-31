@@ -5,6 +5,11 @@ class IntervalGate:
         self._next_deadline = start_monotonic
         self._in_burst = False
         self._burst_end = 0.0
+        # Initialised here rather than only in enter_burst(): the retrigger
+        # branch reads it, and while that is currently unreachable without a
+        # prior enter_burst(), it was one refactor away from an AttributeError
+        # inside the monitor's hot path.
+        self._burst_start = start_monotonic
 
     def should_capture(self, now: float) -> bool:
         """Return True if a capture should be taken at this moment."""
