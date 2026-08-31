@@ -18,7 +18,12 @@ jobs:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
 
     steps:
+      # fetch-depth: 0 — full history + tags. setuptools_scm derives
+      # __version__ from `git describe`; the default shallow checkout has no
+      # tags reachable, which would silently fall back to fallback_version.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
