@@ -1,11 +1,12 @@
 """Icon registry — CommitMono Nerd Font (Codicons BMP PUA)."""
 from __future__ import annotations
+
 import dearpygui.dearpygui as dpg
 
 import rev80
 from rev80._paths import resource_path
 
-log = rev80.get_logger(__name__)
+log = rev80.get_logger("icons")
 
 FONT_SIZE = 16  # 12pt @ 96 DPI
 
@@ -49,30 +50,26 @@ IC: dict[str, str] = {
 _font_tag: int | str | None = None
 
 
-def load() -> int | str | None:
+def load() -> int | str:
     """Register the font with DPG. Idempotent within one DPG context lifetime.
 
-    Returns None when the font file is absent. `assets/fonts/` is gitignored
-    and populated by `scripts/build.sh` step 1, so a fresh clone (and CI) has
-    no font. Passing a nonexistent path to dpg.font() raises inside the
-    context manager and DPG re-surfaces it as an opaque
-    `SystemError: pop_container_stack returned a result with an exception set`,
-    which took down the whole GUI. Degrade to the DPG default font instead —
-    icon glyphs render as tofu, everything else works.
+    Falls back to DPG's default font (icon glyphs render as boxes rather
+    than crashing) if the bundled Nerd Font is missing — e.g. a wheel built
+    without running scripts/fetch_font.sh first.
     """
     global _font_tag
     if _font_tag is not None:
         return _font_tag
-    font_file = resource_path('assets/fonts/CommitMonoNerdFont-Regular.otf')
-    if not font_file.is_file():
+    font_path = resource_path('assets/fonts/CommitMonoNerdFont-Regular.otf')
+    if not font_path.exists():
         log.warning(
-            'Icon font not found at %s — falling back to the default font; '
-            'icon glyphs will not render. Run scripts/build.sh to fetch it.',
-            font_file,
+            "Icon font not found at %s — toolbar icons will render as boxes. "
+            "Run scripts/fetch_font.sh and reinstall to fix.", font_path,
         )
-        return None
+        _font_tag = 0
+        return _font_tag
     with dpg.font_registry():
-        with dpg.font(str(font_file), FONT_SIZE) as tag:
+        with dpg.font(str(font_path), FONT_SIZE) as tag:
             dpg.add_font_range_hint(dpg.mvFontRangeHint_Default)
             dpg.add_font_range(0xe000, 0xffff)
     _font_tag = tag
@@ -87,5 +84,5 @@ def reset() -> None:
 
 def font_tag() -> int | str:
     if _font_tag is None:
-        raise RuntimeError('icons.load() must be called first, and must have found the font file')
+        raise RuntimeError('icons.load() must be called first')
     return _font_tag

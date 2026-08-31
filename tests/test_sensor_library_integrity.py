@@ -90,10 +90,9 @@ class TestScopeSensorFromDict:
     def test_coerces_scalar_types_to_str(self):
         s = ScopeSensor.from_dict({
             'name': 12345, 'engineering_units': 'g',
-            'sensitivity': '10.2', 'target_unit': 7, 'notes': 3.5,
+            'sensitivity': '10.2', 'notes': 3.5,
         })
         assert s.name == '12345'
-        assert s.target_unit == '7'
         assert s.notes == '3.5'
         assert isinstance(s.sensitivity, float)
         assert s.sensitivity == pytest.approx(10.2)

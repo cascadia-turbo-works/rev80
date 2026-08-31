@@ -17,7 +17,6 @@ def test_scope_sensor_to_dict_from_dict_roundtrip():
         name='Test PCB',
         engineering_units='g',
         sensitivity=0.098,
-        target_unit='mm/s',
         notes='test note',
     )
     d = s.to_dict()
@@ -26,18 +25,8 @@ def test_scope_sensor_to_dict_from_dict_roundtrip():
     assert s2.name == s.name
     assert s2.engineering_units == s.engineering_units
     assert s2.sensitivity == pytest.approx(s.sensitivity)
-    assert s2.target_unit == s.target_unit
     assert s2.id == s.id
     assert s2.notes == s.notes
-
-
-def test_scope_sensor_effective_target_unit():
-    s_with_target = ScopeSensor(name='A', engineering_units='g',
-                                sensitivity=10.0, target_unit='mm/s')
-    assert s_with_target.effective_target_unit() == 'mm/s'
-
-    s_no_target = ScopeSensor(name='B', engineering_units='g', sensitivity=10.0)
-    assert s_no_target.effective_target_unit() == 'g'
 
 
 def test_scope_sensor_from_dict_missing_optional_fields():
@@ -49,21 +38,22 @@ def test_scope_sensor_from_dict_missing_optional_fields():
     s = ScopeSensor.from_dict(d)
     assert s.name == 'Minimal'
     assert s.notes == ''
-    assert s.target_unit == ''
     assert s.id  # auto-generated uuid
 
 
-def test_scope_sensor_from_dict_ignores_legacy_modality():
-    """from_dict must silently ignore an old 'modality' key."""
+def test_scope_sensor_from_dict_ignores_legacy_fields():
+    """from_dict must silently ignore old 'modality' and 'target_unit' keys."""
     d = {
         'name': 'LegacySensor',
         'modality': 'acceleration',   # old key — should be ignored
+        'target_unit': 'g',           # old key — should be ignored
         'engineering_units': 'g',
         'sensitivity': 10.0,
     }
     s = ScopeSensor.from_dict(d)
     assert s.name == 'LegacySensor'
     assert not hasattr(s, 'modality')
+    assert not hasattr(s, 'target_unit')
 
 
 # ---------------------------------------------------------------------------

@@ -70,11 +70,13 @@ def _session(tmp_path, sensor_snapshot: dict, channel_snapshot: dict) -> Monitor
 
 
 def _session_with_sensor(tmp_path, target_unit: str = '') -> MonitorSession:
+    # target_unit is a per-CHANNEL setting, not a sensor property: one sensor
+    # may be wired to channels wanting different display targets. It therefore
+    # goes only into the channel snapshot below.
     sensor = ScopeSensor(
         name='PCB 352C33',
         engineering_units='g',
         sensitivity=SENSITIVITY_MV_PER_G,
-        target_unit=target_unit,
         id='sensor-1',
     )
     return _session(

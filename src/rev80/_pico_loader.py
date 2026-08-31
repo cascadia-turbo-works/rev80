@@ -13,7 +13,7 @@ import logging
 import os
 from pathlib import Path
 
-from rev80._paths import resource_path
+from rev80._paths import project_path
 
 log = logging.getLogger(__name__)
 
@@ -21,16 +21,21 @@ log = logging.getLogger(__name__)
 def _drivers_dir() -> Path | None:
     """Return the directory that contains the bundled PicoScope DLLs, or None.
 
-    Delegates to _paths.resource_path, which already resolves both cases
-    correctly: sys._MEIPASS/drivers when frozen, <repo root>/drivers in
-    development. This module previously duplicated that logic and got the
-    development branch wrong by one level — Path(__file__).parent.parent
-    resolves to src/, so it looked for src/drivers, which does not exist.
-    The frozen branch was correct, so only development was affected: the
-    function silently returned False, the bundled DLLs were never registered,
-    and picosdk fell back to walking %PATH%.
+    Delegates to _paths.project_path: sys._MEIPASS/drivers when frozen,
+    <repo root>/drivers in development. NOT resource_path — that resolves
+    inside the installed package, which is right for package-data but wrong
+    here: drivers/ holds DLLs collected at the repo root by
+    build/collect_pico_dlls.py and bundled by build/rev80.spec as a top-level
+    directory.
+
+    This module originally duplicated the logic and got the development branch
+    wrong by one level, looking for src/drivers, which does not exist (audit
+    X-06). Routing it through resource_path fixed that, and then narrowing
+    resource_path to package-data reintroduced it by the same shape — hence
+    the separate function, and the regression test in
+    tests/test_util_small_defects.py.
     """
-    candidate = resource_path('drivers')
+    candidate = project_path('drivers')
     return candidate if candidate.is_dir() else None
 
 

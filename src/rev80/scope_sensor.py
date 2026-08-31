@@ -12,8 +12,10 @@ engineering_units encodes the physical modality via the unit string:
   displacement: 'mm', 'in', 'mil'
   raw / no conversion: 'mV'
 
-target_unit (optional) sets the display/integration target.  If empty,
-the sensor data is displayed in its native engineering_units.
+The display/integration target unit is a per-channel setting
+(AcquisitionSettings.channel_target_units), not part of the sensor
+definition — a sensor may be wired to different channels with different
+targets.
 """
 
 from dataclasses import dataclass, field
@@ -56,20 +58,14 @@ class ScopeSensor:
     name: str
     engineering_units: str          # source EU from datasheet (e.g. 'g', 'mm/s')
     sensitivity: float              # mV / eu  (datasheet value, e.g. 10.2 mV/g)
-    target_unit: str = ''           # display/integration target; '' = same as engineering_units
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     notes: str = ''
-
-    def effective_target_unit(self) -> str:
-        """Return the display unit: target_unit if set, else engineering_units."""
-        return self.target_unit if self.target_unit else self.engineering_units
 
     def to_dict(self) -> dict:
         return {
             'name': self.name,
             'engineering_units': self.engineering_units,
             'sensitivity': self.sensitivity,
-            'target_unit': self.target_unit,
             'id': self.id,
             'notes': self.notes,
         }
@@ -89,11 +85,15 @@ class ScopeSensor:
         if not isinstance(d, dict):
             raise TypeError(f'sensor entry must be a mapping, got {type(d).__name__}')
         return cls(
+            # Coercion retained from the X-01 hardening: sensor definitions
+            # arrive from other installs' YAML and from HDF5 attributes in
+            # shared measurement files, so the values are not trustworthy.
             name=_scalar_str(d, 'name', required=True),
             engineering_units=_scalar_str(d, 'engineering_units', required=True),
             sensitivity=_scalar_float(d, 'sensitivity'),
-            target_unit=_scalar_str(d, 'target_unit'),
             id=_scalar_str(d, 'id') or str(uuid.uuid4()),
             notes=_scalar_str(d, 'notes'),
-            # 'modality' key in old YAML files is silently ignored
+            # 'modality' and 'target_unit' keys in old YAML files are silently
+            # ignored. target_unit moved to AcquisitionSettings.channel_target_units,
+            # since one sensor may be wired to channels wanting different targets.
         )

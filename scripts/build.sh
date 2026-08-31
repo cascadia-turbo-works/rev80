@@ -71,21 +71,22 @@ if [[ "$STEP" == "all" || "$STEP" == "installer" ]]; then
 fi
 
 # ── Step 1: Fetch font ───────────────────────────────────────────────────────
-# Font is gitignored; download on first build and cache locally.
-FONT_FILE="assets/fonts/CommitMonoNerdFont-Regular.otf"
-FONT_URL="https://github.com/ryanoasis/nerd-fonts/releases/download/v3.4.0/CommitMono.zip"
-if [[ ! -f "$FONT_FILE" ]]; then
-    echo "[1/5] Downloading CommitMono Nerd Font..."
-    mkdir -p assets/fonts
-    TMP_ZIP=$(mktemp /tmp/CommitMono.XXXXXX.zip)
-    curl -L --fail --progress-bar "$FONT_URL" -o "$TMP_ZIP"
-    unzip -j "$TMP_ZIP" "CommitMonoNerdFont-Regular.otf" -d assets/fonts/
-    rm "$TMP_ZIP"
-    echo
-else
-    echo "[1/5] Font already present — skipping download."
-    echo
-fi
+./fetch_font.sh
+## Font is gitignored; download on first build and cache locally.
+#FONT_FILE="assets/fonts/CommitMonoNerdFont-Regular.otf"
+#FONT_URL="https://github.com/ryanoasis/nerd-fonts/releases/download/v3.4.0/CommitMono.zip"
+#if [[ ! -f "$FONT_FILE" ]]; then
+#    echo "[1/5] Downloading CommitMono Nerd Font..."
+#    mkdir -p assets/fonts
+#    TMP_ZIP=$(mktemp /tmp/CommitMono.XXXXXX.zip)
+#    curl -L --fail --progress-bar "$FONT_URL" -o "$TMP_ZIP"
+#    unzip -j "$TMP_ZIP" "CommitMonoNerdFont-Regular.otf" -d assets/fonts/
+#    rm "$TMP_ZIP"
+#    echo
+#else
+#    echo "[1/5] Font already present — skipping download."
+#    echo
+#fi
 
 # ── Step 2: Stamp version ────────────────────────────────────────────────────
 # Always runs so the frozen binary embeds the correct tag, even if the
