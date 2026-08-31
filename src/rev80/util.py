@@ -387,6 +387,7 @@ class UI_Elements:
     ACQ_DLG_BAND_FMIN   = 'ACQ_DLG_BAND_FMIN'
     ACQ_DLG_BAND_FMAX   = 'ACQ_DLG_BAND_FMAX'
     ACQ_DLG_CACHE_FRAMES = 'ACQ_DLG_CACHE_FRAMES'
+    ACQ_DLG_ENV_ENABLED = 'ACQ_DLG_ENV_ENABLED'
     # Acquisition dialog — derived display fields
     ACQ_DLG_SAMPLERATE = 'ACQ_DLG_SAMPLERATE'
     ACQ_DLG_NFFT_BINS  = 'ACQ_DLG_NFFT_BINS'
@@ -428,6 +429,7 @@ class UI_Elements:
     PLT_TREND_AX_OVERALL   = 'PLT_TREND_AX_OVERALL'
     PLT_TREND_AX_OVERALL_2 = 'PLT_TREND_AX_OVERALL_2'
     # Envelope / demodulation plot
+    TAB_ENVELOPE       = 'TAB_ENVELOPE'    # the tab itself — shown/hidden per ACQ_DLG_ENV_ENABLED
     PLT_ENV            = 'PLT_ENV'
     PLT_ENV_LEGEND     = 'PLT_ENV_LEGEND'
     PLT_ENV_AX_FREQ    = 'PLT_ENV_AX_FREQ'
@@ -436,6 +438,7 @@ class UI_Elements:
     ENV_BAND_HI        = 'ENV_BAND_HI'
     ENV_BAND_AUTO      = 'ENV_BAND_AUTO'
     ENV_INFO_TEXT      = 'ENV_INFO_TEXT'
+    ENV_FMAX_WARNING   = 'ENV_FMAX_WARNING'
 
     PLT_TREND_DATA         = 'PLT_TREND_DATA'
     PLT_TREND_CURSOR     = 'PLT_TREND_CURSOR'    # vertical line at browsed frame time
