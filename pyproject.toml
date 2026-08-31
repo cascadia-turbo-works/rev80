@@ -1,6 +1,6 @@
 [project]
 name = "rev80"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Rev80 — industrial vibration analysis for PicoScope"
 authors = [
     { name="Henry Gotjen", email="hgotjen@gmail.com" }
@@ -59,8 +59,22 @@ where = ["src"]
 [tool.setuptools.package-data]
 rev80 = ["logging.yaml", "assets/fonts/*.otf", "assets/icons/hicolor/*/apps/*.png"]
 
+# __version__ is derived from git tags/describe at build time (any `pip
+# install`, editable or not) rather than stamped by a commit hook — a
+# commit's own tree can't correctly describe itself w.r.t. a tag applied to
+# it *after* it's committed, so a commit-time stamp is always one step
+# behind a just-tagged release. src/rev80/_version.py is generated here and
+# is gitignored, not committed. Tags are "rc0.2", "rc0.3", ... (no "v"
+# prefix), hence the custom tag_regex. fallback_version covers CI/shallow
+# clones with no tags reachable — see .github/workflows/ci.yml.
+[tool.setuptools_scm]
+version_file = "src/rev80/_version.py"
+version_file_template = "__version__ = \"{version}\"\n"
+tag_regex = '^rc(?P<version>\d+\.\d+(?:\.\d+)?)$'
+fallback_version = "0.0.0+unknown"
+
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=64", "setuptools_scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [tool.pytest.ini_options]

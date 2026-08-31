@@ -46,10 +46,10 @@ python -m rev80
 ## Rendering docs to PDF
 
 `doc/README.pdf`, `doc/CONTRIBUTING.pdf`, `doc/PROGRESS.pdf`, and `doc/CHANGELOG.pdf` are
-committed alongside their Markdown sources. The same `pre-commit` hook that runs `ruff` and
-stamps `src/rev80/_version.py` (`.githooks/pre-commit`, enabled by the
-`git config core.hooksPath .githooks` step above) also re-renders and stages the PDF for any
-of those four files that are part of a commit, via `scripts/render_md.sh`:
+committed alongside their Markdown sources. The same `pre-commit` hook that runs `ruff`
+(`.githooks/pre-commit`, enabled by the `git config core.hooksPath .githooks` step above)
+also re-renders and stages the PDF for any of those four files that are part of a commit,
+via `scripts/render_md.sh`:
 
 ```bash
 # Render one file manually, e.g. after editing without committing
@@ -106,9 +106,9 @@ scripts/
   fetch_font.sh           Downloads the CommitMono Nerd Font into src/rev80/assets/fonts/
   render_md.sh            Renders a Markdown file to PDF (pandoc + weasyprint) — see doc/
 .githooks/
-  pre-commit              ruff check (warn-only), stamps src/rev80/_version.py from `git describe`,
-                           and re-renders doc/*.pdf for any of README.md, CONTRIBUTING.md,
-                           doc/PROGRESS.md, doc/CHANGELOG.md staged in the commit
+  pre-commit              ruff check (blocking; scope matches CI), and re-renders doc/*.pdf
+                           for any of README.md, CONTRIBUTING.md, doc/PROGRESS.md,
+                           doc/CHANGELOG.md staged in the commit
 doc/
   README.pdf, CONTRIBUTING.pdf, PROGRESS.pdf, CHANGELOG.pdf   Rendered by the pre-commit hook
   PROGRESS.md              Delivery history — client requirements mapped to commits
