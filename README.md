@@ -18,7 +18,7 @@ Looking to build, package, or contribute to Rev80? See **[CONTRIBUTING.md](CONTR
 - [Installing from Source (any OS)](#installing-from-source-any-os)
 - [Configuration and Persistence](#configuration-and-persistence)
 - [Monitor Mode](#monitor-mode)
-- [Envelope / Demodulation Analysis (Bearing Diagnostics)](#envelope--demodulation-analysis-bearing-diagnostics)
+- [Envelope-Demodulation Analysis (Bearing Diagnostics)](#envelope-demodulation-analysis-bearing-diagnostics)
 - [Signal Generator](#signal-generator)
 - [Simulated Sensor](#simulated-sensor)
 - [Architecture](#architecture)
@@ -515,7 +515,7 @@ After any burst fires (automatic or manual), the controller optionally blocks fu
 
 ---
 
-## Envelope / Demodulation Analysis (Bearing Diagnostics)
+## Envelope-Demodulation Analysis (Bearing Diagnostics)
 
 The **Envelope** tab is for one specific job: catching rolling-element bearing defects — inner race, outer race, ball, or cage — early, before they show up as broadband vibration. It's off by default (enable it in the Acquisition dialog under **Analysis Tabs → Envelope/Demodulation (bearing analysis)**).
 
