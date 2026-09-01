@@ -45,6 +45,10 @@ IC: dict[str, str] = {
     'add':                 '\uea60',  # cod-add
     'delete':              '\uea81',  # cod-trash (reuse)
     'close':               '\uea76',  # cod-close
+    # warnings (e.g. Monitor Mode storage estimate over 10 GB/year). Plain
+    # Unicode U+26A0 WARNING SIGN is NOT in this font's cmap (verified via
+    # fontTools) and renders as a missing glyph -- use the Codicon instead.
+    'warning':              '\uea6c',  # cod-warning
 }
 
 _font_tag: int | str | None = None

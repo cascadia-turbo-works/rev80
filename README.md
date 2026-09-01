@@ -454,6 +454,13 @@ When monitoring is active, the controller records a frame at the configured inte
 `/monitor/{N}/` in `session.h5`. Interval captures continue regardless of whether a burst is
 in progress.
 
+Each stored frame is a full-bandwidth raw-rate capture (see
+[Data Storage](#data-storage)), so total storage scales with interval, not
+with `maxfreq`. The Monitor config dialog shows an estimated bytes/year
+figure as you adjust the interval; it turns red with a ⚠ warning icon above
+10 GB/year — a signal to reconsider the interval before arming a long run,
+not a hard limit.
+
 ### Burst capture
 
 Any trigger source — automatic anomaly detection or the manual **Record Burst** button —
@@ -544,8 +551,8 @@ The **Band** fields set the low/high edges (Hz) of the band-pass filter applied 
 - **Leave both fields at 0 and click Auto**, or leave them at 0 and just let it re-run every frame — this searches the upper 75% of your configured frequency range (above F_max/4) for the frequency region carrying the most energy, smoothed over the width of the proposed band so a single tall harmonic can't fool it into centering on machine content instead of a resonance. This is deliberately restricted to the *upper* part of the range: the whole reason to demodulate is to escape the 1x/2x/gear-mesh content that dominates the lower part, so a band centered down there would just recover that content again, which is worse than doing nothing.
 - **Type an explicit band once you know where the resonance actually is.** The Auto suggestion is a reasonable first look, not necessarily the right answer — a housing or bearing has more than one structural resonance, and the one that rings loudest under a hammer tap or a bump test isn't guaranteed to be the one Auto finds from operating data alone. If you've identified the real resonance (bump test, or Auto's suggestion drifting frame to frame because there isn't one dominant peak), type it in and it stays fixed.
 - **Width matters as much as center.** Too narrow and you lose modulation sidebands and impulse energy the resonance actually carries — the band needs to be wide enough to pass the resonance's own bandwidth, typically several hundred Hz to a few kHz depending on how lightly damped it is. Too wide and you start letting the 1x/2x machine lines back in at the band edges, which shows up as that spurious 1x line in the envelope mentioned above.
-- **The band must sit strictly inside your acquisition range** (`0 < low < high < Nyquist`) and — since a bearing resonance is a structural, not running-speed-dependent, frequency — well above your highest expected running-speed harmonic. `F_max` sets Nyquist (roughly 1.3–2.6× `F_max`, depending on power-of-two rounding), and the mandatory anti-alias filter has already discarded everything above Nyquist *before* it reaches the demodulation step — so if a resonance doesn't fit under Nyquist, no band choice recovers it. General-route `F_max` presets like 1000–2000 Hz (Nyquist ≈ 2–4 kHz) usually don't reach a housing resonance at all; 5000–10000 Hz (Nyquist ≈ 8–16 kHz) is the realistic range for genuine bearing diagnostics.
-- **Rev80 warns you when this is the case**: if Nyquist is below ~5 kHz, the Envelope tab shows a banner saying so — Auto will still center a band on *something*, but below that ceiling it can only be ordinary machine content, not a resonance, so raise `F_max` in the Acquisition dialog rather than trust the plot.
+- **The band must sit strictly inside the acquisition range** (`0 < low < high < Nyquist`) and — since a bearing resonance is a structural, not running-speed-dependent, frequency — well above your highest expected running-speed harmonic. Acquisition always runs at a fixed rate independent of `F_max` — 40 kHz, Nyquist 20 kHz — specifically so the whole 2–20 kHz range a housing resonance can live in is always available to demodulate, regardless of what `F_max` you have the Spectrum tab set to. `F_max` only controls what the *Spectrum* tab displays; it has no effect on what Envelope can see.
+- **Rev80 still warns you if this ever isn't the case**: the Envelope tab checks the actual Nyquist of the data it's demodulating and shows a banner if it's implausibly low for a resonance to fit under. In normal use this should never fire — it exists as a safety net (e.g. if a future change lowers the acquisition rate) rather than something you'll routinely hit by choosing a low `F_max`.
 - The info line under the Band controls reports the resolved band and the resulting envelope's frequency ceiling for the current frame, so you can see what Auto actually picked.
 
 ---
@@ -570,7 +577,7 @@ Signal generator settings are persisted per-device (see [Configuration and Persi
 
 ## Simulated Sensor
 
-`VibeSensor.simulated()` returns a `VibeSensor` with `is_simulation=True`. When connected, it starts a `SimulatedSensor` daemon thread that generates synthetic bearing-defect vibration data at the configured samplerate and blocksize. Pass `--device sim` (headless) or select the simulated sensor in the GUI's device dialog — no PicoScope hardware required.
+`VibeSensor.simulated()` returns a `VibeSensor` with `is_simulation=True`. When connected, it starts a `SimulatedSensor` daemon thread that generates synthetic bearing-defect vibration data at the raw acquisition rate (`raw_samplerate`/`raw_blocksize`) — the same rate `PicoScopeStream` reports, so the simulated path exercises the same raw/display decimation everything else does rather than silently skipping it. Pass `--device sim` (headless) or select the simulated sensor in the GUI's device dialog — no PicoScope hardware required.
 
 `SimulatedSensor` is **excluded from `VibeSensor.find()`** — it will never appear in the hardware device list. Use `VibeSensor.simulated()` directly in tests and offline development.
 
@@ -679,12 +686,24 @@ When the GUI is slower than the hardware data rate it skips to the latest frame 
 
 ### 1. Acquisition — `PicoScopeStream` (`picoscope.py`)
 
-`PicoScopeStream` is a background polling thread that wraps `ps4000aRunStreaming`. The ADC is always driven faster than the requested `maxfreq` — at an oversampling ratio (up to 4×, capped by a measured safe continuous-streaming ceiling for this hardware) — so a linear-phase Kaiser-windowed FIR anti-alias filter (designed for ≥100 dB stopband; measured −111.7 dB worst case, against −60.0 dB for scipy's default Hamming kernel) can reject content above the target Nyquist *before* decimating down to the configured rate; this is mandatory and not user-configurable. On each poll:
+Acquisition and display run at two independent rates. `PicoScopeStream` always
+acquires at a fixed rate (`AcquisitionSettings.raw_samplerate`, see
+`RAW_SAMPLERATE_HZ` in `sample.py` — 40 kHz, 20 kHz Nyquist by default) high
+enough to always contain a bearing housing resonance (typically 2–20 kHz),
+completely independent of the user's chosen `maxfreq`. `maxfreq` only
+controls what gets *displayed* — the Spectrum tab's rate and the HDF5
+storage cost still track it (see `samplerate`/`blocksize` below), but the
+signal itself is always captured, stored, and available to envelope analysis
+at the full raw rate. This is the same approach other route-based vibration
+analyzers use: display capped low per ISO monitoring convention, demodulation
+still has full bandwidth underneath.
+
+`PicoScopeStream` is a background polling thread that wraps `ps4000aRunStreaming`. The ADC is always driven faster than `raw_samplerate` — at an oversampling ratio (up to 4×, capped by a measured safe continuous-streaming ceiling for this hardware) — so a linear-phase Kaiser-windowed FIR anti-alias filter (designed for ≥100 dB stopband; measured −111.7 dB worst case, against −60.0 dB for scipy's default Hamming kernel) can reject content above `raw_samplerate`'s Nyquist *before* decimating down to it; this is mandatory and not user-configurable. On each poll:
 
 1. Converts ADC counts → mV via `adc2mV()` for all enabled channels
 2. Detects ADC overflow per channel via the overflow bitmask
-3. Accumulates mV samples in a raw, oversampled `(blocksize × effective_osr × N_channels)` buffer
-4. Once a full raw block has accumulated, anti-alias filters and decimates it down to `blocksize` samples via `antialias_decimate()`, then fires the registered callback with:
+3. Accumulates mV samples in a raw, oversampled `(raw_blocksize × effective_osr × N_channels)` buffer
+4. Once a full raw block has accumulated, anti-alias filters and decimates it down to `raw_blocksize` samples via `antialias_decimate()`, then fires the registered callback with:
 
 ```python
 {
@@ -695,28 +714,29 @@ When the GUI is slower than the hardware data rate it skips to the latest frame 
     'timestamp':     datetime,
     'unit':          ['mV', ...],   # one entry per channel
     'channels':      [0, 1, ...],   # enabled channel indices
-    'data':          ndarray,       # shape (blocksize, N_channels), mV
+    'data':          ndarray,       # shape (raw_blocksize, N_channels), mV
+    'samplerate':    float,         # raw_samplerate (or driver-reported actual rate)
 }
 ```
 
 A watchdog thread monitors for >5 s silence and attempts up to 3 reconnect cycles automatically. A second, independent watchdog monitors *sustained* USB streaming throughput every 2 s — this catches a different failure mode where the driver silently delivers only a fraction of the requested rate (`status='OKAY'`, no overflow, callbacks keep firing) that the silence watchdog can't see. It only sets `degraded=True` on the stream and logs a warning; it never triggers reconnect, since a bandwidth ceiling isn't fixed by reopening the device.
 
-**Device discovery** — `VibeSensor.find()` calls `FindPicoScope()` and returns hardware-only results. `SimulatedSensor` is excluded; use `VibeSensor.simulated()` for offline development and testing.
+**Device discovery** — `VibeSensor.find()` calls `FindPicoScope()` and returns hardware-only results. `SimulatedSensor` is excluded; use `VibeSensor.simulated()` for offline development and testing — it generates and reports at `raw_samplerate` too, so it exercises the same dual-rate path.
 
 ### 2. Preprocessing — `DataCollector` (`collector.py`)
 
 `DataCollector.receive_data(frame)` runs in the hardware callback thread:
 
-1. For each enabled channel, extracts the channel column from `frame['data']`
+1. For each enabled channel, extracts the channel column from `frame['data']` (at `raw_samplerate`)
 2. Converts mV → engineering units using `ScopeSensor.sensitivity` (if a sensor is assigned)
-3. Optionally applies a **4th-order Butterworth highpass** filter (default 10 Hz declared band edge). Causal (`sosfilt`) with filter state carried across consecutive streaming blocks, seeded from the block mean on the first block; zero-phase `sosfiltfilt` was tried and reverted — its forward+backward pass effectively doubles the order and overshot both block edges by 35–45% for a low cutoff over a short block
-4. Wraps each channel's data in a `VibeSample` (anti-aliasing is no longer applied here — it happens upstream in `PicoScopeStream`, before the ADC's own Nyquist limit can fold high-frequency content into the passband)
+3. Optionally applies a **4th-order Butterworth highpass** filter (default 10 Hz declared band edge), at the raw rate. Causal (`sosfilt`) with filter state carried across consecutive streaming blocks, seeded from the block mean on the first block; zero-phase `sosfiltfilt` was tried and reverted — its forward+backward pass effectively doubles the order and overshot both block edges by 35–45% for a low cutoff over a short block
+4. Wraps each channel's data in a `VibeSample` at the raw rate (anti-aliasing for the *acquisition* Nyquist is no longer applied here — it happens upstream in `PicoScopeStream`, before the ADC's own Nyquist limit can fold high-frequency content into the passband). `VibeSample.data`/`.samplerate` are this raw signal, and are what gets written to HDF5 and what envelope analysis reads directly
 5. Assembles a frame dict `{ch: VibeSample, 'overflow': mask}` and appends it to the frame ring cache (configurable depth via `AcquisitionSettings.cache_frames`, default 32)
 6. Sets `new_frame_event` to signal the GUI render loop
 
 ### 3. Spectral Analysis — `DataCollector.process_sample()` (`collector.py`)
 
-`DataCollector.process_sample(ch, sample)` computes and returns a `ChannelResult`:
+`DataCollector.process_sample(ch, sample)` first decimates the raw-rate `VibeSample` down to the display rate (`AcquisitionSettings.samplerate`, `maxfreq`-driven) via `decimate_to_rate()` — a rational-ratio polyphase resample (`scipy.signal.resample_poly`) reusing the same Kaiser stopband design as the hardware anti-alias filter, cached on the sample so repeated calls (browsing, unit changes) don't re-resample. Everything below runs on that decimated signal and computes and returns a `ChannelResult`:
 
 - **Welch PSD** — `scipy.signal.welch` with a configurable window function, one segment per frame (`nperseg = blocksize`, so the delivered line count and bin width match what the UI states), and bin size controlled by `AcquisitionSettings.binsize`
 - **Spectral averaging** (optional) — the N most recent *valid* frames up to and including the one displayed are averaged in the **power** domain. Overloaded and rate-degraded frames are rejected from the average. Since the HDF5 stores individual raw frames, averaging is recomputed on load and N can be changed after the fact
@@ -724,6 +744,8 @@ A watchdog thread monitors for >5 s silence and attempts up to 3 reconnect cycle
 - **Peak detection** — `rev80.peaks.select_peaks`: a per-bin local noise floor is estimated with a running median, and array-valued `height`/`prominence` admit a line when it rises `peak_threshold_db` above its *own* neighbourhood. Ranking stays by descending amplitude; the reported value is the maximum bin's amplitude, with no interpolation or energy summation
 - **Overall amplitude** — RMS/0-P/P-P over the **declared band**, not the whole block. Computed from a Hann-tapered, band-masked transform so all five integration orders describe one band
 - **Crest factor and kurtosis** — computed on the band-limited displayed trace. Deliberately *not* averaged: they exist to catch the frame that is not steady
+
+**Envelope analysis reads around this.** `DataCollector.eu_scaled_raw(ch, sample)` returns the highpass-filtered signal in the sensor's own engineering units *at the raw rate*, skipping the `maxfreq` decimation step entirely — this is what the Envelope tab demodulates, so a low display `maxfreq` never limits how much bandwidth a bearing-resonance search can see.
 
 ### 4. Visualisation — `GUI._poll_new_frames()` / `_display_frame()` (`gui.py`)
 
@@ -743,13 +765,21 @@ The GUI uses a manual render loop (`while dpg.is_dearpygui_running()`). Each tic
 
 ### Spectrum settings
 
+`samplerate`/`blocksize` are the **display** rate — what the Spectrum tab's
+Welch PSD is computed at, and what the Acquisition dialog's "Sample Rate"
+field shows. They no longer describe what the hardware actually acquires;
+that's the separate, fixed `raw_samplerate`/`raw_blocksize` pair below.
+`maxfreq` still only affects the display side.
+
 | Property | Description |
 | --- | --- |
-| `maxfreq` | Upper frequency of interest (Hz) — drives `samplerate` selection |
+| `maxfreq` | Upper frequency of interest (Hz) — drives `samplerate` (display) selection. Clamped in the setter to what `raw_samplerate` can back (`≤ raw_samplerate / 2 / 1.28`), since nothing above that was ever captured |
 | `binsize` | Frequency resolution of Welch FFT (Hz) — drives `blocksize` selection |
-| `samplerate` | **Derived** — minimum samplerate ≥ 2.56 × maxfreq (the 28% margin above 2× Nyquist gives the mandatory anti-alias filter a real transition band — same ratio commercial FFT vibration analyzers use) |
-| `blocksize` | **Derived** — next power of 2 satisfying samplerate / blocksize ≤ binsize |
-| `acquisition_period` | **Derived** — blocksize / samplerate (seconds) |
+| `samplerate` | **Derived, display rate** — minimum samplerate ≥ 2.56 × maxfreq (the 28% margin above 2× Nyquist gives the mandatory anti-alias filter a real transition band — same ratio commercial FFT vibration analyzers use). `DataCollector` decimates the raw acquisition down to this rate before computing the Spectrum tab's PSD |
+| `blocksize` | **Derived, display rate** — next power of 2 satisfying samplerate / blocksize ≤ binsize |
+| `raw_samplerate` | **Fixed** — `RAW_SAMPLERATE_HZ` (40 kHz by default), independent of `maxfreq`. What `PicoScopeStream` actually acquires, what gets stored to HDF5, and what envelope analysis (`DataCollector.eu_scaled_raw`) reads directly. Hardware-validated on a PicoScope 4424A — see the module comment above `STREAMING_CEILING_HZ` in `picoscope.py` and `scripts/validate-streaming-capacity` for re-validating on other hardware |
+| `raw_blocksize` | **Derived, raw rate** — sample count spanning the same `acquisition_period` as `blocksize`, at `raw_samplerate`. Not necessarily a power of two — it isn't a Welch segment length, just how many raw samples one frame holds |
+| `acquisition_period` | **Derived** — blocksize / samplerate (seconds). Same value whether computed from the display or raw pair — one frame is one time window at two sample counts |
 | `n_fft_bins` | **Derived** — number of spectrum lines actually displayed, DC up to `maxfreq`. Not the full one-sided transform: the band between `maxfreq` and fs/2 is the anti-alias guard band and is not shown |
 | `fft_window` | Welch window function: `'hann'` (default), `'blackmanharris'`, `'flattop'`, `'hamming'`, `'boxcar'`, `'bartlett'` |
 | `welch_overlap` | Welch segment overlap fraction (default 0.5). Currently inert: `nperseg == blocksize`, so there is exactly one segment per frame |
@@ -764,9 +794,13 @@ The GUI uses a manual render loop (`while dpg.is_dearpygui_running()`). Each tic
 | `highpass_enabled` | Enable the 4th-order Butterworth highpass filter. Causal (`sosfilt`) with filter state carried across consecutive streaming blocks; replayed frames are filtered statelessly from a settled initial condition, so browsing is order-independent |
 | `highpass_fc` | Lower edge of the declared measurement band (Hz) — the frequency at which the response must still be within ±10% (ISO 2954), **not** the −3 dB knee. The Butterworth knee is placed below it at `f_edge × (A²/(1−A²))^(−1/2N)`, which is `0.834 × f_edge` at the shipped order 4 |
 
-Anti-aliasing is no longer a user-configurable lowpass — it's a mandatory
-filter applied at capture time in `PicoScopeStream`, automatically derived
-from `maxfreq` (see `samplerate` above). There's no separate cutoff to set.
+Anti-aliasing is no longer a user-configurable lowpass. Two mandatory,
+automatic filters are involved: `PicoScopeStream` anti-alias filters and
+decimates the oversampled ADC signal down to `raw_samplerate` at capture
+time (fixed, not `maxfreq`-derived); `DataCollector` then anti-alias
+filters and decimates that raw signal again, down to `samplerate` (display,
+`maxfreq`-derived), before computing the Spectrum tab's PSD. There's no
+separate cutoff to set for either.
 
 ### Channel settings
 
@@ -852,6 +886,15 @@ sensor can be wired to different channels with different targets.
 ---
 
 ## Data Storage
+
+Every stored frame — manual save or Monitor Mode interval/burst — is the
+full raw-acquisition-rate capture (`raw_samplerate`/`raw_blocksize`), not
+the `maxfreq`-driven display rate: storage cost is independent of whatever
+`maxfreq` is set to. This is what lets envelope analysis re-run at full
+bandwidth on an old file even if it was captured with a low `maxfreq` for
+the Spectrum tab. It's also why the per-year estimate in the Monitor
+config dialog can be substantial for a tight interval — see
+[Monitor Mode](#monitor-mode).
 
 ### Manual saves (v4 format)
 

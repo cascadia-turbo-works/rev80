@@ -3,6 +3,7 @@
 import threading
 from collections import deque
 from datetime import datetime
+from fractions import Fraction
 from pathlib import Path
 from typing import Dict, Union
 
@@ -14,9 +15,42 @@ import rev80
 from rev80 import _dsp
 from rev80 import peaks as rev80_peaks
 from rev80._paths import data_dir
+from rev80.picoscope import _AA_STOPBAND_DB
 from rev80.scope_sensor import ScopeSensor
 
 log = rev80.get_logger("collector")
+
+
+def decimate_to_rate(block: np.ndarray, raw_rate: float, target_rate: float) -> 'tuple[np.ndarray, float]':
+    """Anti-alias filter + resample a raw-rate block toward target_rate.
+
+    Generalises picoscope.antialias_decimate's integer-factor decimation to
+    an arbitrary rational ratio: RAW_SAMPLERATE_HZ (AcquisitionSettings) is
+    fixed, but the maxfreq-driven display rate this feeds isn't a clean
+    divisor of it in general. Does NOT touch antialias_decimate itself --
+    that's the validated hardware acquisition path (always a small integer
+    factor) and stays exactly as it is.
+
+    `window=('kaiser', beta)` lets scipy.signal.resample_poly derive the
+    correct up/down-normalised cutoff internally, rather than hand-deriving
+    it here -- the one thing pinned to match the hardware path is the
+    stopband target (_AA_STOPBAND_DB), via kaiser_beta.
+
+    Returns (resampled, actual_rate). actual_rate is exact
+    (raw_rate * up / down); target_rate is only ever approximated by the
+    nearest up/down with denominator <= 1000, which keeps the polyphase
+    filter design tractable -- the same spirit as the small integer factors
+    the hardware path already uses.
+    """
+    if target_rate >= raw_rate:
+        return block, raw_rate
+    ratio = Fraction(target_rate).limit_denominator(1000) / Fraction(raw_rate).limit_denominator(1000)
+    up, down = ratio.numerator, ratio.denominator
+    if down <= 1:
+        return block, raw_rate
+    beta = scipy.signal.kaiser_beta(_AA_STOPBAND_DB)
+    resampled = scipy.signal.resample_poly(block, up, down, axis=0, window=('kaiser', beta))
+    return resampled, raw_rate * up / down
 
 
 def _write_channel_group(h5_grp, ch: int, sample: 'rev80.VibeSample',
@@ -629,6 +663,24 @@ class DataCollector:
     # Sample processing
     # ------------------------------------------------------------------
 
+    def _decimated_for(self, sample: 'rev80.VibeSample', filtered_mv: np.ndarray) -> 'tuple[np.ndarray, float]':
+        """filtered_mv digitally decimated from the raw acquisition rate down
+        to the maxfreq-driven display rate, for Spectrum-tab Welch input.
+
+        Cached on the sample the same way psd_mv is: decimate_to_rate is real
+        compute (FIR filter + polyphase resample) and process_sample can be
+        called many times on one frame (browsing, unit changes).
+        """
+        target_rate = self.config.samplerate
+        key = (sample.samplerate, target_rate, sample._filter_config_key)
+        if sample.decimated_mv is not None and sample._decimation_config_key == key:
+            return sample.decimated_mv, sample.decimated_samplerate
+        decimated, actual_rate = decimate_to_rate(filtered_mv, sample.samplerate, target_rate)
+        sample.decimated_mv          = decimated
+        sample.decimated_samplerate  = actual_rate
+        sample._decimation_config_key = key
+        return decimated, actual_rate
+
     def _psd_and_overalls_for(self, ch: int, sample: 'rev80.VibeSample'):
         """Welch PSD (mV²) and the 5-order mV RMS overalls for one frame.
 
@@ -642,8 +694,12 @@ class DataCollector:
             return None, None
 
         filtered_mv = self.filtered_data_for(ch, sample)
-        samplerate  = sample.samplerate
-        N           = sample.blocksize
+        # sample.samplerate is the raw acquisition rate (RAW_SAMPLERATE_HZ);
+        # decimate to the maxfreq-driven display rate before transforming, so
+        # the Spectrum tab keeps showing exactly the line count/bin width the
+        # UI states regardless of what's actually acquired.
+        decimated_mv, samplerate = self._decimated_for(sample, filtered_mv)
+        N           = len(decimated_mv)
         freq_td     = np.fft.rfftfreq(N, d=1.0 / samplerate)
         band_fmin, band_fmax = config.band
 
@@ -654,19 +710,25 @@ class DataCollector:
         # belongs there for the same reason -- the cached overalls are computed
         # over it, so a band change with a stale cache silently returns the
         # previous band's number.
+        #
+        # sample.samplerate (raw) belongs here too, alongside the local
+        # `samplerate` (decimated/display target): the target is constant for
+        # a given config, so keying on it alone can't detect a differently-
+        # rated raw input -- decimate_to_rate's ratio, and therefore its
+        # output, depends on both.
         psd_key = (config.fft_window, config.welch_overlap,
                    config.highpass_enabled, config.highpass_fc,
-                   config.binsize, sample.samplerate,
+                   config.binsize, sample.samplerate, samplerate,
                    band_fmin, band_fmax)
         if sample.psd_mv is not None and sample._psd_config_key == psd_key:
             return sample.freq_hz, sample.psd_mv
 
         # Segment = the whole block, so the computed spectrum matches the line
         # count and bin width the UI states. See config.nperseg.
-        nperseg  = min(config.nperseg, len(filtered_mv))
+        nperseg  = min(config.nperseg, len(decimated_mv))
         noverlap = min(nperseg - 1, int(nperseg * config.welch_overlap))
         freq_hz, psd_mv = scipy.signal.welch(
-            filtered_mv, fs=float(samplerate),
+            decimated_mv, fs=float(samplerate),
             window=config.fft_window, nperseg=nperseg, noverlap=noverlap,
             nfft=nperseg, scaling='spectrum', detrend='linear', average='mean',
         )
@@ -696,7 +758,7 @@ class DataCollector:
         # instrument needs here; the fifth decimal place is not.
         hann_w, hann_gain = _dsp.hann_taper(N)
         masked_hann = np.where(_dsp.band_mask(freq_td, band_fmin, band_fmax),
-                               np.fft.rfft(filtered_mv * hann_w), 0.0)
+                               np.fft.rfft(decimated_mv * hann_w), 0.0)
         for i, n_ord in enumerate(range(-2, 3)):
             if n_ord == 0:
                 time_ord = np.fft.irfft(masked_hann, n=N)
@@ -732,7 +794,6 @@ class DataCollector:
         target_unit    = self.get_active_eu(ch)
         effective_tgt  = target_unit if target_unit else sensor_eu
         config         = self.config
-        samplerate     = sample.samplerate
 
         # ── 1. Butterworth filter ─────────────────────────────────────
         # Filtering happens in filter_block(); see there for why the filter is
@@ -740,6 +801,18 @@ class DataCollector:
         # arrive pre-filtered from receive_data (state carried across blocks);
         # replayed frames are filtered here, statelessly.
         filtered_mv = self.filtered_data_for(ch, sample)
+
+        # sample.samplerate is the raw acquisition rate (RAW_SAMPLERATE_HZ);
+        # everything below -- spectrum AND the displayed time-domain trace --
+        # is built from the maxfreq-driven display rate instead, so the two
+        # stay consistent with each other and with what "Sample Rate" states.
+        # Cached: _psd_and_overalls_for below decimates again for the same
+        # (sample, filter-config) key and hits this exact cache.
+        filtered_mv, samplerate = self._decimated_for(sample, filtered_mv)
+        # sample.time_vec is built from the raw block -- not usable below;
+        # this is the decimated equivalent (still true capture-relative time,
+        # since raw_blocksize spans the same acquisition_period as blocksize).
+        decimated_time_vec = np.arange(len(filtered_mv)) / samplerate
 
         # Frequency-domain integration/differentiation is done on a *tapered*
         # block. The DFT treats the record as periodic, so an un-windowed block
@@ -750,7 +823,7 @@ class DataCollector:
         # read +4473.76% high in displacement overall; the on-bin case that the
         # old test suite exercised exclusively was the one case with zero error.
         # See rev80._dsp for the full measured table.
-        N       = sample.blocksize
+        N       = len(filtered_mv)
         freq_td = np.fft.rfftfreq(N, d=1.0 / samplerate)
 
         # The declared measurement band. Everything the overall and the
@@ -928,19 +1001,19 @@ class DataCollector:
         if n_steps != 0:
             time_signal = _dsp.integrate_rfft(rfft_tukey, freq_td, n_steps, N)
             time_signal = time_signal[keep] * eu_scale
-            time_vec    = sample.time_vec[keep]
+            time_vec    = decimated_time_vec[keep]
         elif band_fmin <= 0.0 and band_fmax >= samplerate / 2.0:
             # Passthrough over the whole transform: no masking to do, so return
             # the full record undisturbed rather than paying the Tukey path's
             # 50% truncation for nothing.
             time_signal = filtered_mv * eu_scale
-            time_vec    = sample.time_vec
+            time_vec    = decimated_time_vec
         else:
             # Passthrough, but band-limited. Masking is a frequency-domain
             # multiply, so it carries the same circular-wrap sensitivity the
             # integrated orders have and needs the same overlap-save treatment.
             time_signal = np.fft.irfft(rfft_tukey, n=N)[keep] * eu_scale
-            time_vec    = sample.time_vec[keep]
+            time_vec    = decimated_time_vec[keep]
 
         return rev80.ChannelResult(
             channel=ch, unit=effective_tgt, overflow=sample.overflow,
@@ -959,6 +1032,46 @@ class DataCollector:
             n_averages=n_avg,
             timestamp=sample._timestamp, rel_time=sample.rel_time, status=sample.status,
         )
+
+    def current_frame(self) -> dict:
+        """The frame dict {ch: VibeSample} currently displayed/being processed.
+
+        Same latest-frame-or-cursor selection process_samples() uses (kept
+        as its own small copy of that index logic rather than a shared
+        refactor, to avoid touching process_samples()'s already-validated
+        internals). Exists so a consumer that needs the *raw* VibeSample --
+        the Envelope tab, which must not use process_sample()'s
+        maxfreq-decimated ChannelResult.time_data -- can reach the exact
+        same frame without re-deriving the streaming/browsing index itself.
+        Returns {} if the cache is empty.
+        """
+        cache = self.data["frame_cache"]
+        if not cache:
+            return {}
+        if not self.is_streaming:
+            self._cache_cursor = min(self._cache_cursor, len(cache) - 1)
+        idx = -1 if self.is_streaming else -1 - self._cache_cursor
+        return cache[idx]
+
+    def eu_scaled_raw(self, ch: int, sample: 'rev80.VibeSample') -> 'tuple[np.ndarray, float, str]':
+        """Highpass-filtered signal in engineering units, at the RAW rate.
+
+        For consumers that need real Nyquist headroom -- currently only the
+        Envelope tab -- and must not go through process_sample()'s
+        maxfreq-driven decimation the way ChannelResult.time_data does.
+        Converts mV -> the sensor's own native EU (mV / sensitivity_mv, the
+        same divide process_sample() step 4 folds into its
+        src_si/tgt_si/sensitivity_mv target-unit scale) but skips the
+        SI/target-unit conversion and any integration order: envelope
+        analysis demodulates the raw sensor signal directly and does not
+        offer a target unit of its own.
+        Returns (signal, samplerate, unit).
+        """
+        scope_sensor   = self.scope_sensors.get(ch)
+        sensor_eu      = scope_sensor.engineering_units if scope_sensor else 'mV'
+        sensitivity_mv = scope_sensor.sensitivity       if scope_sensor else 1.0
+        filtered_mv = self.filtered_data_for(ch, sample)
+        return filtered_mv / sensitivity_mv, sample.samplerate, sensor_eu
 
     def process_samples(self) -> list['rev80.ChannelResult']:
         """Process the current frame; return one ChannelResult per enabled channel.
@@ -1338,21 +1451,28 @@ class DataCollector:
         if not n:
             return
 
-        # Sync enabled_channels from frame data and clamp maxfreq to file samplerate
+        # Sync enabled_channels from frame data.
+        #
+        # This used to also clamp maxfreq up to file_samplerate/2 when the
+        # file's stored rate exceeded the current config's -- a safety net
+        # for files with no properly stored acquisition config, back when
+        # a frame's samplerate WAS the maxfreq-driven display rate. Now
+        # every file's samplerate is the fixed raw acquisition rate
+        # (RAW_SAMPLERATE_HZ) regardless of what maxfreq it was captured
+        # at, so that comparison is meaningless -- it would silently
+        # override the display F_max the user has open (or the correctly
+        # restored one from the file's own acquisition metadata, see
+        # _restore_metadata) on every single load. Removed rather than
+        # reworked: _restore_metadata already restores the real maxfreq
+        # from the file when it has one.
         all_channels: set[int] = set()
-        file_samplerate: float = 0.0
         for frame in self.data["frame_cache"]:
-            for k, v in frame.items():
+            for k in frame:
                 if isinstance(k, int):
                     all_channels.add(k)
-                    if v.samplerate > file_samplerate:
-                        file_samplerate = v.samplerate
 
         if all_channels:
             self.config.enabled_channels = sorted(all_channels)
-
-        if file_samplerate > 0 and self.config.samplerate < file_samplerate:
-            self.config.maxfreq = file_samplerate / 2
 
         self.init_trend_channels()
         self.reprocess_last_block()
