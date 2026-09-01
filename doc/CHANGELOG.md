@@ -48,6 +48,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   three `speed_gate_*` keys in `_BUILTIN_ACQ`, so every device and acquisition
   YAML written before R43 upgrades silently through the existing merge.
 
+- **Simulated tachometer signals and per-channel simulation sources** — step 3.
+  `SimulatedSensor._sample()` previously tiled one generated signal across every
+  enabled channel, which made a simulated tachometer impossible: the tach input would
+  carry the same accelerometer waveform as the vibration input, so tach had no offline
+  CI at all.
+  - `SimulatedSensor.channel_sources` — `{ch: (fn, *args)}` per-channel overrides. Empty
+    keeps the tiled behaviour **byte-identical**, so no existing test or caller moves.
+  - `GenerateTachPulse()` — a pulse train in mV with a **finite rise** (1.5 samples by
+    default). An ideal rectangle is a degenerate stimulus: no sample lands in the
+    detector's hysteresis band and sub-sample interpolation has nothing to interpolate,
+    so generating one would have CI exercise a regime the instrument never sees. Real
+    edges arrive with about one intermediate sample, measured on a 4424A.
+  - `GenerateMachineWithTach()` — a vibration channel and a tach channel from the *same*
+    shaft, sharing `running_rate` and an explicit shaft phase so the tach edge marks the
+    angular position where the load zone peaks. The coherence is the whole point: a tach
+    not locked to the vibration's own shaft rate cannot validate anything, because a
+    broken tachometer and a correct one both return a plausible number against an
+    unrelated signal — the same argument this module already makes about pure cosines
+    being unable to validate envelope analysis. Pinned by a test asserting the measured
+    RPM matches the 1× peak found in the vibration channel's own spectrum.
+  - `machine_with_tach_sources()` — the streaming counterpart, so the two rates cannot be
+    set independently and drift apart.
+  - `GenerateBearingVibration()` gains an optional `shaft_phase`; when omitted it is drawn
+    from the same rng as before, leaving the existing draw order and output unchanged.
+
 ### Changed
 - **Tachometer support is specified around 1 pulse/rev** (decision D-6). The UI will
   offer no pulses/rev control: one reflective tape or one keyway is not merely the

@@ -208,7 +208,8 @@ def GenerateBearingVibration(config: AcquisitionSettings,
                              slip: float = DEFAULT_SLIP,
                              load_zone_depth: float = DEFAULT_LOAD_ZONE_DEPTH,
                              noise: float = DEFAULT_NOISE,
-                             seed: int | None = None) -> np.ndarray:
+                             seed: int | None = None,
+                             shaft_phase: float | None = None) -> np.ndarray:
     """One block of accelerometer signal from a machine with a bearing defect.
 
     `severity=0.0` is the healthy negative control: running-speed harmonics and
@@ -233,7 +234,12 @@ def GenerateBearingVibration(config: AcquisitionSettings,
     # faulted range and would make any threshold test flaky. With independent
     # phases healthy sits at 2.68-3.16 over 40 seeds.
     sig = np.zeros(n, dtype=np.float64)
-    shaft_phase = rng.uniform(0, 2 * np.pi)
+    # An explicit shaft_phase pins the angular reference so a tachometer pulse
+    # can be generated at a known point in the same revolution (see
+    # GenerateMachineWithTach). Drawn from the same rng when not given, so the
+    # default behaviour and its random draw order are unchanged.
+    if shaft_phase is None:
+        shaft_phase = rng.uniform(0, 2 * np.pi)
     for k in range(1, 6):
         f_k = running_rate * k
         if f_k >= fs / 2:
@@ -297,6 +303,143 @@ def GenerateBearingVibration(config: AcquisitionSettings,
     return sig + rung
 
 
+# ---------------------------------------------------------------------------
+# Tachometer
+# ---------------------------------------------------------------------------
+
+#: Default rise/fall time of a generated tach edge, in samples. Measured on a
+#: 4424A: a real TTL edge arrives at the collector with about one intermediate
+#: sample, because the mandatory anti-alias decimation band-limits it after the
+#: ADC. An ideal zero-rise rectangle is a *degenerate* stimulus -- no sample
+#: lands in the detector's hysteresis band and sub-sample interpolation has
+#: nothing to interpolate -- so generating one would have CI exercise a regime
+#: the instrument never sees. See rev80.tach's module docstring.
+TACH_RISE_SAMPLES: float = 1.5
+
+DEFAULT_TACH_AMPLITUDE_MV: float = 5000.0   # 0-5 V TTL / laser tach output
+DEFAULT_TACH_WIDTH_S: float = 200e-6        # comfortably above the ~50 us floor
+
+
+def GenerateTachPulse(config: AcquisitionSettings,
+                      rpm: float = 1800.0,
+                      pulses_per_rev: int = 1,
+                      width_s: float = DEFAULT_TACH_WIDTH_S,
+                      amplitude_mv: float = DEFAULT_TACH_AMPLITUDE_MV,
+                      offset_mv: float = 0.0,
+                      polarity: str = 'rising',
+                      jitter_pct: float = 0.0,
+                      phase_s: float = 0.0,
+                      rise_samples: float = TACH_RISE_SAMPLES,
+                      seed: int | None = None) -> np.ndarray:
+    """One block of tachometer signal, in **millivolts**.
+
+    Returns a pulse train idling low (or high, for `polarity='falling'`) with a
+    finite rise, matching what a keyphasor or laser tach delivers to
+    DataCollector after the acquisition chain's anti-alias filter.
+
+    `pulses_per_rev` defaults to 1 per decision D-6 -- one reflective tape or
+    one keyway, which is both the common installation and the accurate one.
+
+    `jitter_pct` perturbs each pulse instant by a fraction of the nominal
+    period, modelling real torsional/cyclic shaft variation. It should show up
+    in `TachResult.interval_spread`, not as a rate error.
+    """
+    rng = np.random.default_rng(seed)
+    fs = float(config.samplerate)
+    n = int(config.blocksize)
+    t = np.arange(n) / fs
+
+    pulse_rate = float(rpm) * max(1, int(pulses_per_rev)) / 60.0
+    if pulse_rate <= 0:
+        return np.full(n, offset_mv, dtype=np.float64)
+    period = 1.0 / pulse_rate
+
+    # Pulse instants. Jitter is applied per pulse (not as a cumulative walk):
+    # this models cycle-to-cycle shaft variation, which is what an analyst sees
+    # as interval spread. Cumulative slip is the defect model's job, not this.
+    n_pulses = int(np.ceil(t[-1] / period)) + 2
+    starts = (np.arange(n_pulses) * period) + float(phase_s)
+    if jitter_pct > 0:
+        starts = starts + rng.normal(0.0, jitter_pct / 100.0 * period, n_pulses)
+
+    rise_s = max(rise_samples, 1e-9) / fs
+    x = np.zeros(n, dtype=np.float64)
+    for s in starts:
+        if s > t[-1] + period or s + width_s < 0:
+            continue
+        # Trapezoid: linear rise, flat top, linear fall. Clipped rather than
+        # branched so a pulse straddling the block edge is handled naturally.
+        up = np.clip((t - s) / rise_s, 0.0, 1.0)
+        down = np.clip((t - s - width_s) / rise_s, 0.0, 1.0)
+        x = np.maximum(x, up - down)
+
+    if polarity == 'falling':
+        x = 1.0 - x
+    return x * float(amplitude_mv) + float(offset_mv)
+
+
+def GenerateMachineWithTach(config: AcquisitionSettings,
+                            running_rate: float = DEFAULT_RUNNING_RATE_HZ,
+                            severity: float = 1.0,
+                            vib_channel: int = 0,
+                            tach_channel: int = 1,
+                            pulses_per_rev: int = 1,
+                            seed: int | None = None,
+                            **vib_kwargs) -> dict:
+    """A vibration channel and a tachometer channel from the *same* shaft.
+
+    Returns ``{vib_channel: accel, tach_channel: tach_mv}``.
+
+    The coherence is the point. A tach pulse train that is not locked to the
+    vibration's own shaft rate cannot validate anything -- a broken tachometer
+    and a correct one both return a plausible number against an unrelated
+    signal. This is the same argument this module already makes about pure
+    cosines being unable to validate envelope analysis.
+
+    Both channels share `running_rate` and an explicit shaft phase, so the
+    tach's rising edge marks a fixed angular position: the instant the load
+    zone is at its maximum. That makes the rate check (tach RPM vs the 1x peak
+    in the vibration's own spectrum) possible now, and an angular check
+    possible later without regenerating anything.
+    """
+    rng = np.random.default_rng(seed)
+    shaft_phase = float(rng.uniform(0, 2 * np.pi))
+
+    vib = GenerateBearingVibration(
+        config, severity=severity, running_rate=running_rate,
+        seed=seed, shaft_phase=shaft_phase, **vib_kwargs)
+
+    # The load zone peaks where cos(2*pi*f*t + shaft_phase) == 1, i.e. at
+    # t = -shaft_phase / (2*pi*f). Put the first pulse there, modulo one
+    # revolution, so the tach edge is the shaft's angular origin.
+    period = 1.0 / float(running_rate) if running_rate > 0 else 0.0
+    phase_s = float(np.mod(-shaft_phase / (2 * np.pi) * period, period)) if period else 0.0
+
+    tach_mv = GenerateTachPulse(
+        config, rpm=running_rate * 60.0, pulses_per_rev=pulses_per_rev,
+        phase_s=phase_s, seed=seed)
+
+    return {vib_channel: vib, tach_channel: tach_mv}
+
+
+def machine_with_tach_sources(running_rate: float = DEFAULT_RUNNING_RATE_HZ,
+                              severity: float = 1.0,
+                              vib_channel: int = 0,
+                              tach_channel: int = 1,
+                              seed: int | None = None) -> dict:
+    """`channel_sources` entries for a coherent vibration + tachometer pair.
+
+    The streaming counterpart to GenerateMachineWithTach: assign the result to
+    `SimulatedSensor.channel_sources`. Exists so that the two rates cannot be
+    set independently and drift apart, which is the obvious way to get a
+    simulated tach that reads a shaft the vibration channel is not on.
+    """
+    return {
+        vib_channel:  (GenerateBearingVibration, severity, running_rate),
+        tach_channel: (GenerateTachPulse, running_rate * 60.0),
+    }
+
+
 class SimulatedSensor:
 
     def __init__(self, config:AcquisitionSettings, sensor, callback):
@@ -311,6 +454,12 @@ class SimulatedSensor:
         # analysis, so an offline run against them would validate nothing.
         # They remain importable, and are still covered by their own tests.
         self.source: tuple = (GenerateBearingVibration,)
+        # Optional per-channel overrides: {ch: (fn, *args)}. Empty means every
+        # enabled channel carries one tiled copy of `source`, which is the
+        # historical behaviour and is preserved byte-for-byte. A tachometer
+        # channel is impossible without this: tiling would give the tach input
+        # the same accelerometer waveform as the vibration input.
+        self.channel_sources: dict[int, tuple] = {}
         self.stream: threading.Thread
 
         self.create_stream()
@@ -335,7 +484,20 @@ class SimulatedSensor:
         # floor is unnecessary, and it was actively wrong: a single-channel
         # configuration got a phantom second channel.
         n_ch = max(1, len(self.config.enabled_channels))
-        return np.tile(signal, (n_ch, 1)).T
+        if not self.channel_sources:
+            return np.tile(signal, (n_ch, 1)).T
+
+        # Per-channel mode: each enabled channel gets its own generated block,
+        # from its override if it has one and from `source` otherwise. Note
+        # that channels falling back to `source` are generated independently
+        # rather than sharing one draw -- which is both more realistic and
+        # unavoidable, since each call advances its own rng.
+        raw = _RawRateView(self.config)
+        cols = []
+        for ch in sorted(self.config.enabled_channels):
+            fn, *fn_args = self.channel_sources.get(ch, self.source)
+            cols.append(np.asarray(fn(raw, *fn_args), dtype=np.float64))
+        return np.column_stack(cols)
 
     def _stream(self):
         """Acquisition loop.
