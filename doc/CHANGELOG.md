@@ -48,6 +48,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   three `speed_gate_*` keys in `_BUILTIN_ACQ`, so every device and acquisition
   YAML written before R43 upgrades silently through the existing merge.
 
+- **1× shaft-rate marker and level** — the first consumer of shaft speed in the display,
+  and deliberately the simplest: a vertical line on the spectrum at 1×, and the level
+  beside it on each channel result card above the peaks table. No resampling, no
+  interpolation, no second axis type.
+  - A line's frequency is only diagnostic relative to 1×: unbalance sits on it,
+    misalignment on 2×, and a bearing tone characteristically *between* orders.
+  - `ChannelResult.one_x_hz` / `.one_x_amplitude`. 1× rarely lands on a bin centre, so the
+    level is the **larger of the two bins straddling it** — which recovers most of what a
+    strictly-nearest-bin reading loses to the offset, and keeps the rule consistent with
+    how peaks are already reported.
+  - Both are **hidden, not zeroed**, when there is no tachometer reading, and the
+    amplitude is `None` when 1× falls outside the displayed band: F_max can sit below the
+    shaft rate on a fast machine, and reporting the edge bin would be a wrong number
+    rather than a missing one.
+
 - **Duty cycle and pulse widths** on `TachResult`, persisted in v5. `detect_edges` found
   only the active edge, so pulse width — and therefore duty — was not captured at all.
   `detect_pulses()` now returns both edges from the same Schmitt state, so the two can
