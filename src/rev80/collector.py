@@ -17,6 +17,7 @@ from rev80 import peaks as rev80_peaks
 from rev80._paths import data_dir
 from rev80.picoscope import _AA_STOPBAND_DB
 from rev80.scope_sensor import ScopeSensor
+from rev80.tach import TachSettings, tach_result
 
 log = rev80.get_logger("collector")
 
@@ -113,6 +114,15 @@ class DataCollector:
         self.data: Dict = {}
         self.config = config if config else rev80.AcquisitionSettings()
         self.scope_sensors: dict[int, ScopeSensor] = {}
+        # Per-channel tachometer calibration, keyed like scope_sensors. A
+        # channel with role 'tachometer' and no entry uses TachSettings()
+        # defaults.
+        self.tach_settings: dict[int, TachSettings] = {}
+        # RPM trend, separate from self.trend because shaft speed must never
+        # be run through UNIT_TO_SI, amplitude_scale or integration_steps --
+        # the same reason crest factor and kurtosis sit beside `orders` rather
+        # than as columns of it.
+        self.tach_trend: dict[int, dict[str, np.ndarray]] = {}
         self._cache_cursor: int = 0
         self.siggen_config: dict | None = None
         self._last_frame_t: float | None = None  # arrival time of previous frame
@@ -140,6 +150,16 @@ class DataCollector:
             self.scope_sensors.pop(channel, None)
         else:
             self.scope_sensors[channel] = sensor
+
+    def set_tach_settings(self, channel: int, settings: 'TachSettings | None') -> None:
+        """Assign or clear tachometer calibration on a channel."""
+        if settings is None:
+            self.tach_settings.pop(channel, None)
+        else:
+            self.tach_settings[channel] = settings
+
+    def tach_settings_for(self, ch: int) -> TachSettings:
+        return self.tach_settings.get(ch) or TachSettings()
 
     def get_active_eu(self, ch: int = 0) -> str:
         """Return the display/target unit for a channel.
@@ -206,10 +226,19 @@ class DataCollector:
         """
         valid = set(range(num_channels))
 
-        # Prune scope_sensors
+        # Prune scope_sensors, tach calibration and channel roles. Without
+        # the last two, moving from a 4-channel scope to a 2-channel one
+        # leaves channel 3's tachometer role attached to an index the new
+        # device uses for vibration.
         for ch in list(self.scope_sensors):
             if ch not in valid:
                 self.scope_sensors.pop(ch)
+        for ch in list(self.tach_settings):
+            if ch not in valid:
+                self.tach_settings.pop(ch)
+        for ch in list(self.config.channel_roles):
+            if ch not in valid:
+                del self.config.channel_roles[ch]
 
         # Prune per-channel acquisition settings
         for ch in list(self.config.channel_voltage_ranges):
@@ -233,9 +262,41 @@ class DataCollector:
         Channels already in the store are preserved; new channels get empty
         arrays; channels no longer enabled are dropped.
         """
-        enabled = set(self.config.enabled_channels)
+        # Amplitude trends belong to vibration channels only: a tachometer
+        # has no engineering unit, so integration_steps('mV','mV') is 0 and it
+        # would be plotted as raw mV beside in/s -- a trend line tracking LED
+        # brightness.
         self.trend = {
-            ch: self.trend.get(ch, self._empty_trend()) for ch in sorted(enabled)
+            ch: self.trend.get(ch, self._empty_trend())
+            for ch in self.config.vibration_channels
+        }
+        self.tach_trend = {
+            ch: self.tach_trend.get(ch, self._empty_tach_trend())
+            for ch in self.config.tach_channels
+        }
+
+    @staticmethod
+    def _empty_tach_trend() -> dict:
+        return {'rel_times': np.empty(0), 'rpm': np.empty(0)}
+
+    def _update_tach_trend(self, ch: int, rel_time: float, rpm: float) -> None:
+        if ch not in self.tach_trend:
+            self.tach_trend[ch] = self._empty_tach_trend()
+        td = self.tach_trend[ch]
+        keep = self.config.trend_max_points
+        td['rel_times'] = np.append(td['rel_times'], rel_time)[-keep:]
+        td['rpm'] = np.append(td['rpm'], rpm)[-keep:]
+
+    def get_rpm_trend(self) -> dict:
+        """{ch: (rel_times, rpm)} for every tachometer channel.
+
+        Deliberately not folded into get_trend_for_display(): that applies
+        sensitivity, SI and amplitude-mode scaling, none of which mean
+        anything for a shaft speed.
+        """
+        return {
+            ch: (list(td['rel_times']), list(td['rpm']))
+            for ch, td in self.tach_trend.items()
         }
 
     # ------------------------------------------------------------------
@@ -438,7 +499,10 @@ class DataCollector:
         """
         from rev80.util import UNIT_TO_SI, amplitude_scale, integration_steps
         out: dict[int, tuple[list[float], list[float]]] = {}
-        for ch in self.config.enabled_channels:
+        # Vibration channels only -- a tachometer has no engineering unit and
+        # nothing here (sensitivity, SI, amplitude mode, integration) applies
+        # to a shaft speed. RPM is trended by get_rpm_trend().
+        for ch in self.config.vibration_channels:
             td        = self.trend.get(ch, {})
             rel_times = td.get("rel_times", np.empty(0))
             orders    = td.get("orders",    np.empty((0, 5)))
@@ -627,7 +691,21 @@ class DataCollector:
             # block boundaries requires. process_sample may be called many
             # times on the same frame (re-render, unit change) and in any
             # order when browsing, so it must not advance the state.
-            filtered = self.filter_block(ch, data, samplerate, stateful=True)
+            if self.config.role_for(ch) == 'tachometer':
+                # No high-pass. Measured: its overshoot on each falling edge
+                # re-crosses the threshold, turning 31 edges into 108 at 15%
+                # duty -- an 1800 RPM shaft reads 6270. Detect edges here, at
+                # ingestion, for the same reason the filter runs here: this is
+                # the one place a block arrives exactly once, in stream order.
+                filtered = None
+                settings = self.tach_settings_for(ch)
+                tach_res = tach_result(data, samplerate, ch=ch,
+                                       rel_time=samp["rel_time"],
+                                       settings=settings)
+                tach_key = self._tach_key(samplerate, settings)
+            else:
+                filtered = self.filter_block(ch, data, samplerate, stateful=True)
+                tach_res, tach_key = None, None
             samples[ch] = rev80.VibeSample(
                 status=samp["status"],
                 _timestamp=samp["timestamp"],
@@ -640,6 +718,8 @@ class DataCollector:
                 label=f"Ch{chr(65 + ch)}",
                 filtered_mv=filtered,
                 _filter_config_key=self._filter_key(samplerate),
+                tach=tach_res,
+                _tach_config_key=tach_key,
             )
 
         self._data_callback(samples)
@@ -1053,6 +1133,50 @@ class DataCollector:
         idx = -1 if self.is_streaming else -1 - self._cache_cursor
         return cache[idx]
 
+    @staticmethod
+    def _tach_key(samplerate: float, settings: TachSettings) -> tuple:
+        """Cache key for a tach reading: everything that changes the number."""
+        return (float(samplerate), tuple(sorted(settings.to_dict().items())))
+
+    def tach_for(self, ch: int, sample: 'rev80.VibeSample'):
+        """Return this frame's TachResult, recomputing if the settings changed.
+
+        Streaming frames arrive with `tach` already populated by receive_data.
+        A replayed frame, or one whose calibration was edited after capture,
+        is recomputed here -- which is what makes RPM a *view* on stored data
+        rather than a value baked in at capture time.
+        """
+        settings = self.tach_settings_for(ch)
+        key = self._tach_key(sample.samplerate, settings)
+        if sample.tach is not None and sample._tach_config_key == key:
+            return sample.tach
+        res = tach_result(sample.data, sample.samplerate, ch=ch,
+                          rel_time=sample.rel_time, settings=settings)
+        sample.tach = res
+        sample._tach_config_key = key
+        return res
+
+    def current_rpm(self) -> float | None:
+        """Shaft speed for the frame currently being displayed, or None.
+
+        None covers every reason there is no usable reading -- no tachometer
+        configured, nothing on the wire, too few edges. It is never 0.0: "I
+        cannot see a tach signal" and "the shaft is stopped" send an analyst
+        to different places.
+        """
+        tach_channels = self.config.tach_channels
+        if not tach_channels:
+            return None
+        frame = self.current_frame()
+        for ch in tach_channels:
+            sample = frame.get(ch)
+            if sample is None:
+                continue
+            res = self.tach_for(ch, sample)
+            if res.rpm is not None:
+                return res.rpm
+        return None
+
     def eu_scaled_raw(self, ch: int, sample: 'rev80.VibeSample') -> 'tuple[np.ndarray, float, str]':
         """Highpass-filtered signal in engineering units, at the RAW rate.
 
@@ -1067,6 +1191,15 @@ class DataCollector:
         offer a target unit of its own.
         Returns (signal, samplerate, unit).
         """
+        if self.config.role_for(ch) == 'tachometer':
+            # Refuse rather than return something plausible. With no
+            # ScopeSensor this would divide by a sensitivity of 1.0 and hand
+            # back raw mV labelled as engineering units -- the classic field
+            # error, and one that looks entirely reasonable on screen.
+            raise ValueError(
+                f'channel {ch} is a tachometer: it has no engineering unit, '
+                'and envelope/demodulation analysis does not apply to a pulse '
+                'train')
         scope_sensor   = self.scope_sensors.get(ch)
         sensor_eu      = scope_sensor.engineering_units if scope_sensor else 'mV'
         sensitivity_mv = scope_sensor.sensitivity       if scope_sensor else 1.0
@@ -1102,8 +1235,22 @@ class DataCollector:
             want = self.config.n_averages_effective
             history = list(cache)[max(0, stop - want + 1):stop]
 
+        # Record shaft speed for this frame before the vibration channels,
+        # so a consumer reading results has current_rpm() already updated.
+        if self.is_streaming:
+            for tch in self.config.tach_channels:
+                tsample = frame.get(tch)
+                if tsample is None:
+                    continue
+                tres = self.tach_for(tch, tsample)
+                if tres.rpm is not None:
+                    self._update_tach_trend(tch, tres.rel_time, tres.rpm)
+
         results: list[rev80.ChannelResult] = []
-        for ch in sorted(self.config.enabled_channels):
+        # Vibration channels only. A tachometer has no spectrum, no overall and
+        # no engineering unit; letting one through here is what produces
+        # kurtosis 15.94 on a square wave.
+        for ch in self.config.vibration_channels:
             sample = frame.get(ch)
             if sample is None or sample.blocksize <= 1:
                 continue

@@ -48,6 +48,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   three `speed_gate_*` keys in `_BUILTIN_ACQ`, so every device and acquisition
   YAML written before R43 upgrades silently through the existing merge.
 
+- **Tachometer channels wired into `DataCollector`** — step 4.
+  - `receive_data()` branches on role. A tachometer channel **skips the high-pass
+    entirely** and is edge-detected in its place. Measured: the filter's overshoot on
+    each falling edge re-crosses the threshold, turning 31 edges into 108 at 15% duty —
+    an 1800 RPM shaft reads 6270. Detection runs here for the same reason the filter
+    does: this is the one place a block arrives exactly once and in stream order.
+  - `tach_settings` / `set_tach_settings()` / `tach_settings_for()`, keyed like
+    `scope_sensors`; `tach_for()` recomputes when calibration changed after capture, so
+    RPM stays a *view* on stored data rather than a value baked in at capture time.
+  - `current_rpm()` — the displayed frame's shaft speed, or `None`. Never `0.0`.
+  - `process_samples()` now iterates `config.vibration_channels`. A tachometer produces
+    no `ChannelResult` at all, which is what stops kurtosis 15.94 appearing on a channel
+    card for a square wave.
+  - `tach_trend` / `get_rpm_trend()`, kept separate from `trend` because shaft speed must
+    never pass through `UNIT_TO_SI`, `amplitude_scale` or `integration_steps` — the same
+    reason crest factor sits beside `orders` rather than as a column of it.
+    `get_trend_for_display()` and `init_trend_channels()` are partitioned to match.
+  - `eu_scaled_raw()` **raises** on a tachometer channel. With no `ScopeSensor` it would
+    otherwise divide by a sensitivity of 1.0 and hand back raw mV labelled as engineering
+    units — the classic field error, and one that looks entirely reasonable on screen.
+  - `reset_channel_config()` prunes `channel_roles` and `tach_settings`, so moving from a
+    4-channel scope to a 2-channel one cannot leave channel 3's tach role attached to an
+    index the new device uses for vibration.
+  - `VibeSample.tach` / `_tach_config_key`, cached like `psd_mv` and `filtered_mv`.
+
 - **Simulated tachometer signals and per-channel simulation sources** — step 3.
   `SimulatedSensor._sample()` previously tiled one generated signal across every
   enabled channel, which made a simulated tachometer impossible: the tach input would
