@@ -19,6 +19,7 @@ from rev80 import tach as rev80_tach
 from rev80.util import (
     ANOMALY_HOOK_LABELS,
     DEFAULT_RMS_ALPHA,
+    DEFAULT_CHANNEL_ROLE,
     DEFAULT_ROTATION_UNIT,
     DEFAULT_SPEC_ALPHA,
     ROTATION_UNIT_LABELS,
@@ -610,6 +611,34 @@ class GUI:
             return f"--  {ROTATION_UNIT_LABELS.get(unit, unit)}"
         return f"{val:,.1f} {ROTATION_UNIT_LABELS.get(unit, unit)}"
 
+    def _populate_tach_tab(self):
+        """Push the collector's tach state into the tab's widgets.
+
+        Called after a device config is applied, so the tab shows what was
+        restored rather than its construction defaults -- which is what made
+        the setup look like it had reverted.
+        """
+        self._refresh_tach_channel_items()
+        tach_channels = self.collector.config.tach_channels
+        s = (self.collector.tach_settings_for(tach_channels[0]) if tach_channels
+             else rev80_tach.TachSettings())
+        for tag, val in (
+            (ui.TACH_POLARITY, s.polarity),
+            (ui.TACH_THRESH_MODE, s.threshold_mode),
+            (ui.TACH_THRESH_MV, s.threshold_mv),
+            (ui.TACH_MIN_AMPL_MV, s.min_amplitude_mv),
+            (ui.TACH_REFLECTOR_MM, s.reflector_size_mm),
+        ):
+            if dpg.does_item_exist(tag):
+                dpg.set_value(tag, val)
+        unit = self.collector.config.rotation_unit or DEFAULT_ROTATION_UNIT
+        if dpg.does_item_exist(ui.TACH_ROTATION_UNIT):
+            dpg.set_value(ui.TACH_ROTATION_UNIT,
+                          ROTATION_UNIT_LABELS.get(unit, unit))
+        if dpg.does_item_exist(ui.TACH_THRESH_MV):
+            dpg.configure_item(ui.TACH_THRESH_MV,
+                               enabled=(s.threshold_mode == 'fixed'))
+
     def _refresh_tach_channel_items(self):
         """Repopulate the channel combo from what the device actually offers."""
         if not dpg.does_item_exist(ui.TACH_CHANNEL):
@@ -776,7 +805,10 @@ class GUI:
                                 (res.n_edges + 2) * period)
         else:
             dpg.set_axis_limits_auto(ui.TACH_PLOT_X)
+        # set_axis_limits_auto only clears a manual range -- it does not
+        # refit. fit_axis_data is what actually rescales to the current data.
         dpg.set_axis_limits_auto(ui.TACH_PLOT_Y)
+        dpg.fit_axis_data(ui.TACH_PLOT_Y)
 
         dpg.set_value(ui.TACH_READOUT, self.format_rate(res.rpm))
         duty_txt = f"{res.duty_cycle * 100:.1f}%" if res.duty_cycle else "--"
@@ -3315,6 +3347,14 @@ class GUI:
                 "channel_name": self.collector.config.channel_names.get(c, ""),
                 "target_unit": self.collector.config.channel_target_units.get(c, ""),
                 "amplitude_mode": self.collector.config.channel_amplitude_modes.get(c, ""),
+                # The Tachometer tab owns these, but they are per-channel
+                # device state and belong in the device file with the rest of
+                # it -- otherwise the tach reverts to a vibration channel every
+                # time the config is reloaded.
+                "role": self.collector.config.role_for(c),
+                "tach": (self.collector.tach_settings_for(c).to_dict()
+                         if self.collector.config.role_for(c) == 'tachometer'
+                         else None),
             }
             for c in range(self._num_channels)
         }
@@ -3458,6 +3498,7 @@ class GUI:
             channel_name = info.get("channel_name", "")
             target_unit = info.get("target_unit", "")
             amplitude_mode = info.get("amplitude_mode", "")
+            role = str(info.get("role") or DEFAULT_CHANNEL_ROLE)
             sensor = self.registry.find_by_id(sensor_id) if sensor_id else None
             self.collector.set_scope_sensor(ch, sensor)
             self.collector.config.channel_voltage_ranges[ch] = voltage_range
@@ -3468,6 +3509,14 @@ class GUI:
                 self.collector.config.channel_target_units[ch] = target_unit
             if amplitude_mode:
                 self.collector.config.channel_amplitude_modes[ch] = amplitude_mode
+            if role == 'tachometer':
+                self.collector.config.channel_roles[ch] = role
+                self.collector.set_tach_settings(
+                    ch, rev80_tach.TachSettings.from_dict(info.get("tach") or {}))
+                enabled = True   # a claimed channel is sampled; see apply_tach_claim
+            else:
+                self.collector.config.channel_roles.pop(ch, None)
+                self.collector.set_tach_settings(ch, None)
             if enabled and ch not in self.collector.config.enabled_channels:
                 self.collector.config.enabled_channels.append(ch)
             elif not enabled and ch in self.collector.config.enabled_channels:
@@ -3491,6 +3540,10 @@ class GUI:
             if ch < self._num_channels:
                 self._add_channel_series(ch)
         self._update_axis_assignment()
+        # After the roles are restored, so the tab shows what was loaded rather
+        # than its construction defaults -- which is what made a saved tach
+        # setup look like it had reverted to a plain vibration channel.
+        self._populate_tach_tab()
         self._update_results_section_visibility()
 
     # ------------------------------------------------------------------

@@ -8,7 +8,6 @@ when the channel they want for the tach is one they never enabled for
 vibration.
 """
 
-import pytest
 
 import rev80 as vc
 from rev80.gui import apply_tach_claim
