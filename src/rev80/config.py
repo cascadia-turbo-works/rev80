@@ -40,6 +40,14 @@ _BUILTIN_CHANNEL_TEMPLATE: dict[str, Any] = {
     'channel_name':   None,
     'target_unit':    None,
     'amplitude_mode': '0-P',
+    # What this input carries: 'vibration' (default) or 'tachometer'. Every
+    # device file written before R43 lacks the key, and _merge_device fills it
+    # from here -- so an existing install keeps behaving exactly as it did.
+    'role':           'vibration',
+    # TachSettings.to_dict() when role == 'tachometer', else None. A nested
+    # block rather than flattened prefixes, so the whole calibration can be
+    # handed to TachSettings.from_dict() in one piece.
+    'tach':           None,
 }
 
 # Siggen template — stored in picoscope-defaults.yaml and written on every device save
@@ -75,6 +83,13 @@ _BUILTIN_ACQ: dict[str, Any] = {
         'band_fmax':        None,
         'trend_max_points': 5000,
         'cache_frames':     15,
+        # Speed gate (needs a tachometer channel; off by default because with
+        # no tach fitted there is no reference to gate against). null rpm means
+        # "latch the reference from the first valid frame" rather than freezing
+        # one session's running speed into the config.
+        'speed_gate_enabled':       False,
+        'speed_gate_rpm':           None,
+        'speed_gate_tolerance_pct': 3.0,
     },
     'monitor': {
         'interval_s':        600,

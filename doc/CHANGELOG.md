@@ -29,6 +29,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
     is no usable reading and never `0.0`** — "I cannot see a tach signal" and
     "the shaft is stopped" send an analyst to different places.
 
+- **Channel roles and the speed gate** (`AcquisitionSettings`) — step 2, still
+  unconsumed. `channel_roles` (`{ch: 'vibration'|'tachometer'}`) with
+  `role_for()`, and the derived `tach_channels` / `vibration_channels`
+  partitions that `process_samples` will iterate. An unrecognised role string
+  falls back to `vibration` rather than propagating, so a hand-edited YAML
+  cannot invent a third channel kind that every downstream branch then fails to
+  handle; and the partitions filter by *enabled* channels, so a tach role left
+  on a switched-off input does not have the collector hunting for a pulse train
+  nobody is sampling.
+- **`speed_gate_enabled` / `speed_gate_rpm` / `speed_gate_tolerance_pct`** —
+  off by default, since with no tachometer fitted there is no reference to gate
+  against. `speed_gate_rpm = None` means "latch from the first valid frame" and
+  survives the config round trip, for the same reason `band_fmin`/`band_fmax`
+  do: writing a resolved value back would freeze one session's running speed
+  into the config.
+- `role` and a nested `tach` block in `_BUILTIN_CHANNEL_TEMPLATE`, and the
+  three `speed_gate_*` keys in `_BUILTIN_ACQ`, so every device and acquisition
+  YAML written before R43 upgrades silently through the existing merge.
+
+### Fixed
+- **`AcquisitionSettings.copy()` carries `channel_roles`.** The per-channel
+  dicts live in the `channels` config section, so unlike the scalars they are
+  outside the `to_dict`/`from_dict` round trip and are enumerated by name in an
+  explicit tuple. A sixth dict added without extending that tuple is **audit
+  H-08 again**, and for roles the silent result is a copy in which every
+  tachometer has reverted to vibration — the pipeline then high-passes a pulse
+  train and reports kurtosis ~16 on it. Pinned by a revert-checked test.
+
 ### Measured
 Constants carry the table that justifies them, per house convention. Verified
 on a PicoScope 4424A (serial 12462/0067) with AWG loopback on channel A.

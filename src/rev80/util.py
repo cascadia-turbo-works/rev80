@@ -29,6 +29,8 @@ __all__ = [
     # Amplitude modes
     'AMPLITUDE_MODES', 'AMPLITUDE_SCALE', 'DEFAULT_AMPLITUDE_MODE',
     'amplitude_scale',
+    # Channel roles
+    'CHANNEL_ROLES', 'DEFAULT_CHANNEL_ROLE', 'CHANNEL_ROLE_LABELS',
     # Storage
     'SAVEDIR', 'EXT',
     # Monitor mode
@@ -154,6 +156,26 @@ AMPLITUDE_SCALE: dict = {
 # up, so '0-P' is the established default and is what an unrecognised mode
 # must also resolve to.
 DEFAULT_AMPLITUDE_MODE = '0-P'
+
+
+# ---------------------------------------------------------------------------
+# Channel roles
+# ---------------------------------------------------------------------------
+# What a physical input is carrying. Almost everything in the pipeline assumes
+# a channel has a ScopeSensor, an engineering unit, a spectrum and an overall;
+# a tachometer channel has none of those, and feeding a pulse train through the
+# vibration path yields a plausible-looking wrong answer rather than an error
+# (measured: overall 1515 mV, crest 5.00, kurtosis 15.94 and 63 "peaks" on a
+# 5% duty square wave -- which reads as a severely failing bearing).
+#
+# 'vibration' is the default so every config predating roles keeps its meaning.
+CHANNEL_ROLES: tuple = ('vibration', 'tachometer')
+DEFAULT_CHANNEL_ROLE: str = 'vibration'
+
+CHANNEL_ROLE_LABELS: dict = {
+    'vibration':  'Vibration',
+    'tachometer': 'Tachometer',
+}
 
 
 def amplitude_scale(mode) -> float:
