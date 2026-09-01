@@ -10,6 +10,8 @@ wave through the real process_sample: overall 1515 mV, crest 5.00, kurtosis
 These tests are the fence around that.
 """
 
+from datetime import datetime
+
 import numpy as np
 import pytest
 
@@ -53,7 +55,7 @@ def _feed(dc, seed=5, severity=1.0):
     data = np.column_stack([blocks[0], blocks[1]])
     dc.receive_data({
         'data': data, 'channels': [0, 1], 'status': 'OKAY',
-        'timestamp': '2026-09-01T00:00:00', 'rel_time': 0.0,
+        'timestamp': datetime(2026, 9, 1), 'rel_time': 0.0,
         'samplerate': cfg.raw_samplerate, 'overflow_mask': 0, 'degraded': False,
     })
     return dc.data['frame_cache'][-1]
@@ -115,7 +117,7 @@ def test_vibration_result_is_unchanged_by_the_presence_of_a_tach_channel():
         sim._RawRateView(cfg), running_rate=RUNNING_RATE, severity=1.0, seed=5)
     dc_without.receive_data({
         'data': blocks[0][:, None], 'channels': [0], 'status': 'OKAY',
-        'timestamp': '2026-09-01T00:00:00', 'rel_time': 0.0,
+        'timestamp': datetime(2026, 9, 1), 'rel_time': 0.0,
         'samplerate': cfg.raw_samplerate, 'overflow_mask': 0, 'degraded': False,
     })
     without_tach = dc_without.process_samples()[0]
@@ -209,7 +211,7 @@ def test_a_dead_tach_channel_reports_no_signal_not_zero():
     ])
     dc.receive_data({
         'data': data, 'channels': [0, 1], 'status': 'OKAY',
-        'timestamp': '2026-09-01T00:00:00', 'rel_time': 0.0,
+        'timestamp': datetime(2026, 9, 1), 'rel_time': 0.0,
         'samplerate': cfg.raw_samplerate, 'overflow_mask': 0, 'degraded': False,
     })
     assert dc.current_rpm() is None

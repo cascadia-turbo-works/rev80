@@ -18,6 +18,7 @@ from rev80._paths import data_dir
 from rev80.picoscope import _AA_STOPBAND_DB
 from rev80.scope_sensor import ScopeSensor
 from rev80.tach import TachSettings, tach_result
+from rev80.util import CHANNEL_ROLES, DEFAULT_CHANNEL_ROLE
 
 log = rev80.get_logger("collector")
 
@@ -56,14 +57,21 @@ def decimate_to_rate(block: np.ndarray, raw_rate: float, target_rate: float) -> 
 
 def _write_channel_group(h5_grp, ch: int, sample: 'rev80.VibeSample',
                          compression: str | None = None,
-                         compression_opts: int | None = None) -> None:
-    """Write one VibeSample's mV data into an h5py group.
+                         compression_opts: int | None = None,
+                         role: str = 'vibration') -> None:
+    """Write one channel's data for one frame into an h5py group.
 
     THE single channel-group writer, used by both DataCollector.save_data()
     and MonitorWriterThread. These were previously two separate functions that
     had silently diverged: the monitor copy wrote no validity flags at all, so
     every monitor session recorded clipped and rate-degraded captures as though
     they were clean. Keep them unified.
+
+    A **tachometer** channel stores its `edge_times` and a summary, not a
+    `data` waveform (decision D-2): ~30 float64 per second against 41666, and
+    everything that makes RPM a view on stored data is preserved, because
+    pulses_per_rev is a post-hoc divisor on the intervals. Readers must
+    therefore branch on the presence of 'data' rather than assume it.
     """
     cg = h5_grp.create_group(str(ch))
     kw = {}
@@ -71,7 +79,18 @@ def _write_channel_group(h5_grp, ch: int, sample: 'rev80.VibeSample',
         kw['compression'] = compression
         if compression_opts is not None:
             kw['compression_opts'] = compression_opts
-    cg.create_dataset('data', data=np.asarray(sample.data, dtype=np.float64), **kw)
+    if role == 'tachometer':
+        res = sample.tach
+        edges = np.asarray(getattr(res, 'edge_times_s', []), dtype=np.float64)
+        cg.create_dataset('edge_times', data=edges, **kw)
+        cg.attrs['rpm'] = float('nan') if res is None or res.rpm is None else float(res.rpm)
+        cg.attrs['quality'] = str(getattr(res, 'quality', 'no_signal'))
+        cg.attrs['n_edges'] = int(getattr(res, 'n_edges', 0))
+        cg.attrs['interval_spread'] = float(getattr(res, 'interval_spread', 0.0))
+        cg.attrs['speed_drift_pct'] = float(getattr(res, 'speed_drift_pct', 0.0))
+        cg.attrs['pulses_per_rev'] = int(getattr(res, 'pulses_per_rev', 1))
+    else:
+        cg.create_dataset('data', data=np.asarray(sample.data, dtype=np.float64), **kw)
     cg.attrs['timestamp']  = sample.timestamp
     cg.attrs['rel_time']   = float(sample.rel_time)
     cg.attrs['samplerate'] = float(sample.samplerate)
@@ -1150,8 +1169,20 @@ class DataCollector:
         key = self._tach_key(sample.samplerate, settings)
         if sample.tach is not None and sample._tach_config_key == key:
             return sample.tach
-        res = tach_result(sample.data, sample.samplerate, ch=ch,
-                          rel_time=sample.rel_time, settings=settings)
+        if sample.data.size <= 1 and sample.tach is not None:
+            # Replayed frame: the waveform was never stored, so re-detection is
+            # impossible -- but the edge times are enough to re-derive the
+            # rate, because pulses_per_rev is a post-hoc divisor on the
+            # intervals. Re-thresholding after capture is the one thing D-2
+            # trades away.
+            from rev80.tach import estimate_rpm
+            res = estimate_rpm(
+                np.asarray(sample.tach.edge_times_s) * sample.samplerate,
+                sample.samplerate, ch=ch, rel_time=sample.rel_time,
+                settings=settings)
+        else:
+            res = tach_result(sample.data, sample.samplerate, ch=ch,
+                              rel_time=sample.rel_time, settings=settings)
         sample.tach = res
         sample._tach_config_key = key
         return res
@@ -1297,7 +1328,7 @@ class DataCollector:
     #   scope sensor fields as per-frame channel attrs, /acquisition group.
     # v3 (current): structured /metadata group; sensor library; channel config stored once;
     #   shared trend rel_times axis.
-    _FILE_VERSION = 4
+    _FILE_VERSION = 5
 
     def save_data(self, target: Path):
         """Save frame cache and trend history to an HDF5 file (v4 format).
@@ -1373,6 +1404,11 @@ class DataCollector:
                 cg.attrs["scope_sensor_id"] = scope_s.id if scope_s else ""
                 cg.attrs["target_unit"] = self.config.target_unit_for(ch)
                 cg.attrs["amplitude_mode"] = self.config.amplitude_mode_for(ch)
+                role = self.config.role_for(ch)
+                cg.attrs["role"] = role
+                if role == 'tachometer':
+                    for k, v in self.tach_settings_for(ch).to_dict().items():
+                        cg.attrs[f"tach_{k}"] = v
 
             # ── /frames ────────────────────────────────────────────────
             enabled = set(self.config.enabled_channels)
@@ -1389,7 +1425,22 @@ class DataCollector:
                 fg.attrs["samplerate"] = first.samplerate
                 fg.attrs["status"] = first.status
                 for ch, sample in ch_only.items():
-                    _write_channel_group(fg, ch, sample)
+                    _write_channel_group(fg, ch, sample,
+                                         role=self.config.role_for(ch))
+
+            # ── /tach_trend ────────────────────────────────────────────
+            # Separate from /trend: a shaft speed has no engineering unit and
+            # must never be run through the unit/integration scaling that
+            # /trend's `orders` matrix exists for.
+            if self.tach_trend:
+                tt_grp = f.create_group("tach_trend")
+                for ch, td in self.tach_trend.items():
+                    if ch in enabled and len(td["rel_times"]) > 0:
+                        cg = tt_grp.create_group(str(ch))
+                        cg.create_dataset("rel_times",
+                                          data=np.asarray(td["rel_times"], dtype=np.float64))
+                        cg.create_dataset("rpm",
+                                          data=np.asarray(td["rpm"], dtype=np.float64))
 
             # ── /trend ─────────────────────────────────────────────────
             # Each channel has its own rel_times axis + (M,5) orders matrix.
@@ -1433,6 +1484,17 @@ class DataCollector:
                     self.data["frame_cache"].append(frame)
 
             # Trend
+            # Restored before /trend so init_trend_channels(), which preserves
+            # entries that already exist, does not drop it on the rebuild.
+            if "tach_trend" in f:
+                for ch_str, cg in f["tach_trend"].items():
+                    if not ch_str.isdigit():
+                        continue
+                    self.tach_trend[int(ch_str)] = {
+                        "rel_times": np.array(cg["rel_times"][()], dtype=np.float64),
+                        "rpm":       np.array(cg["rpm"][()], dtype=np.float64),
+                    }
+
             if "trend" in f:
                 trend_grp = f["trend"]
                 if version >= 4:
@@ -1489,6 +1551,14 @@ class DataCollector:
 
         version  = int(f["metadata"].attrs.get("version",
                        f["metadata"].attrs.get("file_version", 3)))
+        if version > self._FILE_VERSION:
+            # Worth having independently of the tachometer: an older build
+            # reading a newer file takes its most permissive branch and
+            # restores channels it does not understand as ordinary vibration
+            # -- computing a bogus overall on whatever they actually contain.
+            log.warning(
+                "File version %d is newer than this build supports (%d); "
+                "some channels may be misinterpreted.", version, self._FILE_VERSION)
         meta_grp = f["metadata"]
         self.notes = decode(meta_grp.attrs.get("notes", ""))
 
@@ -1532,6 +1602,20 @@ class DataCollector:
                     self.config.channel_target_units[ch] = target_unit
                 if amplitude_mode:
                     self.config.channel_amplitude_modes[ch] = amplitude_mode
+                # Role, and the tach calibration that produced the stored
+                # reading. Absent in v4 and earlier, which is correct: those
+                # files contain no tachometer channels.
+                role = decode(cg.attrs.get("role", DEFAULT_CHANNEL_ROLE))
+                if role in CHANNEL_ROLES:
+                    self.config.channel_roles[ch] = role
+                if role == 'tachometer':
+                    tach_d = {
+                        k[len('tach_'):]: cg.attrs[k]
+                        for k in cg.attrs if str(k).startswith('tach_')
+                    }
+                    self.tach_settings[ch] = TachSettings.from_dict(
+                        {k: (v.decode() if isinstance(v, bytes) else v)
+                         for k, v in tach_d.items()})
                 self.config.channel_couplings[ch]    = coupling
                 self.config.channel_voltage_ranges[ch] = voltage_range
                 if sensor_id and sensor_id in self._loaded_scope_sensors:
@@ -1555,6 +1639,34 @@ class DataCollector:
                 ch_units[int(ch_str)] = decode(cg.attrs.get("unit", "mV"))
         return ch_units
 
+    def _tach_sample_from_group(self, cg, ch: int, timestamp, samplerate: float,
+                                status: str, rel_time: float) -> 'rev80.VibeSample':
+        """Rebuild a tachometer VibeSample from stored edge times.
+
+        `data` is deliberately empty: the waveform was never stored (D-2). The
+        TachResult is rebuilt from the edge times rather than re-detected, and
+        `tach_for` re-estimates from those same edges if the calibration is
+        changed after loading -- which is what keeps RPM a view on stored data.
+        """
+        def decode(x):
+            return x.decode() if isinstance(x, bytes) else str(x)
+
+        edges = np.ascontiguousarray(cg["edge_times"][()], dtype=np.float64)
+        ch_rel = float(cg.attrs.get("rel_time", rel_time))
+        settings = self.tach_settings_for(ch)
+        res = rev80.tach.estimate_rpm(edges * float(samplerate), float(samplerate),
+                                      ch=ch, rel_time=ch_rel, settings=settings)
+        sample = rev80.VibeSample(
+            status=decode(cg.attrs.get("status", status)),
+            _timestamp=timestamp, samplerate=float(samplerate), unit="mV",
+            overflow=bool(cg.attrs.get("overflow", False)),
+            degraded=bool(cg.attrs.get("degraded", False)),
+            data=np.empty(0, dtype=np.float64), rel_time=ch_rel,
+            label=f"Ch{chr(65 + ch)}",
+            tach=res, _tach_config_key=self._tach_key(samplerate, settings),
+        )
+        return sample
+
     def _read_frame_group(self, fg: 'h5py.Group', ch_units: dict[int, str],
                           version: int) -> dict[int, 'rev80.VibeSample']:
         """Read one HDF5 frame group into a dict[int, VibeSample]."""
@@ -1575,6 +1687,15 @@ class DataCollector:
             if not ch_str.isdigit():
                 continue
             ch   = int(ch_str)
+            if "data" not in cg:
+                # Tachometer channel (v5+): edge times, not a waveform. The
+                # frame cache stays homogeneous -- every entry is a VibeSample
+                # -- because dozens of consumers index it; the sample simply
+                # carries an empty waveform and a populated TachResult.
+                if "edge_times" in cg:
+                    frame_samples[ch] = self._tach_sample_from_group(
+                        cg, ch, timestamp, samplerate, status, rel_time)
+                continue
             data = np.ascontiguousarray(cg["data"][()], dtype=np.float64)
             unit = "mV" if version >= 4 else ch_units.get(ch, "mV")
             # _write_channel_group has always stored these; they were simply
@@ -1683,6 +1804,12 @@ class DataCollector:
         # channel's values and place them in the correct column.
         from rev80.util import UNIT_TO_SI, amplitude_scale, integration_steps
         for ch, rel_times in trend_rel_times.items():
+            if self.config.role_for(ch) == 'tachometer':
+                # A tachometer has no overall. Reconstructing one would write a
+                # fabricated amplitude trend for it -- in practice a line
+                # pinned at zero, since overall_ampl_by_integration_order is
+                # never populated on a channel process_sample never runs on.
+                continue
             overalls    = np.array(trend_overalls[ch])
             sensor_cfg  = self._loaded_channel_sensor_configs.get(ch, {})
             sensor_eu   = sensor_cfg.get('engineering_units', 'mV')
