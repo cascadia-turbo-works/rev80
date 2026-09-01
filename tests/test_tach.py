@@ -426,3 +426,52 @@ def test_unity_ppr_does_not_warn(caplog):
         s = tach.TachSettings.from_dict({'pulses_per_rev': 1})
     assert s.pulses_per_rev == 1
     assert not [r for r in caplog.records if 'pulses_per_rev' in r.message]
+
+
+# --- duty cycle (R46 prerequisite) ---------------------------------------
+
+@pytest.mark.parametrize('duty', [0.05, 0.15, 0.30, 0.50, 0.70, 0.85])
+def test_duty_cycle_is_measured(duty):
+    """Duty is what turns a reflector's physical size into a shaft diameter:
+    the reflector subtends `duty` of a revolution, so C = L/duty and the
+    surface velocity is f*L/duty (R46).
+    """
+    x = make_ramped_pulses(1800.0, HW_FS, duty=duty, rise_samples=2)
+    r = tach.tach_result(x, HW_FS, ch=0, rel_time=0.0)
+    assert r.duty_cycle == pytest.approx(duty, abs=0.02)
+
+
+def test_duty_is_zero_when_unmeasurable():
+    """No complete pulse in the block means no duty, not a fabricated one."""
+    noise = np.random.default_rng(0).normal(0.0, 5.0, int(HW_FS))
+    assert tach.tach_result(noise, HW_FS).duty_cycle == 0.0
+
+
+def test_pulse_widths_are_reported_per_pulse():
+    x = make_ramped_pulses(1800.0, HW_FS, duty=0.25, rise_samples=2)
+    r = tach.tach_result(x, HW_FS)
+    period = 60.0 / 1800.0
+    assert len(r.pulse_widths_s) >= r.n_edges - 1
+    assert np.allclose(r.pulse_widths_s, 0.25 * period, atol=0.02 * period)
+
+
+def test_duty_measures_the_active_state_under_falling_polarity():
+    """A keyphasor idles high and the key is a negative-going notch. The
+    'active' state is the notch, so its width is what corresponds to the key.
+    """
+    duty = 0.2
+    x = make_ramped_pulses(1800.0, HW_FS, duty=duty, rise_samples=2)
+    inverted = -x
+    r = tach.tach_result(inverted, HW_FS,
+                         settings=tach.TachSettings(polarity='falling'))
+    assert r.duty_cycle == pytest.approx(duty, abs=0.02)
+
+
+def test_block_opening_mid_pulse_contributes_no_partial_width():
+    """A pulse whose opening edge fell in the previous block has no measurable
+    width here; counting the truncated remainder would drag duty down."""
+    duty = 0.5
+    x = make_ramped_pulses(1800.0, HW_FS, duty=duty, rise_samples=2)
+    rolled = np.roll(x, -int(0.25 * HW_FS / 30.0))
+    r = tach.tach_result(rolled, HW_FS)
+    assert r.duty_cycle == pytest.approx(duty, abs=0.02)
