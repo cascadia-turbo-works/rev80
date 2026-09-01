@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 import rev80
+from rev80.sample import RAW_SAMPLERATE_HZ
 
 log = rev80.get_logger(__name__)
 
@@ -98,12 +99,16 @@ class VibeSensor:
         channels = list(range(data.shape[1])) if data.ndim == 2 else [0]
 
         sample = {
-            'status':    status,
-            'rel_time':  rel_time,
-            'timestamp': datetime.now(),
-            'unit':      self.unit,
-            'channels':  channels,
-            'data':      data,
+            'status':     status,
+            'rel_time':   rel_time,
+            'timestamp':  datetime.now(),
+            'unit':       self.unit,
+            'channels':   channels,
+            'data':       data,
+            # SimulatedSensor generates at raw_samplerate (see
+            # simulation._RawRateView) -- matches what receive_data expects,
+            # same key PicoScopeStream tags every block with.
+            'samplerate': RAW_SAMPLERATE_HZ,
         }
 
         if self.callback:

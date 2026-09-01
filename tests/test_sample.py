@@ -156,8 +156,16 @@ def test_differentiation_vel_to_acc(freq):
     assert result is not None
     expected_acc = vel_ampl * (2 * np.pi * freq)
 
+    # This tone is generated at the raw acquisition rate and decimated down
+    # to the display rate before differentiation (see
+    # collector.decimate_to_rate) -- unlike the rest of this file's `tol`,
+    # which assumes a bit-exact tone, the Kaiser-windowed resample filter
+    # has a small nonzero passband deviation, and (2*pi*f) differentiation
+    # gain amplifies it. Relative, not absolute: this scales with frequency
+    # the same way the underlying filter's passband droop does.
     actual = _peak_amp_at(result, freq)
-    assert np.abs(actual - expected_acc) < tol, \
+    rel_tol = 2e-3
+    assert np.abs(actual - expected_acc) < rel_tol * expected_acc, \
         f'At {freq}Hz: expected {expected_acc:.6f}, got {actual:.6f}'
 
 

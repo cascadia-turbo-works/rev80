@@ -86,14 +86,17 @@ def hex_to_rgba(hex_color: str, alpha: int = 255) -> tuple:
 # ── Spectrum preset values (quick-pick selections in the GUI) ────────────────
 # These are convenience presets, NOT hard constraints.  AcquisitionSettings
 # derives samplerate and blocksize arithmetically from maxfreq and binsize.
-# Gated so that every offered preset can actually be anti-alias filtered:
-# PicoScopeStream oversamples by an integer ratio and filters back down, so a
-# preset is only safe if samplerate * 2 <= STREAMING_CEILING_HZ (100 kHz, a
-# measured safe continuous-USB-streaming rate). The 20 kHz and 50 kHz presets
-# were removed for that reason -- both ran with NO anti-alias filter at all,
-# and the 50 kHz preset additionally requested 131072 Hz raw, 31% above the
-# ceiling, where the driver silently drops most samples while reporting
-# status='OKAY'. See picoscope.PicoScopeStream._choose_osr.
+# F_max no longer drives the acquisition sample rate (see
+# AcquisitionSettings.raw_samplerate / sample.RAW_SAMPLERATE_HZ) -- it's now
+# purely the displayed/analysed frequency ceiling, clamped in the maxfreq
+# setter to what RAW_SAMPLERATE_HZ can actually back. The 20 kHz and 50 kHz
+# presets remain excluded from history: under the old maxfreq-driven
+# samplerate they ran with NO anti-alias filter at all (50 kHz additionally
+# requested 131072 Hz raw, 31% above the measured safe continuous-streaming
+# ceiling -- see picoscope.STREAMING_CEILING_HZ), and offering them again
+# would just re-clamp against the current, unrelated maxfreq/raw_samplerate
+# ratio limit. See picoscope.PicoScopeStream._choose_osr and
+# AcquisitionSettings.maxfreq's setter.
 MAXFREQ_PRESETS = [2e2, 5e2, 1e3, 2e3, 5e3, 1e4]
 
 # Declared measurement bands for the overall amplitude, as (fmin, fmax) in Hz.
