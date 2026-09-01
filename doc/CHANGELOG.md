@@ -7,9 +7,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [Unreleased] — feature/tachometer (2026-08-31)
+## [Unreleased]
 
-### Added
+### feature/tachometer (R43) (2026-09-01)
+
+#### Added
 - **`rev80.tach`** — tachometer edge detection and shaft-speed estimation.
   Pure functions plus two frozen dataclasses (`TachSettings`, `TachResult`),
   free of dearpygui / h5py / `DataCollector` imports. Nothing wires it in yet;
@@ -274,7 +276,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - `GenerateBearingVibration()` gains an optional `shaft_phase`; when omitted it is drawn
     from the same rng as before, leaving the existing draw order and output unchanged.
 
-### Changed
+#### Changed
 - **Tachometer support is specified around 1 pulse/rev** (decision D-6). The UI will
   offer no pulses/rev control: one reflective tape or one keyway is not merely the
   common installation but the accurate one. At 1 ppr every interval is exactly one
@@ -302,7 +304,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   **1800 at 10 Hz** — where nothing below 1800 RPM can be read at all. That is the one
   case where a legitimate setup returns no reading, and the GUI must say so.
 
-### Fixed
+#### Fixed
 - **`AcquisitionSettings.copy()` carries `channel_roles`.** The per-channel
   dicts live in the `channels` config section, so unlike the scalars they are
   outside the `to_dict`/`from_dict` round trip and are enumerated by name in an
@@ -311,7 +313,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   tachometer has reverted to vibration — the pipeline then high-passes a pulse
   train and reports kurtosis ~16 on it. Pinned by a revert-checked test.
 
-### Measured
+#### Measured
 Constants carry the table that justifies them, per house convention. Verified
 on a PicoScope 4424A (serial 12462/0067) with AWG loopback on channel A.
 
@@ -342,7 +344,7 @@ on a PicoScope 4424A (serial 12462/0067) with AWG loopback on channel A.
   replaces an order-resampling path. The only constant in the module still set
   from simulation rather than the bench.
 
-### Notes
+#### Notes
 - Sub-sample interpolation only works on a **band-limited** edge. On an ideal
   rectangle both straddling samples sit at the rails and the estimator
   degenerates to nearest-sample quantisation. Real edges are band-limited by
@@ -362,9 +364,15 @@ on a PicoScope 4424A (serial 12462/0067) with AWG loopback on channel A.
   (`make_ramped_pulses`) and asserting edge *instants* rather than only rates.
   All 11 invariants are now pinned.
 
-## [Unreleased] — feature/spectral-averaging (2026-08-29)
+## [0.1.0] - 2026-09-01
 
-### Added
+First tagged release. The sections below were written branch-by-branch during
+development and are kept as originally recorded, grouped here under the
+release they shipped in.
+
+### feature/spectral-averaging (2026-08-29)
+
+#### Added
 - **Linear power averaging of the spectrum over N frames**, with an enable
   checkbox and N in the acquisition dialog (off by default). Welch's method
   *is* linear power averaging, but since the F-8 fix set `nperseg = blocksize`
@@ -389,7 +397,7 @@ on a PicoScope 4424A (serial 12462/0067) with AWG loopback on channel A.
     second copy. Two divergent copies of one path was the direct cause of M-05.
   - `tests/test_spectral_averaging.py` — 19 tests.
 
-### The rule tying live and replay together
+#### The rule tying live and replay together
 The average is the N most recent **valid** frames up to and including the frame
 being displayed. Live that is the last N received; browsing it is
 `frames[cursor-N+1 … cursor]`. One rule, so stepping forward through a loaded
@@ -401,7 +409,7 @@ capture taken with averaging *off* can be given 16 averages after loading, and
 changing N recomputes without reloading. Averaging is a view on stored data,
 not a property of it.
 
-### Decisions, each pinned by a test
+#### Decisions, each pinned by a test
 - **Power domain, never amplitude.** Average |X|², then sqrt at the end. On a
   coherent line the two are identical, which is exactly why this is easy to get
   wrong and stay green — it shows only on the noise floor, where averaging
@@ -424,7 +432,7 @@ not a property of it.
 > thing that must be right. Two tests were added asserting against *both*
 > candidate answers so the wrong one cannot pass.
 
-### Measured
+#### Measured
 Noise plus a 300 Hz line, F_max 1000 / df 2:
 
 | N | floor CV | 1/√N predicted | floor level | line amplitude |
@@ -439,21 +447,21 @@ floor *level* rises 12% over that range — not drift, but the
 Rayleigh-mean-to-RMS convergence the power-domain argument predicts, and the
 clearest confirmation that the average is being taken correctly.
 
-### Still open
+#### Still open
 `welch_overlap` remains inert: averaging across frames does not overlap
 segments *within* a frame. Making it real would roughly double the available
 averages for the same wall time.
 
 ---
 
-## [Unreleased] — round 2: vibration-analysis integrity (2026-08-29)
+### round 2: vibration-analysis integrity (2026-08-29)
 
 Second remediation round from the three-discipline audit, addressing the
 vibration-engineering findings the first round did not cover. Round 1 fixed
 *how* the numbers were computed; this round fixes *what they were computed
 over*, and adds the diagnostics an instrument in this class needs.
 
-### Added
+#### Added
 - **`envelope.py`** — envelope (demodulation) analysis, the audit's only
   "blocks stated purpose" gap. `envelope_spectrum()` band-passes around a
   structural resonance, takes the Hilbert magnitude, removes the DC term and
@@ -486,7 +494,7 @@ over*, and adds the diagnostics an instrument in this class needs.
 - **`tests/test_declared_band.py`** (46), **`test_bearing_oracle.py`** (20),
   **`test_diagnostic_scalars.py`** (13), **`test_envelope.py`** (14).
 
-### Fixed
+#### Fixed
 - **M-06 — the overall was not band-limited.** It was the RMS of the whole
   filtered block, so its band was `highpass_fc … fs/2`, and fs/2 is 1.28×–2.56×
   maxfreq depending on where the power-of-two rounding in `samplerate` lands —
@@ -566,7 +574,7 @@ over*, and adds the diagnostics an instrument in this class needs.
   now round-trips through `to_dict`/`from_dict`, so a field added there cannot
   be forgotten here.
 
-### Changed
+#### Changed
 - **The spectral anomaly hook is unwired from the GUI panel**
   (`GUI_ANOMALY_HOOK_TYPES = ('rms',)`). It fires on essentially every healthy
   frame: it triggers on `np.any(|spec − baseline| / baseline > threshold)`
@@ -590,12 +598,12 @@ over*, and adds the diagnostics an instrument in this class needs.
 
 ---
 
-## [Unreleased] — hotfix/claude-ultrareview (2026-08-29)
+### hotfix/claude-ultrareview (2026-08-29)
 
 Integration branch for the three-discipline audit remediation. Sections for the
 individual branches follow below.
 
-### Changed
+#### Changed
 - **`util.py`** / **`gui.py`** — the **spectral anomaly hook is unwired from the GUI panel**. `GUI_ANOMALY_HOOK_TYPES` now restricts the monitor dialog's hook combo to `('rms',)`; `SpectralThresholdHook`, the config schema and the headless front end are untouched, so reviving it is a one-line change
   - It fires on essentially every healthy frame and has never been useful in practice. It triggers on `np.any(|spec − baseline| / baseline > threshold)` across every bin in the band, while Welch runs a single segment in every shipped preset (`nperseg == blocksize`) — so each noise-floor bin is χ²(2), with a standard deviation equal to its own mean. P(some bin of ~2000 exceeds 1.5×) is ~1.0 on healthy data, which makes `consecutive_n` a delay rather than a defence. Bins 0 and 1 are additionally hard-zeroed for integration, so on any velocity/displacement channel they deviate by ~1e12 and fire permanently
   - A stored `spectral`/`both` — which headless still writes — is clamped for display only. `GUI._hook_type_to_save()` preserves the original, so merely opening the monitor dialog cannot silently rewrite a headless user's configuration; that is the S-07 failure mode this branch had already fixed once
@@ -604,9 +612,9 @@ individual branches follow below.
 
 ---
 
-## [Unreleased] — feature/peak-selection (2026-08-29)
+### feature/peak-selection (2026-08-29)
 
-### Added
+#### Added
 - **`src/rev80/peaks.py`** — significance-based spectral peak selection, replacing "report the top N local maxima by absolute amplitude"
   - The local noise floor is not flat: across the 60 channel-spectra of the `old castle` corpus it varies by up to 7× *within a single spectrum*. On `blower 4 - bearing DE.h5` ch2 the median local floor is 9.0 mV overall but 39.4 mV over 1890–2000 Hz, so ranking by absolute amplitude ranked by *how loud the neighbourhood is* rather than by *how far a line stands out of it* — 6 of that spectrum's top 12 came from ripple in the noisy top of the band
   - The diagnostic cost was real: 1034 and 1088 Hz are sidebands at ±25/29 Hz around the 1059 Hz carrier — the bearing-fault signature — and ranked 10th and 4th, so at the shipped display count of 6 the sideband family was broken up and pushed off the table. The instrument was hiding the fault evidence behind noise ripple
@@ -614,12 +622,12 @@ individual branches follow below.
   - **Amplitude reporting is unchanged** — the reported value is still the amplitude of the maximum bin, with no frequency interpolation and no energy summation across a peak. Ranking is still by descending amplitude: significance decides *whether* a line is reported, amplitude decides where it sits in the table
 - **`tests/test_peak_selection.py`** — 626 lines, including an opt-in real-corpus regression suite (`REV80_CORPUS_DIR`, skipped by default since `DEVDATA/` is gitignored)
 
-### Changed
+#### Changed
 - **`collector.py`** — `process_sample()` step 6 calls `rev80.peaks.select_peaks` instead of `find_peaks(..., distance=5)` + top-N sort. `n_segments` is derived from the Welch parameters rather than assumed to be 1, so the median-to-mean floor correction stays right if `nperseg` ever stops equalling `blocksize`
 - **`sample.py`** — `AcquisitionSettings.peak_threshold_db` (default 9.5), persisted in `to_dict`/`from_dict`
 - **`gui.py`** — the "Peak Display" count spinner is replaced by a "Peak Sig., dB" threshold. The count still exists but only as a clutter cap on the table and plot markers (default 50, against a measured corpus median of 40 and p90 of 49), and a text line reports how many lines passed and whether the cap is hiding any — without it, a capped table is indistinguishable from a spectrum that genuinely had few significant lines
 
-### Measured
+#### Measured
 - **Default threshold 9.5 dB is set by a false-alarm cliff, not taste.** On pure noise (2001 bins, no lines at all) the mean reported count is 37.9 at 6.0 dB, **0.8 at 9.5 dB**, 0.0 at 12.0 dB
 - **Floor window width 65 bins** tuned against the corpus, not argued. Scoring single-frame estimators against a 16-frame-averaged reference floor over 20 files × 3 channels × 4 frames gives a broad flat basin from 31 to 65 bins (median |error| 1.097 dB at 31, 1.039 at 45, 1.085 at 65, 1.326 at 129). A *synthetic* spectrum with a deliberately smooth floor prefers 129 — the disagreement is the point
 - **Edge handling: truncated window, not the edge replication first proposed.** Replication copies one random bin 32 times, and 32 copies of a single exponential draw dominate a 65-sample median: median |error| 1.480 dB / p95 5.246 dB, against 0.591 / 1.829 dB truncated. Zero-padding (`scipy.signal.medfilt`) is worst, at −3.568 dB mean bias
@@ -629,7 +637,7 @@ individual branches follow below.
 
 ---
 
-## [Unreleased] — fix/measurement-validity (2026-08-28)
+### fix/measurement-validity (2026-08-28)
 
 Nine measurement-validity defects (F-1 … F-9) from the vibration-engineering audit,
 plus one adjacent logging defect (S-09).
@@ -649,7 +657,7 @@ generated as `sin(2πft)`, so **every record started at phase 0** and `x[0]` equ
 DC level exactly — degenerate in precisely the same way bin-centred frequencies are.
 Real hardware exposed it. `tone()` now takes a `phase` argument defaulting to 0.7 rad.
 
-### Added
+#### Added
 - **`src/rev80/_dsp.py`** — windowing helpers for frequency-domain integration, carrying the measured error tables that justify each choice
 - **`sample.py`** — `AcquisitionSettings.nperseg` and `.binsize_actual`: the Welch segment length and the bin width actually delivered
 - **`collector.py`** — `filter_block()`, `filtered_data_for()`, `reset_filter_state()`, `_seed_zi()`: persistent per-channel high-pass state
@@ -657,7 +665,7 @@ Real hardware exposed it. `tone()` now takes a `phase` argument defaulting to 0.
 - **`monitor/anomaly.py`** — `valid_results()`, a shared validity filter for anomaly hooks
 - **`tests/test_measurement_validity.py`** — 123 tests covering F-1 … F-9 and S-09, all off-bin, with the high-pass enabled, across block boundaries and at every preset
 
-### Changed
+#### Changed
 - **`util.py`** — `MAXFREQ_PRESETS` is `[2e2, 5e2, 1e3, 2e3, 5e3, 1e4]`; **the 20 kHz and 50 kHz presets are removed** and F_max now tops out at 10 kHz (see F-3)
 - **`sample.py`** — `VibeSample.samplerate` / `ChannelResult.samplerate` / the HDF5 `samplerate` attribute are now `float`. The true rate is generally not an integer
 - **`sample.py`** — `n_fft_bins` counts **displayed** lines (DC…F_max), not the full one-sided transform: 1001 at the default preset, not 2049
@@ -665,7 +673,7 @@ Real hardware exposed it. `tone()` now takes a `phase` argument defaulting to 0.
 - **`monitor/writer.py`** — no longer carries its own divergent copy of `_write_channel_group`
 - CRLF → LF in `picoscope.py` and two `examples/` scripts
 
-### Fixed
+#### Fixed
 - **F-1 `collector.py`** — **FFT wrap leakage corrupted every integrated overall and waveform.** `rfft` was taken on the raw, un-windowed block and multiplied by `(jω)^n`. The DFT treats the record as periodic; unless it is exactly periodic in N samples there is a step discontinuity at the wrap point whose spectrum is broadband and low-frequency-weighted, and `n < 0` amplifies it by `1/ω^|n|`. The in-code claim that the round-trip was lossless held only for `n_ord == 0`, and zeroing bins 0 and 1 left the leakage in bins 2, 3, 4 … The spectrum was never affected (Welch already windows); what was wrong was the Overall card, the trend, `overall_json`, the anomaly detector's input, and the displayed waveform
   - Two treatments, because the consumers want different things. **Scalar overalls**: Hann taper, RMS divided by the window power gain `sqrt(mean(w²))`. **Displayed waveform**: cannot be tapered — the envelope would be plainly visible on the trace — so overlap-save instead, with a Tukey `α=0.5` window killing the wrap discontinuity and only the flat middle, where the window is exactly 1.0, returned. `time_vec` is truncated to match
   - **Cost, deliberate and documented:** integrated/differentiated traces span the middle 50% of the block
@@ -693,9 +701,9 @@ Real hardware exposed it. `tone()` now takes a `phase` argument defaulting to 0.
 
 ---
 
-## [Unreleased] — chore/config-consistency-ci (2026-08-28)
+### chore/config-consistency-ci (2026-08-28)
 
-### Added
+#### Added
 
 - **`.github/workflows/ci.yml`** — first CI for the project. There was no
   `.github/` at all: 300+ tests and nothing ran them.
@@ -728,7 +736,7 @@ Real hardware exposed it. `tone()` now takes a `phase` argument defaulting to 0.
   `test_sensor_library_integrity.py`, `test_config_contract.py`,
   `test_anomaly_hook_build.py`, `test_util_small_defects.py`
 
-### Fixed
+#### Fixed
 
 - **`.githooks/pre-commit`** — still ran `ruff check vibechecker/` and wrote
   `vibechecker/_version.py` after the rebrand moved the package to
@@ -920,7 +928,7 @@ Real hardware exposed it. `tone()` now takes a `phase` argument defaulting to 0.
   pre-load samplerate but never compared against it, so the "adjusts" behaviour
   it is named for went unverified. No `noqa` added anywhere.
 
-### Reverted
+#### Reverted
 
 - **`.python-version`** — briefly changed to `3.13` on the premise that the
   literal `vibecheck` was a stale string. That premise was wrong: `vibecheck` is
@@ -931,9 +939,9 @@ Real hardware exposed it. `tone()` now takes a `phase` argument defaulting to 0.
 
 ---
 
-## [Unreleased] — refactor/event-pipeline (develop)
+### refactor/event-pipeline (develop)
 
-### Changed
+#### Changed
 - **`collector.py`** — removed `callbacks` dict entirely; all consumers now read
   from `frame_cache` via `new_frame_event` rather than receiving samples directly
   - `collect_sample()` rewritten: `new_frame_event.clear()` / `wait()` / `frame_cache[-1]`
@@ -953,15 +961,15 @@ Real hardware exposed it. `tone()` now takes a `phase` argument defaulting to 0.
 - **`gui.py`** — removed duplicate `ACQ_NOTES` widget block in `_create_gui`
   (caused DPG "alias already exists" crash on `test_gui_build`)
 
-### Refactored
+#### Refactored
 - **Tests** — `callbacks` references replaced with `frame_cache` reads across
   `test_vibechecker.py`, `test_multichannel.py`, `test_picoscope.py`, `test_scope_sensor.py`
 
 ---
 
-## [Unreleased] — hotfix/hpf-integration-fix (2026-08-28)
+### hotfix/hpf-integration-fix (2026-08-28)
 
-### Fixed
+#### Fixed
 - **`collector.py`** — `process_sample()` highpass + integration blow-up (field-reported spurious spike at ~1–2 Hz)
   - Root cause 1: the integration transfer function (`(2πf)^n`, applied at all three sites — 5-order overalls, PSD, time-domain output) only zeroed the exact DC bin; bin 1 (1x binsize) received the full multiplier applied to residual near-DC energy and dominated the whole spectrum (0.313 in/s at bin1 vs. a real 0.747 in/s tone peak in a captured reference file)
   - A first fix attempt weighted the transfer function by the highpass filter's frequency response (`scipy.signal.sosfreqz`); this suppressed bin1 by ~50,000x but, being a smooth multiply across many bins rather than an exact single-bin removal, behaved as a wide kernel under circular convolution and badly distorted the time-domain signal at both block edges
@@ -972,9 +980,9 @@ Real hardware exposed it. `tone()` now takes a `phase` argument defaulting to 0.
 
 ---
 
-## [Unreleased] — feature/anti-alias (2026-08-26)
+### feature/anti-alias (2026-08-26)
 
-### Added
+#### Added
 - **`picoscope.py`** — mandatory anti-alias oversample/decimate stage in `PicoScopeStream`
   - Field incident: a high-frequency bearing-fault harmonic aliased into the low-frequency band at low apparent power, injecting spurious spectral energy; root cause was driving the ADC directly at the target analysis rate with no anti-alias filtering
   - Always oversamples the ADC (`effective_osr`, up to 4x, capped by `STREAMING_CEILING_HZ` — a ceiling measured on real hardware: continuous `ps4000aRunStreaming`/`GetStreamingLatestValues` silently drops most samples above ~100–250 kHz depending on channel count, with no error indication), applies a zero-phase anti-alias filter, then decimates back to `config.samplerate` via the new `antialias_decimate()` helper — fully transparent to `DataCollector` and everything above it
@@ -984,22 +992,22 @@ Real hardware exposed it. `tone()` now takes a `phase` argument defaulting to 0.
 - **`tests/test_antialias.py`** — regression tests for `antialias_decimate()`: aliasing tone suppressed >20x vs. naive decimation, factor=1 no-op, legitimate low-frequency tone survives intact, independent multi-channel handling
 - **`tests/test_picoscope.py`** — `TestRateDegradationWatchdog`: monkeypatched-clock coverage of `_check_rate_degradation()` (healthy/degraded/recovery), confirms `_try_recover()` is never called for this condition
 
-### Changed
+#### Changed
 - **`sample.py`** / **`util.py`** — `samplerate` now derives from `nextpow2(2.56 * maxfreq)` instead of 2x, guaranteeing >=28% Nyquist margin for the anti-alias filter's transition band (matching the ratio commercial FFT vibration analyzers use); `MAXFREQ_PRESETS` drops the 100k/250k/500k Hz entries — hardware measurement showed these already exceed this PicoScope's continuous-streaming ceiling, silently corrupting captured data
 - **`collector.py`** — `receive_data()` threads the `degraded` flag from each incoming frame onto every channel's `VibeSample`/`ChannelResult` and persists it into saved `.h5` files alongside `overflow`; new `DataCollector.stream_degraded` property mirrors `is_streaming`
 - **`collector.py`** — `process_sample()`'s lowpass Butterworth block removed (anti-aliasing is now mandatory upstream in `PicoScopeStream`); highpass filter switched from causal `sosfilt` to zero-phase `sosfiltfilt` (reverted in hotfix/hpf-integration-fix, below)
 - **`gui.py`** — Lowpass checkbox/field removed from the acquisition dialog; status line shows the auto-derived AA cutoff instead of "LP ..." text; a warning line appears when the stream is degraded
 
-### Removed
+#### Removed
 - User-facing `lowpass_enabled`/`lowpass_fc` fields — they ran after the ADC had already sampled and so could never actually prevent aliasing; anti-aliasing is now mandatory and handled at capture time
 
 ---
 
-## [Unreleased] — rebrand-to-rev80 (2026-08-19 – 2026-08-28)
+### rebrand-to-rev80 (2026-08-19 – 2026-08-28)
 
 From this point forward the product is named **Rev80** (formerly vibechecker). Earlier sections below retain the historical "vibechecker" name as an accurate record of the codebase at the time.
 
-### Changed
+#### Changed
 - Rebrand vibechecker → Rev80 across the codebase, packaging, and docs
   - Package moved from `./vibechecker/` to `./src/rev80/` (src-layout; history preserved via `git mv`); all imports updated `from vibechecker` → `from rev80`
   - `pyproject.toml`: package name `rev80`, entry points `rev80`/`rev80-headless`, `where=["src"]`, `pythonpath=["src"]`
@@ -1013,9 +1021,9 @@ From this point forward the product is named **Rev80** (formerly vibechecker). E
 
 ---
 
-## [Unreleased] — hotfix/welch_leakage (2026-08-18)
+### hotfix/welch_leakage (2026-08-18)
 
-### Fixed
+#### Fixed
 - **`collector.py`** — Welch window functions (Hann, Blackman-Harris, etc.) introduce spectral leakage that inflates the reported overall vibration level by a window-dependent factor (Hann: √(3/2)); overall amplitude is now derived from the RMS of an exact-inverse time-domain reconstruction instead of summing spectral peaks
   - The 5-order (`-2`…`+2`) mV RMS overalls are now computed via `irfft` of the integration-scaled `rfft` — reusing the same plain, unwindowed `rfft` already computed once for the time-domain output step, so the round-trip is lossless — as `sqrt(mean(time_ord**2))` instead of `sqrt(sum(psd_ord**2))`
   - The target-unit overall (step 7) now reuses the cached 5-order mV RMS column instead of re-deriving it from the spectrum
@@ -1023,9 +1031,9 @@ From this point forward the product is named **Rev80** (formerly vibechecker). E
 
 ---
 
-## [Unreleased] — feature/monitor_mode (2026-05-28 – 2026-06-30)
+### feature/monitor_mode (2026-05-28 – 2026-06-30)
 
-### Added
+#### Added
 - **`monitor/` package** — Monitor Mode interval datalogger
   - `gate.py`: `IntervalGate` with snap-to-grid scheduling and burst mode
   - `session.py`: `MonitorSession` frozen dataclass (later gains `acq_snapshot`/`channel_snapshot`/`sensor_snapshot`, `cooldown_enabled`/`cooldown_s`)
@@ -1062,7 +1070,7 @@ From this point forward the product is named **Rev80** (formerly vibechecker). E
 - **`gui.py`** — global keyboard shortcuts: Ctrl+A autoscale, Ctrl+K start/stop, Ctrl+S save, Ctrl+O load, Ctrl+Q quit, ←/→ frame browse (live only)
 - **`gui.py`** — configurable frame cache depth (`AcquisitionSettings.cache_frames`, default 32) with derived recording-window and memory-usage display
 
-### Changed
+#### Changed
 - **`config.py`** — layout split into `acquisition.yaml` (maxfreq/binsize/monitor/anomaly, per instance), `devices/picoscope-<model>-<SN>.yaml` (channels + siggen, per device), and `devices/picoscope-defaults.yaml` (new-device template); `device_config_path()` now takes `(model_name, serial_number)` and produces human-readable filenames; no migration path — delete `~/.config/vibechecker` to reseed
 - **`collector.py`** — overalls now always computed over the full FFT spectrum; the `trend_fmin`/`trend_fmax` "Trend Frequency Window" band-limiting knob removed entirely (dataclass field, config default, UI tags, dialog widgets, tests)
 - **`collector.py`** — `nperseg` clamped to signal length in the Welch PSD call to avoid spurious warnings on short blocks
@@ -1070,15 +1078,15 @@ From this point forward the product is named **Rev80** (formerly vibechecker). E
 - Version tooling: git-describe version written by a `post-commit` hook, later moved to `pre-commit` so `_version.py` is included in the commit that changes it; installer version now derived from `_version.py` at build time instead of hardcoded in the `.iss` file
 - Build fixes accumulated through the branch: UPX disabled (was corrupting the frozen `python3XX.dll`'s PE import table); `pandas` removed (pulled in a `pytz` version-detection failure in frozen builds; the peaks table now uses `list[tuple]`); `plyer`'s Windows filechooser dependency (`win32com`/`pywintypes`) added to hidden imports; `pyyaml` hidden-import name corrected (`yaml`, not `pyyaml`); `dist/` cleaned and any running instance killed before rebuilding; `assets/` bundled into the frozen app (font was missing, causing a startup crash); PyInstaller cache wipe no longer runs by default (`./build.sh all clean` to force it); Inno Setup arch identifier updated to `x64compatible`
 
-### Removed
+#### Removed
 - `monitor/index.py` (SQLite session index) — superseded by the single-`session.h5` v5 layout
 - Arm/disarm as a user-facing concept — anomaly detection now runs for the whole monitored session, gated only by post-burst cooldown
 
 ---
 
-## [Unreleased] — refactor/mv-domain-trend (2026-05-05)
+### refactor/mv-domain-trend (2026-05-05)
 
-### Changed
+#### Changed
 - **`sample.py`** / **`collector.py`** — `VibeSample` now stores raw mV throughout; all sensitivity conversion, Butterworth filtering, and Welch PSD computation moved into `DataCollector.process_sample()`
   - `VibeSample`: `process()`, `_convert_time_domain()`, `push_sample()`, `save()`, `load()` removed; adds `overflow: bool` and cached `psd_mv`/`freq_hz`/`_psd_config_key`/`overall_ampl_by_integration_order` (5,) mV RMS fields
   - `ChannelResult` gains an `overflow` field
@@ -1092,23 +1100,23 @@ From this point forward the product is named **Rev80** (formerly vibechecker). E
 - **`picoscope.py`** — `_setup_siggen()` now also called from `start()`; previously it only fired on the reconnect path in `_try_recover()`, so the signal generator never started on the initial `stream.start()` call
 - **`collector.py`** — overalls now computed over the full FFT spectrum unconditionally (groundwork later formalized by removing `trend_fmin`/`trend_fmax` in feature/monitor_mode); HDF5 load paths consolidated
 
-### Added
+#### Added
 - **`gui.py`** — global keyboard shortcuts (Ctrl+A/K/S/O/Q, arrow-key frame browse) — later extended in feature/monitor_mode
 - **`gui.py`** — configurable frame cache depth with recording-window/memory display, `DEFAULT_CACHE_FRAMES` sourced from `config._BUILTIN_DEFAULTS` — later extended in feature/monitor_mode
 - Build tooling: git-describe version written by a post-commit hook and embedded into the installer via `_version.py`; PyInstaller/Inno Setup fixes for UPX corruption, a `vibechecker.spec` merge conflict, `pandas`/`plyer` bundling, and `pyyaml` hidden-import naming
 
 ---
 
-## [Unreleased] — feature/windows-build (2026-03-29 – 2026-05-27)
+### feature/windows-build (2026-03-29 – 2026-05-27)
 
-### Added
+#### Added
 - **`_paths.py`** — cross-platform path sanitization (Phase 1): `sys._MEIPASS`-aware `data_dir()`, `log_dir()`, `resource_path()`; replaces the third-party `path` library with stdlib `pathlib` across all modules; `SAVEDIR`/`DataCollector.datadir` route to `~/Documents/vibechecker/data/` in frozen builds
 - **`_pico_loader.py`** / `build/collect_pico_dlls.py` — PicoScope driver bundling (Phase 2): a Windows script locates `ps4000a.dll`/`picoipp.dll` from the PicoSDK install (registry + default paths), validates the 64-bit PE header, and copies them to `drivers/`; `_pico_loader.py` registers that directory via `os.add_dll_directory()` before `picosdk` import, handling both frozen (`sys._MEIPASS/drivers/`) and dev layouts
 - **`vibechecker.spec`** / `installer/vibechecker.iss` / `build.bat` / `build.sh` — PyInstaller + Inno Setup build pipeline (Phase 3): one-dir PyInstaller build bundling `logging.yaml`, driver DLLs, and dearpygui data; Inno Setup 6 script for a 64-bit, non-admin install to `%LOCALAPPDATA%` with a soft PicoSDK-present check and Start Menu/desktop shortcuts
 - App icon: placeholder icon wired into both the PyInstaller spec and Inno Setup script (real artwork deferred)
 - **`README.md`** — restructured for users, contributors, and Windows builders: Windows install section (PicoSDK + installer), cross-platform source install section, Contributing section (dev env, project layout, icon swap guide), full prerequisites table (Python, Git for Windows, PicoSDK, Inno Setup)
 
-### Fixed
+#### Fixed
 - PicoSDK 11.x detection by DLL path when the registry key is absent
 - `logging.yaml` moved into `vibechecker/` so `resource_path()` resolves it correctly in both dev and frozen builds
 - Removed `scipy` submodule excludes from the PyInstaller spec — `scipy.signal` depends on `scipy.linalg` internally and the build broke without it
@@ -1116,16 +1124,16 @@ From this point forward the product is named **Rev80** (formerly vibechecker). E
 - Inno Setup Compiler (`ISCC`) lookup corrected to the proper install `APPDATA` directory
 - Icon assets moved to `assets/icons/`
 
-### Changed
+#### Changed
 - **`picoscope.py`** — `FindPicoScope` replaced with multi-device enumeration via `ps4000aEnumerateUnits`, opening each device by serial number; `PicoScopeStream` gains `_open_unit_by_serial` so it targets the correct device when multiple scopes are connected
 - **`picoscope.py`** — hand-maintained `_channels_for_model` lookup table replaced by `_probe_channel_count`, which calls `ps4000aSetChannel` for channels A–H and counts successes, so any future hardware variant self-reports its channel count without a code change
 - Ruff lint fixes across `picoscope.py`, `sample.py`, `util.py`
 
 ---
 
-## [Unreleased] — feature/channel-naming (2026-04-03 – 2026-04-13)
+### feature/channel-naming (2026-04-03 – 2026-04-13)
 
-### Added
+#### Added
 - **`sample.py`** — `AcquisitionSettings` gains `channel_names` and `channel_target_units` dicts with `name_for(ch)`/`target_unit_for(ch)` helpers, persisted in `to_dict`/`from_dict`; later extended with `channel_amplitude_modes`, `channel_couplings`, `channel_voltage_ranges` dicts and matching typed accessors (`amplitude_mode_for`, `coupling_for`, `voltage_range_for`)
 - **`gui.py`** — offline post-analysis mode: `load_data` auto-configures `enabled_channels` and `maxfreq` from file contents; plot series, axes, and results panel sync after load; connection summary shows "File Loaded" (yellow) with frame/channel count; trend plot gets a vertical cursor line for the browsed frame position; acquisition buttons disabled when no device is connected
 - **`gui.py`** — native file dialogs via `plyer.filechooser` (kdialog on KDE, native Win32) replace the DPG file dialog; `SAVEDIR` resolved to an absolute path so the dialog opens in the right place; browse-waveform controls consolidated into a single `_on_browse` dispatcher
@@ -1134,7 +1142,7 @@ From this point forward the product is named **Rev80** (formerly vibechecker). E
 - File Handling card gains a multiline Measurement Notes widget, read on save and populated on load
 - Tooling: `ruff` added to dev dependencies with a `.githooks/pre-commit` hook (`git config core.hooksPath .githooks` to activate); `pyproject.toml` sets line-length 120, ignores E402/E701
 
-### Changed
+#### Changed
 - **`collector.py`** — HDF5 format migrated v1 → v2 → v3 across the branch
   - v2: metadata moved into `.attrs` (`/acquisition`, per-frame/per-channel groups) instead of child datasets; `_load_v1` retained for back-compat
   - v3: structured `/metadata/` group — `/metadata/acquisition` (scalars only), `/metadata/scope_sensors/{id}` (sensor library, each unique sensor stored once), `/metadata/channels/{ch}` (name/unit/coupling/voltage_range/sensor_id/target_unit/amplitude_mode); `/frames/{i}/{ch}/data` stores raw samples only; `/trend/rel_times` becomes a shared axis with `/trend/{ch}/data` per channel; `load_data` dispatches to `_load_v3` only, `_load_v1`/`_load_v2` removed; `save_data` overwrites existing files instead of early-returning
@@ -1145,9 +1153,9 @@ From this point forward the product is named **Rev80** (formerly vibechecker). E
 
 ---
 
-## [Unreleased] — refactor/queue-handoff (2026-04-08)
+### refactor/queue-handoff (2026-04-08)
 
-### Changed
+#### Changed
 - **`collector.py`** / **`gui.py`** — decouple collector→GUI with `threading.Event`, precursor to the fuller refactor/event-pipeline cleanup above
   - `DataCollector.new_frame_event`: set by `data_callback` and `reprocess_last_block`
   - `GUI.poll_new_frames`: polls the event each render tick and grabs `frame_cache[-1]`
@@ -1159,9 +1167,9 @@ From this point forward the product is named **Rev80** (formerly vibechecker). E
 
 ---
 
-## [Unreleased] — feature/picoscope
+### feature/picoscope
 
-### Added
+#### Added
 - **`vibechecker/picoscope.py`** — PicoScope 4000A acquisition backend (Phase 1)
   - `FindPicoScope()` — enumerates connected PS4000A units; returns `VibeSensor`-compatible
     dicts with `unit=['mV']`, mirroring the `FindDigiducer` interface
@@ -1185,7 +1193,7 @@ From this point forward the product is named **Rev80** (formerly vibechecker). E
   signal generator, streams Channel A at 50 kHz for 100 ms, then renders a Plotly HTML
   report with Welch PSD (10 windows, 50 % overlap) and top-5 peak detection
 
-### Changed
+#### Changed
 - **`sensor.py`** — `VibeSensor.find()` now calls `FindPicoScope()` instead of
   `FindDigiducer()`; `VibeSensor.connect()` returns a `PicoScopeStream` for hardware
   sensors and a `SimulatedSensor` for the simulation path
@@ -1200,13 +1208,13 @@ From this point forward the product is named **Rev80** (formerly vibechecker). E
 - **`README.md`** — added PicoScope Integration section: architecture change, new
   `AcquisitionSettings` fields, Phase 1 data flow diagram, Phase 2 roadmap
 
-### Removed
+#### Removed
 - `digiducer.py` / `sounddevice` no longer used in the main acquisition path (file
   retained for reference; `FindDigiducer` still exported from `__init__.py`)
 
 ---
 
-## [0.1.0] — main (2025-xx-xx)
+## [0.0.1] — early prototype (2025, sounddevice/Digiducer path)
 
 Initial public snapshot of the **sounddevice / Digiducer** acquisition path with:
 
