@@ -594,6 +594,11 @@ def estimate_rpm(edge_idx: np.ndarray,
     # here is the *pulse* period (before the pulses_per_rev divide), because a
     # reflector subtends a fraction of the interval between pulses, not of a
     # revolution, whenever there is more than one per turn.
+    # The `else` is unreachable by construction and is defence only: a rising
+    # edge requires a decided-low state before it, so between any two rising
+    # edges there is necessarily a closing edge -- with MIN_EDGES rises there
+    # are at least two complete pulses. Do not write a test for it; write one
+    # for widths.size >= n_edges - 1 instead, which is the real invariant.
     duty = float(np.mean(widths) / med) if widths.size else 0.0
 
     # pulses_per_rev divides here and nowhere else in the module.
