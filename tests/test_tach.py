@@ -42,6 +42,30 @@ def make_pulses(rpm, fs, duration_s=1.0, ppr=1, duty=0.05, amplitude_mv=AMPL_MV,
     return x
 
 
+def make_ramped_pulses(rpm, fs, duration_s=1.0, ppr=1, duty=0.5,
+                       rise_samples=8, amplitude_mv=AMPL_MV,
+                       offset_mv=OFFSET_MV, phase_s=0.0, noise_mv=0.0, seed=0):
+    """A pulse train with a finite, linear rise and fall.
+
+    Ideal rectangles are a degenerate test signal for a threshold detector:
+    no sample ever lands between the rails, so the hysteresis band is never
+    occupied and sub-sample interpolation has nothing to interpolate. Real
+    edges reaching this module have already been band-limited by the mandatory
+    anti-alias filter, which is what puts samples on the slope.
+    """
+    n = int(round(fs * duration_s))
+    t = np.arange(n) / fs
+    period = 60.0 / (rpm * ppr)
+    rise_s = rise_samples / fs
+    ph = np.mod(t - phase_s, period)
+    up = np.clip(ph / rise_s, 0.0, 1.0)
+    down = np.clip((ph - duty * period) / rise_s, 0.0, 1.0)
+    x = amplitude_mv * (up - down) + offset_mv - amplitude_mv / 2.0
+    if noise_mv:
+        x = x + np.random.default_rng(seed).normal(0.0, noise_mv, n)
+    return x
+
+
 # --- min-span gate -------------------------------------------------------
 
 def test_noise_only_block_reports_no_signal_not_zero_rpm():
@@ -81,6 +105,30 @@ def test_rising_and_falling_polarity_agree_on_rate(rpm):
         settings=tach.TachSettings(polarity='falling'))
     assert rising.rpm == pytest.approx(rpm, rel=2e-3)
     assert falling.rpm == pytest.approx(rpm, rel=2e-3)
+
+
+def test_polarity_selects_which_end_of_the_pulse_is_timed():
+    """Rate alone cannot pin polarity -- a pulse train has the same period
+    whichever end you time. The edge *instants* are what differ: 'rising' marks
+    each pulse's leading edge, 'falling' its trailing edge, one duty cycle
+    later. Without the inversion both settings return the leading edge and the
+    keyphasor's angular reference is silently wrong by the pulse width.
+    """
+    rpm, duty = 1800.0, 0.25
+    period_s = 60.0 / rpm
+    # Start the block in the gap between pulses. A block that opens mid-pulse
+    # correctly suppresses that pulse's leading edge (it happened in the
+    # previous block), which would make the two series start on different
+    # pulses and the offset come out negative.
+    x = make_pulses(rpm, HW_FS, duty=duty, phase_s=-0.5 * period_s)
+    lead = tach.tach_result(x, HW_FS, ch=0, rel_time=0.0)
+    trail = tach.tach_result(
+        x, HW_FS, ch=0, rel_time=0.0,
+        settings=tach.TachSettings(polarity='falling'))
+    assert lead.rpm == pytest.approx(trail.rpm, rel=1e-3)
+    offset = trail.edge_times_s[0] - lead.edge_times_s[0]
+    assert offset == pytest.approx(duty * period_s, rel=0.02), (
+        'falling polarity must time the trailing edge, one duty cycle later')
 
 
 @pytest.mark.parametrize('ppr', [1, 2, 6, 60])
@@ -149,10 +197,49 @@ def test_fixed_threshold_fails_on_ac_coupled_high_duty_signal():
 
 
 def test_hysteresis_rejects_noise_riding_on_the_threshold():
-    """Noise at the switching point must not multiply the edge count."""
-    x = make_pulses(1800.0, HW_FS, duty=0.5, noise_mv=40.0, seed=3)
-    r = tach.tach_result(x, HW_FS, ch=0, rel_time=0.0)
-    assert r.rpm == pytest.approx(1800.0, rel=5e-3)
+    """Noise at the switching point must not multiply the edge count.
+
+    The edge has to have a finite rise time for this to bite: on an ideal
+    rectangle no sample ever lands near the threshold, so hysteresis is never
+    exercised and its removal goes unnoticed. Real edges are band-limited by
+    the anti-alias filter upstream, which is what puts samples in the band.
+    """
+    rpm = 1800.0
+    kw = dict(duty=0.5, rise_samples=12)
+    clean = tach.tach_result(make_ramped_pulses(rpm, HW_FS, **kw), HW_FS)
+    noisy = tach.tach_result(
+        make_ramped_pulses(rpm, HW_FS, noise_mv=90.0, seed=3, **kw), HW_FS)
+    assert noisy.n_edges == clean.n_edges, (
+        'noise on the slope must not add edges')
+    assert noisy.rpm == pytest.approx(rpm, rel=5e-3)
+    assert noisy.quality == tach.QUALITY_OK
+
+
+def test_detect_edges_applies_the_min_span_gate_itself():
+    """detect_edges is public and is called directly (by estimate_rpm's
+    callers and by the GUI's tach waveform view), so it cannot rely on
+    tach_result having already checked the span.
+    """
+    noise = np.random.default_rng(7).normal(0.0, 5.0, int(HW_FS))
+    assert tach.detect_edges(noise).size == 0
+
+
+def test_sub_sample_interpolation_beats_nearest_sample_quantisation():
+    """At 60 pulses/rev a period is only ~69 samples, so rounding each edge to
+    the nearest sample costs up to 1.4 %. Interpolating the crossing on a
+    band-limited edge must do materially better than that.
+    """
+    rpm, ppr = 600.0, 60
+    settings = tach.TachSettings(pulses_per_rev=ppr)
+    errs = []
+    for phase_frac in np.linspace(0.0, 1.0, 8, endpoint=False):
+        x = make_ramped_pulses(rpm, HW_FS, ppr=ppr, duty=0.5, rise_samples=6,
+                               phase_s=phase_frac / HW_FS)
+        r = tach.tach_result(x, HW_FS, ch=0, rel_time=0.0, settings=settings)
+        errs.append(abs(r.rpm - rpm) / rpm)
+    assert max(errs) < 3e-3, (
+        f'worst relative error {max(errs):.2%} -- interpolation is not working; '
+        'nearest-sample quantisation alone would give ~1.4 %')
 
 
 # --- block boundaries ----------------------------------------------------
@@ -166,6 +253,31 @@ def test_block_starting_mid_pulse_does_not_report_a_phantom_edge():
     assert x[0] > OFFSET_MV, 'test setup: block must start mid-pulse'
     r = tach.tach_result(x, HW_FS, ch=0, rel_time=0.0)
     assert r.rpm == pytest.approx(1800.0, rel=2e-3)
+
+
+def test_block_opening_inside_the_hysteresis_band_reports_no_edge_there():
+    """An edge requires a *decided low* state before it, not merely 'not high'.
+
+    A block can open with its first samples part-way up a slope, inside the
+    hysteresis band, where the detector has no prior state and cannot know
+    whether the signal was rising or falling into it. Accepting that as an edge
+    invents one at an arbitrary position, which corrupts one interval and can
+    trip the 'inconsistent' flag on a perfectly good sensor. Suppressing it
+    costs at most one interval out of thirty and corrupts nothing.
+    """
+    rpm, rise = 1800.0, 60
+    rise_s = rise / HW_FS
+    x = make_ramped_pulses(rpm, HW_FS, duty=0.5, rise_samples=rise,
+                           phase_s=-0.5 * rise_s)
+    span = x.max() - x.min()
+    mid = (x.max() + x.min()) / 2.0
+    assert abs(x[0] - mid) < tach.HYSTERESIS_FRAC * span / 2.0, (
+        'test setup: block must open inside the hysteresis band')
+
+    edges = tach.detect_edges(x)
+    settled = tach.detect_edges(x[rise:])     # same signal, opening below the band
+    assert len(edges) == len(settled), (
+        'opening inside the band must not add an edge the settled block lacks')
 
 
 @pytest.mark.parametrize('phase_frac', np.linspace(0.0, 1.0, 8, endpoint=False))
