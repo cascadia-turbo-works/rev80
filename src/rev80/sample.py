@@ -575,6 +575,16 @@ class ChannelResult:
     # no averaging. Reported rather than assumed from config: early frames and
     # frames excluded for overflow/degraded both lower it.
     n_averages:   int = 1
+    # Shaft speed at this frame's capture instant, and whether it fell inside
+    # the declared speed window. None means no tachometer reading -- never 0.0.
+    #
+    # `speed_ok` defaults True so that every existing construction site, test
+    # fixture and result reconstructed from a file behaves exactly as before.
+    # An out-of-window frame is still measured, still displayed and still
+    # stored; it is excluded only from trending, baseline adaptation and alarm
+    # evaluation, because its amplitude is correct but not *comparable*.
+    rpm:        float | None = None
+    speed_ok:   bool = True
 
     @property
     def band(self) -> 'tuple[float, float] | None':

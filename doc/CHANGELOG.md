@@ -48,6 +48,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   three `speed_gate_*` keys in `_BUILTIN_ACQ`, so every device and acquisition
   YAML written before R43 upgrades silently through the existing merge.
 
+- **Speed gating** — step 6. A frame captured outside a declared shaft-speed window is
+  still measured, displayed and stored, but is excluded from trending, baseline
+  adaptation and alarm evaluation, because its amplitude is *correct* and simply not
+  comparable. For a rigid rotor below its first critical the 1× velocity goes as ω³, so a
+  **3.2% speed change alone moves the overall 10%** — the shipped `RmsThresholdHook`
+  default. On any VFD or load-following machine the anomaly detector has been measuring
+  load rather than condition.
+  - `ChannelResult.rpm` / `.speed_ok`; `speed_ok` defaults `True` so every existing
+    construction site, fixture and reconstructed result is untouched.
+  - `DataCollector.speed_ok()` is the single place the gate is evaluated, and
+    `monitor/anomaly.valid_results()` the single place it is applied — a seam that
+    already existed to answer exactly this question and is already called by every hook
+    and both baseline-adaptation paths.
+  - **Fails closed** on a missing reading: if the tach dies mid-session (cable pulled,
+    tape peeled, LED aged out), treating "no speed reading" as "speed is fine" would
+    leave an unattended monitor alarming on load swings it can no longer see — the exact
+    false-alarm mechanism the gate exists to remove.
+  - `speed_gate_rpm = None` latches the reference from the first frame that actually has
+    one; an unreadable frame cannot latch.
+  - **`_build_anomaly_hook` is untouched in both copies** and
+    `tests/test_anomaly_hook_build.py` passes unmodified. That is the check that the seam
+    was chosen correctly: adding the gate as a hook parameter would have meant editing
+    both copies, which is what audit H-01 exists to prevent.
+
 - **Tachometer persistence, measurement file `_FILE_VERSION` 4 → 5** — step 5.
   - A tach channel stores **`edge_times`, not a `data` waveform** (decision D-2): ~30
     float64 per second against 41666, a factor of ~1400, which matters most on the long
