@@ -218,6 +218,61 @@ def _build_anomaly_hook(anom_cfg: dict, config, pre_buffer_s: float = 0.0):
     return CompositeAnomalyHook(hooks)
 
 
+
+def _apply_channel_config(config, device_cfg: dict) -> None:
+    """Load per-channel fields from a device config into `config`.
+
+    Derives enabled_channels from each channel's 'enabled' flag, and
+    **refuses tachometer-role channels** (R44).
+
+    Tachometry is out of scope for rev80-headless, but out of scope has to
+    mean "does not do it" rather than "does it wrong". Headless reads the same
+    devices/*.yaml the GUI writes, so a channel the operator configured as a
+    tachometer would otherwise be enabled here, high-passed, given an overall,
+    trended, and fed to the anomaly hooks as vibration. Measured on a 5% duty
+    pulse train at 1800 RPM through the real process_sample: overall 1514.9 mV,
+    crest factor 5.00, kurtosis 15.94 and 63 spectral peaks -- an analyst
+    reviewing that session concludes a bearing is failing badly. It also drifts
+    on nothing: a tach LED ageing from 5.0 V to 4.5 V of pulse amplitude moves
+    that channel's overall by exactly -10%, the shipped RmsThresholdHook
+    threshold, on three consecutive frames.
+
+    Extracted from run() so the refusal is testable. See R44 in doc/PROGRESS.md
+    for the revisit.
+    """
+    from rev80.util import DEFAULT_CHANNEL_ROLE
+
+    enabled_channels = []
+    refused = []
+    for ch_key, info in device_cfg.get("channels", {}).items():
+        ch = int(ch_key)
+        role = str(info.get("role") or DEFAULT_CHANNEL_ROLE)
+        if role == 'tachometer':
+            config.channel_roles[ch] = role
+            if info.get("enabled", False):
+                refused.append(ch)
+            continue
+        if info.get("enabled", False):
+            enabled_channels.append(ch)
+        if info.get("voltage_range") is not None:
+            config.channel_voltage_ranges[ch] = info["voltage_range"]
+        if info.get("coupling"):
+            config.channel_couplings[ch] = info["coupling"]
+        if info.get("channel_name"):
+            config.channel_names[ch] = info["channel_name"]
+        if info.get("target_unit"):
+            config.channel_target_units[ch] = info["target_unit"]
+        if info.get("amplitude_mode"):
+            config.channel_amplitude_modes[ch] = info["amplitude_mode"]
+    if refused:
+        log.info(
+            "Not enabling tachometer channel(s) %s: rev80-headless does not "
+            "support tachometry (R44). Use the GUI for tach measurements.",
+            ", ".join(str(c) for c in sorted(refused)))
+    if enabled_channels:
+        config.enabled_channels = sorted(enabled_channels)
+
+
 def _apply_overrides(config, args) -> None:
     if args.maxfreq:
         config.maxfreq = float(args.maxfreq)
@@ -392,24 +447,7 @@ def run(args: argparse.Namespace) -> int:
 
     config = AcquisitionSettings.from_dict(acq_cfg.get("acquisition", {}))
 
-    # Load per-channel fields from device config; derive enabled_channels from 'enabled' flag
-    enabled_channels = []
-    for ch_key, info in device_cfg.get("channels", {}).items():
-        ch = int(ch_key)
-        if info.get("enabled", False):
-            enabled_channels.append(ch)
-        if info.get("voltage_range") is not None:
-            config.channel_voltage_ranges[ch] = info["voltage_range"]
-        if info.get("coupling"):
-            config.channel_couplings[ch] = info["coupling"]
-        if info.get("channel_name"):
-            config.channel_names[ch] = info["channel_name"]
-        if info.get("target_unit"):
-            config.channel_target_units[ch] = info["target_unit"]
-        if info.get("amplitude_mode"):
-            config.channel_amplitude_modes[ch] = info["amplitude_mode"]
-    if enabled_channels:
-        config.enabled_channels = sorted(enabled_channels)
+    _apply_channel_config(config, device_cfg)
 
     # CLI overrides (maxfreq, binsize; --channels already applied above)
     if args.maxfreq:
