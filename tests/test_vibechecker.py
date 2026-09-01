@@ -18,6 +18,7 @@ from rev80 import (
     GUI,
     get_logger,
 )
+from rev80.sample import RAW_SAMPLERATE_HZ
 from rev80.scope_sensor import ScopeSensor
 
 DATADIR = Path('DEVDATA')
@@ -75,6 +76,44 @@ def test_collect_sample_signal_processing():
         assert cr.time_data.flags['C_CONTIGUOUS']
         assert len(cr.freq) > 0
         assert len(cr.spectrum) == len(cr.freq)
+
+
+def test_eu_scaled_raw_keeps_full_raw_bandwidth_independent_of_maxfreq():
+    """eu_scaled_raw() -- what the Envelope tab consumes -- stays at the raw
+    acquisition rate even when a low F_max heavily decimates ChannelResult.
+
+    This is the raw-stream-retention guarantee: envelope/demodulation must
+    see RAW_SAMPLERATE_HZ's full Nyquist, not the maxfreq-driven display
+    rate process_sample() decimates ChannelResult.time_data to.
+    """
+    low_config = AcquisitionSettings()
+    low_config.maxfreq = 500.0
+    collector = DataCollector(sim_sensor, config=low_config)
+    frame = collector.collect_sample()
+    collector.disconnect_sensor()
+
+    ch, sample = next((k, v) for k, v in frame.items() if isinstance(k, int))
+    cr = collector.process_sample(ch, sample)
+    assert cr.samplerate < RAW_SAMPLERATE_HZ  # display rate: decimated down for low F_max
+
+    signal, samplerate, unit = collector.eu_scaled_raw(ch, sample)
+    assert samplerate == RAW_SAMPLERATE_HZ
+    assert isinstance(unit, str)
+    assert len(signal) == sample.blocksize
+
+
+def test_current_frame_matches_collect_sample():
+    """current_frame() returns the same {ch: VibeSample} dict collect_sample() populated."""
+    collector = DataCollector(sim_sensor)
+    collected = collector.collect_sample()
+    collector.disconnect_sensor()
+
+    current = collector.current_frame()
+    ch_collected = {k: v for k, v in collected.items() if isinstance(k, int)}
+    ch_current = {k: v for k, v in current.items() if isinstance(k, int)}
+    assert set(ch_current) == set(ch_collected)
+    for ch in ch_collected:
+        assert ch_current[ch] is ch_collected[ch]
 
 
 # ---------------------------------------------------------------------------
@@ -164,12 +203,21 @@ def test_load_offline_configures_channels():
     fname.unlink(missing_ok=True)
 
 
-def test_load_offline_adjusts_maxfreq():
-    """Loading a file whose samplerate > current config adjusts maxfreq."""
-    # Create a file with high samplerate
-    high_freq_config = AcquisitionSettings()
-    high_freq_config.maxfreq = 50000.0  # → samplerate = 131072
-    collector = DataCollector(sim_sensor, high_freq_config)
+def test_load_offline_restores_maxfreq_from_file_metadata():
+    """Loading a file restores the maxfreq it was captured with.
+
+    From the file's stored acquisition metadata -- not derived from its raw
+    samplerate, which is now a fixed constant (RAW_SAMPLERATE_HZ) unrelated
+    to what maxfreq was used at capture time. This used to instead clamp
+    maxfreq up to (file samplerate)/2 whenever it exceeded the current
+    config's, back when a file's samplerate WAS the maxfreq-driven display
+    rate; that comparison no longer means anything (every file's samplerate
+    is the same fixed constant), and doing it anyway would silently
+    override the F_max the user has open on every single load.
+    """
+    captured_config = AcquisitionSettings()
+    captured_config.maxfreq = 5000.0
+    collector = DataCollector(sim_sensor, captured_config)
     collector.collect_sample()   # populates frame_cache; return value unused
     collector.disconnect_sensor()
 
@@ -178,24 +226,16 @@ def test_load_offline_adjusts_maxfreq():
     fname.unlink(missing_ok=True)
     collector.save_data(fname)
 
-    # Load with a low-freq default config
+    # Load into a session with a different current maxfreq
     low_config = AcquisitionSettings()
-    low_config.maxfreq = 500.0  # → samplerate = 1024
+    low_config.maxfreq = 500.0
     offline = DataCollector(config=low_config)
-    old_sr = offline.config.samplerate
 
     offline.load_data(fname)
 
-    # Config should have been adjusted upward
-    assert offline.config.samplerate >= high_freq_config.samplerate, (
-        f'samplerate {offline.config.samplerate} should be >= '
-        f'{high_freq_config.samplerate} after loading high-freq file'
-    )
-    # ...and strictly upward from where it started, which is the behaviour the
-    # test is named for but never actually checked.
-    assert offline.config.samplerate > old_sr, (
-        f'samplerate should have been raised from {old_sr}, '
-        f'got {offline.config.samplerate}'
+    assert offline.config.maxfreq == pytest.approx(5000.0), (
+        f'maxfreq should be restored from the file (5000.0), '
+        f'got {offline.config.maxfreq}'
     )
 
     fname.unlink(missing_ok=True)

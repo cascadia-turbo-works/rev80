@@ -25,19 +25,34 @@ from rev80.picoscope import PicoScopeStream, _DRIVER_BUFFER_SAMPLES
 # Helpers
 # ---------------------------------------------------------------------------
 
+class _FixedRawBlockSettings(vc.AcquisitionSettings):
+    """Test-only: force raw_blocksize to an exact value.
+
+    PicoScopeStream acquires at config.raw_blocksize, which is fixed
+    (derived from RAW_SAMPLERATE_HZ + acquisition_period) and no longer
+    reachable via the maxfreq/binsize trick these accumulator/streaming-
+    callback tests used to target a specific blocksize with. They only care
+    about PicoScopeStream's own raw-rate mechanics, so force it directly
+    rather than reverse-engineering maxfreq/binsize to hit it indirectly.
+    """
+    _forced_raw_blocksize = 0
+
+    @property
+    def raw_blocksize(self):
+        return self._forced_raw_blocksize or super().raw_blocksize
+
+
 def _make_config(maxfreq=500, binsize=8.0, coupling='AC', enabled_channels=None,
                   blocksize=None):
-    cfg = vc.AcquisitionSettings()
+    cfg = _FixedRawBlockSettings() if blocksize is not None else vc.AcquisitionSettings()
     cfg.maxfreq = maxfreq
-    if blocksize is not None:
-        # Derive binsize that produces the desired blocksize
-        cfg.binsize = cfg.samplerate / blocksize
-    else:
-        cfg.binsize = binsize
+    cfg.binsize = binsize
     cfg.coupling = coupling
     cfg.highpass_enabled = False
     if enabled_channels is not None:
         cfg.enabled_channels = list(enabled_channels)
+    if blocksize is not None:
+        cfg._forced_raw_blocksize = blocksize
     return cfg
 
 
@@ -197,7 +212,7 @@ class TestStreamingCallbackAccumulator:
 
     def test_single_chunk_smaller_than_blocksize_no_callback(self, monkeypatch):
         stream, received = _make_stream(monkeypatch=monkeypatch)
-        raw_bs = stream.config.blocksize * stream._effective_osr
+        raw_bs = stream.config.raw_blocksize * stream._effective_osr
 
         _fill_driver_buffers(stream, value=0, n=raw_bs)
         stream._streaming_callback(
@@ -208,7 +223,7 @@ class TestStreamingCallbackAccumulator:
 
     def test_exact_blocksize_fires_once(self, monkeypatch):
         stream, received = _make_stream(monkeypatch=monkeypatch)
-        raw_bs = stream.config.blocksize * stream._effective_osr
+        raw_bs = stream.config.raw_blocksize * stream._effective_osr
 
         buf = np.arange(raw_bs, dtype=np.int16)
         stream._driver_buffers[0] = np.zeros(max(raw_bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
@@ -221,8 +236,14 @@ class TestStreamingCallbackAccumulator:
         assert len(received) == 1
 
     def test_two_chunks_fire_one_callback(self, monkeypatch):
-        stream, received = _make_stream(monkeypatch=monkeypatch)
-        raw_bs = stream.config.blocksize * stream._effective_osr
+        # Forced small raw_blocksize (see other tests in this class): the
+        # default config's real raw_blocksize (RAW_SAMPLERATE_HZ-derived) is
+        # now far bigger than _DRIVER_BUFFER_SAMPLES, so a nonzero startIndex
+        # at half of it would exercise the driver's circular-buffer wraparound
+        # -- a real thing PicoScopeStream handles, but not what this test is
+        # about; it wants two non-wrapping chunks.
+        stream, received = _make_stream(_make_config(blocksize=64), monkeypatch=monkeypatch)
+        raw_bs = stream.config.raw_blocksize * stream._effective_osr
         half = raw_bs // 2
 
         buf = np.zeros(max(raw_bs, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
@@ -238,7 +259,7 @@ class TestStreamingCallbackAccumulator:
 
     def test_double_blocksize_fires_twice(self, monkeypatch):
         stream, received = _make_stream(monkeypatch=monkeypatch)
-        raw_bs = stream.config.blocksize * stream._effective_osr
+        raw_bs = stream.config.raw_blocksize * stream._effective_osr
 
         buf = np.zeros(max(raw_bs * 2, _DRIVER_BUFFER_SAMPLES), dtype=np.int16)
         stream._driver_buffers[0] = buf

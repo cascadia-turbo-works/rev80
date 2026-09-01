@@ -70,8 +70,31 @@ _MAX_RECONNECT_ATTEMPTS = 3     # recovery attempts before giving up
 # 1/2/4 channels (the 4-channel case is borderline in the 100-200k range).
 #
 # To get real anti-alias protection without hitting that ceiling, the ADC is
-# run at effective_osr * config.samplerate (oversampled), then filtered and
-# decimated back down to config.samplerate before reaching DataCollector.
+# run at effective_osr * config.raw_samplerate (oversampled), then filtered and
+# decimated back down to config.raw_samplerate before reaching DataCollector.
+#
+# config.raw_samplerate is now a fixed constant (RAW_SAMPLERATE_HZ in
+# sample.py, currently 40000 Hz), independent of the displayed F_max --
+# acquisition always runs at this rate so envelope/demodulation analysis has
+# real bearing-resonance bandwidth (2-20 kHz) regardless of what F_max the
+# Spectrum tab is showing. Re-validated at that value on the same 4424A
+# (scripts/validate-streaming-capacity), sustained 45s at 3 and 4 channels:
+#
+#   samplerate   osr   raw ADC rate/ch      overflow   degraded transitions
+#   40000 Hz      2      ~83.3 kHz             0          0, every run
+#   50000 Hz      2      100 kHz (at ceiling)  0          0 to 2, run-to-run
+#   100000 Hz     1      100 kHz (at ceiling)  0          0  (but osr=1: no
+#                                                             anti-alias margin)
+#
+# 40 kHz is the highest rate that came back clean *consistently*, with real
+# anti-alias margin. 50 kHz sits at the same measured ceiling with zero
+# headroom and was not reliable across repeated runs -- sometimes clean,
+# sometimes not, on identical hardware and settings -- which disqualifies it
+# for a shipped default even more than a rate that failed outright would.
+# Only tested up to 4 channels (this hardware's limit); an 8+ channel device
+# scaling the same way is an inherited assumption from this
+# ceiling being documented as channel-count-independent, not independently
+# re-proven here.
 STREAMING_CEILING_HZ = 100_000
 OSR_TARGET           = 4
 
@@ -388,13 +411,13 @@ class PicoScopeStream:
         self._stop_event   = threading.Event()
         self._thread: threading.Thread | None = None
 
-        # Oversample ratio: the ADC is driven at effective_osr * config.samplerate
+        # Oversample ratio: the ADC is driven at effective_osr * config.raw_samplerate
         # and the result is filtered + decimated back down before reaching the
         # app callback. Capped at OSR_TARGET and by how much headroom is left
         # under STREAMING_CEILING_HZ at this target rate (see module docstring
         # comment above STREAMING_CEILING_HZ for the hardware measurements this
         # is based on).
-        self._effective_osr = self._choose_osr(config.samplerate)
+        self._effective_osr = self._choose_osr(config.raw_samplerate)
 
         # One rolling driver buffer per enabled channel
         self._enabled_channels: list[int] = list(config.enabled_channels)
@@ -406,7 +429,7 @@ class PicoScopeStream:
         # 2-D accumulator: shape (acc_size, N) — one column per enabled channel.
         # Sized in raw (oversampled) samples — see _effective_osr above.
         N = len(self._enabled_channels)
-        self._accumulator   = np.zeros((config.blocksize * self._effective_osr * 2, N),
+        self._accumulator   = np.zeros((config.raw_blocksize * self._effective_osr * 2, N),
                                        dtype=np.float64)
         self._acc_ptr       = 0
         self._stream_start  = 0.0
@@ -415,10 +438,10 @@ class PicoScopeStream:
         # initialised from config and updated in _start_streaming. This is the
         # *target* rate reported downstream (DataCollector, VibeSample, HDF5) —
         # oversampling is fully transparent to consumers of this attribute.
-        self._actual_samplerate = config.samplerate
+        self._actual_samplerate = config.raw_samplerate
         # Actual *raw* (oversampled) rate achieved by hardware, updated in
         # _start_streaming. Used only internally (decimation, rate watchdog).
-        self._actual_raw_samplerate = config.samplerate * self._effective_osr
+        self._actual_raw_samplerate = config.raw_samplerate * self._effective_osr
         # Watchdog: updated by _streaming_callback whenever data arrives
         self._last_data_time    = 0.0
         # Channels already warned about overflow this stream; cleared on start/recover
@@ -459,7 +482,7 @@ class PicoScopeStream:
         N = len(self._enabled_channels)
         self._acc_ptr         = 0
         self._accumulator     = np.zeros(
-            (self.config.blocksize * self._effective_osr * 2, N), dtype=np.float64)
+            (self.config.raw_blocksize * self._effective_osr * 2, N), dtype=np.float64)
         self._stream_start    = time.monotonic()
         self._last_data_time  = time.monotonic()
         self._overflow_warned = set()   # reset per-channel overflow inhibit on each stream start
@@ -666,12 +689,12 @@ class PicoScopeStream:
                 ps.PS4000A_RATIO_MODE['PS4000A_RATIO_MODE_NONE'],
             ))
 
-        # Drive the ADC at effective_osr * config.samplerate (oversampled) so the
+        # Drive the ADC at effective_osr * config.raw_samplerate (oversampled) so the
         # anti-alias filter in _streaming_callback has real signal above the
         # target Nyquist to filter out before decimating back down. See
         # STREAMING_CEILING_HZ / OSR_TARGET module comment for why this is
         # necessary and bounded.
-        raw_samplerate = self.config.samplerate * self._effective_osr
+        raw_samplerate = self.config.raw_samplerate * self._effective_osr
         sample_interval_us = ctypes.c_int32(max(1, int(1e6 / raw_samplerate)))
 
         assert_pico_ok(ps.ps4000aRunStreaming(
@@ -679,7 +702,7 @@ class PicoScopeStream:
             ctypes.byref(sample_interval_us),
             ps.PS4000A_TIME_UNITS['PS4000A_US'],
             0,                               # maxPreTriggerSamples
-            self.config.blocksize * 4,       # maxPostTriggerSamples — driver buffer budget; autoStop=0 streams continuously regardless
+            self.config.raw_blocksize * 4,       # maxPostTriggerSamples — driver buffer budget; autoStop=0 streams continuously regardless
             0,                               # autoStop = 0  → continuous
             1,                               # downsampleRatio
             ps.PS4000A_RATIO_MODE['PS4000A_RATIO_MODE_NONE'],
@@ -715,9 +738,13 @@ class PicoScopeStream:
         F_max=20 kHz an unfiltered 50 kHz component folds to 15536 Hz, inside
         the displayed band and indistinguishable from real signal.
 
-        MAXFREQ_PRESETS is gated so every offered preset satisfies
-        samplerate * 2 <= STREAMING_CEILING_HZ. This function still degrades
-        gracefully, with a loud warning, for a maxfreq set outside the presets.
+        `samplerate` here is config.raw_samplerate (RAW_SAMPLERATE_HZ,
+        sample.py) -- a fixed constant, not maxfreq-derived, so this no
+        longer varies with what F_max the user picks. Validated at
+        RAW_SAMPLERATE_HZ=40000 (osr=2, real margin) on real hardware -- see
+        the STREAMING_CEILING_HZ comment above. This function still degrades
+        gracefully, with a loud warning, if that constant is ever raised past
+        what leaves real anti-alias headroom.
         """
         osr = int(math.floor(STREAMING_CEILING_HZ / float(samplerate)))
         osr = min(OSR_TARGET, osr)
@@ -726,7 +753,8 @@ class PicoScopeStream:
                 'ANTI-ALIAS DISABLED: sample rate %g Hz leaves no headroom under '
                 'the %d Hz safe streaming ceiling for even 2x oversampling. '
                 'Frequencies above %g Hz will alias into the displayed band and '
-                'cannot be distinguished from real signal. Reduce F_max.',
+                'cannot be distinguished from real signal. Lower RAW_SAMPLERATE_HZ '
+                '(sample.py).',
                 samplerate, STREAMING_CEILING_HZ, samplerate / 2.0,
             )
             return 1
@@ -741,7 +769,7 @@ class PicoScopeStream:
         driver rounds the streaming interval to a whole microsecond and writes
         back what it used, which is generally not what was requested.
 
-        Reporting config.samplerate instead scaled every displayed frequency by
+        Reporting config.raw_samplerate instead scaled every displayed frequency by
         requested/actual. Measured at F_max=2000: requested 32768 Hz raw, driver
         rounded 30.5 us down to 30 us -> 33333 Hz raw -> 8333.33 Hz decimated,
         reported as 8192 Hz. A true 100 Hz tone displayed at 98.3 Hz and a
@@ -830,7 +858,7 @@ class PicoScopeStream:
 
         # Grow accumulator rows if needed. Sized in raw samples — bs below is
         # the raw (oversampled) block size needed before decimation.
-        raw_bs = self.config.blocksize * self._effective_osr
+        raw_bs = self.config.raw_blocksize * self._effective_osr
         if end > self._accumulator.shape[0]:
             new_rows = end + raw_bs
             grown = np.zeros((new_rows, N), dtype=np.float64)
@@ -842,7 +870,7 @@ class PicoScopeStream:
         self._acc_ptr = end
 
         # Fire app callback for each complete raw block accumulated, decimated
-        # down to config.blocksize before being handed to the app callback.
+        # down to config.raw_blocksize before being handed to the app callback.
         bs = raw_bs
         while self._acc_ptr >= bs:
             raw_block = self._accumulator[:bs, :].copy()   # shape (raw_bs, N)
@@ -909,7 +937,7 @@ class PicoScopeStream:
                 N = len(self._enabled_channels)
                 self._acc_ptr         = 0
                 self._accumulator     = np.zeros(
-                    (self.config.blocksize * self._effective_osr * 2, N),
+                    (self.config.raw_blocksize * self._effective_osr * 2, N),
                     dtype=np.float64)
                 self._last_data_time  = time.monotonic()
                 self._overflow_warned = set()   # settings changed — re-arm overflow warnings

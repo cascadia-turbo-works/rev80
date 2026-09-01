@@ -10,6 +10,44 @@ log = rev80.get_logger(__name__)
 
 N_CHANNELS = 2
 
+
+class _RawRateView:
+    """Presents `config` at its raw acquisition rate to signal generators.
+
+    Every generator below reads config.samplerate/blocksize/sampleperiod/
+    time_vec to build one block. SimulatedSensor must generate (and report)
+    blocks at raw_samplerate/raw_blocksize -- the same rate PicoScopeStream
+    delivers and DataCollector.receive_data tags each frame with -- not the
+    maxfreq-driven display rate those attributes normally give; otherwise
+    the simulated path silently defeats raw-stream retention (envelope
+    analysis, HDF5 storage) by handing it already-decimated data. Proxying
+    keeps every generator, and the tests that call them directly against a
+    real AcquisitionSettings, unchanged.
+    """
+
+    def __init__(self, config: AcquisitionSettings):
+        self._config = config
+
+    @property
+    def samplerate(self):
+        return self._config.raw_samplerate
+
+    @property
+    def blocksize(self):
+        return self._config.raw_blocksize
+
+    @property
+    def sampleperiod(self):
+        return self._config.raw_sampleperiod
+
+    @property
+    def time_vec(self):
+        return self._config.raw_time_vec
+
+    def __getattr__(self, name):
+        return getattr(self._config, name)
+
+
 def GenerateTone(config:AcquisitionSettings,
                  ampl:float = 1,
                  freq:float = 500,
@@ -286,8 +324,9 @@ class SimulatedSensor:
 
     def _sample(self):
         # HACK: to acomplish FFT units testing
+        # Raw rate, not display rate -- see _RawRateView.
         args = self.source[1:] if len(self.source)>1 else []
-        signal = self.source[0].__call__(self.config, *args) # type: ignore
+        signal = self.source[0].__call__(_RawRateView(self.config), *args) # type: ignore
 
         # One column per enabled channel. This used to be
         # max(len(enabled_channels), N_CHANNELS), which forced a minimum of two
@@ -312,7 +351,7 @@ class SimulatedSensor:
         try:
             next_due = time.monotonic()
             while self._running:
-                self.callback(self._sample(), self.config.blocksize,
+                self.callback(self._sample(), self.config.raw_blocksize,
                               time.monotonic(), 'OKAY')
                 # Emit blocks at the rate real hardware would. Sleeping the
                 # remaining time rather than a fixed interval keeps the block
