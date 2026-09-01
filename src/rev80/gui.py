@@ -520,6 +520,7 @@ class GUI:
                 ui.ch_scalars_text(ch),
                 f"Crest {result.crest_factor:.2f}   Kurt {result.kurtosis:.2f}",
             )
+        self._update_one_x(result, ch)
         peak_limit = max(1, int(dpg.get_value(ui.FFT_PEAKS_DISPLAY_COUNT) or 1))
         peaks = result.peaks
         self._update_peak_count_text(len(peaks), peak_limit)
@@ -539,6 +540,32 @@ class GUI:
         else:
             dpg.set_value(ui.plt_freq_peaks(ch), [[], []])
             self._update_fft_peaks_table(["Frequency (Hz)", "Amp."], [], ch)
+
+    def _update_one_x(self, result: 'rev80.ChannelResult', ch: int):
+        """Show the 1x level and marker, or hide both when there is no tach.
+
+        Hidden rather than zeroed: a channel with no shaft-speed reading has no
+        1x level, and displaying 0.0 would be a measured value rather than a
+        missing one.
+        """
+        amp = result.one_x_amplitude
+        f_1x = result.one_x_hz
+        txt_tag = ui.ch_one_x_text(ch)
+        line_tag = ui.plt_freq_one_x(ch)
+        if f_1x is None:
+            if dpg.does_item_exist(txt_tag):
+                dpg.configure_item(txt_tag, show=False)
+            if dpg.does_item_exist(line_tag):
+                dpg.set_value(line_tag, [[]])
+            return
+        if dpg.does_item_exist(line_tag):
+            dpg.set_value(line_tag, [[float(f_1x)]])
+        if dpg.does_item_exist(txt_tag):
+            amp_mode = self._get_amplitude_mode(ch)
+            shown = ("--" if amp is None
+                     else f"{amp:.4g} {result.unit} {amp_mode}")
+            dpg.set_value(txt_tag, f"1x @ {f_1x:.2f} Hz:  {shown}")
+            dpg.configure_item(txt_tag, show=True)
 
     def _update_avg_count_text(self, result: 'rev80.ChannelResult'):
         """Report how many frames were actually averaged, not how many were asked for.
@@ -859,6 +886,13 @@ class GUI:
             if not dpg.does_item_exist(tag):
                 dpg.add_line_series([0.0], [0.0], label=ch_label, tag=tag, parent=axis)
                 dpg.bind_item_theme(tag, theme)
+        one_x_tag = ui.plt_freq_one_x(ch)
+        if not dpg.does_item_exist(one_x_tag):
+            # Vertical marker at the shaft rate. A line's frequency is only
+            # diagnostic relative to 1x -- unbalance sits on it, misalignment
+            # on 2x, and a bearing tone characteristically between orders.
+            dpg.add_inf_line_series([], label=f"##onex_{ch}", tag=one_x_tag,
+                                    parent=freq_axis)
         peaks_tag = ui.plt_freq_peaks(ch)
         if not dpg.does_item_exist(peaks_tag):
             dpg.add_scatter_series([0.0], [0.0], label=f"##peaks_{ch}", tag=peaks_tag, parent=freq_axis)
@@ -868,7 +902,7 @@ class GUI:
     def _remove_channel_series(self, ch: int):
         for tag in [ui.plt_time_series(ch), ui.plt_freq_series(ch),
                     ui.plt_env_series(ch), ui.plt_trend_series(ch),
-                    ui.plt_freq_peaks(ch)]:
+                    ui.plt_freq_peaks(ch), ui.plt_freq_one_x(ch)]:
             if dpg.does_item_exist(tag):
                 dpg.delete_item(tag)
 
@@ -4128,6 +4162,18 @@ class GUI:
                             _sc = dpg.add_text("Crest -   Kurt -",
                                                tag=ui.ch_scalars_text(_ch),
                                                color=_c("MUTED"))
+                            # Vibration level at the shaft rate, shown only
+                            # when a tachometer is reading. Blank rather than
+                            # zero without one -- an absent number and a
+                            # measured zero are different facts.
+                            _ox = dpg.add_text("", tag=ui.ch_one_x_text(_ch),
+                                               color=_c("MUTED"), show=False)
+                            self._tooltip(
+                                _ox,
+                                "Vibration level at 1x shaft rate.\n\n"
+                                "1x rarely lands on a bin centre, so this is the "
+                                "larger of the two bins straddling it -- no "
+                                "interpolation, the same rule the peak table uses.")
                             self._tooltip(
                                 _sc,
                                 "Crest factor = peak / RMS: 1.41 for a pure sine, "

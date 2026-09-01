@@ -587,6 +587,36 @@ class ChannelResult:
     speed_ok:   bool = True
 
     @property
+    def one_x_hz(self) -> 'float | None':
+        """Shaft rate in Hz for this frame, or None with no tachometer reading."""
+        return None if self.rpm is None else self.rpm / 60.0
+
+    @property
+    def one_x_amplitude(self) -> 'float | None':
+        """Spectrum level at 1x -- the larger of the two bins straddling it.
+
+        1x rarely lands on a bin centre, and a strictly-nearest-bin reading
+        loses amplitude to the offset. Taking the larger of the bracketing pair
+        recovers most of that without interpolating, which keeps this
+        consistent with how peaks are already reported: max-bin amplitude, no
+        energy summation, no frequency interpolation.
+
+        None when there is no reading, or when 1x falls outside the displayed
+        band -- F_max can sit below the shaft rate on a fast machine, and
+        reporting the edge bin would be a wrong number rather than a missing
+        one.
+        """
+        f = self.one_x_hz
+        if f is None or len(self.freq) == 0 or len(self.spectrum) == 0:
+            return None
+        if f < float(self.freq[0]) or f > float(self.freq[-1]):
+            return None
+        hi = int(np.searchsorted(self.freq, f, side='left'))
+        lo = max(0, hi - 1)
+        hi = min(hi, len(self.spectrum) - 1)
+        return float(max(self.spectrum[lo], self.spectrum[hi]))
+
+    @property
     def band(self) -> 'tuple[float, float] | None':
         """The declared band as (fmin, fmax), or None if this result has none."""
         if self.band_fmin is None or self.band_fmax is None:

@@ -572,6 +572,16 @@ class UI_Elements:
         return f'PLT_FREQ_CH{ch}'
 
     @staticmethod
+    def plt_freq_one_x(ch: int) -> str:
+        """Vertical marker on the spectrum at the shaft rate (1x)."""
+        return f'PLT_FREQ_ONE_X_{ch}'
+
+    @staticmethod
+    def ch_one_x_text(ch: int) -> str:
+        """1x level readout on a channel result card."""
+        return f'CH{ch}_ONE_X'
+
+    @staticmethod
     def plt_freq_peaks(ch: int) -> str:
         return f'PLT_FREQ_PEAKS_CH{ch}'
 
