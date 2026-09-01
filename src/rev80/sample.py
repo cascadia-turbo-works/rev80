@@ -495,6 +495,14 @@ class VibeSample:
     decimated_samplerate: float | None     = field(default=None, repr=False)
     _decimation_config_key: tuple | None   = field(default=None, repr=False)
 
+    # Tachometer reading, on a tachometer-role channel only. Computed once at
+    # ingestion (receive_data), where the block arrives exactly once and in
+    # stream order, and cached here keyed on the settings that produced it so
+    # that changing pulses_per_rev after a file is loaded recomputes rather
+    # than returning a stale number. None on every vibration channel.
+    tach: 'object | None'             = field(default=None, repr=False)
+    _tach_config_key: tuple | None    = field(default=None, repr=False)
+
     @classmethod
     def empty(cls):
         return VibeSample(status='EMPTY', _timestamp=datetime.now(),
