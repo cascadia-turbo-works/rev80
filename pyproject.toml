@@ -64,13 +64,24 @@ rev80 = ["logging.yaml", "assets/fonts/*.otf", "assets/icons/hicolor/*/apps/*.pn
 # commit's own tree can't correctly describe itself w.r.t. a tag applied to
 # it *after* it's committed, so a commit-time stamp is always one step
 # behind a just-tagged release. src/rev80/_version.py is generated here and
-# is gitignored, not committed. Tags are "rc0.2", "rc0.3", ... (no "v"
-# prefix), hence the custom tag_regex. fallback_version covers CI/shallow
-# clones with no tags reachable — see .github/workflows/ci.yml.
+# is gitignored, not committed.
+#
+# No custom tag_regex: release tags are plain "vX.Y.Z" (v0.1.0, ...), which
+# setuptools_scm's own default regex already parses correctly (strips the
+# "v", no further pattern needed). A hand-rolled regex used to live here for
+# the old "rc0.2"/"rc0.3"/... pre-release tags; a `.*`-greedy version of it
+# mis-parsed "v0.1.0" as version "1.0" (the greedy `.*` swallows "v0.",
+# leaving the shortest tail that still matches \d+\.\d+ -- "1.0" -- instead
+# of "0.1.0"), which is why a clean checkout of the v0.1.0 tag was reporting
+# "1.1.dev0+g<hash>.d<date>" instead of plain "0.1.0". Only exact, clean
+# tag checkouts get the bare version; a dev/hash/date suffix still appears
+# for any commit that isn't exactly on a tag, or with local changes present
+# -- that's intentional, it's what disambiguates non-release builds.
+# fallback_version covers CI/shallow clones with no tags reachable — see
+# .github/workflows/ci.yml.
 [tool.setuptools_scm]
 version_file = "src/rev80/_version.py"
 version_file_template = "__version__ = \"{version}\"\n"
-tag_regex = '^rc(?P<version>\d+\.\d+(?:\.\d+)?)$'
 fallback_version = "0.0.0+unknown"
 
 [build-system]
