@@ -35,3 +35,7 @@ installer/Output/
 # Place ps4000a.dll + picoipp.dll here, or set PICO_DLL_DIR env var.
 # See build/collect_pico_dlls.py for details.
 vendor/pico/
+
+# ── Claude Code: share agents, keep machine-local settings out ───────────────
+.claude/settings.local.json
+.claude/worktrees/
