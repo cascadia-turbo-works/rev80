@@ -4,7 +4,7 @@ from datetime import datetime
 import numpy as np
 
 import rev80
-from rev80 import nextpow2
+from rev80 import CHANNEL_ROLES, DEFAULT_CHANNEL_ROLE, nextpow2
 from rev80.config import DEFAULT_CACHE_FRAMES
 from rev80.peaks import DEFAULT_THRESHOLD_DB as PEAK_THRESHOLD_DB_DEFAULT
 
@@ -71,6 +71,19 @@ class AcquisitionSettings:
     channel_names: dict = field(default_factory=dict)           # {ch: str}  default: 'Ch A'
     channel_target_units: dict = field(default_factory=dict)   # {ch: str}  '' = use sensor EU
     channel_amplitude_modes: dict = field(default_factory=dict) # {ch: str}  'RMS'|'0-P'|'P-P'
+    channel_roles: dict = field(default_factory=dict)           # {ch: str}  'vibration'|'tachometer'
+    # Speed gate. A shaft-speed window outside which a frame is still measured
+    # and displayed, but is excluded from trending, baseline adaptation and
+    # alarm evaluation -- the amplitude is right, it is simply not comparable.
+    # For a rigid rotor below its first critical the 1x velocity goes as
+    # omega^3, so a 3.2% speed change alone moves the overall 10%, which is the
+    # shipped RmsThresholdHook default: without this gate, on a VFD or
+    # load-following machine the anomaly detector measures load rather than
+    # condition. Off by default -- with no tachometer fitted there is no
+    # reference to gate against.
+    speed_gate_enabled: bool = False
+    speed_gate_rpm: float | None = None   # None = latch from the first valid frame
+    speed_gate_tolerance_pct: float = 3.0
     # Trend history
     trend_max_points: int = 500
     # FFT / Welch
@@ -142,6 +155,38 @@ class AcquisitionSettings:
         """Return per-channel amplitude display mode, or '' to fall back to sensor/default."""
         return self.channel_amplitude_modes.get(ch, '')
 
+    def role_for(self, ch: int) -> str:
+        """Return 'vibration' (the default) or 'tachometer' for a channel.
+
+        An unrecognised value falls back to 'vibration' rather than propagating:
+        a hand-edited YAML must not be able to invent a third kind of channel
+        that every downstream `if role == ...` branch then fails to handle.
+        """
+        role = self.channel_roles.get(ch, DEFAULT_CHANNEL_ROLE)
+        return role if role in CHANNEL_ROLES else DEFAULT_CHANNEL_ROLE
+
+    @property
+    def tach_channels(self) -> list:
+        """Enabled channels acting as tachometers.
+
+        Enabled, not merely configured: a tach role left on a channel that is
+        switched off would otherwise have the collector hunting for a pulse
+        train on an input nobody is sampling.
+        """
+        return [ch for ch in sorted(self.enabled_channels)
+                if self.role_for(ch) == 'tachometer']
+
+    @property
+    def vibration_channels(self) -> list:
+        """Enabled channels carrying vibration -- everything not a tachometer.
+
+        This is what `process_samples` iterates. A tachometer channel has no
+        spectrum, no overall and no engineering unit, so it must never reach
+        the paths that assume all three.
+        """
+        return [ch for ch in sorted(self.enabled_channels)
+                if self.role_for(ch) != 'tachometer']
+
     @classmethod
     def copy(cls, settings: 'AcquisitionSettings') -> 'AcquisitionSettings':
         """Duplicate a settings object.
@@ -155,8 +200,16 @@ class AcquisitionSettings:
         c = cls.from_dict(settings.to_dict())
         c.coupling         = settings.coupling
         c.enabled_channels = list(settings.enabled_channels)
+        # Every per-channel dict must be listed here. They live in the
+        # 'channels' config section rather than 'acquisition', so unlike the
+        # scalars above they are outside the to_dict/from_dict round trip and
+        # cannot carry themselves. Adding a dict field without adding it here
+        # is H-08 again -- and for channel_roles the silent result is a copy in
+        # which every tachometer has reverted to vibration, so the pipeline
+        # high-passes a pulse train and reports kurtosis ~16 on it.
         for name in ('channel_voltage_ranges', 'channel_couplings', 'channel_names',
-                     'channel_target_units', 'channel_amplitude_modes'):
+                     'channel_target_units', 'channel_amplitude_modes',
+                     'channel_roles'):
             setattr(c, name, dict(getattr(settings, name)))
         return c
 
@@ -181,6 +234,12 @@ class AcquisitionSettings:
             'band_fmin':        self.band_fmin,
             'band_fmax':        self.band_fmax,
             'envelope_enabled': self.envelope_enabled,
+            'speed_gate_enabled': self.speed_gate_enabled,
+            # None means "latch the reference from the first valid frame".
+            # Writing a resolved value back would freeze one session's running
+            # speed into the config -- the trap band_fmin/band_fmax also guard.
+            'speed_gate_rpm':   self.speed_gate_rpm,
+            'speed_gate_tolerance_pct': self.speed_gate_tolerance_pct,
             'trend_max_points': self.trend_max_points,
             'cache_frames':     self.cache_frames,
         }
@@ -204,6 +263,9 @@ class AcquisitionSettings:
         if 'band_fmin'        in d: obj.band_fmin        = _opt_float(d['band_fmin'])  # noqa: E701
         if 'band_fmax'        in d: obj.band_fmax        = _opt_float(d['band_fmax'])  # noqa: E701
         if 'envelope_enabled' in d: obj.envelope_enabled = bool(d['envelope_enabled'])  # noqa: E701
+        if 'speed_gate_enabled' in d: obj.speed_gate_enabled = bool(d['speed_gate_enabled'])  # noqa: E701
+        if 'speed_gate_rpm'   in d: obj.speed_gate_rpm    = _opt_float(d['speed_gate_rpm'])  # noqa: E701
+        if 'speed_gate_tolerance_pct' in d: obj.speed_gate_tolerance_pct = float(d['speed_gate_tolerance_pct'])  # noqa: E701
         if 'trend_max_points' in d: obj.trend_max_points = int(d['trend_max_points'])  # noqa: E701
         if 'cache_frames'     in d: obj.cache_frames     = int(d['cache_frames'])           # noqa: E701
         return obj

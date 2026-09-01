@@ -135,3 +135,109 @@ def test_filter_defaults():
 def test_welch_overlap_default():
     config = AcquisitionSettings()
     assert 0.0 <= config.welch_overlap <= 0.95
+
+
+# ---------------------------------------------------------------------------
+# Channel roles (R43 — tachometer support)
+# ---------------------------------------------------------------------------
+
+def test_channels_are_vibration_by_default():
+    """Every existing config predates roles and must keep behaving as before."""
+    config = AcquisitionSettings()
+    assert config.role_for(0) == 'vibration'
+    assert config.role_for(7) == 'vibration'
+    assert config.channel_roles == {}
+
+
+def test_role_partitions_enabled_channels():
+    config = AcquisitionSettings()
+    config.enabled_channels = [0, 1, 3]
+    config.channel_roles = {3: 'tachometer'}
+    assert config.vibration_channels == [0, 1]
+    assert config.tach_channels == [3]
+
+
+def test_role_partition_ignores_disabled_channels():
+    """A tach configured on a channel that is switched off is not a tach
+    channel this run -- otherwise the collector would look for a pulse train
+    on an input nobody is sampling."""
+    config = AcquisitionSettings()
+    config.enabled_channels = [0]
+    config.channel_roles = {3: 'tachometer'}
+    assert config.tach_channels == []
+    assert config.vibration_channels == [0]
+
+
+def test_unknown_role_string_falls_back_to_vibration():
+    """A hand-edited YAML must not be able to invent a third channel kind."""
+    config = AcquisitionSettings()
+    config.channel_roles = {0: 'keyphasor'}
+    assert config.role_for(0) == 'vibration'
+
+
+def test_copy_carries_channel_roles():
+    """AcquisitionSettings.copy() enumerates the per-channel dicts by name,
+    because they live in the 'channels' config section and so are outside the
+    to_dict/from_dict round trip. A sixth dict added without editing that tuple
+    is audit H-08 again: the copy silently reverts every tachometer channel to
+    vibration, and the pipeline then high-passes a pulse train and reports
+    kurtosis ~16 on it.
+    """
+    config = AcquisitionSettings()
+    config.enabled_channels = [0, 1]
+    config.channel_roles = {1: 'tachometer'}
+    dup = AcquisitionSettings.copy(config)
+    assert dup.channel_roles == {1: 'tachometer'}
+    assert dup.tach_channels == [1]
+
+
+def test_copy_deep_copies_channel_roles():
+    config = AcquisitionSettings()
+    config.channel_roles = {1: 'tachometer'}
+    dup = AcquisitionSettings.copy(config)
+    dup.channel_roles[2] = 'tachometer'
+    assert 2 not in config.channel_roles, 'copy must not alias the original dict'
+
+
+# ---------------------------------------------------------------------------
+# Speed gate (R43)
+# ---------------------------------------------------------------------------
+
+def test_speed_gate_defaults_to_off():
+    """Off by default: with no tach fitted there is no reference to gate on,
+    and a gate that fails closed would reject every frame."""
+    config = AcquisitionSettings()
+    assert config.speed_gate_enabled is False
+    assert config.speed_gate_rpm is None
+    assert config.speed_gate_tolerance_pct == 3.0
+
+
+def test_speed_gate_round_trips_through_dict():
+    """Scalars belong in to_dict/from_dict so a field added there is carried
+    by copy() automatically."""
+    config = AcquisitionSettings()
+    config.speed_gate_enabled = True
+    config.speed_gate_rpm = 1780.0
+    config.speed_gate_tolerance_pct = 1.5
+    restored = AcquisitionSettings.from_dict(config.to_dict())
+    assert restored.speed_gate_enabled is True
+    assert restored.speed_gate_rpm == 1780.0
+    assert restored.speed_gate_tolerance_pct == 1.5
+
+
+def test_speed_gate_rpm_none_survives_the_round_trip():
+    """None means 'latch the reference from the first valid frame'. Writing a
+    resolved value back would freeze one session's speed into the config --
+    the same trap band_fmin/band_fmax already guard against."""
+    config = AcquisitionSettings()
+    config.speed_gate_rpm = None
+    assert AcquisitionSettings.from_dict(config.to_dict()).speed_gate_rpm is None
+
+
+def test_speed_gate_survives_copy():
+    config = AcquisitionSettings()
+    config.speed_gate_enabled = True
+    config.speed_gate_rpm = 3550.0
+    dup = AcquisitionSettings.copy(config)
+    assert dup.speed_gate_enabled is True
+    assert dup.speed_gate_rpm == 3550.0

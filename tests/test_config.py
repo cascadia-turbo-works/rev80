@@ -333,3 +333,47 @@ class TestAcquisitionSettingsSerialisation:
         assert restored.maxfreq == 8000.0
         assert isinstance(restored.fft_window, str)
         assert isinstance(restored.welch_overlap, float)
+
+
+# ---------------------------------------------------------------------------
+# Channel roles and speed gate in the config templates (R43)
+# ---------------------------------------------------------------------------
+
+def test_channel_template_carries_role_and_tach_block():
+    from rev80.config import _BUILTIN_CHANNEL_TEMPLATE
+    assert _BUILTIN_CHANNEL_TEMPLATE['role'] == 'vibration'
+    assert _BUILTIN_CHANNEL_TEMPLATE['tach'] is None
+
+
+def test_existing_device_config_without_role_upgrades_to_vibration():
+    """Every device YAML on disk predates roles. _merge_device must fill the
+    key rather than leave it missing, or role_for() silently carries the whole
+    upgrade burden.
+    """
+    from rev80.config import _merge_device
+    merged = _merge_device({'channels': {0: {'enabled': True, 'voltage_range': 8}}})
+    ch0 = merged['channels'][0]
+    assert ch0['role'] == 'vibration'
+    assert ch0['tach'] is None
+    assert ch0['voltage_range'] == 8, 'existing keys must survive the merge'
+
+
+def test_existing_acquisition_config_without_speed_gate_upgrades():
+    from rev80.config import _merge_acquisition
+    merged = _merge_acquisition({'acquisition': {'maxfreq': 500.0}})
+    acq = merged['acquisition']
+    assert acq['speed_gate_enabled'] is False
+    assert acq['speed_gate_rpm'] is None
+    assert acq['speed_gate_tolerance_pct'] == 3.0
+    assert acq['maxfreq'] == 500.0, 'existing keys must survive the merge'
+
+
+def test_acquisition_template_round_trips_through_settings():
+    """The template is what a fresh install starts from, so it must be
+    loadable by AcquisitionSettings without loss."""
+    from rev80 import AcquisitionSettings
+    from rev80.config import _BUILTIN_ACQ
+    cfg = AcquisitionSettings.from_dict(_BUILTIN_ACQ['acquisition'])
+    assert cfg.speed_gate_enabled is False
+    assert cfg.speed_gate_rpm is None
+    assert cfg.speed_gate_tolerance_pct == 3.0
