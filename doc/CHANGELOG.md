@@ -48,6 +48,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   three `speed_gate_*` keys in `_BUILTIN_ACQ`, so every device and acquisition
   YAML written before R43 upgrades silently through the existing merge.
 
+- **Tachometer persistence, measurement file `_FILE_VERSION` 4 → 5** — step 5.
+  - A tach channel stores **`edge_times`, not a `data` waveform** (decision D-2): ~30
+    float64 per second against 41666, a factor of ~1400, which matters most on the long
+    unattended sessions where a tach channel would otherwise dominate the file. What is
+    traded away is re-thresholding after capture; what is kept is everything that makes
+    RPM a *view* on stored data — `pulses_per_rev` is a post-hoc divisor on the
+    intervals, and a shaft-angle vector, if ever wanted, is an interpolation of the same
+    edge times. Readers must branch on the presence of `data` rather than assume it.
+  - `/metadata/channels/{ch}` gains `role` and the `tach_*` calibration that produced the
+    stored reading; `/frames/{i}/{ch}` gains `rpm`, `quality`, `n_edges`,
+    `interval_spread` and `speed_drift_pct` as a cross-check; `/tach_trend/{ch}` holds
+    the RPM history.
+  - **A newer file version now warns instead of being misread.** An older build reading a
+    v5 file takes its most permissive branch and restores a tach as an ordinary vibration
+    channel, computing a bogus overall on a square wave and trending it. The guard is
+    worth having independently of the tachometer.
+  - The frame cache stays homogeneous — every entry is still a `VibeSample`, carrying an
+    empty waveform and a populated `TachResult`, because dozens of consumers index it.
+  - `reprocess_session_trend()` skips tach channels, which would otherwise get a
+    fabricated amplitude trend pinned at zero (`overall_ampl_by_integration_order` is
+    never populated on a channel `process_sample` never runs on). Deferred here from
+    step 4 because it needs the role restored from file metadata to know what to skip.
+
 - **Tachometer channels wired into `DataCollector`** — step 4.
   - `receive_data()` branches on role. A tachometer channel **skips the high-pass
     entirely** and is edge-detected in its place. Measured: the filter's overshoot on
