@@ -45,9 +45,23 @@ def valid_results(results: list) -> list:
     adaptation: letting one into an EWMA baseline poisons the reference for
     the following ~33 frames just as surely as firing on it raises a false
     alarm now.
+
+    A frame captured outside the declared shaft-speed window is excluded for a
+    different reason than the other two: its amplitude is *correct*, it is
+    simply not comparable. For a rigid rotor below its first critical the 1x
+    velocity goes as omega^3, so a 3.2% speed change alone moves the overall
+    10% -- the shipped RmsThresholdHook default. Without this clause the
+    detector measures load rather than condition on any VFD or load-following
+    machine. Such a frame is still measured, displayed and stored; it is kept
+    out of alarm evaluation and baseline adaptation only.
+
+    This is the single place the speed gate is applied. Adding it as a hook
+    parameter instead would mean editing `_build_anomaly_hook` in both gui.py
+    and headless.py, which audit H-01 exists to prevent.
     """
     return [r for r in results
-            if not (getattr(r, 'overflow', False) or getattr(r, 'degraded', False))]
+            if not (getattr(r, 'overflow', False) or getattr(r, 'degraded', False))
+            and getattr(r, 'speed_ok', True)]
 
 
 @runtime_checkable

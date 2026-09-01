@@ -142,6 +142,8 @@ class DataCollector:
         # the same reason crest factor and kurtosis sit beside `orders` rather
         # than as columns of it.
         self.tach_trend: dict[int, dict[str, np.ndarray]] = {}
+        # Latched speed-gate reference, used when config.speed_gate_rpm is None.
+        self._speed_ref_rpm: float | None = None
         self._cache_cursor: int = 0
         self.siggen_config: dict | None = None
         self._last_frame_t: float | None = None  # arrival time of previous frame
@@ -1114,6 +1116,7 @@ class DataCollector:
             time_signal = np.fft.irfft(rfft_tukey, n=N)[keep] * eu_scale
             time_vec    = decimated_time_vec[keep]
 
+        rpm = self.current_rpm()
         return rev80.ChannelResult(
             channel=ch, unit=effective_tgt, overflow=sample.overflow,
             degraded=sample.degraded,
@@ -1130,6 +1133,10 @@ class DataCollector:
             kurtosis=_dsp.kurtosis(time_signal),
             n_averages=n_avg,
             timestamp=sample._timestamp, rel_time=sample.rel_time, status=sample.status,
+            # Shaft speed for this frame, and whether it is comparable. The
+            # gate is evaluated in exactly one place (self.speed_ok) and read
+            # in exactly one other (monitor.anomaly.valid_results).
+            rpm=rpm, speed_ok=self.speed_ok(rpm),
         )
 
     def current_frame(self) -> dict:
@@ -1186,6 +1193,34 @@ class DataCollector:
         sample.tach = res
         sample._tach_config_key = key
         return res
+
+    def speed_ok(self, rpm: 'float | None') -> bool:
+        """Is this frame's shaft speed inside the declared window?
+
+        The single place the gate is evaluated. It is deliberately not a hook
+        parameter: `_build_anomaly_hook` is copy-pasted between gui.py and
+        headless.py and pinned by tests/test_anomaly_hook_build.py asserting
+        the two copies' defaults match (audit H-01). Adding the gate there
+        would turn one bug into two.
+
+        Fails **closed** on a missing reading. If the tachometer dies
+        mid-session -- cable pulled, tape peeled off, LED aged out -- treating
+        "no speed reading" as "speed is fine" leaves an unattended monitor
+        alarming on load-driven amplitude swings it can no longer see, which is
+        the exact false-alarm mechanism the gate exists to remove.
+        """
+        if not self.config.speed_gate_enabled:
+            return True
+        if rpm is None:
+            return False
+        ref = self.config.speed_gate_rpm or self._speed_ref_rpm
+        if ref is None:
+            # Latch the reference from the first frame that actually has one.
+            self._speed_ref_rpm = float(rpm)
+            return True
+        if ref <= 0:
+            return False
+        return abs(float(rpm) - ref) / ref * 100.0 <= self.config.speed_gate_tolerance_pct
 
     def current_rpm(self) -> float | None:
         """Shaft speed for the frame currently being displayed, or None.
