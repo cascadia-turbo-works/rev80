@@ -53,20 +53,61 @@ Error scales with speed, so the honest claim is **+/-0.2% of reading** at
 1 pulse/rev from 300 to 10200 RPM -- not a fixed RPM figure. Line naming (the
 use that justifies the feature) needs 0.3%.
 
-Sub-sample interpolation needs a band-limited edge
---------------------------------------------------
-The interpolation in `detect_edges` recovers where between two samples the
-threshold was really crossed. That only works when the edge has a finite rise
-time: on an *ideal* rectangle both straddling samples sit at the rails, the
-interpolated fraction is a constant, and the estimator silently degenerates to
-nearest-sample quantisation.
+Sub-sample interpolation, and when it helps
+-------------------------------------------
+A keyphasor or TTL tach switches in nanoseconds, and there is no analog
+anti-alias filter ahead of the ADC (`RunStreaming` with `RATIO_MODE_NONE` takes
+one instantaneous sample every 12 us). So the obvious worry is that an edge
+arrives as a hard step -- both straddling samples at the rails, interpolated
+fraction constant, estimator silently degenerating to nearest-sample rounding.
 
-Real signals are never ideal here -- `PicoScopeStream` runs the ADC oversampled
-and applies the mandatory Kaiser anti-alias filter before anything reaches this
-module, which band-limits every edge. That is why the bench numbers above beat
-what a synthetic square wave achieves, and it is why the accuracy tests in
-tests/test_measurement_validity.py must push their signals through
-`antialias_decimate` rather than assert against ideal rectangles.
+Measured on the bench, that is not what arrives. A real captured edge has
+**exactly one intermediate sample** (58 samples inside the 10-90% band across
+58 transitions of a 30 Hz square), flanked by ~8% Gibbs ringing, and the
+interpolated fraction varies over [0.294, 0.707] rather than sitting at a
+constant -- i.e. it carries real sub-sample position. Interpolated vs
+nearest-sample, same captures:
+
+    pulse rate   samples/period   interpolated   nearest   gain
+       30 Hz         1388.9          0.021%      0.008%    0.4x
+      200 Hz          208.3          0.038%      0.160%    4.2x
+      600 Hz           69.4          0.047%      0.644%   13.8x
+     1500 Hz           27.8          0.791%      0.794%    1.0x
+     3000 Hz           13.9          0.785%      0.794%    1.0x
+
+Three regimes. Below ~600 Hz pulse rate interpolation is worth 4-14x. Above
+about 1000 samples per period it is marginally *worse* than rounding, because
+quantisation there is already under 0.07% and dithering averages it away while
+interpolation adds its own small systematic error -- both are excellent, the
+difference does not matter. Below ~40 samples per period **both** collapse to
+~0.8%: the median locks onto the modal integer period (27.778 samples reads as
+exactly 28.000) and the compressed [0.29, 0.71] transfer cannot reconstruct the
+fraction.
+
+That last regime is a real limit on pulses_per_rev, and it binds sooner than
+pulse-width considerations do. Full accuracy wants **>= ~70 samples per pulse,
+i.e. a pulse rate at or below ~600 Hz**:
+
+    1 ppr    -> 36000 RPM   (never binds)
+    6 ppr    ->  6000 RPM
+    60 ppr   ->   600 RPM
+    1024 ppr ->    35 RPM   (a high-line encoder is impractical here)
+
+Not isolated: which stage does the band-limiting. `antialias_decimate` is the
+only lowpass after the ADC and is the likely cause, but a pure step landing
+between two 83 kHz samples would smear symmetrically and carry no sub-sample
+information at all, so something upstream contributes as well. The design rests
+on the measured effect, not on the attribution.
+
+Consequence for tests: an ideal rectangle is a *degenerate* stimulus here, not
+a conservative one. The accuracy tests in tests/test_measurement_validity.py
+must push their signals through `antialias_decimate` rather than assert against
+synthetic squares, or they measure quantisation and call it accuracy.
+
+Divide-by-zero in the interpolation is unreachable by construction: an edge
+requires the previous state to be a decided low, so `y0 <= hi < y1` and the
+denominator is strictly positive. Measured minimum across 2880 real edges:
+1461.7 mV. The guard in the code is defensive only.
 """
 
 from dataclasses import dataclass, field
