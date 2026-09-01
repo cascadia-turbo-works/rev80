@@ -283,7 +283,10 @@ class TestIntervalCapture:
         assert session.session_h5.exists()
         with h5py.File(session.session_h5, 'r') as f:
             assert 'metadata' in f
-            assert f['metadata'].attrs['file_version'] == 5
+            # v6 adds per-capture rpm/speed_ok. Literal rather than the
+            # module constant, so a version bump has to be a deliberate edit
+            # here rather than passing silently.
+            assert f['metadata'].attrs['file_version'] == 6
             assert 'monitor' in f
             assert '0' in f['monitor']
             assert '0' in f['monitor']['0']       # channel group

@@ -14,7 +14,7 @@ log = rev80.get_logger(__name__)
 
 _DISK_GUARD_BYTES: int = 1 * 1024 ** 3  # 1 GiB
 _QUEUE_WARN_DEPTH: int = 50
-_FILE_VERSION: int = 5
+_FILE_VERSION: int = 6
 
 
 # Deliberately the same function DataCollector.save_data uses, not a copy.
@@ -22,6 +22,25 @@ _FILE_VERSION: int = 5
 # so monitor sessions stored clipped captures indistinguishable from clean
 # ones. Importing it is what keeps the two write paths honest.
 from rev80.collector import _write_channel_group  # noqa: E402
+
+
+def _frame_speed(results: list) -> tuple[float, bool]:
+    """Shaft speed for a capture, and whether it was inside the declared window.
+
+    A scalar rather than a per-channel map: this instrument supports one
+    tachometer on one shaft (multi-shaft needs order ratios and a machine-train
+    model, which is a different feature), so every result in a frame carries
+    the same reading and a {ch: rpm} map would be redundant.
+
+    NaN means no reading. It is never 0.0 -- "I cannot see a tach signal" and
+    "the shaft is stopped" lead an analyst to different places.
+    """
+    for r in results:
+        rpm = getattr(r, 'rpm', None)
+        if rpm is not None:
+            return float(rpm), bool(getattr(r, 'speed_ok', True))
+    ok = all(bool(getattr(r, 'speed_ok', True)) for r in results) if results else True
+    return float('nan'), ok
 
 
 def _compute_overall_peaks(results: list) -> tuple[str, str, str, str]:
@@ -235,6 +254,12 @@ class MonitorWriterThread:
             gate_grp.attrs['peaks_json']   = peaks_json
             gate_grp.attrs['band_json']    = band_json
             gate_grp.attrs['scalars_json'] = scalars_json
+            # Shaft speed at the capture instant. Without it, a trend point
+            # cannot be compared with another one taken at a different load --
+            # the same argument the declared band makes for the overall.
+            rpm, speed_ok = _frame_speed(results)
+            gate_grp.attrs['rpm'] = rpm
+            gate_grp.attrs['speed_ok'] = speed_ok
 
             for ch, sample in sorted(ch_samples.items()):
                 _write_channel_group(
@@ -280,6 +305,9 @@ class MonitorWriterThread:
             bid_grp.attrs['max_overall_json']    = overall_json
             bid_grp.attrs['band_json']           = band_json
             bid_grp.attrs['scalars_json']        = scalars_json
+            rpm, speed_ok = _frame_speed(results)
+            bid_grp.attrs['rpm'] = rpm
+            bid_grp.attrs['speed_ok'] = speed_ok
             bid_grp.attrs['n_frames']            = n_frames
             bid_grp.attrs['n_pretrigger_frames'] = n_pretrigger
 
