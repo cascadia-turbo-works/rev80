@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""validate-streaming-capacity — sustained continuous-streaming stress test.
+
+Connects to the first detected PicoScope and streams continuously for a
+configurable duration at a configurable sample rate / channel count,
+reporting overflow count, rate-degradation transitions (the streaming-rate
+watchdog in picoscope.py), and the actual vs. requested raw ADC delivery
+rate.
+
+This is how RAW_SAMPLERATE_HZ (sample.py) was chosen and validated, and how
+any future change to it (or to the number of channels a deployment expects
+to run simultaneously) should be re-validated on real hardware -- rather
+than re-derived by hand each time. See the STREAMING_CEILING_HZ comment in
+picoscope.py for the hardware measurements this all rests on.
+
+Usage
+-----
+    ./scripts/validate-streaming-capacity                    # RAW_SAMPLERATE_HZ, all channels
+    ./scripts/validate-streaming-capacity --samplerate 50000 --channels 0 1 2 3
+    ./scripts/validate-streaming-capacity --duration 120 --channels 0 1 2
+
+Exit status is 0 if the run completed with zero overflow and zero
+rate-degradation transitions, 1 otherwise (including "no device found").
+"""
+
+import argparse
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
+import rev80  # noqa: E402
+import rev80.sample as _sample_mod  # noqa: E402
+
+
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description="Sustained continuous-streaming stress test against a real PicoScope.",
+    )
+    p.add_argument("--samplerate", type=int, default=_sample_mod.RAW_SAMPLERATE_HZ,
+                    metavar="HZ", help="Requested acquisition sample rate "
+                    f"(default: RAW_SAMPLERATE_HZ = {_sample_mod.RAW_SAMPLERATE_HZ})")
+    p.add_argument("--channels", type=int, nargs="+", default=None, metavar="N",
+                    help="Channel indices to stream (default: all channels the device exposes)")
+    p.add_argument("--duration", type=float, default=45.0, metavar="SECS",
+                    help="Streaming duration in seconds (default: 45)")
+    p.add_argument("--device", type=str, default=None, metavar="SERIAL",
+                    help="PicoScope serial number substring (default: first device found)")
+    return p.parse_args()
+
+
+def main() -> int:
+    args = _parse_args()
+
+    sensors = rev80.VibeSensor.find()
+    if not sensors:
+        print("ERROR: no PicoScope found. Check the USB connection.", file=sys.stderr)
+        return 1
+    sensor = sensors[0]
+    if args.device:
+        match = next((s for s in sensors if args.device in s.serial_number), None)
+        if match is None:
+            print(f"ERROR: no device matching {args.device!r}. "
+                  f"Available: {[s.serial_number for s in sensors]}", file=sys.stderr)
+            return 1
+        sensor = match
+
+    channels = args.channels if args.channels is not None else list(range(sensor.num_channels))
+    print(f"Device:     {sensor.model_name} s/n {sensor.serial_number} ({sensor.num_channels} ch)")
+    print(f"Channels:   {channels}")
+    print(f"Samplerate: {args.samplerate} Hz (requested)")
+    print(f"Duration:   {args.duration:g} s")
+
+    # RAW_SAMPLERATE_HZ is a fixed module constant (AcquisitionSettings.raw_samplerate
+    # reads it directly, not per-instance) -- reassign it so a non-default
+    # --samplerate propagates through raw_samplerate/raw_blocksize normally,
+    # same mechanism real code uses, no special-casing needed here.
+    _sample_mod.RAW_SAMPLERATE_HZ = args.samplerate
+
+    cfg = rev80.AcquisitionSettings()
+    cfg.enabled_channels = list(channels)
+    cfg.channel_voltage_ranges = {ch: 7 for ch in channels}  # +/-1V, matches app default
+    cfg.coupling = "AC"
+    cfg.highpass_enabled = False
+
+    dc = rev80.DataCollector(config=cfg)
+    dc.connect_sensor(sensor)
+    stream = dc.stream
+    print(f"effective_osr = {stream._effective_osr}")
+    if stream._effective_osr < 2:
+        print("WARNING: osr < 2 -- no real anti-alias margin at this rate/channel count.")
+
+    degraded_transitions = 0
+    was_degraded = False
+    overflow_seen = False
+    t0 = time.monotonic()
+
+    try:
+        dc.start_stream()
+        print(f"Streaming... actual_raw_samplerate="
+              f"{getattr(stream, '_actual_raw_samplerate', 'n/a')}")
+        while time.monotonic() - t0 < args.duration:
+            time.sleep(1.0)
+            elapsed = time.monotonic() - t0
+            cache = dc.data.get("frame_cache", [])
+            deg = dc.stream_degraded
+            if deg and not was_degraded:
+                degraded_transitions += 1
+            was_degraded = deg
+            latest = cache[-1] if cache else {}
+            frame_overflow = any(getattr(s, "overflow", False) for s in latest.values()) \
+                if isinstance(latest, dict) else False
+            overflow_seen = overflow_seen or frame_overflow
+            print(f"  t={elapsed:5.1f}s  frames_cached={len(cache)}  "
+                  f"degraded={deg}  overflow={frame_overflow}")
+    finally:
+        dc.stop_stream()
+        dc.disconnect_sensor()
+
+    print()
+    print("=== SUMMARY ===")
+    print(f"degraded_transitions: {degraded_transitions}")
+    print(f"overflow_seen:        {overflow_seen}")
+    clean = degraded_transitions == 0 and not overflow_seen
+    print("Result: CLEAN" if clean else "Result: PROBLEMS DETECTED")
+    return 0 if clean else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
