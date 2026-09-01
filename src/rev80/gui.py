@@ -702,13 +702,13 @@ class GUI:
         # Slowest measurable shaft, from the block length. Information only:
         # an operator must be able to set the tach up against a machine that
         # is not running.
+        t_block = 1.0 / max(self.collector.config.binsize, 1e-9)
+        floor_rpm = rev80_tach.MIN_EDGES * 60.0 / t_block
         if dpg.does_item_exist(ui.TACH_FLOOR):
-            t_block = 1.0 / max(self.collector.config.binsize, 1e-9)
-            floor_rpm = rev80_tach.MIN_EDGES * 60.0 / t_block
             dpg.set_value(
                 ui.TACH_FLOOR,
-                f"Block {t_block:.2f} s -> slowest measurable shaft "
-                f"{self.format_rate(floor_rpm)}")
+                f"{icons.IC['warning']}  Below {self.format_rate(floor_rpm)} "
+                f"reads as stopped (block {t_block:.2f} s)")
 
         if dpg.does_item_exist(ui.TACH_STREAM_BTN):
             dpg.configure_item(
@@ -723,6 +723,8 @@ class GUI:
                     dpg.set_value(tag, [[], []])
             dpg.set_value(ui.TACH_READOUT, "--")
             dpg.set_value(ui.TACH_QUALITY, "No tachometer channel selected.")
+            if dpg.does_item_exist(ui.TACH_WARN_BOX):
+                dpg.configure_item(ui.TACH_WARN_BOX, show=False)
             return
 
         ch = tach_channels[0]
@@ -732,6 +734,14 @@ class GUI:
             return
 
         res = self.collector.tach_for(ch, sample)
+        if dpg.does_item_exist(ui.TACH_WARN_BOX):
+            # Only a warning when it is actually biting. The floor is normal
+            # information at configure time, not a fault -- an operator must be
+            # able to set the tach up against a machine that is not running.
+            dpg.configure_item(
+                ui.TACH_WARN_BOX,
+                show=res.quality in (rev80_tach.QUALITY_TOO_FEW_EDGES,
+                                     rev80_tach.QUALITY_NO_SIGNAL))
         fs = float(sample.samplerate)
         x = np.asarray(sample.data, dtype=np.float64)
         t_axis = np.arange(x.size) / fs
@@ -774,6 +784,31 @@ class GUI:
             ui.TACH_QUALITY,
             f"{res.quality}   {res.n_edges} edges   duty {duty_txt}   "
             f"span {span:.0f} mV")
+
+    def _update_tach_cards(self) -> None:
+        """Refresh every tachometer channel's result card.
+
+        Separate from _update_tach_tab, which only runs while the config dialog
+        is on screen. The card is the readout that stays behind once the dialog
+        closes, so it has to update on the main render path -- both read the
+        same TachResult, so the two cannot disagree about what the shaft is
+        doing.
+        """
+        frame = self.collector.current_frame()
+        for ch in self.collector.config.tach_channels:
+            sample = frame.get(ch)
+            if sample is None:
+                continue
+            self._update_tach_result_card(ch, self.collector.tach_for(ch, sample))
+
+    def _update_tach_result_card(self, ch: int, res) -> None:
+        """Put the shaft rate on one tachometer channel's result card."""
+        if dpg.does_item_exist(ui.ch_tach_rate(ch)):
+            dpg.set_value(ui.ch_tach_rate(ch), self.format_rate(res.rpm))
+        if dpg.does_item_exist(ui.ch_tach_detail(ch)):
+            duty = f"{res.duty_cycle * 100:.1f}%" if res.duty_cycle else "--"
+            dpg.set_value(ui.ch_tach_detail(ch),
+                          f"{res.quality}   {res.n_edges} edges   duty {duty}")
 
     def _update_one_x(self, result: 'rev80.ChannelResult', ch: int):
         """Show the 1x level and marker, or hide both when there is no tach.
@@ -995,6 +1030,15 @@ class GUI:
             tag = ui.ch_result_section(ch)
             if dpg.does_item_exist(tag):
                 dpg.configure_item(tag, show=(ch in enabled))
+            # A tachometer's card shows its rate; the vibration fields on it
+            # would never be populated, because process_samples produces no
+            # ChannelResult for that channel -- they would sit at their
+            # construction defaults and read as a real measurement of zero.
+            is_tach = self.collector.config.role_for(ch) == 'tachometer'
+            for grp, want in ((ui.ch_vib_group(ch), not is_tach),
+                              (ui.ch_tach_group(ch), is_tach)):
+                if dpg.does_item_exist(grp):
+                    dpg.configure_item(grp, show=want)
         self._update_envelope_tab_visibility()
 
     def _update_envelope_tab_visibility(self):
@@ -1079,6 +1123,7 @@ class GUI:
             return
         self.collector.new_frame_event.clear()
         self._display_frame()
+        self._update_tach_cards()
         if self._monitor is not None and self._monitor.is_recording:
             self._update_monitor_card()
 
@@ -3601,7 +3646,23 @@ class GUI:
                                  "automatically so the waveform is there to "
                                  "adjust against.")
                             dpg.add_text("", tag=ui.TACH_QUALITY, color=_c("MUTED"))
-                            _fl = dpg.add_text("", tag=ui.TACH_FLOOR, color=_c("MUTED"))
+                            # Warnings get a bordered orange box and the
+                            # warning glyph. Muted grey on a dark ground reads
+                            # as disabled text, which is the opposite of what a
+                            # warning is for.
+                            with dpg.theme(tag=ui.TACH_WARN_THEME):
+                                with dpg.theme_component(dpg.mvChildWindow):
+                                    dpg.add_theme_color(dpg.mvThemeCol_Border,
+                                                        _c("ORANGE"),
+                                                        category=dpg.mvThemeCat_Core)
+                                    dpg.add_theme_style(dpg.mvStyleVar_ChildBorderSize, 2,
+                                                        category=dpg.mvThemeCat_Core)
+                            with dpg.child_window(tag=ui.TACH_WARN_BOX, border=True,
+                                                  autosize_x=True, height=34,
+                                                  show=False) as _wb:
+                                _fl = dpg.add_text("", tag=ui.TACH_FLOOR,
+                                                   color=_c("ORANGE"))
+                            dpg.bind_item_theme(_wb, ui.TACH_WARN_THEME)
                             _tip(_fl,
                                  "Three pulses must fall inside one acquisition "
                                  "block for a rate to be resolved, so the block "
@@ -4547,6 +4608,17 @@ class GUI:
                                     )
                                 dpg.add_text(self.collector.config.name_for(_ch), tag=ui.ch_header_text(_ch))
                             dpg.add_separator()
+                            # A tachometer channel has no overall, no spectrum
+                            # and no engineering unit, so its card shows the
+                            # shaft rate instead of a set of vibration fields
+                            # that nothing would ever populate. The Tachometer
+                            # tab took the channel; it takes the card with it.
+                            with dpg.group(tag=ui.ch_tach_group(_ch), show=False):
+                                dpg.add_text("--", tag=ui.ch_tach_rate(_ch))
+                                dpg.add_text("", tag=ui.ch_tach_detail(_ch),
+                                             color=_c("MUTED"))
+                            dpg.add_group(tag=ui.ch_vib_group(_ch))
+                            dpg.push_container_stack(ui.ch_vib_group(_ch))
                             dpg.add_input_text(
                                 label="Overall",
                                 tag=ui.ch_overall_value(_ch),
@@ -4589,6 +4661,7 @@ class GUI:
                                 no_host_extendX=True,
                                 tag=ui.ch_peaks_table(_ch),
                             )
+                            dpg.pop_container_stack()   # ch_vib_group
                         dpg.add_spacer(height=2)
 
     # ------------------------------------------------------------------

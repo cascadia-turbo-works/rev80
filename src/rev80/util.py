@@ -409,6 +409,24 @@ class UI_Elements:
     TACH_PLOT_EDGES      = 'TACH_PLOT_EDGES'
     TACH_READOUT         = 'TACH_READOUT'
     TACH_STREAM_BTN      = 'TACH_STREAM_BTN'
+    TACH_WARN_BOX        = 'TACH_WARN_BOX'
+    TACH_WARN_THEME      = 'TACH_WARN_THEME'
+    # Result card: a tachometer channel shows its rate, not a spectrum.
+    @staticmethod
+    def ch_vib_group(ch: int) -> str:
+        return f'CH{ch}_VIB_GROUP'
+
+    @staticmethod
+    def ch_tach_group(ch: int) -> str:
+        return f'CH{ch}_TACH_GROUP'
+
+    @staticmethod
+    def ch_tach_rate(ch: int) -> str:
+        return f'CH{ch}_TACH_RATE'
+
+    @staticmethod
+    def ch_tach_detail(ch: int) -> str:
+        return f'CH{ch}_TACH_DETAIL'
     TACH_QUALITY         = 'TACH_QUALITY'
     TACH_FLOOR           = 'TACH_FLOOR'
     # Shaft-rate readout on the main display.
