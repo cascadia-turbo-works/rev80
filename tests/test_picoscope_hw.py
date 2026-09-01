@@ -23,6 +23,8 @@ import numpy as np
 import pytest
 
 import rev80 as vc
+import rev80.sample
+from rev80 import tach as rev80_tach
 from rev80.picoscope import PicoScopeStream
 
 # ---------------------------------------------------------------------------
@@ -242,3 +244,197 @@ class TestPicoScopeRetrigger:
             f'Expected ≥2 streaming callbacks across 2 cycles, got {len(received)}'
         )
         assert not stream.active
+
+
+# ---------------------------------------------------------------------------
+# Tachometer (R43) — AWG loopback on Channel A
+# ---------------------------------------------------------------------------
+# These drive the real acquisition path: PicoScopeStream -> antialias_decimate
+# -> DataCollector.receive_data -> tach.tach_result. A synthetic array handed
+# straight to the detector proves nothing about the chain in between, which is
+# where the anti-alias filter and the 41666.5 Hz reported rate live.
+
+TACH_PKTOPK_UV = 2_000_000   # the 4424A generator is a +-2 V part: 5 Vpp at
+TACH_OFFSET_UV = 1_000_000   # 2.5 V offset returns PICO_SIGGEN_OFFSET_VOLTAGE
+TACH_RANGE     = 8           # PS4000A_5V
+
+
+def _tach_config(coupling: str = 'DC', channels=(0,)) -> vc.AcquisitionSettings:
+    cfg = vc.AcquisitionSettings()
+    cfg.maxfreq = 1000.0
+    cfg.binsize = 1.0                     # 1 s block
+    cfg.highpass_enabled = False
+    cfg.enabled_channels = list(channels)
+    cfg.channel_voltage_ranges = {c: TACH_RANGE for c in channels}
+    cfg.coupling = coupling
+    cfg.channel_couplings = {c: coupling for c in channels}
+    cfg.channel_roles = {0: 'tachometer'}   # loopback is on Channel A
+    return cfg
+
+
+def _capture_tach(freq_hz: float, coupling: str = 'DC', settings=None,
+                  channels=(0,)):
+    """One frame through the whole chain; returns (TachResult, DataCollector)."""
+    sensor = _get_hardware_sensor()
+    if sensor is None:
+        return None, None
+    dc = vc.DataCollector(config=_tach_config(coupling, channels))
+    if settings is not None:
+        dc.set_tach_settings(0, settings)
+    dc.connect_sensor(sensor, siggen_config={
+        'freq_hz': freq_hz, 'pktopk_uv': TACH_PKTOPK_UV,
+        'offset_uv': TACH_OFFSET_UV, 'wave_type': 'PS4000A_SQUARE'})
+    try:
+        frame = dc.collect_sample()
+        sample = frame.get(0) if frame else None
+        return (dc.tach_for(0, sample) if sample is not None else None), dc
+    finally:
+        dc.disconnect_sensor()
+
+
+@hardware_skip
+class TestPicoScopeTachometer:
+    """Electrical close-out for R43."""
+
+    def test_reads_the_awg_square_wave(self):
+        """30 Hz square = 1800 RPM. The AWG's DDS clock is orders of magnitude
+        better than the 0.3 % that naming spectral lines needs."""
+        res, _ = _capture_tach(30.0)
+        assert res is not None
+        assert res.quality == rev80_tach.QUALITY_OK
+        assert res.rpm == pytest.approx(1800.0, rel=2e-3)
+
+    @pytest.mark.parametrize('freq_hz', [5.0, 10.0, 30.0, 60.0, 100.0, 170.0])
+    def test_tracks_a_speed_sweep(self, freq_hz):
+        """300 to 10200 RPM. Measured worst case is 0.164 % at 300 RPM and
+        <= 0.04 % above; the tolerance here is the published +-0.2 % of
+        reading, which is what the docs claim."""
+        res, _ = _capture_tach(freq_hz)
+        assert res is not None and res.rpm is not None
+        assert res.rpm == pytest.approx(freq_hz * 60.0, rel=2e-3)
+
+    def test_reported_rate_is_the_hardware_rate_not_the_constant(self):
+        """The 4.166 % trap. The driver rounds the streaming interval to 12 us,
+        so the true rate is 41666.5 Hz, not RAW_SAMPLERATE_HZ (40000). Anything
+        computed from the constant reads high on hardware and is exactly right
+        in CI -- the worst combination a defect can have."""
+        res, _ = _capture_tach(30.0)
+        assert res is not None
+        assert res.samplerate == pytest.approx(41666.5, rel=1e-3)
+        assert res.samplerate != rev80.sample.RAW_SAMPLERATE_HZ
+
+    def test_adaptive_threshold_survives_ac_coupling(self):
+        """AC coupling removes the mean, and on a pulse train the mean IS the
+        duty cycle. Adaptive tracks each block's own span, so it does not care.
+        """
+        dc_res, _ = _capture_tach(30.0, coupling='DC')
+        ac_res, _ = _capture_tach(30.0, coupling='AC')
+        assert dc_res.rpm == pytest.approx(1800.0, rel=2e-3)
+        assert ac_res.rpm == pytest.approx(1800.0, rel=2e-3)
+
+    def test_fixed_threshold_works_in_its_own_regime(self):
+        """A fixed threshold is correct on a DC-coupled input at a level inside
+        the signal's swing. That is the configuration it is for.
+
+        Deliberately no assertion about AC coupling at 50 % duty: that is the
+        one duty at which fixed and adaptive coincide, and whether a 1000 mV
+        level lands inside the AC-coupled swing depends on where the coupling
+        settles and on the AWG's phase. It was observed both ways across runs,
+        so pinning either outcome would be pinning a coin-flip. The regime
+        where the difference is real and repeatable is high duty --
+        test_fixed_threshold_fails_outright_at_high_duty.
+        """
+        fixed = rev80_tach.TachSettings(threshold_mode='fixed',
+                                        threshold_mv=1000.0)
+        dc_res, _ = _capture_tach(30.0, coupling='DC', settings=fixed)
+        assert dc_res.rpm == pytest.approx(1800.0, rel=2e-3)
+        assert dc_res.quality == rev80_tach.QUALITY_OK
+
+    def test_fixed_threshold_fails_outright_at_high_duty(self):
+        """The failure the adaptive default exists to prevent, reproduced
+        electrically.
+
+        AC coupling removes the mean, and on a pulse train the mean IS the duty
+        cycle: above ~55 % the signal maximum falls below any fixed level and
+        the shaft reads as stopped on a machine that is running. Needs a
+        non-50 % waveform, which the built-in generator cannot produce -- hence
+        the arbitrary-waveform stimulus. Only the stimulus is patched; the
+        acquisition path under test is the real one.
+        """
+        import ctypes
+        import numpy as _np
+        from picosdk.ps4000a import ps4000a as _ps
+        from picosdk.functions import assert_pico_ok as _ok
+        from rev80.picoscope import PicoScopeStream
+
+        NBUF, DUTY, FREQ = 4096, 0.70, 30.0
+
+        def _setup(self_stream):
+            wf = _np.full(NBUF, -32767, dtype=_np.int16)
+            wf[:int(NBUF * DUTY)] = 32767
+            n = ctypes.c_uint32(0)
+            _ok(_ps.ps4000aSigGenFrequencyToPhase(
+                self_stream._chandle, ctypes.c_double(FREQ), 0, NBUF, ctypes.byref(n)))
+            _ok(_ps.ps4000aSetSigGenArbitrary(
+                self_stream._chandle, TACH_OFFSET_UV, TACH_PKTOPK_UV,
+                n.value, n.value, 0, 0,
+                wf.ctypes.data_as(ctypes.POINTER(ctypes.c_int16)), NBUF,
+                0, 0, 0, 0, 0, 0, 0, ctypes.c_int16(0)))
+
+        fixed = rev80_tach.TachSettings(threshold_mode='fixed',
+                                        threshold_mv=1000.0)
+        original = PicoScopeStream._setup_siggen
+        PicoScopeStream._setup_siggen = _setup
+        try:
+            ac_fixed, _ = _capture_tach(FREQ, coupling='AC', settings=fixed)
+            ac_adaptive, _ = _capture_tach(FREQ, coupling='AC')
+        finally:
+            PicoScopeStream._setup_siggen = original
+
+        assert ac_fixed.rpm is None, (
+            'a fixed threshold must fail on a high-duty AC-coupled input -- '
+            'this is why adaptive is the default')
+        assert ac_adaptive.rpm == pytest.approx(FREQ * 60.0, rel=3e-3), (
+            'adaptive tracks the block span and is unaffected by duty')
+
+    def test_duty_cycle_is_measured(self):
+        """The built-in square is 50 % duty; duty is what R46 turns into a
+        surface velocity."""
+        res, _ = _capture_tach(30.0)
+        assert res.duty_cycle == pytest.approx(0.5, abs=0.05)
+
+    def test_tach_channel_produces_no_channel_result(self):
+        """Role plumbing, end to end on real hardware: a pulse train must not
+        acquire an overall, a spectrum or a kurtosis."""
+        _, dc = _capture_tach(30.0, channels=(0, 1))
+        assert dc is not None
+        results = dc.process_samples()
+        assert all(r.channel != 0 for r in results)
+
+    def test_four_channels_with_a_tach_stream_cleanly(self):
+        """A tach as one of four inputs sits inside the streaming envelope the
+        STREAMING_CEILING_HZ measurements already established."""
+        sensor = _get_hardware_sensor()
+        dc = vc.DataCollector(config=_tach_config('DC', channels=(0, 1, 2, 3)))
+        dc.connect_sensor(sensor, siggen_config={
+            'freq_hz': 30.0, 'pktopk_uv': TACH_PKTOPK_UV,
+            'offset_uv': TACH_OFFSET_UV, 'wave_type': 'PS4000A_SQUARE'})
+        try:
+            dc.start_stream()
+            deadline = time.time() + 8.0
+            frames = 0
+            overflow = degraded = 0
+            while time.time() < deadline:
+                if dc.new_frame_event.wait(timeout=2.0):
+                    dc.new_frame_event.clear()
+                    frame = dc.data['frame_cache'][-1]
+                    frames += 1
+                    for s in frame.values():
+                        overflow += bool(s.overflow)
+                        degraded += bool(s.degraded)
+            dc.stop_stream()
+        finally:
+            dc.disconnect_sensor()
+        assert frames >= 3, f'only {frames} frames in 8 s at 4 channels'
+        assert overflow == 0, f'{overflow} overflowed channel-frames'
+        assert degraded == 0, f'{degraded} rate-degraded channel-frames'
