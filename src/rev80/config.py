@@ -90,6 +90,8 @@ _BUILTIN_ACQ: dict[str, Any] = {
         'speed_gate_enabled':       False,
         'speed_gate_rpm':           None,
         'speed_gate_tolerance_pct': 3.0,
+        # Display unit for shaft-rate readouts: RPM | Hz | rad/s | deg/s.
+        'rotation_unit':            'RPM',
     },
     'monitor': {
         'interval_s':        600,

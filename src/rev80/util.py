@@ -31,6 +31,9 @@ __all__ = [
     'amplitude_scale',
     # Channel roles
     'CHANNEL_ROLES', 'DEFAULT_CHANNEL_ROLE', 'CHANNEL_ROLE_LABELS',
+    # Rotation rate units
+    'ROTATION_UNITS', 'ROTATION_UNIT_LABELS', 'DEFAULT_ROTATION_UNIT',
+    'rotation_scale', 'rotation_from_rpm',
     # Storage
     'SAVEDIR', 'EXT',
     # Monitor mode
@@ -171,6 +174,59 @@ DEFAULT_AMPLITUDE_MODE = '0-P'
 # 'vibration' is the default so every config predating roles keeps its meaning.
 CHANNEL_ROLES: tuple = ('vibration', 'tachometer')
 DEFAULT_CHANNEL_ROLE: str = 'vibration'
+
+# ---------------------------------------------------------------------------
+# Rotation rate units
+# ---------------------------------------------------------------------------
+# A shaft rate shown without its unit is a number waiting to be misread: 30 is
+# a plausible RPM, a plausible Hz and a plausible rad/s, and they differ by
+# factors of 60 and 6.28. The amplitude side of this app already carries its
+# unit everywhere a value appears; the rate side does too.
+#
+# rad/s IS angular frequency omega -- one option, not two. The label carries
+# both names so it is findable either way.
+#
+# Scale factors are applied to the shaft rate in **rev/s**:
+ROTATION_UNITS: tuple = ('RPM', 'Hz', 'rad/s', 'deg/s')
+DEFAULT_ROTATION_UNIT: str = 'RPM'
+
+_ROTATION_SCALE: dict = {
+    'RPM':   60.0,
+    'Hz':     1.0,
+    'rad/s':  2.0 * np.pi,
+    'deg/s': 360.0,
+}
+
+ROTATION_UNIT_LABELS: dict = {
+    'RPM':   'RPM',
+    'Hz':    'Hz',
+    'rad/s': 'rad/s (\u03c9)',
+    'deg/s': 'deg/s',
+}
+
+
+def rotation_scale(unit) -> float:
+    """Multiplier from shaft rate in rev/s to `unit`.
+
+    An unrecognised unit falls back to the default rather than propagating: a
+    hand-edited config must not be able to invent a scale factor, which would
+    silently rescale every rate the instrument reports.
+    """
+    return _ROTATION_SCALE.get(str(unit), _ROTATION_SCALE[DEFAULT_ROTATION_UNIT])
+
+
+def rotation_from_rpm(rpm, unit) -> 'float | None':
+    """Convert an RPM value to `unit`. None stays None.
+
+    Shaft rate is held in RPM everywhere internally and in every stored file;
+    the unit is a display preference only. A number in a file whose meaning
+    depends on a setting is exactly the class of defect this codebase keeps
+    finding.
+    """
+    if rpm is None:
+        return None
+    return float(rpm) / 60.0 * rotation_scale(unit)
+
 
 CHANNEL_ROLE_LABELS: dict = {
     'vibration':  'Vibration',
@@ -336,6 +392,26 @@ class UI_Elements:
     CONFIG_TAB_ACQUISITION = 'CONFIG_TAB_ACQUISITION'
     CONFIG_TAB_SIGGEN    = 'CONFIG_TAB_SIGGEN'
     CONFIG_TAB_MONITOR   = 'CONFIG_TAB_MONITOR'
+    # Tachometer tab -- owns the tach role and its calibration.
+    CONFIG_TAB_TACH      = 'CONFIG_TAB_TACH'
+    TACH_CHANNEL         = 'TACH_CHANNEL'
+    TACH_POLARITY        = 'TACH_POLARITY'
+    TACH_THRESH_MODE     = 'TACH_THRESH_MODE'
+    TACH_THRESH_MV       = 'TACH_THRESH_MV'
+    TACH_MIN_AMPL_MV     = 'TACH_MIN_AMPL_MV'
+    TACH_REFLECTOR_MM    = 'TACH_REFLECTOR_MM'
+    TACH_ROTATION_UNIT   = 'TACH_ROTATION_UNIT'
+    TACH_PLOT            = 'TACH_PLOT'
+    TACH_PLOT_X          = 'TACH_PLOT_X'
+    TACH_PLOT_Y          = 'TACH_PLOT_Y'
+    TACH_PLOT_WAVE       = 'TACH_PLOT_WAVE'
+    TACH_PLOT_THRESH     = 'TACH_PLOT_THRESH'
+    TACH_PLOT_EDGES      = 'TACH_PLOT_EDGES'
+    TACH_READOUT         = 'TACH_READOUT'
+    TACH_QUALITY         = 'TACH_QUALITY'
+    TACH_FLOOR           = 'TACH_FLOOR'
+    # Shaft-rate readout on the main display.
+    RPM_TEXT             = 'RPM_TEXT'
 
     # Monitor Mode setup button + card (left panel)
     BTN_MONITOR_SETUP    = 'BTN_MONITOR_SETUP'

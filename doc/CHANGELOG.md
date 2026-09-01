@@ -48,6 +48,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   three `speed_gate_*` keys in `_BUILTIN_ACQ`, so every device and acquisition
   YAML written before R43 upgrades silently through the existing merge.
 
+- **Tachometer tab, and selectable rotation-rate units** — step 9.
+  - A **Tachometer tab** in the config dialog, which *owns* the tach role: channel claim,
+    polarity, threshold mode and level, minimum amplitude, reflector size, rate units, a
+    live waveform with the threshold drawn and detected edges marked, and RPM / quality /
+    duty / span readouts. Tach setup is a commissioning activity done once per
+    installation, so the diagnostic view belongs where the settings are — adjust, watch
+    the edges move, confirm the rate, all on one screen. Closing the dialog leaves only
+    the derivatives, which solves "hide the waveform once it works" structurally rather
+    than with a toggle the operator has to manage. (Verified first that a dearpygui modal
+    does not block the render loop: 60/60 frames advanced with a modal shown.)
+  - The waveform is **aligned so the first detected pulse sits at t = 0**. A free-running
+    trace jitters by up to a whole period between frames; aligned, successive frames
+    overlay and a threshold adjustment is legible. X limits span two periods either side.
+  - The **Channels tab no longer has a role control.** A claimed channel is shown
+    read-only in its summary line — its settings there are meaningless, since a pulse
+    train has no sensor, engineering unit or amplitude mode, and two screens able to set
+    the role could disagree.
+  - **Rotation-rate units**: RPM, Hz, rad/s (ω), deg/s — `rad/s` *is* angular frequency,
+    so it is one option labelled with both names, not two. The unit is rendered wherever
+    a rate appears: 30 is a plausible RPM, a plausible Hz and a plausible rad/s, and they
+    differ by factors of 60 and 6.28. It is a **display preference only** — `TachResult`
+    and every stored file stay in RPM, because a number whose meaning depends on a
+    setting is the class of defect this codebase keeps finding.
+  - The slowest measurable shaft for the current bin size is shown as **information, not
+    validation**: an operator must be able to configure the tach against a machine that
+    is not running, using their best guess.
+
 - **1× shaft-rate marker and level** — the first consumer of shaft speed in the display,
   and deliberately the simplest: a vertical line on the spectrum at 1×, and the level
   beside it on each channel result card above the peaks table. No resampling, no
