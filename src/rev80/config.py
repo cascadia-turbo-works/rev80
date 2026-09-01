@@ -103,7 +103,7 @@ _BUILTIN_ACQ: dict[str, Any] = {
             'enabled':    True,
             'hook_type':  'rms',
             'warmup':     10,
-            'rms_pct':    10.0,
+            'rms_pct':    50.0,
             'rms_s':      3.0,    # sustained deviation time (s) before firing; 0 = fire on first frame
             'rms_alpha':  0.97,
             'spec_pct':   50.0,

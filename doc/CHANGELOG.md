@@ -48,6 +48,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   three `speed_gate_*` keys in `_BUILTIN_ACQ`, so every device and acquisition
   YAML written before R43 upgrades silently through the existing merge.
 
+- **`RmsThresholdHook` default 10% → 50%** (decision D-1). Not a tachometer change — a
+  correction to a shipped default that the speed analysis exposed. For a rigid rotor
+  below its first critical the 1× velocity goes as ω³:
+
+  | speed deviation | 1× velocity change |
+  |---|---|
+  | 0.5% | +1.5% |
+  | 1.0% | +3.0% |
+  | 2.0% | +6.1% |
+  | **3.2%** | **+10.0%** ← the old default |
+  | 5.0% | +15.8% |
+  | 10.0% | +33.1% |
+
+  A 3.2% speed change crossed the threshold on its own, and a typical induction motor's
+  ~2% no-load-to-full-load slip swing shows up as a +6% rise on a machine whose condition
+  has not changed. On any VFD or load-following machine the detector was measuring load.
+  50% is the level at which a broadband RMS rise means something without a speed
+  reference. Where a tachometer is fitted the speed gate is the more certain
+  discriminator and this can be tightened per installation; where one is not — common,
+  and often impractical to retrofit — detection has to come from envelope techniques or
+  fixed thresholds instead. Changed in all five places that carried it (the hook, the
+  config template, and both `_build_anomaly_hook` copies plus the headless summary), so
+  `tests/test_anomaly_hook_build.py` still passes.
+
 - **Monitor sessions record shaft speed, `session.h5` `_FILE_VERSION` 5 → 6** — step 8.
   Every interval capture and burst now carries `rpm` and `speed_ok`. Without it a monitor
   trend point cannot be compared with another taken at a different load — the same

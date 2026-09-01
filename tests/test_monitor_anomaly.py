@@ -568,3 +568,40 @@ class TestFixedThresholdHook:
         upper_event = hook.on_results(above, None)
         assert upper_event is not None
         assert 'upper' in upper_event.reason.lower()
+
+
+# ---------------------------------------------------------------------------
+# Default RMS threshold (decision D-1)
+# ---------------------------------------------------------------------------
+
+def test_rms_threshold_default_is_50_percent():
+    """10% is crossed by a 3.2% speed change alone.
+
+    For a rigid rotor below its first critical the 1x velocity goes as
+    omega^3, so:
+
+        speed deviation   1x velocity change
+             0.5 %              +1.5 %
+             1.0 %              +3.0 %
+             2.0 %              +6.1 %
+             3.2 %             +10.0 %   <- the old default
+             5.0 %             +15.8 %
+
+    A typical induction motor's no-load-to-full-load slip swing is ~2%, a +6%
+    apparent rise on a machine whose condition has not changed. At 10% the
+    detector was measuring load. 50% is the level at which a broadband RMS
+    rise means something without a speed reference -- and where a tachometer
+    *is* fitted, the speed gate is the more certain trigger and this can be
+    tightened per installation.
+    """
+    from rev80.monitor.anomaly import RmsThresholdHook
+    import inspect
+    sig = inspect.signature(RmsThresholdHook.__init__)
+    assert sig.parameters['rms_threshold_pct'].default == 50.0
+
+
+def test_config_template_matches_the_hook_default():
+    """A template that disagrees with the code default means the shipped
+    behaviour depends on whether a config file happens to exist."""
+    from rev80.config import _BUILTIN_ACQ
+    assert _BUILTIN_ACQ['monitor']['anomaly']['rms_pct'] == 50.0
