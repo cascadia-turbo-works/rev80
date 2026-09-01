@@ -71,7 +71,7 @@ if [[ "$STEP" == "all" || "$STEP" == "installer" ]]; then
 fi
 
 # ── Step 1: Fetch font ───────────────────────────────────────────────────────
-./fetch_font.sh
+./scripts/fetch_font.sh
 ## Font is gitignored; download on first build and cache locally.
 #FONT_FILE="assets/fonts/CommitMonoNerdFont-Regular.otf"
 #FONT_URL="https://github.com/ryanoasis/nerd-fonts/releases/download/v3.4.0/CommitMono.zip"
