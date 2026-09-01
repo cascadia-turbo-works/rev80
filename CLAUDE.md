@@ -81,6 +81,7 @@ rate, it skips to the latest frame — all earlier frames remain in the
 | `scope_sensor_registry.py` | `ScopeSensorRegistry` — YAML-backed global sensor library (`scope_sensors.yaml`); CRUD by ID/name; loaded from `~/.config/rev80/` |
 | `simulation.py` | `SimulatedSensor` (threading-based fake stream) + signal generators (`GenerateTone`, bearing-defect) for offline dev/test |
 | `sample.py` | `AcquisitionSettings` — two independent rate pairs: fixed `raw_samplerate`/`raw_blocksize` (`RAW_SAMPLERATE_HZ`, what's actually acquired/stored) and derived `samplerate`/`blocksize`/`nperseg`/band (from `maxfreq`/`binsize`, display/Spectrum-tab only); declared band; averaging; per-channel names, target units, amplitude modes, couplings, voltage ranges. `VibeSample` (one channel's raw block at the raw rate, with cached PSD/decimated/filtered data) + `ChannelResult` (frozen display result, display-rate) |
+| `tach.py` | Tachometer channels — `TachSettings`, `TachResult`, Schmitt edge detection with sub-sample interpolation, median-of-intervals rate estimation, duty cycle. Free of dearpygui/h5py/`DataCollector` imports; every constant carries the bench measurement that justifies it. **One pulse/rev** (D-6): at 1 ppr every interval is exactly one revolution, so encoder division error and once-per-rev speed modulation cancel by construction (0.0013% vs 0.091% for a 60-line encoder at any window length) |
 | `_dsp.py` | Windowing and band helpers, each carrying the measured error table that justifies it: `hann_taper`/`tukey_taper`, `band_mask`, `band_rms`, `integrate_rfft`, `butter_knee_for_edge`, `crest_factor`, `kurtosis` |
 | `peaks.py` | Significance-based spectral peak selection — per-bin local noise floor via a running median, feeding array-valued `height`/`prominence` into one `find_peaks` call. A line is reported when it stands above **its own** neighbourhood, not by top-N amplitude |
 | `envelope.py` | Envelope (demodulation) analysis — `envelope_spectrum()` (band-pass → Hilbert magnitude → DC removal → amplitude spectrum) and `suggest_band()`. The band-pass, not the Hilbert transform, is the load-bearing step. Reads the raw-rate signal via `DataCollector.eu_scaled_raw()`, not the maxfreq-decimated `ChannelResult`, so a low display `maxfreq` never limits what it can see |
@@ -88,11 +89,11 @@ rate, it skips to the latest frame — all earlier frames remain in the
 | `config.py` | OS-aware device config directory (`~/.config/rev80/` on Linux, `%APPDATA%/rev80/` on Windows); per-device YAML persistence with atomic writes; default config fallback |
 | `gui.py` | `GUI` class — dearpygui 3-panel layout (controls / plots / results), `_poll_new_frames()` render loop, config dialogs (Device/Channels/Sensor/Spectrum/Siggen), spectrum FFT window/preset controls, per-channel result cards, trend plot, HDF5 file load/save |
 | `logger.py` | YAML-configured logging; rotating log files written to `log/`. `sys.excepthook` is installed — but **`threading.excepthook` is not**, so exceptions escaping the acquisition, simulation and writer threads never reach the log (audit H-07) |
-| `headless.py` | No-GUI front end: interval datalogger, anomaly hooks, session summary. ~640 lines. Shares no code with the GUI's copy of the same logic — see the H-01 warning below |
+| `headless.py` | No-GUI front end: interval datalogger, anomaly hooks, session summary. **Refuses tachometer-role channels** (R44) — out of scope has to mean "does not do it", not "does it wrong". Shares no code with the GUI's copy of the same logic — see the H-01 warning below |
 | `monitor/controller.py` | `MonitorController` — interval/burst state machine, pre-trigger ring buffer, anomaly dispatch |
-| `monitor/writer.py` | `MonitorWriterThread` — daemon thread accumulating captures into one `session.h5` (v5) |
+| `monitor/writer.py` | `MonitorWriterThread` — daemon thread accumulating captures into one `session.h5` (v6; every capture and burst records `rpm`/`speed_ok`) |
 | `monitor/gate.py` | `IntervalGate` — snap-to-grid capture scheduler; burst entry/exit with `max_burst_s` |
-| `monitor/anomaly.py` | `RmsThresholdHook`, `SpectralThresholdHook`, `FixedThresholdHook`, `CompositeAnomalyHook`, `valid_results()` |
+| `monitor/anomaly.py` | `RmsThresholdHook` (default 50%, see below), `SpectralThresholdHook`, `FixedThresholdHook`, `CompositeAnomalyHook`, `valid_results()` — the single place the speed gate is applied |
 | `_paths.py` | Runtime-safe path resolution — editable checkout, non-editable pip install, and PyInstaller frozen bundle all resolve correctly; `resource_path()`, `data_dir()`, `log_dir()` |
 | `_pico_loader.py` | Windows-only: registers PicoSDK DLL search path before `picosdk` import |
 | `desktop.py` | Linux-only: `install()`/`uninstall()` a `~/.local/share/applications/rev80.desktop` launcher entry + icon, driven by `rev80 --install-desktop-entry` / `--uninstall-desktop-entry` |
@@ -100,8 +101,9 @@ rate, it skips to the latest frame — all earlier frames remain in the
 ### Data flow details
 
 - `VibeSensor._callback` is the hardware stream callback; it scales raw ADC counts to mV via per-channel voltage range and packages a dict keyed by channel index. `SimulatedSensor` mirrors this: it generates and reports at `raw_samplerate` (via `simulation._RawRateView`, which presents `config` at its raw rate to the signal generators), not the display rate, so offline dev/CI exercises the same raw/display split real hardware does.
-- `DataCollector.receive_data` looks up the `ScopeSensor` assigned to each channel, converts mV→EU via `sensitivity`, then wraps each channel in a `VibeSample` at the raw acquisition rate (carrying the frame's `overflow` and `degraded` flags). The per-channel Butterworth highpass filter is applied later, in `process_sample()`, still at the raw rate; anti-aliasing for the acquisition Nyquist is not applied here at all — it happens upstream in `PicoScopeStream`, before the ADC's own Nyquist limit can fold high-frequency content into the passband, and is not user-configurable.
+- `DataCollector.receive_data` wraps each channel in a `VibeSample` at the raw acquisition rate, carrying the frame's `overflow` and `degraded` flags. The sample is **in mV**: the mV→EU sensitivity divide happens later, inside `process_sample()`, not here. (This passage claimed the opposite until Sep 2026 — `VibeSample.unit` is `'mV'`, and the tachometer's fixed-mV threshold depends on it being so.) A **tachometer-role channel branches here**: it skips the highpass entirely and is edge-detected instead (measured — the filter's overshoot on each falling edge re-crosses the threshold, turning 31 edges into 108 at 15% duty, so an 1800 RPM shaft reads 6270). The per-channel Butterworth highpass filter is applied later, in `process_sample()`, still at the raw rate; anti-aliasing for the acquisition Nyquist is not applied here at all — it happens upstream in `PicoScopeStream`, before the ADC's own Nyquist limit can fold high-frequency content into the passband, and is not user-configurable.
 - `DataCollector._data_callback` appends the frame to a 32-frame ring cache (deque) and sets `new_frame_event`. All consumers — GUI render loop, `collect_sample`, tests — read from `frame_cache` via `new_frame_event`; there is no separate callbacks fan-out. `DataCollector.current_frame()` returns the same `{ch: VibeSample}` dict as whatever `process_samples()` would currently process (respecting the streaming-vs-browse cursor), for a consumer — the Envelope tab — that needs the raw `VibeSample` rather than a decimated `ChannelResult`.
+- `process_samples()` iterates `config.vibration_channels`, **not** `enabled_channels`: a tachometer produces no `ChannelResult` at all. Letting one through is what yields overall 1515 mV, crest 5.00, kurtosis 15.94 and 63 "peaks" on a square wave — a reading that looks like a severely failing bearing and raises nothing. RPM is trended separately (`tach_trend`/`get_rpm_trend()`) because a shaft speed must never pass through `UNIT_TO_SI`, `amplitude_scale` or `integration_steps`.
 - `DataCollector.process_sample()` (not `VibeSample.process()`) decimates the raw-rate `VibeSample` down to the display rate (`collector.decimate_to_rate()` — rational-ratio `scipy.signal.resample_poly`, reusing the hardware anti-alias filter's Kaiser stopband design; cached on the sample) and produces the `ChannelResult`. Per frame: Welch PSD (one segment — `nperseg == blocksize`), optional averaging over N frames, five integration orders, spectrum truncated at `maxfreq`, peaks, overall, waveform, crest factor and kurtosis. `ChannelResult.time_data`/`.samplerate` are display-rate. `DataCollector.eu_scaled_raw(ch, sample)` instead returns the highpass-filtered signal in the sensor's own EU *at the raw rate*, skipping decimation entirely — this is what envelope/demodulation analysis (`gui.py`'s `_update_envelope_plot`) reads, so a low `maxfreq` never limits envelope bandwidth.
 - **Everything scalar is measured over the declared band** (`config.band`), applied as a mask on the rFFT. All five integration orders share one masked, Hann-tapered path — including order 0, because the mask is itself a transform-domain multiply and carries the same circular-wrap sensitivity the taper exists to control.
 - **Averaging is in the power domain**: average |X|², sqrt at the end; the overall combines as `sqrt(mean(squares))`. Averaging magnitudes converges ~11% low on a noise floor and is invisible on a coherent line — the trap that passed 17 tests before two were added to catch it.
@@ -126,7 +128,7 @@ There is no user-facing `lowpass_enabled`/`lowpass_fc` — anti-aliasing is mand
 
 `PicoScopeStream` drives the ADC above `raw_samplerate` by an oversampling ratio (`effective_osr`, up to 4x) capped by `STREAMING_CEILING_HZ` (a measured safe continuous-USB-streaming ceiling — see `picoscope.py`), then filters and decimates back down to `raw_samplerate`/`raw_blocksize`; this is invisible to `AcquisitionSettings`/`DataCollector`/the GUI, all of which only ever see `raw_samplerate`/`raw_blocksize` on the acquisition side.
 
-Per-channel fields (`channel_names`, `channel_target_units`, `channel_amplitude_modes`, `channel_couplings`, `channel_voltage_ranges`) are dicts keyed by channel index (0-based). They are independent of each other and of the global acquisition parameters.
+Per-channel fields (`channel_names`, `channel_target_units`, `channel_amplitude_modes`, `channel_couplings`, `channel_voltage_ranges`, `channel_roles`) are dicts keyed by channel index (0-based). **Every one of them must also be listed in `AcquisitionSettings.copy()`'s explicit tuple** — they live in the `channels` config section, outside the `to_dict`/`from_dict` round trip that carries the scalars automatically, so a dict added without editing that tuple is audit H-08 again. They are independent of each other and of the global acquisition parameters.
 
 ### Simulated sensor
 
@@ -136,9 +138,64 @@ The default generator is `simulation.GenerateBearingVibration()` — a physicall
 
 **This matters for testing.** The older pure-tone generators (kept for regression coverage) are ten cosines plus white noise — kurtosis ≈ 3, no impulsiveness, no resonance carrier, no sidebands. They cannot validate crest factor, kurtosis or envelope analysis even in principle: a broken envelope analyser and a correct one both return "nothing here" on pure cosines. Two constants in the model are set from measurement rather than the textbook — see the tables in `simulation.py`.
 
+## Tachometer channels (R43)
+
+A channel can carry a **role**: `'vibration'` (the default, and what every
+config written before R43 restores as) or `'tachometer'`. The role changes what
+the channel *is*, not just how it is displayed — almost everything downstream of
+`receive_data` assumes a channel has a `ScopeSensor`, an engineering unit, a
+spectrum and an overall, and a tachometer has none of them.
+
+Feeding a pulse train through the vibration path does not raise. It returns a
+plausible wrong answer: measured on a 5% duty square wave through the real
+`process_sample`, **overall 1515 mV, crest 5.00, kurtosis 15.94 and 63 "peaks"**
+— which reads as a severely failing bearing. Every guard below exists because of
+that number, not in the abstract.
+
+- **The Tachometer tab owns the role.** The Channels tab shows a claimed channel
+  read-only and its Enable checkbox is locked, because two screens able to set
+  the role could disagree, and unchecking Enable would silently stop the tach
+  (`tach_channels` filters by `enabled_channels`). Claiming a channel enables it.
+- **Edge detection runs in `receive_data`, before and instead of the highpass.**
+  The filter's overshoot on each falling edge re-crosses the threshold: 31 edges
+  become 108 at 15% duty, and an 1800 RPM shaft reads 6270.
+- **Adaptive thresholding is the default**, and the reason is electrical. AC
+  coupling removes the mean, and on a pulse train the mean *is* the duty cycle,
+  so above ~55% duty a fixed level is never reached and the shaft reads as
+  stopped on a machine that is running. Reproduced on the bench at 70% and 85%
+  duty; `tests/test_picoscope_hw.py` keeps it.
+- **One pulse per revolution** (D-6). Not merely the common installation but the
+  accurate one: at 1 ppr every interval is exactly one revolution, so encoder
+  division error and once-per-rev speed modulation cancel by construction —
+  0.0013% against 0.091% for a 60-line encoder at *any* window length.
+  `pulses_per_rev` survives in the code and a non-1 value is honoured with a
+  warning, never silently clamped.
+- **`rpm` is `None`, never `0.0`,** when there is no usable reading. "I cannot
+  see a tach signal" and "the shaft is stopped" send an analyst to different
+  places — and note the two are not currently distinguishable from a flat block
+  (R45).
+- **Storage is edge times, not the waveform** (D-2): ~30 float64 per second
+  against 41666. `pulses_per_rev` is a post-hoc divisor, so RPM stays a *view* on
+  stored data; what is traded away is re-thresholding after capture.
+- Measured accuracy **±0.2% of reading**, 300–10200 RPM, verified by AWG
+  loopback. Below `180/T_block` RPM no rate can be resolved — surfaced as
+  information, not a fault, because an operator must be able to configure the
+  tach against a machine that is not running.
+
+**Speed gating.** `AcquisitionSettings.speed_gate_*` declares a shaft-speed
+window; a frame outside it is still measured, displayed and stored but is
+excluded from trending, baseline adaptation and alarm evaluation, because its
+amplitude is *correct* and simply not comparable. For a rigid rotor below its
+first critical the 1x velocity goes as ω³, so a **3.2% speed change alone moves
+the overall 10%** — which is why `RmsThresholdHook`'s default was raised from 10%
+to 50%. The gate is evaluated in `DataCollector.speed_ok()` and applied in
+`monitor/anomaly.valid_results()` and **nowhere else**: putting it in
+`_build_anomaly_hook` would mean editing both copies of it, which is what audit
+H-01 exists to prevent. It fails **closed** on a missing reading.
+
 ## Persistence
 
-### HDF5 measurement files (`_FILE_VERSION = 4`)
+### HDF5 measurement files (`_FILE_VERSION = 5`)
 
 Saved to `~/Documents/Rev80/data/*.h5` (via `_paths.data_dir()`). Layout:
 
@@ -151,9 +208,19 @@ Saved to `~/Documents/Rev80/data/*.h5` (via `_paths.data_dir()`). Layout:
                                    (None is stored as '' and read back as None)
 /metadata/scope_sensors/{id}.attrs one group per unique sensor used
 /metadata/channels/{ch}.attrs      name, unit, coupling, voltage_range,
-                                   scope_sensor_id, target_unit
+                                   scope_sensor_id, target_unit, role,
+                                   tach_* (calibration, tach channels only)
 /frames/{i}.attrs                  timestamp, rel_time, samplerate (raw rate), status
 /frames/{i}/{ch}/data              (N,) float64  + overflow / degraded attrs
+                                   -- VIBRATION channels only
+/frames/{i}/{ch}/edge_times        (E,) float64  seconds from block start
+/frames/{i}/{ch}/pulse_widths      (P,) float64  complete pulses only
+              .attrs               rpm, quality, n_edges, interval_spread,
+                                   speed_drift_pct, duty_cycle
+                                   -- TACHOMETER channels: NO 'data' dataset.
+                                   Readers must branch on its presence.
+/tach_trend/{ch}/rel_times         (M,) float64
+/tach_trend/{ch}/rpm               (M,) float64
 /trend/{ch}/rel_times              (M,) float64
 /trend/{ch}/orders                 (M,5) float64 — mV RMS, integration orders -2…+2
 /trend/{ch}/crest_factor           (M,) float64  — dimensionless, NaN = not recorded
@@ -162,7 +229,7 @@ Saved to `~/Documents/Rev80/data/*.h5` (via `_paths.data_dir()`). Layout:
 
 Because individual raw frames are stored, analysis settings are **not baked in**: a file captured with averaging off can be given N averages after loading, and the declared band can be changed and recomputed. Anything derived is a view on stored data.
 
-Monitor sessions are a separate `session.h5` (`_FILE_VERSION = 5`, `monitor/writer.py`) with `/metadata`, `/monitor/{n}` (interval captures) and `/burst/{id}` groups.
+Monitor sessions are a separate `session.h5` (`_FILE_VERSION = 6`, `monitor/writer.py`) with `/metadata`, `/monitor/{n}` (interval captures) and `/burst/{id}` groups.
 
 Do not write to `_fm`/`_df` private attributes when constructing replay `AcquisitionSettings` from HDF5 — use the public setters.
 

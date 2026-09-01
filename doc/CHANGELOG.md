@@ -48,6 +48,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   three `speed_gate_*` keys in `_BUILTIN_ACQ`, so every device and acquisition
   YAML written before R43 upgrades silently through the existing merge.
 
+- **Hardware close-out on the 4424A** — 14 new self-skipping tests in
+  `tests/test_picoscope_hw.py`, all through the real acquisition path
+  (`PicoScopeStream` → `antialias_decimate` → `receive_data` → `tach_result`) rather
+  than handing synthetic arrays to the detector. **23 hardware tests pass.**
+  - AWG sweep 300–10200 RPM, every point within the published ±0.2% of reading.
+  - The reported rate is asserted to be 41666.5 Hz and *not* `RAW_SAMPLERATE_HZ` — the
+    4.166% trap that is exactly right in CI and wrong on hardware.
+  - The AC-coupling failure reproduced electrically with a 70%-duty arbitrary waveform:
+    a fixed threshold returns no reading while adaptive tracks the shaft.
+  - Duty cycle measured against the generator's known 50%.
+  - A tach channel confirmed to produce no `ChannelResult` on real hardware.
+  - Four channels with a tach streaming 8 s with zero overflow and zero
+    rate-degradation events.
+  - One test was written wrong and corrected: a fixed threshold at **50% duty** is the
+    one case where fixed and adaptive coincide, and whether a 1000 mV level lands inside
+    the AC-coupled swing was observed both ways across runs. Pinning either outcome would
+    have pinned a coin-flip, so the assertion now covers only the regime where the
+    difference is real and repeatable.
+
 - **Tachometer tab, and selectable rotation-rate units** — step 9.
   - A **Tachometer tab** in the config dialog, which *owns* the tach role: channel claim,
     polarity, threshold mode and level, minimum amplitude, reflector size, rate units, a

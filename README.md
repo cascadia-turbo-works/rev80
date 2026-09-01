@@ -18,6 +18,7 @@ Looking to build, package, or contribute to Rev80? See **[CONTRIBUTING.md](CONTR
 - [Installing from Source (any OS)](#installing-from-source-any-os)
 - [Configuration and Persistence](#configuration-and-persistence)
 - [Monitor Mode](#monitor-mode)
+- [Tachometer](#tachometer)
 - [Envelope-Demodulation Analysis (Bearing Diagnostics)](#envelope-demodulation-analysis-bearing-diagnostics)
 - [Signal Generator](#signal-generator)
 - [Simulated Sensor](#simulated-sensor)
@@ -42,10 +43,11 @@ Looking to build, package, or contribute to Rev80? See **[CONTRIBUTING.md](CONTR
 - Mandatory hardware-level anti-aliasing (oversample + linear-phase Kaiser FIR decimate, measured −111.7 dB stopband) on every capture, plus a streaming-rate watchdog that flags degraded USB throughput
 - Configurable IEPE sensor library: sensitivity (mV/EU), modality, engineering units
 - PicoScope 4000A built-in signal generator for excitation testing
-- HDF5 file save/load for post-processing and archiving (v4 format)
+- HDF5 file save/load for post-processing and archiving (v5 format)
 - Configurable frame cache depth (default 32 frames) with backward browse
 - **Declared measurement band** — the overall is measured over a configurable band (default: highpass edge to F_max) with ISO 20816 presets, and the band is stored with the data so two readings can be compared
 - **Linear power spectral averaging** over N frames, to pull small lines out of a noisy floor (off by default)
+- **Tachometer channel** — shaft speed from a keyphasor or laser tach, with a live commissioning preview, a 1x marker on the spectrum, selectable rate units (RPM / Hz / rad/s / deg/s), and speed gating that keeps a load-driven amplitude swing from reading as a condition change
 - **Envelope (demodulation) analysis** — band-pass around a structural resonance, Hilbert magnitude, envelope spectrum; the standard early-warning diagnostic for rolling-element bearing defects, with automatic demodulation-band selection
 - **Crest factor and kurtosis** per channel — impulsiveness scalars that a broadband overall averages away
 - Significance-based spectral peak selection: a line is reported when it stands a configurable number of dB above its own local noise floor, rather than by a fixed top-N amplitude ranking
@@ -521,6 +523,71 @@ Upper and lower limits are independent. A channel with no sensor/EU assigned (ra
 After any burst fires (automatic or manual), the controller optionally blocks further automatic triggers for `cooldown_s` seconds. Interval captures are unaffected. Use this to prevent a sustained fault from generating many overlapping burst files.
 
 ---
+
+## Tachometer
+
+A tachometer channel turns a spectrum into a diagnosis. A line at 162.9 Hz means
+nothing on its own; the same line at 5.43x shaft is a bearing outer race. Shaft
+speed is the denominator.
+
+Configure it in **Configuration → Tachometer**. That tab owns the tach: pick the
+channel there (it is enabled for you), set polarity and threshold, and watch the
+live preview while you adjust. Closing the dialog leaves the readouts behind.
+
+### What it is for
+
+- **Naming the lines.** Slip on a 4-pole 60 Hz motor moves 1800 → 1750 RPM between
+  no load and full load. A 5.43x bearing tone moves 6.1 Hz with it — twelve bins
+  at 0.5 Hz resolution, which is the difference between finding a defect and
+  looking in the wrong place.
+- **Separating electrical from mechanical.** On a 2-pole motor, 2x line frequency
+  is 7200 CPM exactly and 2x running speed is 7120 CPM. Eighty CPM apart, and
+  completely different repairs.
+- **Making trends comparable.** For a rigid rotor below its first critical the 1x
+  velocity goes as ω³, so a 3.2% speed change moves the overall by 10% on a
+  machine whose condition has not changed. Speed gating excludes those frames from
+  alarming while still measuring and storing them.
+
+### Setting one up
+
+Wire the tach to a spare input, **DC coupled** — AC coupling removes the signal's
+mean, and on a pulse train the mean *is* the duty cycle, so above roughly 55% duty
+an AC-coupled tach with a fixed threshold reads as a stopped machine. The default
+adaptive threshold tracks each block's own span and is immune to this, but DC is
+still the right way to wire it.
+
+Pick a voltage range that fits the pulse with headroom (±10 V for a 5 V TTL tach,
+±20 V for a 12 V one or a proximity-probe keyphasor). The anti-alias filter adds
+about 8% of Gibbs overshoot, so a 5.00 V pulse arrives near 5.9 V.
+
+The preview shows the raw signal, the computed threshold, and every edge the
+detector found, with the first pulse aligned to t=0 so successive frames overlay
+instead of sliding. If the rate reads nothing, the picture tells you which of the
+three usual causes it is: the pulse is too small, the threshold is in the wrong
+place, or the coupling is stripping the DC.
+
+### One pulse per revolution
+
+Rev80 assumes one reflective tape or one keyway. This is not a simplification —
+it is the accurate configuration. At 1 pulse/rev every measured interval is
+exactly one revolution, so encoder division error and once-per-rev speed
+modulation cancel inside each interval rather than having to average out. Measured
+against a 60-line encoder with realistic division error: **0.0013% at 1 ppr,
+against 0.091% at 60 ppr no matter how long you observe for.**
+
+### What it reports, and its limits
+
+Accuracy is **±0.2% of reading** from 300 to 10200 RPM, verified by AWG loopback
+on the instrument itself.
+
+Three pulses must fall inside one acquisition block, so the bin size sets a
+slowest measurable shaft — `180 / T_block` RPM, i.e. 180 RPM at 1 Hz bins and
+1800 RPM at 10 Hz bins. The Tachometer tab shows the figure for your current
+settings. Below it the reading is absent rather than wrong; it does not stop you
+configuring the tach against a machine that is not running.
+
+A shaft speed always carries its unit on screen. 30 is a plausible RPM, a
+plausible Hz and a plausible rad/s, and they differ by factors of 60 and 6.28.
 
 ## Envelope-Demodulation Analysis (Bearing Diagnostics)
 
