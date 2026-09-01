@@ -181,7 +181,7 @@ def _build_anomaly_hook(anom_cfg: dict, config, pre_buffer_s: float = 0.0):
             else:
                 rms_alpha = float(anom_cfg.get("rms_alpha", DEFAULT_RMS_ALPHA))
             hooks.append(RmsThresholdHook(
-                rms_threshold_pct    = float(anom_cfg.get("rms_pct", 10.0)),
+                rms_threshold_pct    = float(anom_cfg.get("rms_pct", 50.0)),
                 consecutive_n        = consecutive_n,
                 baseline_alpha       = rms_alpha,
                 min_baseline_samples = warmup,
@@ -329,7 +329,7 @@ def _print_session_summary(sensor, config, args, mon_cfg, anom_cfg, device_path)
                 rms_alpha = float(anom_cfg.get("rms_alpha", 0.97))
                 rms_tau   = -dt / _math.log(rms_alpha) if rms_alpha < 1 else float("inf")
                 alpha_str = f"α={rms_alpha:.4f} (τ={rms_tau:.3g}s)"
-            print(f"    Anomaly   RMS  threshold={anom_cfg.get('rms_pct', 10):.4g}%  "
+            print(f"    Anomaly   RMS  threshold={anom_cfg.get('rms_pct', 50):.4g}%  "
                   f"{alpha_str}  sustained={anom_cfg.get('rms_s', 3.0):.3g}s  warmup={warmup}")
         if hook_type in ("SPECTRAL", "BOTH"):
             if "spec_ewma_time" in anom_cfg and dt > 0:

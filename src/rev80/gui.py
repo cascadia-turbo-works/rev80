@@ -2417,7 +2417,7 @@ class GUI:
         # actually lists. The stored value itself is preserved on save.
         self._stored_hook_type = canonical_hook_type(anom.get("hook_type", "rms"))
         _sv(ui.MON_ANOM_HOOK,      hook_type_label(gui_hook_type(self._stored_hook_type)))
-        _sv(ui.MON_ANOM_RMS_PCT,      float(anom.get("rms_pct",       10.0)))
+        _sv(ui.MON_ANOM_RMS_PCT,      float(anom.get("rms_pct",       50.0)))
         _sv(ui.MON_ANOM_RMS_S,        float(anom.get("rms_s",         3.0)))
         _sv(ui.MON_ANOM_RMS_EWMA_TIME, float(anom.get("rms_ewma_time", 60.0)))
         _sv(ui.MON_ANOM_RMS_WARMUP,   int(anom.get("warmup",          10)))
@@ -2478,7 +2478,7 @@ class GUI:
             'anomaly': {
                 'enabled':       bool(_get(ui.MON_ANOM_ENABLED,    False)),
                 'hook_type':     self._hook_type_to_save(_get(ui.MON_ANOM_HOOK, 'RMS')),
-                'rms_pct':       float(_get(ui.MON_ANOM_RMS_PCT,        10.0)),
+                'rms_pct':       float(_get(ui.MON_ANOM_RMS_PCT,        50.0)),
                 'rms_s':         float(_get(ui.MON_ANOM_RMS_S,          3.0)),
                 'rms_ewma_time': float(_get(ui.MON_ANOM_RMS_EWMA_TIME,  60.0)),
                 'warmup':        int(_get(ui.MON_ANOM_RMS_WARMUP,        10)),
@@ -2734,7 +2734,7 @@ class GUI:
                 rms_alpha  = (ewma_alpha_from_time(rms_ewma_t, period)
                               if period > 0 else DEFAULT_RMS_ALPHA)
                 hooks.append(RmsThresholdHook(
-                    rms_threshold_pct    = float(_get(ui.MON_ANOM_RMS_PCT, 10.0)),
+                    rms_threshold_pct    = float(_get(ui.MON_ANOM_RMS_PCT, 50.0)),
                     consecutive_n        = consecutive_n,
                     baseline_alpha       = rms_alpha,
                     min_baseline_samples = warmup,

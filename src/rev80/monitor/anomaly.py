@@ -82,7 +82,29 @@ class RmsThresholdHook:
     ----------
     rms_threshold_pct:
         Percentage deviation from the EWMA baseline that triggers an event
-        (e.g. 10 means 10 %).
+        (e.g. 50 means 50 %).
+
+        The default was 10 %, which a 3.2 % speed change crosses on its own.
+        For a rigid rotor below its first critical the 1x velocity goes as
+        omega^3, so a typical induction motor's ~2 % no-load-to-full-load slip
+        swing shows up as a +6 % rise on a machine whose condition has not
+        changed -- and on a VFD or load-following machine the detector was
+        measuring load rather than condition.
+
+            speed deviation   1x velocity change
+                 0.5 %              +1.5 %
+                 1.0 %              +3.0 %
+                 2.0 %              +6.1 %
+                 3.2 %             +10.0 %   <- the old default
+                 5.0 %             +15.8 %
+                10.0 %             +33.1 %
+
+        50 % is the level at which a broadband RMS rise means something on its
+        own, without a speed reference. Where a tachometer is fitted the speed
+        gate (see valid_results) is the more certain discriminator and this can
+        be tightened per installation; where one is not -- common, and often
+        impractical to retrofit -- detection has to come from envelope
+        techniques or fixed thresholds instead.
     consecutive_n:
         Number of consecutive above-threshold frames required before firing.
     baseline_alpha:
@@ -97,7 +119,7 @@ class RmsThresholdHook:
 
     def __init__(
         self,
-        rms_threshold_pct: float = 10.0,
+        rms_threshold_pct: float = 50.0,
         consecutive_n: int = 3,
         baseline_alpha: float = 0.97,
         min_baseline_samples: int = 30,
