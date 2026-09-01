@@ -108,11 +108,56 @@ Divide-by-zero in the interpolation is unreachable by construction: an edge
 requires the previous state to be a decided low, so `y0 <= hi < y1` and the
 denominator is strictly positive. Measured minimum across 2880 real edges:
 1461.7 mV. The guard in the code is defensive only.
+
+One pulse per revolution (decision D-6)
+---------------------------------------
+The UI offers no pulses/rev control; every installation is treated as one
+reflective tape or one keyway. This is not only the common case, it is the
+accurate one. At 1 ppr **every interval is exactly one shaft revolution**, so
+the two dominant error sources -- encoder division error and once-per-rev speed
+modulation from load zone, misalignment or a reciprocating load -- cancel inside
+each interval by construction. Above 1 ppr they cancel only once a whole
+revolution has been observed, and extra pulses buy nothing before that (see the
+table beside MIN_EDGES). Measured: 0.0013% at 1 ppr from three edges, against
+0.091% for a 60-line encoder at any window length.
+
+`pulses_per_rev` and the divide in `estimate_rpm` are retained so the capability
+can be restored without rework. A value other than 1 is **honoured and warned
+about, never silently clamped**: clamping would report an integer multiple of
+the true speed with nothing on screen to say so.
+
+Not built, deliberately: inferring ppr by detecting multi-modal pulse periods.
+Unequally spaced reflectors are already reported 'inconsistent' by the
+interval_spread test whenever the two gaps differ by more than ~90 degrees of
+shaft rotation; a near-evenly-spaced pair reads an exact integer multiple, which
+is the most obvious possible error to a technician who knows the machine.
+
+What still binds at 1 ppr is block length. Guaranteeing MIN_EDGES rising edges
+regardless of start phase needs a block spanning three periods, so the slowest
+measurable shaft is 180/T_block RPM, where T_block = 1/binsize:
+
+    binsize    T_block    slowest shaft
+    0.25 Hz     4.00 s        45 RPM
+    0.5  Hz     2.00 s        90 RPM
+    1    Hz     1.00 s       180 RPM
+    2    Hz     0.50 s       360 RPM
+    5    Hz     0.20 s       900 RPM
+    10   Hz     0.10 s      1800 RPM
+
+At 10 Hz bins nothing below 1800 RPM can be read at all. This is the one case
+where a legitimate setup returns no reading, and it is the front end's job to
+say so rather than show a blank.
 """
 
+import logging
 from dataclasses import dataclass, field
 
 import numpy as np
+
+# Stdlib logger rather than rev80.get_logger, to keep this module importable
+# without the package -- the same discipline peaks.py and envelope.py follow.
+# The name 'rev80.tach' still inherits the app's logging config.
+log = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------
 # Measured constants
@@ -184,7 +229,29 @@ SPEED_DRIFT_MAX_PCT: float = 1.0
 
 MIN_EDGES: int = 3
 # Two intervals is the minimum from which a median and a spread both mean
-# something.
+# something -- and at 1 pulse/rev, which is the only value the UI can produce
+# (see the module docstring on D-6), three edges is exactly **two whole shaft
+# revolutions**. That is why there is no separate minimum-revolutions gate:
+# MIN_EDGES already is one.
+#
+# The distinction matters only above 1 ppr, where a pulse is a fraction of a
+# revolution and the two dominant error sources -- encoder division error and
+# once-per-rev speed modulation -- do not cancel until a whole revolution has
+# been observed. Measured, 60-line encoder, +-0.05 deg division error, 0.5%
+# once-per-rev modulation, 40 random start phases:
+#
+#     revolutions   pulses   mean err   worst err
+#        0.05          3      0.580%     1.898%
+#        0.25         15      0.344%     0.869%
+#        0.50         30      0.260%     0.704%
+#        1.00         60      0.091%     0.383%
+#        2.00        120      0.091%     0.383%
+#       20.0        1200      0.091%     0.383%
+#
+# Flat from one revolution onward: more pulses buy nothing. The same test at
+# 1 ppr gives 0.0013% from three edges -- 70x better than 60 ppr reaches at any
+# window length -- because every interval is itself one full revolution, so the
+# cancellation is by construction rather than by averaging.
 
 _MIN_EDGES_FOR_DRIFT: int = 5
 # Drift compares the median interval of each half of the block, so it needs
@@ -244,8 +311,19 @@ class TachSettings:
             v = str(d.get(key, default) or default)
             return v if v in allowed else default
 
+        ppr = max(1, int(d.get('pulses_per_rev', 1) or 1))
+        if ppr != 1:
+            # Honoured, not clamped. Clamping a hand-edited ppr=6 to 1 would
+            # report six times the true speed with nothing on screen saying so,
+            # which is worse than the unsupported configuration itself.
+            log.warning(
+                'pulses_per_rev=%d is an unsupported configuration: the UI only '
+                'produces 1 pulse/rev, and accuracy above 1 ppr degrades until a '
+                'whole revolution has been observed (0.091%% vs 0.0013%%). The '
+                'value is being honoured, not clamped.', ppr)
+
         return cls(
-            pulses_per_rev=max(1, int(d.get('pulses_per_rev', 1) or 1)),
+            pulses_per_rev=ppr,
             polarity=_str('polarity', 'rising', POLARITIES),
             threshold_mode=_str('threshold_mode', 'adaptive', THRESHOLD_MODES),
             threshold_mv=float(d.get('threshold_mv', 2500.0)),

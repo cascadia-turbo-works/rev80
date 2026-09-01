@@ -48,6 +48,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   three `speed_gate_*` keys in `_BUILTIN_ACQ`, so every device and acquisition
   YAML written before R43 upgrades silently through the existing merge.
 
+### Changed
+- **Tachometer support is specified around 1 pulse/rev** (decision D-6). The UI will
+  offer no pulses/rev control: one reflective tape or one keyway is not merely the
+  common installation but the accurate one. At 1 ppr every interval is exactly one
+  shaft revolution, so encoder division error and once-per-rev speed modulation cancel
+  *inside each interval by construction*; above 1 ppr they cancel only after a whole
+  revolution has been observed, and extra pulses buy nothing before that. Measured, a
+  60-line encoder with ±0.05° division error and 0.5% once-per-rev modulation over 40
+  random start phases: 0.580% error at 0.05 rev, 0.344% at 0.25 rev, **0.091% at 1.00
+  rev and flat thereafter out to 20 rev**. The same test at 1 ppr gives **0.0013%** from
+  three edges — 70× better than 60 ppr reaches at any window length.
+  - `pulses_per_rev` and the divide are retained so the capability can be restored, and
+    a value other than 1 is **honoured with a warning, never silently clamped** —
+    clamping would report an integer multiple of the true speed with nothing on screen
+    to say so.
+  - Consequently there is **no minimum-revolutions constant and no new user config**:
+    `MIN_EDGES = 3` already is two whole revolutions at 1 ppr.
+  - Rejected: inferring ppr from multi-modal pulse periods. Unequally spaced reflectors
+    are already flagged `inconsistent` by `interval_spread` once the two gaps differ by
+    more than ~90° of shaft rotation, and a near-evenly-spaced pair reads an exact
+    integer multiple — the most obvious possible error to a technician who knows the
+    machine.
+- The published slowest-measurable-shaft figures are **3× higher than first stated**.
+  Guaranteeing three rising edges regardless of start phase needs a block spanning three
+  periods, so the floor is `180/T_block` RPM: 45 RPM at 0.25 Hz bins, 180 at 1 Hz, and
+  **1800 at 10 Hz** — where nothing below 1800 RPM can be read at all. That is the one
+  case where a legitimate setup returns no reading, and the GUI must say so.
+
 ### Fixed
 - **`AcquisitionSettings.copy()` carries `channel_roles`.** The per-channel
   dicts live in the `channels` config section, so unlike the scalars they are
