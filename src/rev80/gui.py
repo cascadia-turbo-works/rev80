@@ -173,6 +173,43 @@ _VOLTAGE_RANGE_LABELS = [
 ]
 
 
+def apply_tach_claim(collector, channel, implicit_enabled, settings=None):
+    """Claim `channel` for the tachometer role, or release it when None.
+
+    Pure of dearpygui so the policy can be tested without a viewport. Returns
+    the new "implicitly enabled" channel, or None.
+
+    Claiming enables the channel. `config.tach_channels` filters by
+    enabled_channels -- deliberately, so a tach role left on a switched-off
+    input does not send the collector hunting for a pulse train nobody is
+    sampling -- which meant claiming a disabled channel previously did nothing
+    at all, and did it silently. Choosing a channel is a statement that it
+    carries the tachometer, so enabling it is what the operator meant.
+
+    A channel enabled *implicitly* this way is switched off again when the role
+    is released. Leaving it on would hand back an enabled vibration channel
+    nobody asked for, carrying a pulse train -- which reads as overall 1515 mV,
+    crest 5.00 and kurtosis 15.94, i.e. a severely failing bearing.
+    """
+    cfg = collector.config
+    for old in [c for c, r in cfg.channel_roles.items() if r == 'tachometer']:
+        del cfg.channel_roles[old]
+        collector.set_tach_settings(old, None)
+        if old == implicit_enabled and old in cfg.enabled_channels:
+            cfg.enabled_channels.remove(old)
+        implicit_enabled = None
+
+    if channel is None:
+        return None
+
+    cfg.channel_roles[channel] = 'tachometer'
+    collector.set_tach_settings(channel, settings or rev80_tach.TachSettings())
+    if channel not in cfg.enabled_channels:
+        cfg.enabled_channels = sorted(cfg.enabled_channels + [channel])
+        return channel
+    return None
+
+
 class GUI:
     collector: rev80.DataCollector
     found_sensors: list
@@ -182,6 +219,9 @@ class GUI:
         self.collector = rev80.DataCollector()
         self.registry = ScopeSensorRegistry()
         self._editing_scope_sensor_id: str | None = None
+        # Channel the Tachometer tab switched on implicitly when it was
+        # claimed, so releasing the role can switch it back off again.
+        self._tach_implicit_enable: int | None = None
         self._num_channels: int = _DEFAULT_NUM_CHANNELS
         self._channel_themes: list = []
         self._peak_themes: list = []
@@ -589,16 +629,39 @@ class GUI:
 
         This tab is the only writer of channel_roles, so there is nowhere for a
         second control to disagree with it.
+
+        Claiming a channel **enables it**. `config.tach_channels` filters by
+        enabled_channels -- deliberately, so a tach role left on a switched-off
+        input does not send the collector hunting for a pulse train nobody is
+        sampling -- which meant claiming a disabled channel previously did
+        nothing at all, silently. Choosing a channel here is a statement that it
+        carries the tachometer, so enabling it is what the operator meant.
+
+        A channel enabled *implicitly* this way is switched off again when the
+        role is released. Leaving it on would hand back an enabled vibration
+        channel nobody asked for, carrying a pulse train -- the overall
+        1515 mV, kurtosis 15.94 reading this feature exists to prevent.
         """
         val = dpg.get_value(ui.TACH_CHANNEL) or "(none)"
-        for ch in list(self.collector.config.channel_roles):
-            if self.collector.config.channel_roles.get(ch) == 'tachometer':
-                del self.collector.config.channel_roles[ch]
-                self.collector.set_tach_settings(ch, None)
-        if val != "(none)":
-            ch = int(val.split(":", 1)[0])
-            self.collector.config.channel_roles[ch] = 'tachometer'
-            self.collector.set_tach_settings(ch, self._tach_settings_from_ui())
+        ch = None if val == "(none)" else int(val.split(":", 1)[0])
+        before = list(self.collector.config.enabled_channels)
+        self._tach_implicit_enable = apply_tach_claim(
+            self.collector, ch, self._tach_implicit_enable,
+            self._tach_settings_from_ui() if ch is not None else None)
+        changed = before != self.collector.config.enabled_channels
+
+        # The stream is constructed with a fixed channel list, so a channel
+        # enabled underneath a running acquisition is simply not being
+        # sampled. Restart rather than leave the tab showing an empty plot
+        # that looks like a dead sensor.
+        if changed and self.collector.is_streaming:
+            self._stop_stream()
+            self._start_stream()
+        elif ch is not None and not self.collector.is_streaming \
+                and self.collector.stream is not None:
+            # Claiming a channel is a request to see it. Start automatically
+            # so there is a waveform to adjust the threshold against.
+            self._start_stream()
         self.collector.init_trend_channels()
         self._rebuild_device_channel_rows()
         self._update_results_section_visibility()
@@ -646,6 +709,12 @@ class GUI:
                 ui.TACH_FLOOR,
                 f"Block {t_block:.2f} s -> slowest measurable shaft "
                 f"{self.format_rate(floor_rpm)}")
+
+        if dpg.does_item_exist(ui.TACH_STREAM_BTN):
+            dpg.configure_item(
+                ui.TACH_STREAM_BTN,
+                label="Stop" if self.collector.is_streaming else "Start",
+                enabled=self.collector.stream is not None)
 
         tach_channels = self.collector.config.tach_channels
         if not tach_channels:
@@ -1001,11 +1070,15 @@ class GUI:
         If multiple frames arrived since the last tick, only the most
         recent is displayed — earlier frames remain in frame_cache for browsing.
         """
+        # Ahead of the new-frame check: with acquisition stopped no frames
+        # arrive, and the Tachometer tab still has to show its Start button,
+        # the measurable-speed floor, and whatever frame is currently loaded.
+        # It early-returns when its dialog is not on screen.
+        self._update_tach_tab()
         if not self.collector.new_frame_event.is_set():
             return
         self.collector.new_frame_event.clear()
         self._display_frame()
-        self._update_tach_tab()
         if self._monitor is not None and self._monitor.is_recording:
             self._update_monitor_card()
 
@@ -1739,12 +1812,23 @@ class GUI:
                     dpg.add_theme_color(dpg.mvThemeCol_Text, grey_color, category=dpg.mvThemeCat_Core)
             # Line 1: color swatch + channel name
             with dpg.group(horizontal=True, parent=ui.DEVSETUP_CHANNEL_GROUP):
-                dpg.add_checkbox(
+                # A tachometer channel's Enable is owned by the Tachometer tab.
+                # Leaving it switchable here would let the operator silently
+                # switch off the tach -- tach_channels filters by enabled, so
+                # the rate would simply stop with no explanation.
+                _en = dpg.add_checkbox(
                     label="Enable",
                     tag=ui.scope_ch_enabled(ch),
                     default_value=is_enabled,
+                    enabled=not is_tach,
                     callback=lambda s, d, c=ch: self._on_channel_enable_change(c),
                 )
+                if is_tach:
+                    self._tooltip(
+                        _en,
+                        "Enabled because this input is claimed as the "
+                        "tachometer. Release it in the Tachometer tab to "
+                        "switch it off.")
                 with dpg.drawlist(width=16, height=16):
                     dpg.draw_rectangle(pmin=(2, 2), pmax=(14, 14), fill=ch_color, color=(0, 0, 0, 0), rounding=2)
                 dpg.add_text(ch_name, tag=ui.scope_ch_name_text(ch))
@@ -3503,7 +3587,19 @@ class GUI:
                                  "width and probe field are not corrected for.")
 
                             dpg.add_separator()
-                            dpg.add_text("--", tag=ui.TACH_READOUT)
+                            with dpg.group(horizontal=True):
+                                _tb = dpg.add_button(
+                                    label="Start", tag=ui.TACH_STREAM_BTN,
+                                    width=90,
+                                    callback=lambda s, d: self._toggle_acquisition())
+                                dpg.add_text("--", tag=ui.TACH_READOUT)
+                            _tip(_tb,
+                                 "Starts and stops acquisition -- the same "
+                                 "control as the main window, not a second "
+                                 "one, because there is one instrument.\n\n"
+                                 "Claiming a tachometer channel starts it "
+                                 "automatically so the waveform is there to "
+                                 "adjust against.")
                             dpg.add_text("", tag=ui.TACH_QUALITY, color=_c("MUTED"))
                             _fl = dpg.add_text("", tag=ui.TACH_FLOOR, color=_c("MUTED"))
                             _tip(_fl,

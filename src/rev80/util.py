@@ -408,6 +408,7 @@ class UI_Elements:
     TACH_PLOT_THRESH     = 'TACH_PLOT_THRESH'
     TACH_PLOT_EDGES      = 'TACH_PLOT_EDGES'
     TACH_READOUT         = 'TACH_READOUT'
+    TACH_STREAM_BTN      = 'TACH_STREAM_BTN'
     TACH_QUALITY         = 'TACH_QUALITY'
     TACH_FLOOR           = 'TACH_FLOOR'
     # Shaft-rate readout on the main display.
