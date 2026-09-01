@@ -108,14 +108,20 @@ def test_tach_pulse_defaults_to_one_pulse_per_rev():
 # --- per-channel sources -------------------------------------------------
 
 def test_empty_channel_sources_keeps_the_tiled_behaviour_identical():
-    """Existing tests and callers must be untouched by this feature."""
+    """Existing tests and callers must be untouched by this feature.
+
+    The source has to be a *stochastic* one for this to mean anything. A pure
+    tone is deterministic, so two independent generator calls return identical
+    arrays and the assertion holds whether the block was tiled or generated
+    per channel -- it would pass with the tiled path deleted.
+    """
     cfg = _cfg(channels=(0, 1))
     s = sim.SimulatedSensor(cfg, sensor=None, callback=lambda *a: None)
-    s.source = (sim.GenerateTone, 1.0, 500.0)
+    s.source = (sim.GenerateBearingVibration,)     # unseeded: differs per call
     block = s._sample()
     assert block.shape[1] == 2
     assert np.array_equal(block[:, 0], block[:, 1]), (
-        'with no per-channel sources every column is the same signal')
+        'with no per-channel sources every column is one tiled signal')
 
 
 def test_channel_sources_gives_each_channel_its_own_signal():
