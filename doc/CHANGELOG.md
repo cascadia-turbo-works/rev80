@@ -48,6 +48,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   three `speed_gate_*` keys in `_BUILTIN_ACQ`, so every device and acquisition
   YAML written before R43 upgrades silently through the existing merge.
 
+- **`rev80-headless` refuses tachometer-role channels** — step 7. Tachometry is out of
+  scope there (tracked as R44), but out of scope has to mean "does not do it" rather than
+  "does it wrong". Headless reads the same `devices/*.yaml` the GUI writes, so a channel
+  the operator configured as a tachometer would otherwise be enabled, high-passed, given
+  an overall, trended and fed to the anomaly hooks as vibration. Measured on a 5% duty
+  pulse train at 1800 RPM through the real `process_sample`: overall 1514.9 mV, crest
+  5.00, **kurtosis 15.94** and 63 spectral peaks — an analyst reviewing that unattended
+  session concludes a bearing is failing badly. It also drifts on nothing: a tach LED
+  ageing from 5.0 V to 4.5 V moves that channel's overall by exactly −10%, the shipped
+  `RmsThresholdHook` threshold, on three consecutive frames. The refusal logs at INFO
+  rather than passing silently. The per-channel config loading moved out of `run()` into
+  `_apply_channel_config()` in the process.
+
 - **Speed gating** — step 6. A frame captured outside a declared shaft-speed window is
   still measured, displayed and stored, but is excluded from trending, baseline
   adaptation and alarm evaluation, because its amplitude is *correct* and simply not
