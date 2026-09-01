@@ -48,6 +48,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   three `speed_gate_*` keys in `_BUILTIN_ACQ`, so every device and acquisition
   YAML written before R43 upgrades silently through the existing merge.
 
+- **Duty cycle and pulse widths** on `TachResult`, persisted in v5. `detect_edges` found
+  only the active edge, so pulse width — and therefore duty — was not captured at all.
+  `detect_pulses()` now returns both edges from the same Schmitt state, so the two can
+  never disagree about where the signal was high, and `pulse_widths()` pairs them.
+  - A pulse straddling either block boundary is **dropped, not truncated**: its remainder
+    is a function of where the block happened to start, so including it would bias duty
+    by something that has nothing to do with the reflector.
+  - Duty is measured against the *pulse* period rather than the shaft period, because a
+    reflector subtends a fraction of the interval between pulses whenever there is more
+    than one per turn.
+  - Under `falling` polarity it measures the notch, which is what a keyphasor's key
+    actually subtends.
+  - This is the prerequisite for surface velocity (R46): the reflector subtends `duty` of
+    a revolution, so circumference is `L/duty` and `v = f·L/duty` — the tape doubles as a
+    shaft-diameter measurement. Rolled into v5 rather than a new file version, since the
+    format has not shipped and no real-world file contains a `TachResult` yet.
+
 - **`RmsThresholdHook` default 10% → 50%** (decision D-1). Not a tachometer change — a
   correction to a shipped default that the speed analysis exposed. For a rigid rotor
   below its first critical the 1× velocity goes as ω³:

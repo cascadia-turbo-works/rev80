@@ -360,6 +360,20 @@ class TachResult:
     samplerate: float
     rel_time: float
     edge_times_s: np.ndarray = field(repr=False)
+    # Width of each *complete* pulse in the block -- one whose opening and
+    # closing edge both fall inside it. A pulse truncated by the block boundary
+    # contributes nothing, because counting its remainder would drag the duty
+    # down by an amount that depends only on where the block happened to start.
+    pulse_widths_s: np.ndarray = field(
+        default_factory=lambda: np.empty(0, dtype=np.float64), repr=False)
+    # Mean pulse width as a fraction of the shaft period, 0.0 when no complete
+    # pulse was seen. The reflector subtends this fraction of a revolution, so
+    # with its physical arc length L the shaft circumference is L/duty and the
+    # surface velocity is f*L/duty -- the tape doubles as a diameter
+    # measurement (R46). Measures the *active* state, so under 'falling'
+    # polarity it is the width of the notch, which is what a keyphasor's key
+    # actually subtends.
+    duty_cycle: float = 0.0
 
     @property
     def shaft_hz(self) -> float | None:
@@ -381,6 +395,19 @@ class TachResult:
 # Detection
 # --------------------------------------------------------------------------
 
+def detect_pulses(x_mv: np.ndarray,
+                  settings: 'TachSettings | None' = None
+                  ) -> 'tuple[np.ndarray, np.ndarray]':
+    """Return (opening_edges, closing_edges) as fractional sample indices.
+
+    Opening edges are what time the shaft; closing edges exist only to measure
+    pulse width, and therefore duty cycle. Both are found from the same Schmitt
+    state, so they cannot disagree about where the signal was high.
+    """
+    rise, fall, _ = _schmitt(x_mv, settings)
+    return rise, fall
+
+
 def detect_edges(x_mv: np.ndarray,
                  settings: 'TachSettings | None' = None) -> np.ndarray:
     """Return sub-sample edge positions, in fractional sample indices.
@@ -394,10 +421,18 @@ def detect_edges(x_mv: np.ndarray,
     actual crossing, where the loop reports a phantom edge at sample 1 whenever
     a block happens to begin part-way through a pulse.
     """
+    return _schmitt(x_mv, settings)[0]
+
+
+def _schmitt(x_mv: np.ndarray,
+             settings: 'TachSettings | None' = None
+             ) -> 'tuple[np.ndarray, np.ndarray, float]':
+    """Shared Schmitt pass: (opening edges, closing edges, span)."""
+    _empty = np.empty(0, dtype=np.float64)
     s = settings or TachSettings()
     x = np.asarray(x_mv, dtype=np.float64)
     if x.size < 2:
-        return np.empty(0, dtype=np.float64)
+        return _empty, _empty, 0.0
 
     # Polarity is applied here, exactly once, by inverting the signal. Every
     # threshold below is then a rising-edge threshold.
@@ -406,7 +441,7 @@ def detect_edges(x_mv: np.ndarray,
 
     span = float(x.max() - x.min())
     if span < s.min_amplitude_mv:
-        return np.empty(0, dtype=np.float64)
+        return _empty, _empty, span
 
     if s.threshold_mode == 'fixed':
         mid = float(s.threshold_mv) if s.polarity != 'falling' else -float(s.threshold_mv)
@@ -423,7 +458,7 @@ def detect_edges(x_mv: np.ndarray,
     state[x < lo] = -1
     decided = state != 0
     if not decided.any():
-        return np.empty(0, dtype=np.float64)
+        return _empty, _empty, span
     src = np.maximum.accumulate(np.where(decided, np.arange(x.size), 0))
     filled = state[src]
     filled[:int(np.argmax(decided))] = 0     # before the first decided sample
@@ -432,15 +467,25 @@ def detect_edges(x_mv: np.ndarray,
     # has no preceding low state and so contributes no edge, which is correct:
     # its rising edge happened in the previous block.
     k = np.flatnonzero((filled[1:] == 1) & (filled[:-1] == -1)) + 1
+    # Closing edges: the mirror transition, found from the same state array so
+    # the two can never disagree about where the signal was high.
+    kf = np.flatnonzero((filled[1:] == -1) & (filled[:-1] == 1)) + 1
     if k.size == 0:
-        return np.empty(0, dtype=np.float64)
+        return _empty, _interp(x, kf, lo), span
 
     # Sub-sample interpolation of the `hi` crossing between k-1 and k. One line
     # of arithmetic, worth 2-9x accuracy at every pulses_per_rev above 1, and
     # it turns a 60-line encoder at 600 RPM from 0.79% error into 0.09%.
+    return _interp(x, k, hi), _interp(x, kf, lo), span
+
+
+def _interp(x: np.ndarray, k: np.ndarray, level: float) -> np.ndarray:
+    """Sub-sample position of each threshold crossing at index k."""
+    if k.size == 0:
+        return np.empty(0, dtype=np.float64)
     y0, y1 = x[k - 1], x[k]
     denom = y1 - y0
-    frac = np.where(denom != 0, (hi - y0) / np.where(denom != 0, denom, 1.0), 0.0)
+    frac = np.where(denom != 0, (level - y0) / np.where(denom != 0, denom, 1.0), 0.0)
     return (k - 1) + np.clip(frac, 0.0, 1.0)
 
 
@@ -473,12 +518,30 @@ def _interval_stats(intervals: np.ndarray) -> tuple[float, float, float]:
     return med, spread, drift
 
 
+def pulse_widths(rise: np.ndarray, fall: np.ndarray,
+                 samplerate: float) -> np.ndarray:
+    """Widths, in seconds, of pulses whose opening AND closing edge are present.
+
+    A pulse straddling either block boundary is dropped rather than truncated:
+    its remainder is a function of where the block happened to start, so
+    including it biases duty by an amount that has nothing to do with the
+    reflector.
+    """
+    if rise.size == 0 or fall.size == 0 or samplerate <= 0:
+        return np.empty(0, dtype=np.float64)
+    # For each opening edge, the first closing edge after it.
+    idx = np.searchsorted(fall, rise, side='right')
+    ok = idx < fall.size
+    return (fall[idx[ok]] - rise[ok]) / float(samplerate)
+
+
 def estimate_rpm(edge_idx: np.ndarray,
                  samplerate: float,
                  ch: int = 0,
                  rel_time: float = 0.0,
                  settings: 'TachSettings | None' = None,
-                 span_mv: float = 0.0) -> TachResult:
+                 span_mv: float = 0.0,
+                 widths_s: 'np.ndarray | None' = None) -> TachResult:
     """Turn edge positions into a shaft speed.
 
     The estimator is the **median of intervals**, not first-to-last. Measured
@@ -503,12 +566,16 @@ def estimate_rpm(edge_idx: np.ndarray,
     fs = float(samplerate)
     edge_times = edges / fs if fs > 0 else np.empty(0, dtype=np.float64)
 
-    def _result(rpm, quality, spread=0.0, drift=0.0):
+    widths = (np.empty(0, dtype=np.float64) if widths_s is None
+              else np.asarray(widths_s, dtype=np.float64))
+
+    def _result(rpm, quality, spread=0.0, drift=0.0, duty=0.0):
         return TachResult(
             channel=ch, rpm=rpm, quality=quality, n_edges=int(edges.size),
             span_mv=float(span_mv), interval_spread=float(spread),
             speed_drift_pct=float(drift), pulses_per_rev=s.pulses_per_rev,
             samplerate=fs, rel_time=float(rel_time), edge_times_s=edge_times,
+            pulse_widths_s=widths, duty_cycle=float(duty),
         )
 
     # Note this reports 'too_few_edges' and not 'no_signal' even for zero
@@ -523,6 +590,12 @@ def estimate_rpm(edge_idx: np.ndarray,
     if med <= 0:
         return _result(None, QUALITY_TOO_FEW_EDGES)
 
+    # Duty is the mean complete-pulse width over the pulse period. The period
+    # here is the *pulse* period (before the pulses_per_rev divide), because a
+    # reflector subtends a fraction of the interval between pulses, not of a
+    # revolution, whenever there is more than one per turn.
+    duty = float(np.mean(widths) / med) if widths.size else 0.0
+
     # pulses_per_rev divides here and nowhere else in the module.
     rpm = 60.0 / med / s.pulses_per_rev
 
@@ -530,10 +603,10 @@ def estimate_rpm(edge_idx: np.ndarray,
     # outlier; spread is not. When drift fires, it explains the spread, so it
     # wins -- the machine is changing speed rather than the sensor miscounting.
     if abs(drift) > SPEED_DRIFT_MAX_PCT:
-        return _result(rpm, QUALITY_UNSTEADY, spread, drift)
+        return _result(rpm, QUALITY_UNSTEADY, spread, drift, duty)
     if spread > INTERVAL_SPREAD_MAX:
-        return _result(rpm, QUALITY_INCONSISTENT, spread, drift)
-    return _result(rpm, QUALITY_OK, spread, drift)
+        return _result(rpm, QUALITY_INCONSISTENT, spread, drift, duty)
+    return _result(rpm, QUALITY_OK, spread, drift, duty)
 
 
 def tach_result(x_mv: np.ndarray,
@@ -562,6 +635,7 @@ def tach_result(x_mv: np.ndarray,
             rel_time=float(rel_time), edge_times_s=np.empty(0, dtype=np.float64),
         )
 
-    edges = detect_edges(x, s)
-    return estimate_rpm(edges, samplerate, ch=ch, rel_time=rel_time,
-                        settings=s, span_mv=span)
+    rise, fall = detect_pulses(x, s)
+    widths = pulse_widths(rise, fall, samplerate)
+    return estimate_rpm(rise, samplerate, ch=ch, rel_time=rel_time,
+                        settings=s, span_mv=span, widths_s=widths)

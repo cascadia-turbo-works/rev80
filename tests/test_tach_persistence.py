@@ -194,3 +194,28 @@ def test_a_newer_file_version_warns_rather_than_misreading(tmp_path, caplog):
     with caplog.at_level('WARNING'):
         dc2.load_data(path)
     assert any('version' in r.message.lower() for r in caplog.records)
+
+
+# --- duty cycle (R46 prerequisite, rolled into v5) ------------------------
+
+def test_pulse_widths_and_duty_are_persisted(tmp_path):
+    """Duty turns a reflector's physical size into a shaft diameter, and hence
+    a surface velocity (R46). Rolled into v5 rather than a new version: the
+    format has not shipped and no real-world file contains a TachResult yet.
+    """
+    import h5py as _h5
+    _, path = _saved(tmp_path)
+    with _h5.File(path, 'r') as f:
+        cg = f['frames/0/1']
+        assert 'pulse_widths' in cg
+        assert cg['pulse_widths'].size > 0
+        assert 0.0 < float(cg.attrs['duty_cycle']) < 1.0
+
+
+def test_duty_survives_the_round_trip(tmp_path):
+    dc, path = _saved(tmp_path)
+    live = dc.current_frame()[1].tach.duty_cycle
+    dc2 = vc.DataCollector(config=vc.AcquisitionSettings())
+    dc2.load_data(path)
+    reloaded = dc2.current_frame()[1].tach.duty_cycle
+    assert reloaded == pytest.approx(live, rel=1e-9)

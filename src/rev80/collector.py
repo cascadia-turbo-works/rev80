@@ -83,6 +83,15 @@ def _write_channel_group(h5_grp, ch: int, sample: 'rev80.VibeSample',
         res = sample.tach
         edges = np.asarray(getattr(res, 'edge_times_s', []), dtype=np.float64)
         cg.create_dataset('edge_times', data=edges, **kw)
+        # Widths of complete pulses, for duty cycle -- which turns a
+        # reflector's physical size into a shaft diameter and hence a surface
+        # velocity (R46). Roughly doubles the tach channel's footprint, which
+        # against the ~1400x saving from not storing the waveform is nothing.
+        cg.create_dataset(
+            'pulse_widths',
+            data=np.asarray(getattr(res, 'pulse_widths_s', []), dtype=np.float64),
+            **kw)
+        cg.attrs['duty_cycle'] = float(getattr(res, 'duty_cycle', 0.0))
         cg.attrs['rpm'] = float('nan') if res is None or res.rpm is None else float(res.rpm)
         cg.attrs['quality'] = str(getattr(res, 'quality', 'no_signal'))
         cg.attrs['n_edges'] = int(getattr(res, 'n_edges', 0))
@@ -1186,7 +1195,7 @@ class DataCollector:
             res = estimate_rpm(
                 np.asarray(sample.tach.edge_times_s) * sample.samplerate,
                 sample.samplerate, ch=ch, rel_time=sample.rel_time,
-                settings=settings)
+                settings=settings, widths_s=sample.tach.pulse_widths_s)
         else:
             res = tach_result(sample.data, sample.samplerate, ch=ch,
                               rel_time=sample.rel_time, settings=settings)
@@ -1687,10 +1696,13 @@ class DataCollector:
             return x.decode() if isinstance(x, bytes) else str(x)
 
         edges = np.ascontiguousarray(cg["edge_times"][()], dtype=np.float64)
+        widths = (np.ascontiguousarray(cg["pulse_widths"][()], dtype=np.float64)
+                  if "pulse_widths" in cg else None)
         ch_rel = float(cg.attrs.get("rel_time", rel_time))
         settings = self.tach_settings_for(ch)
         res = rev80.tach.estimate_rpm(edges * float(samplerate), float(samplerate),
-                                      ch=ch, rel_time=ch_rel, settings=settings)
+                                      ch=ch, rel_time=ch_rel, settings=settings,
+                                      widths_s=widths)
         sample = rev80.VibeSample(
             status=decode(cg.attrs.get("status", status)),
             _timestamp=timestamp, samplerate=float(samplerate), unit="mV",
