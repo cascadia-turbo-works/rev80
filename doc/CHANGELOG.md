@@ -7,6 +7,69 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — feature/tachometer (2026-08-31)
+
+### Added
+- **`rev80.tach`** — tachometer edge detection and shaft-speed estimation.
+  Pure functions plus two frozen dataclasses (`TachSettings`, `TachResult`),
+  free of dearpygui / h5py / `DataCollector` imports. Nothing wires it in yet;
+  this is step 1 of the tachometer feature.
+  - `detect_edges()` — vectorised Schmitt trigger with sub-sample interpolation
+    of the crossing instant. The vectorised form is not just 68x faster than
+    the obvious loop (0.090 ms vs 6.1 ms on a 1.0 s block) but more correct:
+    it requires a real crossing, where the loop reports a phantom edge at
+    sample 1 whenever a block opens part-way through a pulse.
+  - `estimate_rpm()` — **median of intervals**, not first-to-last. Measured at
+    1800 RPM over 200 reps, one dropped edge costs first-to-last 62.09 RPM and
+    the median 0.15 RPM. Robustness to a miscount is worth more than tightness
+    under jitter, because jitter shows up in `interval_spread` and a miscount
+    does not.
+  - Quality is classified, not collapsed: `ok` / `no_signal` /
+    `too_few_edges` / `inconsistent` / `unsteady`. **`rpm` is `None` when there
+    is no usable reading and never `0.0`** — "I cannot see a tach signal" and
+    "the shaft is stopped" send an analyst to different places.
+
+### Measured
+Constants carry the table that justifies them, per house convention. Verified
+on a PicoScope 4424A (serial 12462/0067) with AWG loopback on channel A.
+
+- **The reported sample rate is 41666.5 Hz, not `RAW_SAMPLERATE_HZ` (40000).**
+  The driver rounds the sample interval to 12 us, so the true rate is
+  83333/2 Hz. Any RPM computed from the constant reads **4.166% high on
+  hardware and is exactly right in CI** — the worst combination a defect can
+  have. `tach` takes the rate from the sample; a test pins it.
+- **`MIN_PULSE_AMPLITUDE_MV = 1000.0`** — measured front-end noise with the AWG
+  idle: 0.37 mV RMS at +/-1 V rising to 5.09 mV RMS at +/-20 V, worst block
+  span 42.5 mV. The gate clears that by 23.5x and still sits a factor of two
+  below any real logic-level swing. Without it an adaptive threshold on pure
+  noise returns ~9100 edges/block — 547752 RPM.
+- **Adaptive thresholding is the default, and the reason is electrical.** AC
+  coupling removes the mean, and on a pulse train the mean is the duty cycle.
+  On the bench at 30 Hz, a fixed threshold placed at the correct DC midpoint
+  detected nothing at all above ~55% duty (AC-coupled signal maximum falls to
+  980 mV at 70% duty, 750 mV at 85%), while adaptive returned 1801.7 RPM in
+  all ten duty/coupling combinations. The fixed-threshold failure is silent
+  and reads as a stopped machine.
+- **RPM accuracy: +/-0.2% of reading**, 300 to 10200 RPM at 1 pulse/rev
+  (worst case 0.164% at 300 RPM, 0.040% at 10200). The earlier simulated claim
+  of a fixed +/-0.2 RPM does not survive contact with hardware — error scales
+  with speed.
+- **`SPEED_DRIFT_MAX_PCT = 1.0`** — within-block speed change above which a
+  frame is flagged `unsteady`. Bearing analysis is performed at steady state,
+  so a smeared spectrum is rejected rather than corrected; this is what
+  replaces an order-resampling path. The only constant in the module still set
+  from simulation rather than the bench.
+
+### Notes
+- Sub-sample interpolation only works on a **band-limited** edge. On an ideal
+  rectangle both straddling samples sit at the rails and the estimator
+  degenerates to nearest-sample quantisation. Real edges are band-limited by
+  the mandatory anti-alias filter upstream, which is why bench accuracy beats
+  what a synthetic square wave achieves — and why accuracy tests must push
+  their signals through `antialias_decimate`.
+- All 40 tests in `tests/test_tach.py` were revert-checked: each claimed
+  invariant was confirmed to fail with its guard removed.
+
 ## [Unreleased] — feature/spectral-averaging (2026-08-29)
 
 ### Added
