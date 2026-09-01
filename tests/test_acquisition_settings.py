@@ -119,8 +119,10 @@ def test_n_fft_bins():
 
 
 def test_memory_bytes():
+    """Against raw_blocksize, not blocksize: frame_cache/HDF5 hold the raw
+    (acquisition-rate) data, not the maxfreq-decimated display view."""
     config = AcquisitionSettings()
-    assert config.memory_bytes == config.blocksize * 8
+    assert config.memory_bytes == config.raw_blocksize * 8
 
 
 def test_filter_defaults():

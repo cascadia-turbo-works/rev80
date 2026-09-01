@@ -10,6 +10,24 @@ from rev80.peaks import DEFAULT_THRESHOLD_DB as PEAK_THRESHOLD_DB_DEFAULT
 
 log = rev80.get_logger(__name__)
 
+#: Fixed acquisition/storage sample rate (Hz), independent of the displayed
+#: F_max. Bearing housing resonances (envelope/demodulation analysis) live
+#: at 2-20 kHz -- well above where a display-driven F_max (often 1-2 kHz
+#: per ISO route-monitoring convention) would give any Nyquist headroom.
+#: Acquiring at a fixed rate high enough to always contain a resonance
+#: means envelope analysis works regardless of what F_max the user has
+#: picked for the Spectrum tab.
+#:
+#: Value validated on real hardware (PicoScope 4424A, see
+#: scripts/validate-streaming-capacity and picoscope.py's
+#: STREAMING_CEILING_HZ comment): 40000 Hz -> _choose_osr=2 -> raw ADC
+#: rate ~83.3 kHz/channel, clean at both 3 and 4 simultaneous channels,
+#: 0 overflow / 0 rate-degradation events, consistently across repeated
+#: 45s runs. 50000 Hz sits at the measured 100 kHz/channel ceiling with
+#: zero headroom and was not reliable run-to-run on identical hardware
+#: and settings (0-2 rate-degradation events); not used.
+RAW_SAMPLERATE_HZ: int = 40_000
+
 
 def _opt_float(v) -> float | None:
     """Coerce a config value to float, preserving None (and empty/0 as unset)."""
@@ -23,12 +41,25 @@ def _opt_float(v) -> float | None:
 class AcquisitionSettings:
     """Spectrum acquisition parameters.
 
-    The user controls two primary values — maxfreq and binsize.
-    Everything else (samplerate, blocksize, acquisition time) is derived.
+    Two rates, not one:
+
+    - `raw_samplerate` / `raw_blocksize` — fixed at RAW_SAMPLERATE_HZ,
+      independent of maxfreq. This is what PicoScopeStream actually
+      acquires, what VibeSample.data/HDF5/frame_cache hold, and what
+      envelope analysis operates on directly.
+    - `samplerate` / `blocksize` — unchanged from before this split:
+      still maxfreq/binsize-derived, still what the Acquisition dialog's
+      "Sample Rate" field shows and what the Spectrum tab's Welch PSD is
+      computed at. DataCollector digitally decimates the raw block down
+      to this rate (see collector.decimate_to_rate) before computing the
+      displayed spectrum -- maxfreq no longer drives acquisition, only
+      what's displayed/analysed from it.
 
     Arithmetic flow:
-        maxfreq  → samplerate = nextpow2(2.56 * maxfreq)
-        binsize  → blocksize  = nextpow2(samplerate / binsize)
+        maxfreq  → samplerate = nextpow2(2.56 * maxfreq)   (display)
+        binsize  → blocksize  = nextpow2(samplerate / binsize)  (display)
+        RAW_SAMPLERATE_HZ → raw_blocksize, spanning the same
+            acquisition_period as blocksize above  (acquisition/storage)
     """
     _fm: float = 2e3               # max analysis frequency (Hz)
     _df: float = 2.0               # frequency bin resolution (Hz)
@@ -199,12 +230,41 @@ class AcquisitionSettings:
         return nextpow2(int(self.samplerate / self._df))
 
     @property
+    def raw_samplerate(self) -> int:
+        """Fixed acquisition/storage rate -- see RAW_SAMPLERATE_HZ. Not maxfreq-derived."""
+        return RAW_SAMPLERATE_HZ
+
+    @property
+    def raw_blocksize(self) -> int:
+        """Raw-rate block length spanning the same duration as `blocksize` (display).
+
+        One frame is one time window at two sample counts -- this and
+        `blocksize` cover the same acquisition_period. Not necessarily a
+        power of two: unlike `blocksize` this isn't a Welch segment length,
+        just how many samples PicoScopeStream accumulates per callback.
+        """
+        return max(1, round(self.raw_samplerate * self.acquisition_period))
+
+    @property
     def maxfreq(self) -> float:
         return self._fm
 
     @maxfreq.setter
     def maxfreq(self, fm: float):
-        self._fm = float(fm)
+        fm = float(fm)
+        # samplerate/blocksize (display) are no longer what acquisition runs
+        # at, but maxfreq still can't ask to display more than
+        # raw_samplerate/2 actually contains -- the anti-alias filter has
+        # already discarded anything above that before this data exists.
+        # 1.28x mirrors the same margin `samplerate`'s own docstring uses.
+        max_displayable = RAW_SAMPLERATE_HZ / 2.0 / 1.28
+        if fm > max_displayable:
+            log.warning(
+                "maxfreq=%.1f Hz exceeds what raw_samplerate=%d Hz can display "
+                "(max %.1f Hz) -- clamping.", fm, RAW_SAMPLERATE_HZ, max_displayable,
+            )
+            fm = max_displayable
+        self._fm = fm
 
     @property
     def binsize(self) -> float:
@@ -256,6 +316,14 @@ class AcquisitionSettings:
     def band(self) -> tuple[float, float]:
         """The declared band as (fmin, fmax), both resolved."""
         return self.band_fmin_resolved, self.band_fmax_resolved
+
+    @property
+    def raw_sampleperiod(self) -> float:
+        return 1.0 / self.raw_samplerate
+
+    @property
+    def raw_time_vec(self) -> np.ndarray:
+        return np.arange(self.raw_blocksize) * self.raw_sampleperiod
 
     @property
     def sampleperiod(self) -> float:
@@ -314,8 +382,15 @@ class AcquisitionSettings:
 
     @property
     def memory_bytes(self) -> int:
-        """Approximate memory per channel per block (float64)."""
-        return self.blocksize * 8
+        """Approximate memory per channel per block (float64).
+
+        Against raw_blocksize, not blocksize: frame_cache/HDF5 hold the raw
+        (acquisition-rate) data, not the maxfreq-decimated display view, so
+        this is what actually drives cache/storage cost. Consequently it no
+        longer varies with F_max -- only with binsize (via acquisition_period)
+        and cache_frames.
+        """
+        return self.raw_blocksize * 8
 
 @dataclass
 class VibeSample:
@@ -348,6 +423,15 @@ class VibeSample:
     # is replayed or the filter config changed after capture.
     filtered_mv: np.ndarray | None      = field(default=None, repr=False)
     _filter_config_key: tuple | None    = field(default=None, repr=False)
+
+    # filtered_mv digitally decimated from samplerate (raw acquisition rate)
+    # down to the maxfreq-driven display rate, for Spectrum-tab Welch input.
+    # Cached the same way as psd_mv -- decimation is real compute
+    # (FIR filter + polyphase resample) and process_sample can be called
+    # many times on one frame (browsing, unit changes).
+    decimated_mv: np.ndarray | None        = field(default=None, repr=False)
+    decimated_samplerate: float | None     = field(default=None, repr=False)
+    _decimation_config_key: tuple | None   = field(default=None, repr=False)
 
     @classmethod
     def empty(cls):

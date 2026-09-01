@@ -398,54 +398,57 @@ class GUI:
             self._last_time_x0_ms = float(time[0])
         dpg.set_value(ui.plt_time_series(ch), [time.tolist(), signal.tolist()])
 
-    def _env_band_for(self, result: 'rev80.ChannelResult'):
+    def _env_band_for(self, signal: np.ndarray, samplerate: float):
         """Demodulation band to use: the typed one, else auto from this frame.
 
-        Returns (lo, hi) or None when no usable band can be formed -- a very
-        low F_max leaves no room above the machine orders for a resonance to
-        sit in, and inventing a band there would produce a confident-looking
-        plot of nothing.
+        Returns (lo, hi) or None when no usable band can be formed -- too
+        little bandwidth leaves no room above the machine orders for a
+        resonance to sit in, and inventing a band there would produce a
+        confident-looking plot of nothing.
         """
         lo = float(dpg.get_value(ui.ENV_BAND_LO) or 0.0)
         hi = float(dpg.get_value(ui.ENV_BAND_HI) or 0.0)
         if lo > 0 and hi > lo:
             return (lo, hi)
         try:
-            return rev80_env.suggest_band(
-                result.time_data, result.samplerate,
-                fmax=self.collector.config.band_fmax_resolved,
-            )
+            return rev80_env.suggest_band(signal, samplerate, fmax=samplerate / 2.0)
         except (ValueError, IndexError):
             return None
 
-    def _update_env_fmax_warning(self, result: 'rev80.ChannelResult'):
-        """Warn when F_max leaves too little bandwidth for envelope analysis to work.
+    def _update_env_fmax_warning(self, samplerate: float):
+        """Warn when the raw acquisition bandwidth is too narrow for envelope analysis.
 
-        The mandatory anti-alias filter upstream has already removed
-        everything above Nyquist before this data was acquired -- a bearing
-        housing resonance (typically 2-20 kHz) that doesn't fit under Nyquist
-        isn't in the block at all, at any band setting. Below that, Auto (or
-        a hand-typed band) can only center on ordinary machine content, which
-        looks like a normal envelope plot but isn't measuring what it claims
-        to.
+        Envelope analysis reads the raw acquisition signal directly (see
+        DataCollector.eu_scaled_raw) rather than the maxfreq-decimated
+        display data, so under the shipped RAW_SAMPLERATE_HZ this is a rare
+        safety net rather than something F_max choice can trigger day to
+        day. It still matters if RAW_SAMPLERATE_HZ is ever lowered, or for a
+        file captured under an older version at a lower rate: a bearing
+        housing resonance (typically 2-20 kHz) that doesn't fit under
+        Nyquist isn't in the block at all, at any band setting.
         """
         if not dpg.does_item_exist(ui.ENV_FMAX_WARNING):
             return
-        nyquist = result.samplerate / 2.0
+        nyquist = samplerate / 2.0
         if nyquist < rev80_env.MIN_USEFUL_NYQUIST_HZ:
             dpg.set_value(
                 ui.ENV_FMAX_WARNING,
-                f"F_max ({self.collector.config.maxfreq:.0f} Hz) gives only "
-                f"{nyquist:.0f} Hz of bandwidth -- a bearing resonance "
+                f"This recording's acquisition bandwidth gives only "
+                f"{nyquist:.0f} Hz of headroom -- a bearing resonance "
                 f"(typically 2-20 kHz) may not fit under Nyquist at all. "
-                f"Raise F_max in the Acquisition dialog for genuine defect "
-                f"detection.")
+                f"Envelope/demodulation results here should not be trusted "
+                f"for genuine defect detection.")
             dpg.configure_item(ui.ENV_FMAX_WARNING, show=True)
         else:
             dpg.configure_item(ui.ENV_FMAX_WARNING, show=False)
 
-    def _update_envelope_plot(self, result: 'rev80.ChannelResult', ch: int):
+    def _update_envelope_plot(self, sample: 'rev80.VibeSample | None', ch: int):
         """Band-pass, demodulate, and plot the envelope spectrum for one channel.
+
+        Takes the raw VibeSample, not process_sample()'s ChannelResult:
+        ChannelResult.time_data is decimated to the maxfreq-driven display
+        rate, which would throw away exactly the high-frequency headroom
+        this tab exists to use. See DataCollector.eu_scaled_raw.
 
         Skipped entirely when the tab is disabled -- not every job is a
         bearing job, and there's no point band-pass filtering and running a
@@ -456,14 +459,17 @@ class GUI:
         tag = ui.plt_env_series(ch)
         if not dpg.does_item_exist(tag):
             return
-        self._update_env_fmax_warning(result)
-        band = self._env_band_for(result)
+        if sample is None:
+            dpg.set_value(tag, [[], []])
+            return
+        signal, samplerate, _unit = self.collector.eu_scaled_raw(ch, sample)
+        self._update_env_fmax_warning(samplerate)
+        band = self._env_band_for(signal, samplerate)
         if band is None:
             dpg.set_value(tag, [[], []])
             return
         try:
-            freq, spec = rev80_env.envelope_spectrum(
-                result.time_data, result.samplerate, band=band)
+            freq, spec = rev80_env.envelope_spectrum(signal, samplerate, band=band)
         except ValueError:
             # An unusable band is a configuration problem, not a crash: clear
             # the series and say why on the info line.
@@ -488,10 +494,13 @@ class GUI:
         deliberate: the analyst can see what was chosen and adjust it, and the
         band then stays put across frames instead of drifting each time.
         """
-        results = self.collector.process_samples()
-        if not results:
+        raw_frame = self.collector.current_frame()
+        enabled = sorted(self.collector.config.enabled_channels)
+        ch = next((c for c in enabled if c in raw_frame), None)
+        if ch is None:
             return
-        band = self._env_band_for(results[0])
+        signal, samplerate, _unit = self.collector.eu_scaled_raw(ch, raw_frame[ch])
+        band = self._env_band_for(signal, samplerate)
         if band is None:
             return
         dpg.set_value(ui.ENV_BAND_LO, float(band[0]))
@@ -749,6 +758,7 @@ class GUI:
             self._schedule_status_timeout()
 
         results = self.collector.process_samples()
+        raw_frame = self.collector.current_frame()
 
         n_overflow = 0
         for result in results:
@@ -760,7 +770,7 @@ class GUI:
                     n_overflow += 1
             self._update_time_plot(result, ch)
             self._update_freq_plot(result, ch)
-            self._update_envelope_plot(result, ch)
+            self._update_envelope_plot(raw_frame.get(ch), ch)
 
         if dpg.does_item_exist(ui.CH_WARNINGS_SECTION):
             dpg.configure_item(
@@ -2503,8 +2513,11 @@ class GUI:
         pre_buf_s   = float(dpg.get_value(ui.MON_DLG_PRE_BUFFER)) if dpg.does_item_exist(ui.MON_DLG_PRE_BUFFER) else 0.0
 
         cfg = self.collector.config
-        block_s = cfg.blocksize / cfg.samplerate if cfg.samplerate else 1.0
-        block_bytes = cfg.blocksize * len(cfg.enabled_channels) * 8  # float64
+        # raw_blocksize/raw_samplerate, not blocksize/samplerate: what's
+        # actually written to session.h5 is the raw (acquisition-rate) data,
+        # not the maxfreq-decimated display view -- see RAW_SAMPLERATE_HZ.
+        block_s = cfg.raw_blocksize / cfg.raw_samplerate if cfg.raw_samplerate else 1.0
+        block_bytes = cfg.raw_blocksize * len(cfg.enabled_channels) * 8  # float64
         compressed = block_bytes * 0.5  # gzip ~50% compression
 
         # Interval logger: one capture per interval
@@ -2525,7 +2538,20 @@ class GUI:
             burst_est = f"~{burst_bytes / 1e3:.0f} KiB/burst"
 
         estimate = f"Interval: {interval_est}\nBurst: {burst_est}"
-        dpg.set_value(ui.MON_DLG_ESTIMATE, estimate)
+        # >10 GB/year is well past what a daily/weekly-interval long run
+        # costs (the intended use for a run approaching a year) -- flag it
+        # in case the interval was left at something much tighter than
+        # intended, rather than silently letting it grow. MON_DLG_ESTIMATE
+        # is guaranteed to exist here (checked at the top of this method).
+        over_10gb = per_year > 10e9
+        dpg.set_value(
+            ui.MON_DLG_ESTIMATE,
+            f"{icons.IC['warning']}  {estimate}" if over_10gb else estimate,
+        )
+        dpg.configure_item(
+            ui.MON_DLG_ESTIMATE,
+            color=_c("RED_LIGHT") if over_10gb else _c("ON_SURFACE"),
+        )
 
     def _on_record_toggle(self, sender=None, data=None):
         if self._monitor is not None and self._monitor.is_recording:
