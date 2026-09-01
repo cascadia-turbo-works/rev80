@@ -67,8 +67,18 @@ on a PicoScope 4424A (serial 12462/0067) with AWG loopback on channel A.
   the mandatory anti-alias filter upstream, which is why bench accuracy beats
   what a synthetic square wave achieves — and why accuracy tests must push
   their signals through `antialias_decimate`.
-- All 40 tests in `tests/test_tach.py` were revert-checked: each claimed
-  invariant was confirmed to fail with its guard removed.
+- All 44 tests in `tests/test_tach.py` were revert-checked against 11
+  invariants. The first pass found **5 of them pinned by nothing** — the
+  min-span gate inside `detect_edges`, hysteresis, the Schmitt low-state
+  requirement, sub-sample interpolation, and polarity inversion could each be
+  deleted with the suite still green. All five were tests passing for the
+  wrong reason, and the cause was one shared assumption: an *ideal rectangle*
+  transitions in zero time, so no sample ever lands in the hysteresis band and
+  interpolation has nothing to interpolate, while rate alone is
+  polarity-invariant so comparing rates proves nothing about which end of the
+  pulse is being timed. Fixed by adding a band-limited pulse generator
+  (`make_ramped_pulses`) and asserting edge *instants* rather than only rates.
+  All 11 invariants are now pinned.
 
 ## [Unreleased] — feature/spectral-averaging (2026-08-29)
 
