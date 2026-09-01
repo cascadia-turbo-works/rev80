@@ -15,10 +15,15 @@ import rev80.icons as icons
 from rev80.sample import AcquisitionSettings
 from rev80.scope_sensor import ScopeSensor
 from rev80.scope_sensor_registry import ScopeSensorRegistry
+from rev80 import tach as rev80_tach
 from rev80.util import (
     ANOMALY_HOOK_LABELS,
     DEFAULT_RMS_ALPHA,
+    DEFAULT_ROTATION_UNIT,
     DEFAULT_SPEC_ALPHA,
+    ROTATION_UNIT_LABELS,
+    ROTATION_UNITS,
+    rotation_from_rpm,
     GUI_ANOMALY_HOOK_TYPES,
     UNIT_TO_SI,
     canonical_hook_type,
@@ -541,6 +546,166 @@ class GUI:
             dpg.set_value(ui.plt_freq_peaks(ch), [[], []])
             self._update_fft_peaks_table(["Frequency (Hz)", "Amp."], [], ch)
 
+    # ------------------------------------------------------------------
+    # Tachometer tab
+    # ------------------------------------------------------------------
+
+    def _tach_unit(self) -> str:
+        """The configured rate unit, resolved from its display label."""
+        label = dpg.get_value(ui.TACH_ROTATION_UNIT) if dpg.does_item_exist(ui.TACH_ROTATION_UNIT) else None
+        for unit, lbl in ROTATION_UNIT_LABELS.items():
+            if lbl == label:
+                return unit
+        return self.collector.config.rotation_unit or DEFAULT_ROTATION_UNIT
+
+    def format_rate(self, rpm) -> str:
+        """A shaft rate with its unit, always. Never a bare number.
+
+        30 is a plausible RPM, a plausible Hz and a plausible rad/s, and they
+        differ by factors of 60 and 6.28.
+        """
+        unit = self.collector.config.rotation_unit or DEFAULT_ROTATION_UNIT
+        val = rotation_from_rpm(rpm, unit)
+        if val is None:
+            return f"--  {ROTATION_UNIT_LABELS.get(unit, unit)}"
+        return f"{val:,.1f} {ROTATION_UNIT_LABELS.get(unit, unit)}"
+
+    def _refresh_tach_channel_items(self):
+        """Repopulate the channel combo from what the device actually offers."""
+        if not dpg.does_item_exist(ui.TACH_CHANNEL):
+            return
+        names = ["(none)"] + [
+            f"{ch}: {self.collector.config.name_for(ch)}"
+            for ch in range(self._num_channels)
+        ]
+        dpg.configure_item(ui.TACH_CHANNEL, items=names)
+        current = self.collector.config.tach_channels
+        sel = next((n for n in names[1:] if current and n.startswith(f"{current[0]}:")),
+                   "(none)")
+        dpg.set_value(ui.TACH_CHANNEL, sel)
+
+    def _on_tach_channel_change(self):
+        """Claim (or release) a channel for the tachometer role.
+
+        This tab is the only writer of channel_roles, so there is nowhere for a
+        second control to disagree with it.
+        """
+        val = dpg.get_value(ui.TACH_CHANNEL) or "(none)"
+        for ch in list(self.collector.config.channel_roles):
+            if self.collector.config.channel_roles.get(ch) == 'tachometer':
+                del self.collector.config.channel_roles[ch]
+                self.collector.set_tach_settings(ch, None)
+        if val != "(none)":
+            ch = int(val.split(":", 1)[0])
+            self.collector.config.channel_roles[ch] = 'tachometer'
+            self.collector.set_tach_settings(ch, self._tach_settings_from_ui())
+        self.collector.init_trend_channels()
+        self._rebuild_device_channel_rows()
+        self._update_results_section_visibility()
+
+    def _tach_settings_from_ui(self) -> 'rev80_tach.TachSettings':
+        def _g(tag, default):
+            return dpg.get_value(tag) if dpg.does_item_exist(tag) else default
+        return rev80_tach.TachSettings(
+            pulses_per_rev=1,          # D-6: not user-configurable
+            polarity=str(_g(ui.TACH_POLARITY, 'rising')),
+            threshold_mode=str(_g(ui.TACH_THRESH_MODE, 'adaptive')),
+            threshold_mv=float(_g(ui.TACH_THRESH_MV, 2500.0)),
+            min_amplitude_mv=float(_g(ui.TACH_MIN_AMPL_MV,
+                                      rev80_tach.MIN_PULSE_AMPLITUDE_MV)),
+            reflector_size_mm=float(_g(ui.TACH_REFLECTOR_MM, 0.0)),
+        )
+
+    def _on_tach_settings_change(self):
+        mode = dpg.get_value(ui.TACH_THRESH_MODE) if dpg.does_item_exist(ui.TACH_THRESH_MODE) else 'adaptive'
+        if dpg.does_item_exist(ui.TACH_THRESH_MV):
+            dpg.configure_item(ui.TACH_THRESH_MV, enabled=(mode == 'fixed'))
+        self.collector.config.rotation_unit = self._tach_unit()
+        for ch in self.collector.config.tach_channels:
+            self.collector.set_tach_settings(ch, self._tach_settings_from_ui())
+
+    def _update_tach_tab(self):
+        """Live waveform, edges and readouts while the tab is open.
+
+        Only runs when the dialog is actually visible -- a modal does not block
+        dearpygui's render loop, so this would otherwise cost a plot update
+        every frame for a screen nobody is looking at.
+        """
+        if not dpg.does_item_exist(ui.TACH_PLOT):
+            return
+        if not dpg.is_item_shown(ui.DLG_CONFIG):
+            return
+
+        # Slowest measurable shaft, from the block length. Information only:
+        # an operator must be able to set the tach up against a machine that
+        # is not running.
+        if dpg.does_item_exist(ui.TACH_FLOOR):
+            t_block = 1.0 / max(self.collector.config.binsize, 1e-9)
+            floor_rpm = rev80_tach.MIN_EDGES * 60.0 / t_block
+            dpg.set_value(
+                ui.TACH_FLOOR,
+                f"Block {t_block:.2f} s -> slowest measurable shaft "
+                f"{self.format_rate(floor_rpm)}")
+
+        tach_channels = self.collector.config.tach_channels
+        if not tach_channels:
+            for tag in (ui.TACH_PLOT_WAVE, ui.TACH_PLOT_THRESH, ui.TACH_PLOT_EDGES):
+                if dpg.does_item_exist(tag):
+                    dpg.set_value(tag, [[], []])
+            dpg.set_value(ui.TACH_READOUT, "--")
+            dpg.set_value(ui.TACH_QUALITY, "No tachometer channel selected.")
+            return
+
+        ch = tach_channels[0]
+        sample = self.collector.current_frame().get(ch)
+        if sample is None or sample.data.size <= 1:
+            dpg.set_value(ui.TACH_QUALITY, "Waiting for data...")
+            return
+
+        res = self.collector.tach_for(ch, sample)
+        fs = float(sample.samplerate)
+        x = np.asarray(sample.data, dtype=np.float64)
+        t_axis = np.arange(x.size) / fs
+
+        # Align the first detected pulse to t=0. A free-running trace jitters
+        # by up to a whole period between frames, which makes it hard to see
+        # whether the threshold sits where you want it; aligned, successive
+        # frames overlay and the adjustment is legible.
+        edges = np.asarray(res.edge_times_s, dtype=np.float64)
+        t0 = float(edges[0]) if edges.size else 0.0
+        t_axis = t_axis - t0
+        edges_shifted = edges - t0
+
+        dpg.set_value(ui.TACH_PLOT_WAVE, [t_axis.tolist(), x.tolist()])
+
+        span = float(x.max() - x.min())
+        settings = self.collector.tach_settings_for(ch)
+        if settings.threshold_mode == 'fixed':
+            level = settings.threshold_mv
+        else:
+            level = (float(x.max()) + float(x.min())) / 2.0
+        dpg.set_value(ui.TACH_PLOT_THRESH,
+                      [[float(t_axis[0]), float(t_axis[-1])], [level, level]])
+        dpg.set_value(ui.TACH_PLOT_EDGES,
+                      [edges_shifted.tolist(), [level] * edges_shifted.size])
+
+        # A couple of periods of lead-in and run-out, so the pulses sit inside
+        # the frame rather than against its edges.
+        if res.shaft_hz:
+            period = 1.0 / res.shaft_hz
+            dpg.set_axis_limits(ui.TACH_PLOT_X, -2.0 * period,
+                                (res.n_edges + 2) * period)
+        else:
+            dpg.set_axis_limits_auto(ui.TACH_PLOT_X)
+        dpg.set_axis_limits_auto(ui.TACH_PLOT_Y)
+
+        dpg.set_value(ui.TACH_READOUT, self.format_rate(res.rpm))
+        duty_txt = f"{res.duty_cycle * 100:.1f}%" if res.duty_cycle else "--"
+        dpg.set_value(
+            ui.TACH_QUALITY,
+            f"{res.quality}   {res.n_edges} edges   duty {duty_txt}   "
+            f"span {span:.0f} mV")
+
     def _update_one_x(self, result: 'rev80.ChannelResult', ch: int):
         """Show the 1x level and marker, or hide both when there is no tach.
 
@@ -840,6 +1005,7 @@ class GUI:
             return
         self.collector.new_frame_event.clear()
         self._display_frame()
+        self._update_tach_tab()
         if self._monitor is not None and self._monitor.is_recording:
             self._update_monitor_card()
 
@@ -1512,6 +1678,7 @@ class GUI:
 
     def _rebuild_device_channel_rows(self):
         """Rebuild per-channel rows inside the Device Setup dialog."""
+        self._refresh_tach_channel_items()
         if not dpg.does_item_exist(ui.DEVSETUP_CHANNEL_GROUP):
             return
         for ch in range(_MAX_CHANNELS):
@@ -1559,6 +1726,7 @@ class GUI:
             ch_tu = self.collector.config.target_unit_for(ch) or "(use sensor)"
             ch_amp = self.collector.config.amplitude_mode_for(ch) or "0-P"
             ch_name = self.collector.config.name_for(ch)
+            is_tach = self.collector.config.role_for(ch) == 'tachometer'
             summary = f"{default_c}  {default_r}  {default_s} -> {ch_tu} {ch_amp}"
             ch_color = _CH_COLORS[ch % len(_CH_COLORS)]
             grey_color = _c("ON_SURFACE")
@@ -1580,6 +1748,22 @@ class GUI:
                 with dpg.drawlist(width=16, height=16):
                     dpg.draw_rectangle(pmin=(2, 2), pmax=(14, 14), fill=ch_color, color=(0, 0, 0, 0), rounding=2)
                 dpg.add_text(ch_name, tag=ui.scope_ch_name_text(ch))
+            # A channel claimed by the Tachometer tab is shown, not edited.
+            # Its settings here are meaningless -- a pulse train has no sensor,
+            # no engineering unit and no amplitude mode -- and a second control
+            # able to set the role could disagree with the tab that owns it.
+            if is_tach:
+                _t = dpg.add_text(
+                    f"    TACHOMETER  ({default_c}  {default_r})"
+                    "   - configured in the Tachometer tab",
+                    parent=ui.DEVSETUP_CHANNEL_GROUP, color=_c("MUTED"))
+                self._tooltip(
+                    _t,
+                    "This input is claimed as the tachometer.\n\n"
+                    "It carries a pulse train, not vibration, so it has no "
+                    "sensor, no engineering unit and no spectrum. Change it "
+                    "in the Tachometer tab.")
+                continue
             # Line 2: collapsing header with settings summary
             with dpg.collapsing_header(
                 label=summary, tag=ui.scope_ch_header(ch), parent=ui.DEVSETUP_CHANNEL_GROUP
@@ -3225,6 +3409,124 @@ class GUI:
                             dpg.add_separator()
                             with dpg.group(tag=ui.DEVSETUP_CHANNEL_GROUP):
                                 dpg.add_text("No device connected.")
+
+                    # ── Tachometer tab ─────────────────────────────────────
+                    # This tab OWNS the tachometer role. The Channels tab shows
+                    # a claimed channel read-only: two screens able to set the
+                    # role could disagree, one cannot.
+                    #
+                    # The live plot lives here rather than in the main display
+                    # because tach setup is a commissioning activity done once
+                    # per installation, not a monitoring one. Adjust the
+                    # threshold, watch the edges move, confirm the rate -- all
+                    # on one screen. Closing the dialog leaves only the
+                    # derivatives, which is why there is no visibility toggle
+                    # for the operator to manage.
+                    with dpg.tab(label="Tachometer", tag=ui.CONFIG_TAB_TACH):
+                        with dpg.child_window(autosize_x=True, height=-1):
+                            dpg.add_text("Tachometer Channel")
+                            dpg.add_separator()
+                            _tc = dpg.add_combo(
+                                label="Channel", tag=ui.TACH_CHANNEL,
+                                items=["(none)"], default_value="(none)",
+                                width=_DLG_FIELD_W,
+                                callback=lambda s, d: self._on_tach_channel_change())
+                            _tip(_tc,
+                                 "Which input carries the tachometer pulse.\n\n"
+                                 "A tachometer has no sensor and no engineering "
+                                 "unit, so the Channels tab shows it read-only "
+                                 "once claimed here.")
+                            dpg.add_spacer(height=4)
+
+                            with dpg.group(horizontal=True):
+                                dpg.add_combo(
+                                    label="Polarity", tag=ui.TACH_POLARITY,
+                                    items=list(rev80_tach.POLARITIES),
+                                    default_value='rising', width=_DLG_FIELD_W // 2,
+                                    callback=lambda s, d: self._on_tach_settings_change())
+                                _tm = dpg.add_combo(
+                                    label="Threshold", tag=ui.TACH_THRESH_MODE,
+                                    items=list(rev80_tach.THRESHOLD_MODES),
+                                    default_value='adaptive', width=_DLG_FIELD_W // 2,
+                                    callback=lambda s, d: self._on_tach_settings_change())
+                            _tip(_tm,
+                                 "Adaptive places the threshold at the midpoint "
+                                 "of each block's own span.\n\n"
+                                 "A fixed threshold fails silently on an "
+                                 "AC-coupled input: AC coupling removes the mean, "
+                                 "and on a pulse train the mean IS the duty "
+                                 "cycle, so above ~55% duty the signal never "
+                                 "reaches a fixed level and the shaft reads as "
+                                 "stopped. Measured on the bench at 70% and 85% "
+                                 "duty. Leave this on adaptive unless you have a "
+                                 "specific reason.")
+                            with dpg.group(horizontal=True):
+                                dpg.add_input_float(
+                                    label="Level (mV)", tag=ui.TACH_THRESH_MV,
+                                    default_value=2500.0, step=100.0,
+                                    width=_DLG_FIELD_W // 2, enabled=False,
+                                    callback=lambda s, d: self._on_tach_settings_change())
+                                _ma = dpg.add_input_float(
+                                    label="Min ampl. (mV)", tag=ui.TACH_MIN_AMPL_MV,
+                                    default_value=rev80_tach.MIN_PULSE_AMPLITUDE_MV,
+                                    step=100.0, width=_DLG_FIELD_W // 2,
+                                    callback=lambda s, d: self._on_tach_settings_change())
+                            _tip(_ma,
+                                 "Below this peak-to-peak swing the channel is "
+                                 "reported as having no tach signal.\n\n"
+                                 "Measured front-end noise on this hardware "
+                                 "spans at most 42.5 mV, so 1000 mV clears it "
+                                 "23x while staying well under any real "
+                                 "logic-level tach's 2 V swing.")
+
+                            dpg.add_spacer(height=4)
+                            with dpg.group(horizontal=True):
+                                _ru = dpg.add_combo(
+                                    label="Rate units", tag=ui.TACH_ROTATION_UNIT,
+                                    items=[ROTATION_UNIT_LABELS[u] for u in ROTATION_UNITS],
+                                    default_value=ROTATION_UNIT_LABELS[DEFAULT_ROTATION_UNIT],
+                                    width=_DLG_FIELD_W // 2,
+                                    callback=lambda s, d: self._on_tach_settings_change())
+                                _rf = dpg.add_input_float(
+                                    label="Reflector (mm)", tag=ui.TACH_REFLECTOR_MM,
+                                    default_value=0.0, step=1.0,
+                                    width=_DLG_FIELD_W // 2,
+                                    callback=lambda s, d: self._on_tach_settings_change())
+                            _tip(_ru, "Applies to every shaft-rate readout in the app.")
+                            _tip(_rf,
+                                 "Arc length of the reflective tape or key, "
+                                 "measured along the shaft surface. 0 = not "
+                                 "measured.\n\n"
+                                 "With the duty cycle this gives the shaft "
+                                 "circumference and hence surface velocity. "
+                                 "Measure what the sensor actually sees -- spot "
+                                 "width and probe field are not corrected for.")
+
+                            dpg.add_separator()
+                            dpg.add_text("--", tag=ui.TACH_READOUT)
+                            dpg.add_text("", tag=ui.TACH_QUALITY, color=_c("MUTED"))
+                            _fl = dpg.add_text("", tag=ui.TACH_FLOOR, color=_c("MUTED"))
+                            _tip(_fl,
+                                 "Three pulses must fall inside one acquisition "
+                                 "block for a rate to be resolved, so the block "
+                                 "length (1/bin size) sets a slowest measurable "
+                                 "shaft.\n\n"
+                                 "This is information, not a limit on setup: "
+                                 "configure the tach against a stopped machine "
+                                 "with your best guess and it will read once the "
+                                 "shaft turns.")
+                            with dpg.plot(label="Tach signal", height=200,
+                                          width=-1, tag=ui.TACH_PLOT):
+                                dpg.add_plot_axis(dpg.mvXAxis, label="s from first pulse",
+                                                  tag=ui.TACH_PLOT_X)
+                                with dpg.plot_axis(dpg.mvYAxis, label="mV",
+                                                   tag=ui.TACH_PLOT_Y):
+                                    dpg.add_line_series([], [], label="signal",
+                                                        tag=ui.TACH_PLOT_WAVE)
+                                    dpg.add_line_series([], [], label="threshold",
+                                                        tag=ui.TACH_PLOT_THRESH)
+                                    dpg.add_scatter_series([], [], label="edges",
+                                                           tag=ui.TACH_PLOT_EDGES)
 
                     # ── Sensors tab ────────────────────────────────────────
                     with dpg.tab(label="Sensors", tag=ui.CONFIG_TAB_SENSORS):

@@ -288,6 +288,13 @@ class TachSettings:
     threshold_mv: float = 2500.0          # used only when mode == 'fixed'
     min_amplitude_mv: float = MIN_PULSE_AMPLITUDE_MV
     hysteresis_frac: float = HYSTERESIS_FRAC
+    # Arc length of the reflective tape or key the sensor sees, in mm.
+    # 0.0 means "not measured". With the duty cycle this gives the shaft
+    # circumference (L/duty) and hence surface velocity v = f*L/duty (R46).
+    # Sensor geometry -- an optical spot's width, a proximity probe's
+    # inductive field -- inflates the observed duty; by decision the operator
+    # accounts for that when measuring the tape, so nothing is corrected here.
+    reflector_size_mm: float = 0.0
 
     def to_dict(self) -> dict:
         return {
@@ -297,6 +304,7 @@ class TachSettings:
             'threshold_mv':     self.threshold_mv,
             'min_amplitude_mv': self.min_amplitude_mv,
             'hysteresis_frac':  self.hysteresis_frac,
+            'reflector_size_mm': self.reflector_size_mm,
         }
 
     @classmethod
@@ -330,6 +338,7 @@ class TachSettings:
             min_amplitude_mv=float(
                 d.get('min_amplitude_mv', MIN_PULSE_AMPLITUDE_MV)),
             hysteresis_frac=float(d.get('hysteresis_frac', HYSTERESIS_FRAC)),
+            reflector_size_mm=float(d.get('reflector_size_mm', 0.0)),
         )
 
 
