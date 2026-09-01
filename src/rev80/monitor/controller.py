@@ -268,6 +268,13 @@ class MonitorController:
             for ch, sample in frame_dict.items():
                 if not isinstance(ch, int):
                     continue
+                if getattr(sample, 'tach', None) is not None:
+                    # A tachometer channel has no overall. Its
+                    # overall_ampl_by_integration_order is never populated,
+                    # because process_sample never runs on it -- so including
+                    # it here writes 0.0, and load_monitor_session then rebuilds
+                    # a trend line pinned at zero for that channel.
+                    continue
                 ch_cfg  = ch_snap.get(str(ch), {})
                 sid     = ch_cfg.get('scope_sensor_id')
 

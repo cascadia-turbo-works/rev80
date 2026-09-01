@@ -48,6 +48,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   three `speed_gate_*` keys in `_BUILTIN_ACQ`, so every device and acquisition
   YAML written before R43 upgrades silently through the existing merge.
 
+- **Monitor sessions record shaft speed, `session.h5` `_FILE_VERSION` 5 → 6** — step 8.
+  Every interval capture and burst now carries `rpm` and `speed_ok`. Without it a monitor
+  trend point cannot be compared with another taken at a different load — the same
+  argument the declared band already makes for the overall, and the prerequisite for any
+  later order analysis.
+  - A **scalar**, not a `{ch: rpm}` map: this instrument supports one tachometer on one
+    shaft (multi-shaft needs order ratios and a machine-train model, a different
+    feature), so every result in a frame carries the same reading. NaN means no reading,
+    never 0.0.
+  - `MonitorController._compute_pretrigger_overalls()` now **skips tachometer channels**.
+    It reads `overall_ampl_by_integration_order`, which is never populated on a channel
+    `process_sample` never runs on — so a tach was contributing a literal `0.0`, and
+    `load_monitor_session()` then rebuilt a trend line pinned at zero for it.
+
 - **`rev80-headless` refuses tachometer-role channels** — step 7. Tachometry is out of
   scope there (tracked as R44), but out of scope has to mean "does not do it" rather than
   "does it wrong". Headless reads the same `devices/*.yaml` the GUI writes, so a channel
