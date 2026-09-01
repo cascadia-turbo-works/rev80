@@ -384,3 +384,45 @@ def test_settings_from_dict_coerces_types_and_fills_defaults():
     assert s.threshold_mv == 2500.0 and isinstance(s.threshold_mv, float)
     assert s.polarity == 'rising'
     assert tach.TachSettings.from_dict({}) == tach.TachSettings()
+
+
+# --- pulses per rev is clamped to 1 by the UI, not by the code (D-6) --------
+
+def test_default_is_one_pulse_per_rev():
+    """D-6: the preponderance of installs is one reflective tape or one
+    keyway, and 1 ppr is not merely the common case but the accurate one --
+    every interval is then exactly one revolution, so once-per-rev division
+    error and load-zone speed modulation cancel by construction rather than by
+    averaging (measured 0.0013% at 1 ppr vs 0.091% for a 60-line encoder at
+    any window length).
+    """
+    assert tach.TachSettings().pulses_per_rev == 1
+
+
+def test_three_edges_is_two_whole_revolutions_at_one_ppr():
+    """Which is why there is no separate minimum-revolutions gate: MIN_EDGES
+    already is one, at the only ppr the UI can produce."""
+    assert tach.MIN_EDGES == 3
+    x = make_pulses(1800.0, HW_FS, duration_s=3.2 * 60.0 / 1800.0)
+    r = tach.tach_result(x, HW_FS, ch=0, rel_time=0.0)
+    assert r.quality == tach.QUALITY_OK
+    assert r.n_edges >= tach.MIN_EDGES
+
+
+def test_non_unity_ppr_is_honoured_and_warns(caplog):
+    """Never silently clamp to 1. A hand-edited YAML carrying ppr=6 clamped to
+    1 would read 6x high with nothing on screen to say so -- the silent-wrong
+    -number class this project keeps finding. Honour it, and say it is
+    unsupported.
+    """
+    with caplog.at_level('WARNING'):
+        s = tach.TachSettings.from_dict({'pulses_per_rev': 6})
+    assert s.pulses_per_rev == 6, 'must not silently clamp'
+    assert any('pulses_per_rev' in rec.message for rec in caplog.records)
+
+
+def test_unity_ppr_does_not_warn(caplog):
+    with caplog.at_level('WARNING'):
+        s = tach.TachSettings.from_dict({'pulses_per_rev': 1})
+    assert s.pulses_per_rev == 1
+    assert not [r for r in caplog.records if 'pulses_per_rev' in r.message]
