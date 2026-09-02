@@ -9,6 +9,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **Repo-relocation breakage (tooling only, no measurement impact).** The checkout has
+  moved three times (`~/CODE/reveng/vibegui` → `~/Documents/reveng/code/vibegui` →
+  `~/Documents/reveng/vibration/rev80`) and each move stranded absolute-path state that
+  fails *silently*:
+  - `core.hooksPath` still pointed at the previous clone's `.git/hooks`, a directory that
+    no longer exists. Git runs no hooks at all in that state, so the blocking
+    `ruff check src/ tests/` gate and the `doc/*.pdf` re-render had not run since the
+    move. Now set to the relative `.githooks`, which survives any future relocation.
+    The stale `gitflow.path.hooks` (pointing two moves back, at `~/PurpleDocs/...`) was
+    unset.
+  - The editable install's `.pth` pointed at the dead `.../code/vibegui/src`, so
+    `import rev80` raised `ModuleNotFoundError` and the `rev80` / `rev80-headless`
+    console scripts and the desktop launcher were all dead. Reinstalled editable.
+    A stale pre-rename `vibechecker` distribution — a separate dist that
+    `pip install -e .` does not touch — was uninstalled alongside it.
+
+  This went unnoticed because **`pytest` is immune to it**: `pyproject.toml` sets
+  `pythonpath = ["src"]`, resolved from rootdir, so all 737 tests collected and passed
+  against the source tree while every installed entry point was broken. Green CI does not
+  prove the app launches.
+
+### Changed
+- `.python-version`, `.vscode/` and `.ruff_cache/` are now gitignored (and
+  `.python-version` untracked) so each checkout owns its own dev environment. Consequence:
+  a relocated checkout no longer auto-selects the pyenv env, so the environment must be
+  selected *before* `pip install -e .` or the editable install lands in the wrong
+  interpreter. Documented in CONTRIBUTING.md's new **Moving the checkout** section, along
+  with the hooks fix above.
+- Removed two stale vendor datasheet PDFs from `doc/`.
+
 ## [0.1.0] - 2026-09-01
 
 First tagged release. The sections below were written branch-by-branch during
