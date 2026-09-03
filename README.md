@@ -203,8 +203,8 @@ Works on Windows, Linux, and macOS. Requires Python 3.10+.
 2. Get the source and install dependencies:
 
    ```bash
-   git clone <repo-url>/vibegui.git
-   cd vibegui
+   git clone <repo-url>/rev80.git  # currently closed source. Contact RevEngineering.
+   cd rev80
 
    # Runtime dependencies only
    pip install .
