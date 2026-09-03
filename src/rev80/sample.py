@@ -26,7 +26,7 @@ log = rev80.get_logger(__name__)
 #: 45s runs. 50000 Hz sits at the measured 100 kHz/channel ceiling with
 #: zero headroom and was not reliable run-to-run on identical hardware
 #: and settings (0-2 rate-degradation events); not used.
-RAW_SAMPLERATE_HZ: int = 40_000
+RAW_SAMPLERATE_HZ: int = 10_000
 
 
 def _opt_float(v) -> float | None:

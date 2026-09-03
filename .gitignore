@@ -18,7 +18,10 @@ __pycache__/
 # after its own commit.
 src/rev80/_version.py
 .pytest_cache/
+.ruff_cache/
 .venv/
+.python-version
+.vscode
 venv/
 **/.ipynb_checkpoints/
 
