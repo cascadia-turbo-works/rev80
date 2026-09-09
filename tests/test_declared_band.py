@@ -9,7 +9,7 @@ at maxfreq, so the overall and the spectrum on screen described different bands.
 Two consequences, both quantified by the audit:
 
   * Content the user explicitly excluded via F_max still landed in the trend.
-    2 g RMS at 1500 Hz outside a 1000 Hz F_max inflated reported overall
+    2 g RMS above a 1000 Hz F_max inflated reported overall
     velocity from 3.00 to 3.74 mm/s (+25%) -- enough to move a machine from
     ISO 20816 zone B to zone C on a reading that should have excluded it.
   * Overalls were not comparable across sessions taken at different F_max,
@@ -74,7 +74,10 @@ def test_band_default_upper_edge_is_maxfreq_not_nyquist():
     """The whole point of M-06: fs/2 is up to 2.048x maxfreq at these presets."""
     cfg = vc.AcquisitionSettings()
     cfg.maxfreq = 1000.0
-    assert cfg.samplerate / 2 > 2.0 * cfg.maxfreq   # the preset really is that wide
+    # There really is a guard band above maxfreq. It used to be up to 2.048x
+    # maxfreq wide, an artifact of samplerate being rounded up to a power of
+    # two; with the corrected exact-2.56x rate it is the designed 1.28x.
+    assert cfg.samplerate / 2 == pytest.approx(1.28 * cfg.maxfreq)
     assert cfg.band_fmax_resolved == pytest.approx(cfg.maxfreq)
 
 
@@ -158,13 +161,22 @@ def test_channel_result_reports_the_band_it_was_measured_over():
 
 @pytest.mark.parametrize('frac', OFFBIN_FRACTIONS)
 def test_out_of_band_tone_does_not_reach_the_overall(frac):
-    """The audit's case: 1500 Hz content outside a 1000 Hz F_max inflated the
-    reported velocity overall by +25%, on a reading that should have excluded it.
+    """The audit's case: content above F_max inflated the reported velocity
+    overall by +25%, on a reading that should have excluded it.
+
+    The audit used 1500 Hz. That sat inside the guard band only while
+    samplerate was nextpow2(2.56 * maxfreq) = 4096 (fs/2 = 2048); at the
+    corrected exact 2.56x rate fs/2 is 1280 and 1500 Hz is above Nyquist,
+    where the decimation anti-alias filter removes it outright (-240 dB
+    measured) and the test would pass without the band mask doing anything.
+    1100 Hz is the equivalent case at the real guard band: above F_max=1000,
+    below fs/2=1280, and measured to survive decimation at -0.7 dB, so the
+    band mask is the only thing that can keep it out of the overall.
     """
     dc = make_collector(eu='mm/s2', target_unit='mm/s2', amp_mode='RMS',
                         maxfreq=1000, binsize=2.0)
     f_in  = offbin(dc, 300.0, frac)
-    f_out = offbin(dc, 1500.0, frac)          # above F_max, below fs/2
+    f_out = offbin(dc, 1100.0, frac)          # above F_max, below fs/2
     assert f_out < dc.config.samplerate / 2
 
     data = tone(dc, f_in, amp=1.0) + tone(dc, f_out, amp=2.0)
@@ -179,7 +191,7 @@ def test_out_of_band_tone_excluded_from_integrated_overall(frac):
     dc = make_collector(eu='mm/s2', target_unit='mm/s', amp_mode='RMS',
                         maxfreq=1000, binsize=2.0)
     f_in  = offbin(dc, 300.0, frac)
-    f_out = offbin(dc, 1500.0, frac)
+    f_out = offbin(dc, 1100.0, frac)      # above F_max, below fs/2 -- see above
     data = tone(dc, f_in, amp=1.0) + tone(dc, f_out, amp=2.0)
     r = dc.process_sample(0, make_sample(dc, data))
     assert abs(rel_err(r.overall, true_rms(1.0, f_in, 1))) < 0.03

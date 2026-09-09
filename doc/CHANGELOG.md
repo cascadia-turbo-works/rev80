@@ -10,6 +10,63 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Fixed
+- **The Acquisition dialog advertised a sample rate the instrument never produced.**
+  `RAW_SAMPLERATE_HZ` was lowered to relieve GUI lag while streaming 4 channels, which
+  exposed a latent defect in the display-rate derivation. `samplerate` was
+  `nextpow2(2.56 * maxfreq)` — rounding *up* to a power of two, so it overstated the
+  rate by up to 2x. That was invisible only while `raw_samplerate` was large enough to
+  absorb the overshoot. Measured, at the 10 kHz preset against 25.6 kHz of acquisition:
+
+  | | dialog showed | pipeline delivered |
+  |---|---|---|
+  | sample rate | 32.8 kS/s | 25.6 kS/s |
+  | lines | 10001 | computed from a rate that did not exist |
+
+  It failed silently because `decimate_to_rate` returns the block untouched when
+  `target_rate >= raw_rate`, so the overstated rate produced no error — just a readout
+  that disagreed with the data, and `n_fft_bins`/`binsize_actual` derived from the
+  fictitious rate.
+
+  `samplerate` is now **exactly** `2.56 * maxfreq`. This cannot overshoot:
+  `maxfreq`'s setter already clamps to `raw_samplerate/2/1.28`, which *is* the condition
+  `2.56 * maxfreq <= raw_samplerate`. A power-of-two *rate* bought nothing — the FFT
+  length is `blocksize`, not the rate. Every preset rate is now 5-smooth and divides
+  `raw_samplerate` exactly, so raw→display decimation is an exact integer factor
+  (50/20/10/5/2/1) at all six presets.
+
+- **`blocksize` is now `ceil(samplerate / binsize)`** rather than `nextpow2(...)`.
+  With a power-of-two rate that divided exactly and a frame really was `1/binsize`
+  seconds; with an exact-2.56x rate `nextpow2` would have made frames up to 2x longer
+  than the dialog claims. Measured worst-case frame-length overshoot across the 54
+  preset combinations: **56.2% → 17.2%**, with 24 combinations now exact. The delivered
+  bin is still never coarser than the requested one. `blocksize` is no longer a power of
+  two, which does not matter: it is a Welch segment length, pocketfft is efficient for
+  any 5-smooth length, and every preset combination is one.
+
+- **`RAW_SAMPLERATE_HZ` = 25600** (2.56 × the 10 kHz top preset), replacing a briefly-set
+  `10_000` that dropped the 2.56 factor. At 10 kHz raw the `maxfreq` setter silently
+  clamped to 3906 Hz — the 5 kHz and 10 kHz presets were unreachable — and envelope
+  bandwidth was halved. 25600 Hz gives osr=3 (76.8 kHz/channel at the ADC), which asks
+  *less* of the ADC than the 40000 Hz configuration measured clean on a 4424A.
+  **Not yet re-measured on hardware** — re-run `scripts/validate-streaming-capacity`
+  when a scope is attached. The GUI-load problem that motivated lowering the rate is
+  separate and still open.
+
+### Changed
+- `tests/test_acquisition_settings.py`: `test_samplerate_is_power_of_two` and
+  `test_blocksize_is_power_of_two` pinned the exact behaviour that was wrong. Replaced
+  with the invariants that matter — samplerate is exactly 2.56x maxfreq; the display rate
+  never exceeds the acquisition rate; the decimation ratio is an exact integer; no preset
+  is clamped; the delivered bin is never coarser than requested and a frame is never more
+  than one sample longer than `1/binsize`.
+- `tests/test_declared_band.py`: the out-of-band tone was 1500 Hz against `F_max`=1000,
+  which sat in the guard band only because `nextpow2` inflated fs/2 to 2048. At the
+  correct fs/2 = 1280 it is above Nyquist, where the decimation filter removes it
+  outright (−240 dB measured) — the test would have passed without the band mask doing
+  anything. Moved to 1100 Hz, measured to survive decimation at −0.7 dB, so the band
+  mask is the only thing that can exclude it. Revert-checked: patching out the
+  `band_fmax_resolved` clamp makes it fail by +123.6%.
+
 - **Repo-relocation breakage (tooling only, no measurement impact).** The checkout has
   moved three times (`~/CODE/reveng/vibegui` → `~/Documents/reveng/code/vibegui` →
   `~/Documents/reveng/vibration/rev80`) and each move stranded absolute-path state that
