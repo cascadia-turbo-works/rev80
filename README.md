@@ -328,7 +328,7 @@ file to change capture intervals, anomaly thresholds, filter settings, etc.
 
 ```yaml
 acquisition:
-  maxfreq: 1000.0           # Hz — drives sample rate (samplerate = nextpow2(2.56 × maxfreq))
+  maxfreq: 1000.0           # Hz — drives display sample rate (samplerate = 2.56 × maxfreq)
   binsize: 1.0              # Hz — drives FFT block size
   fft_window: hann
   welch_overlap: 0.5
@@ -551,7 +551,7 @@ The **Band** fields set the low/high edges (Hz) of the band-pass filter applied 
 - **Leave both fields at 0 and click Auto**, or leave them at 0 and just let it re-run every frame — this searches the upper 75% of your configured frequency range (above F_max/4) for the frequency region carrying the most energy, smoothed over the width of the proposed band so a single tall harmonic can't fool it into centering on machine content instead of a resonance. This is deliberately restricted to the *upper* part of the range: the whole reason to demodulate is to escape the 1x/2x/gear-mesh content that dominates the lower part, so a band centered down there would just recover that content again, which is worse than doing nothing.
 - **Type an explicit band once you know where the resonance actually is.** The Auto suggestion is a reasonable first look, not necessarily the right answer — a housing or bearing has more than one structural resonance, and the one that rings loudest under a hammer tap or a bump test isn't guaranteed to be the one Auto finds from operating data alone. If you've identified the real resonance (bump test, or Auto's suggestion drifting frame to frame because there isn't one dominant peak), type it in and it stays fixed.
 - **Width matters as much as center.** Too narrow and you lose modulation sidebands and impulse energy the resonance actually carries — the band needs to be wide enough to pass the resonance's own bandwidth, typically several hundred Hz to a few kHz depending on how lightly damped it is. Too wide and you start letting the 1x/2x machine lines back in at the band edges, which shows up as that spurious 1x line in the envelope mentioned above.
-- **The band must sit strictly inside the acquisition range** (`0 < low < high < Nyquist`) and — since a bearing resonance is a structural, not running-speed-dependent, frequency — well above your highest expected running-speed harmonic. Acquisition always runs at a fixed rate independent of `F_max` — 40 kHz, Nyquist 20 kHz — specifically so the whole 2–20 kHz range a housing resonance can live in is always available to demodulate, regardless of what `F_max` you have the Spectrum tab set to. `F_max` only controls what the *Spectrum* tab displays; it has no effect on what Envelope can see.
+- **The band must sit strictly inside the acquisition range** (`0 < low < high < Nyquist`) and — since a bearing resonance is a structural, not running-speed-dependent, frequency — well above your highest expected running-speed harmonic. Acquisition always runs at a fixed rate independent of `F_max` — 25.6 kHz, Nyquist 12.8 kHz — specifically so the whole 2–20 kHz range a housing resonance can live in is always available to demodulate, regardless of what `F_max` you have the Spectrum tab set to. `F_max` only controls what the *Spectrum* tab displays; it has no effect on what Envelope can see.
 - **Rev80 still warns you if this ever isn't the case**: the Envelope tab checks the actual Nyquist of the data it's demodulating and shows a banner if it's implausibly low for a resonance to fit under. In normal use this should never fire — it exists as a safety net (e.g. if a future change lowers the acquisition rate) rather than something you'll routinely hit by choosing a low `F_max`.
 - The info line under the Band controls reports the resolved band and the resulting envelope's frequency ceiling for the current frame, so you can see what Auto actually picked.
 
@@ -688,7 +688,7 @@ When the GUI is slower than the hardware data rate it skips to the latest frame 
 
 Acquisition and display run at two independent rates. `PicoScopeStream` always
 acquires at a fixed rate (`AcquisitionSettings.raw_samplerate`, see
-`RAW_SAMPLERATE_HZ` in `sample.py` — 40 kHz, 20 kHz Nyquist by default) high
+`RAW_SAMPLERATE_HZ` in `sample.py` — 25.6 kHz, 12.8 kHz Nyquist by default) high
 enough to always contain a bearing housing resonance (typically 2–20 kHz),
 completely independent of the user's chosen `maxfreq`. `maxfreq` only
 controls what gets *displayed* — the Spectrum tab's rate and the HDF5
@@ -775,9 +775,9 @@ that's the separate, fixed `raw_samplerate`/`raw_blocksize` pair below.
 | --- | --- |
 | `maxfreq` | Upper frequency of interest (Hz) — drives `samplerate` (display) selection. Clamped in the setter to what `raw_samplerate` can back (`≤ raw_samplerate / 2 / 1.28`), since nothing above that was ever captured |
 | `binsize` | Frequency resolution of Welch FFT (Hz) — drives `blocksize` selection |
-| `samplerate` | **Derived, display rate** — minimum samplerate ≥ 2.56 × maxfreq (the 28% margin above 2× Nyquist gives the mandatory anti-alias filter a real transition band — same ratio commercial FFT vibration analyzers use). `DataCollector` decimates the raw acquisition down to this rate before computing the Spectrum tab's PSD |
+| `samplerate` | **Derived, display rate** — exactly 2.56 × maxfreq (the 28% margin above 2× Nyquist gives the mandatory anti-alias filter a real transition band — same ratio commercial FFT vibration analyzers use). Every preset divides `raw_samplerate` by an exact integer, and the top preset meets it exactly, so the display rate can never exceed what was acquired. `DataCollector` decimates the raw acquisition down to this rate before computing the Spectrum tab's PSD |
 | `blocksize` | **Derived, display rate** — next power of 2 satisfying samplerate / blocksize ≤ binsize |
-| `raw_samplerate` | **Fixed** — `RAW_SAMPLERATE_HZ` (40 kHz by default), independent of `maxfreq`. What `PicoScopeStream` actually acquires, what gets stored to HDF5, and what envelope analysis (`DataCollector.eu_scaled_raw`) reads directly. Hardware-validated on a PicoScope 4424A — see the module comment above `STREAMING_CEILING_HZ` in `picoscope.py` and `scripts/validate-streaming-capacity` for re-validating on other hardware |
+| `raw_samplerate` | **Fixed** — `RAW_SAMPLERATE_HZ` (25.6 kHz = 2.56 × the 10 kHz top preset), independent of `maxfreq`. What `PicoScopeStream` actually acquires, what gets stored to HDF5, and what envelope analysis (`DataCollector.eu_scaled_raw`) reads directly. Hardware-validated on a PicoScope 4424A — see the module comment above `STREAMING_CEILING_HZ` in `picoscope.py` and `scripts/validate-streaming-capacity` for re-validating on other hardware |
 | `raw_blocksize` | **Derived, raw rate** — sample count spanning the same `acquisition_period` as `blocksize`, at `raw_samplerate`. Not necessarily a power of two — it isn't a Welch segment length, just how many raw samples one frame holds |
 | `acquisition_period` | **Derived** — blocksize / samplerate (seconds). Same value whether computed from the display or raw pair — one frame is one time window at two sample counts |
 | `n_fft_bins` | **Derived** — number of spectrum lines actually displayed, DC up to `maxfreq`. Not the full one-sided transform: the band between `maxfreq` and fs/2 is the anti-alias guard band and is not shown |
