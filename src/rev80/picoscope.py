@@ -74,7 +74,8 @@ _MAX_RECONNECT_ATTEMPTS = 3     # recovery attempts before giving up
 # decimated back down to config.raw_samplerate before reaching DataCollector.
 #
 # config.raw_samplerate is now a fixed constant (RAW_SAMPLERATE_HZ in
-# sample.py, currently 40000 Hz), independent of the displayed F_max --
+# sample.py, currently 25600 Hz = 2.56 x the 10 kHz top F_max preset),
+# independent of the displayed F_max --
 # acquisition always runs at this rate so envelope/demodulation analysis has
 # real bearing-resonance bandwidth (2-20 kHz) regardless of what F_max the
 # Spectrum tab is showing. Re-validated at that value on the same 4424A
@@ -742,7 +743,10 @@ class PicoScopeStream:
         sample.py) -- a fixed constant, not maxfreq-derived, so this no
         longer varies with what F_max the user picks. Validated at
         RAW_SAMPLERATE_HZ=40000 (osr=2, real margin) on real hardware -- see
-        the STREAMING_CEILING_HZ comment above. This function still degrades
+        the STREAMING_CEILING_HZ comment above. The constant is now 25600,
+        measured on the same 4424A at osr=3 / 76923 Hz per channel, clean at
+        3 and 4 simultaneous channels (see the RAW_SAMPLERATE_HZ comment in
+        sample.py for the full table). This function still degrades
         gracefully, with a loud warning, if that constant is ever raised past
         what leaves real anti-alias headroom.
         """

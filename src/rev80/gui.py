@@ -126,8 +126,8 @@ def derive_acquisition_preview(maxfreq: float, binsize: float) -> dict:
     """Derived acquisition values for the settings dialog preview.
 
     Delegates to AcquisitionSettings rather than recomputing. The dialog used
-    to duplicate the derivation and got it wrong — nextpow2(2 * maxfreq)
-    instead of nextpow2(2.56 * maxfreq) — so at the default F_max=2000 it
+    to duplicate the derivation and got it wrong — 2 * maxfreq instead of
+    2.56 * maxfreq — so at the default F_max=2000 it
     advertised 4.1 kS/s, 2049 lines, 1.000 s and half the true memory while
     the instrument actually ran at 8.2 kS/s, 4097 lines and 0.500 s. Wrong for
     the 500/1000/2000 Hz presets. Never duplicate the formula.
@@ -1395,7 +1395,8 @@ class GUI:
         # Averaging window, in seconds. N alone is hard to reason about; what
         # the analyst actually needs to know is how long the machine has to
         # stay steady, and how long they will wait for the estimate to fill.
-        # A frame is exactly 1/binsize seconds, so the window is N/binsize.
+        # A frame is 1/binsize seconds rounded up to a whole sample (see
+        # AcquisitionSettings.blocksize), so the window is ~N/binsize.
         if dpg.does_item_exist(ui.ACQ_DLG_AVG_TIME):
             if dpg.get_value(ui.ACQ_DLG_AVG_ENABLED):
                 n_req = max(1, int(dpg.get_value(ui.ACQ_DLG_AVG_N)))
@@ -1407,7 +1408,7 @@ class GUI:
                 dpg.set_value(ui.ACQ_DLG_AVG_TIME, "off")
 
         if dpg.does_item_exist(ui.ACQ_DLG_SAMPLERATE):
-            dpg.set_value(ui.ACQ_DLG_SAMPLERATE, f"{samplerate / 1000:.1f} kS/s")
+            dpg.set_value(ui.ACQ_DLG_SAMPLERATE, f"{samplerate / 1000:.3f} kS/s")
         if dpg.does_item_exist(ui.ACQ_DLG_NFFT_BINS):
             dpg.set_value(ui.ACQ_DLG_NFFT_BINS, str(n_fft_bins))
         if dpg.does_item_exist(ui.ACQ_DLG_ACQ_TIME):

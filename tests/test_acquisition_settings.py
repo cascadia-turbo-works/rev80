@@ -1,4 +1,6 @@
 import pytest
+
+import rev80
 from rev80 import AcquisitionSettings
 
 
@@ -63,20 +65,93 @@ def test_trend_max_points_is_positive_int():
     assert config.trend_max_points > 0
 
 
-def test_samplerate_is_power_of_two():
+def test_samplerate_is_exactly_2p56x_maxfreq():
+    """The display rate is the ratio the dialog advertises, not a rounded-up one.
+
+    Replaces test_samplerate_is_power_of_two. nextpow2(2.56 * maxfreq)
+    overstated the rate by up to 2x; at the top preset that meant advertising
+    32768 Hz against 25600 Hz of real data. A power-of-two *rate* buys nothing
+    -- the FFT length is blocksize, tested separately.
+    """
     config = AcquisitionSettings()
-    for fm in [200, 500, 1000, 5000, 10000, 50000]:
+    for fm in rev80.MAXFREQ_PRESETS:
         config.maxfreq = fm
-        sr = config.samplerate
-        assert sr & (sr - 1) == 0, f'samplerate {sr} is not a power of 2'
+        assert config.samplerate == int(round(2.56 * fm)), (
+            f'F_max={fm}: samplerate {config.samplerate} != 2.56 x {fm}'
+        )
 
 
-def test_blocksize_is_power_of_two():
+def test_display_rate_never_exceeds_acquisition_rate():
+    """You cannot display a rate you did not acquire.
+
+    The bug this pins: decimate_to_rate returns the block undecimated when
+    target_rate >= raw_rate, so an overstated samplerate does not fail loudly
+    -- the dialog simply advertises a rate the pipeline never produces, and
+    n_fft_bins / binsize_actual are computed from it. Every preset must
+    satisfy samplerate <= raw_samplerate, which is exactly the condition
+    maxfreq's setter clamps to.
+    """
     config = AcquisitionSettings()
-    for df in [0.25, 0.5, 1.0, 2.0, 5.0, 10.0]:
-        config.binsize = df
-        bs = config.blocksize
-        assert bs & (bs - 1) == 0, f'blocksize {bs} is not a power of 2'
+    for fm in rev80.MAXFREQ_PRESETS:
+        config.maxfreq = fm
+        assert config.maxfreq == fm, (
+            f'F_max={fm} was clamped to {config.maxfreq} -- RAW_SAMPLERATE_HZ '
+            f'({config.raw_samplerate}) cannot back the preset grid'
+        )
+        assert config.samplerate <= config.raw_samplerate, (
+            f'F_max={fm}: display rate {config.samplerate} exceeds acquisition '
+            f'rate {config.raw_samplerate}'
+        )
+
+
+def test_decimation_ratio_is_an_exact_integer_at_every_preset():
+    """raw -> display decimation should be a clean integer factor.
+
+    Not a correctness requirement on its own, but it is the property that
+    makes the polyphase resampler cheap and exact, and it is what picks
+    RAW_SAMPLERATE_HZ = 2.56 x the top preset over any nearby value.
+    """
+    config = AcquisitionSettings()
+    for fm in rev80.MAXFREQ_PRESETS:
+        config.maxfreq = fm
+        ratio = config.raw_samplerate / config.samplerate
+        assert ratio == int(ratio), (
+            f'F_max={fm}: raw/display = {ratio}, not an integer'
+        )
+
+
+def test_blocksize_delivers_the_requested_binsize():
+    """Replaces test_blocksize_is_power_of_two.
+
+    blocksize is a Welch segment length, and pocketfft is efficient for any
+    5-smooth length -- being a power of two was never the invariant that
+    mattered. What matters is that the delivered bin is never coarser than
+    the requested one, and that a frame really is 1/binsize seconds.
+    """
+    config = AcquisitionSettings()
+    for fm in rev80.MAXFREQ_PRESETS:
+        for df in rev80.BINSIZE_PRESETS:
+            config.maxfreq = fm
+            config.binsize = df
+            assert config.binsize_actual <= df + 1e-9, (
+                f'F_max={fm} df={df}: delivered bin {config.binsize_actual} '
+                f'is coarser than requested'
+            )
+            # A frame is 1/binsize seconds, rounded up to a whole sample --
+            # never shorter (you cannot resolve df from less data) and never
+            # more than one sample longer. The dialog's "a frame is exactly
+            # 1/binsize seconds" only ever held when samplerate/binsize landed
+            # on a power of two; with nextpow2 the overshoot reached 56.2%
+            # (F_max=200, df=50: 31.2 ms for a nominal 20 ms). This bounds it.
+            ideal = 1.0 / df
+            assert config.acquisition_period >= ideal - 1e-12, (
+                f'F_max={fm} df={df}: frame {config.acquisition_period} s is '
+                f'shorter than the {ideal} s the requested bin needs'
+            )
+            assert config.acquisition_period < ideal + 1.0 / config.samplerate, (
+                f'F_max={fm} df={df}: frame {config.acquisition_period} s '
+                f'overshoots {ideal} s by more than one sample'
+            )
 
 
 def test_n_fft_bins():

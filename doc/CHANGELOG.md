@@ -364,6 +364,110 @@ on a PicoScope 4424A (serial 12462/0067) with AWG loopback on channel A.
   (`make_ramped_pulses`) and asserting edge *instants* rather than only rates.
   All 11 invariants are now pinned.
 
+### hotfix/RAW_SAMPLERATE (2026-09-09)
+
+#### Fixed
+- **The Acquisition dialog advertised a sample rate the instrument never produced.**
+  `RAW_SAMPLERATE_HZ` was lowered to relieve GUI lag while streaming 4 channels, which
+  exposed a latent defect in the display-rate derivation. `samplerate` was
+  `nextpow2(2.56 * maxfreq)` — rounding *up* to a power of two, so it overstated the
+  rate by up to 2x. That was invisible only while `raw_samplerate` was large enough to
+  absorb the overshoot. Measured, at the 10 kHz preset against 25.6 kHz of acquisition:
+
+  | | dialog showed | pipeline delivered |
+  |---|---|---|
+  | sample rate | 32.8 kS/s | 25.6 kS/s |
+  | lines | 10001 | computed from a rate that did not exist |
+
+  It failed silently because `decimate_to_rate` returns the block untouched when
+  `target_rate >= raw_rate`, so the overstated rate produced no error — just a readout
+  that disagreed with the data, and `n_fft_bins`/`binsize_actual` derived from the
+  fictitious rate.
+
+  `samplerate` is now **exactly** `2.56 * maxfreq`. This cannot overshoot:
+  `maxfreq`'s setter already clamps to `raw_samplerate/2/1.28`, which *is* the condition
+  `2.56 * maxfreq <= raw_samplerate`. A power-of-two *rate* bought nothing — the FFT
+  length is `blocksize`, not the rate. Every preset rate is now 5-smooth and divides
+  `raw_samplerate` exactly, so raw→display decimation is an exact integer factor
+  (50/20/10/5/2/1) at all six presets.
+
+- **`blocksize` is now `ceil(samplerate / binsize)`** rather than `nextpow2(...)`.
+  With a power-of-two rate that divided exactly and a frame really was `1/binsize`
+  seconds; with an exact-2.56x rate `nextpow2` would have made frames up to 2x longer
+  than the dialog claims. Measured worst-case frame-length overshoot across the 54
+  preset combinations: **56.2% → 17.2%**, with 24 combinations now exact. The delivered
+  bin is still never coarser than the requested one. `blocksize` is no longer a power of
+  two, which does not matter: it is a Welch segment length, pocketfft is efficient for
+  any 5-smooth length, and every preset combination is one.
+
+- **`RAW_SAMPLERATE_HZ` = 25600** (2.56 × the 10 kHz top preset), replacing a briefly-set
+  `10_000` that dropped the 2.56 factor. At 10 kHz raw the `maxfreq` setter silently
+  clamped to 3906 Hz — the 5 kHz and 10 kHz presets were unreachable — and envelope
+  bandwidth was halved. 25600 Hz gives osr=3 (76.8 kHz/channel at the ADC), which asks
+  *less* of the ADC than the 40000 Hz configuration measured clean on a 4424A.
+  **Validated on hardware 2026-09-09** (4424A s/n 12462/0067): `effective_osr=3`,
+  actual raw ADC rate 76923 Hz/channel against 76800 requested (+0.16%, the driver's
+  discrete timebase), **0 overflow and 0 rate-degradation transitions** over 45 s
+  sustained at both 3 and 4 simultaneous channels; all 9 AWG-loopback hardware tests
+  pass. The GUI-load problem that motivated lowering the rate is separate and still
+  open.
+
+- **`tests/test_picoscope_hw.py` asserted a sample rate the stream never requested.**
+  `STREAM_SAMPLERATE = 50_000` predated the raw/display split: `PicoScopeStream`
+  acquires at `raw_samplerate`, so 50 kHz was never asked of the hardware. The
+  assertion allowed 40% deviation — wide enough to hide the rate being wrong by a
+  factor of 1.56 — and passed only while `raw_samplerate` happened to be 40 kHz, 20%
+  away. At 25600 Hz it failed at 48.7%. Separately, `test_stream_start_stop_cycle`
+  computed its sleep as `STREAM_BLOCKSIZE / STREAM_SAMPLERATE` = 1.0 s against a real
+  `acquisition_period` of 1.95 s, so no callback could arrive and it reported a
+  streaming failure that was its own. Both now derive from the config
+  (`raw_samplerate`, `acquisition_period`) and the rate tolerance is 5%, against a
+  measured quantisation error of 0.16%.
+
+#### Changed
+- `tests/test_acquisition_settings.py`: `test_samplerate_is_power_of_two` and
+  `test_blocksize_is_power_of_two` pinned the exact behaviour that was wrong. Replaced
+  with the invariants that matter — samplerate is exactly 2.56x maxfreq; the display rate
+  never exceeds the acquisition rate; the decimation ratio is an exact integer; no preset
+  is clamped; the delivered bin is never coarser than requested and a frame is never more
+  than one sample longer than `1/binsize`.
+- `tests/test_declared_band.py`: the out-of-band tone was 1500 Hz against `F_max`=1000,
+  which sat in the guard band only because `nextpow2` inflated fs/2 to 2048. At the
+  correct fs/2 = 1280 it is above Nyquist, where the decimation filter removes it
+  outright (−240 dB measured) — the test would have passed without the band mask doing
+  anything. Moved to 1100 Hz, measured to survive decimation at −0.7 dB, so the band
+  mask is the only thing that can exclude it. Revert-checked: patching out the
+  `band_fmax_resolved` clamp makes it fail by +123.6%.
+
+- **Repo-relocation breakage (tooling only, no measurement impact).** The checkout has
+  moved three times (`~/CODE/reveng/vibegui` → `~/Documents/reveng/code/vibegui` →
+  `~/Documents/reveng/vibration/rev80`) and each move stranded absolute-path state that
+  fails *silently*:
+  - `core.hooksPath` still pointed at the previous clone's `.git/hooks`, a directory that
+    no longer exists. Git runs no hooks at all in that state, so the blocking
+    `ruff check src/ tests/` gate and the `doc/*.pdf` re-render had not run since the
+    move. Now set to the relative `.githooks`, which survives any future relocation.
+    The stale `gitflow.path.hooks` (pointing two moves back, at `~/PurpleDocs/...`) was
+    unset.
+  - The editable install's `.pth` pointed at the dead `.../code/vibegui/src`, so
+    `import rev80` raised `ModuleNotFoundError` and the `rev80` / `rev80-headless`
+    console scripts and the desktop launcher were all dead. Reinstalled editable.
+    A stale pre-rename `vibechecker` distribution — a separate dist that
+    `pip install -e .` does not touch — was uninstalled alongside it.
+
+  This went unnoticed because **`pytest` is immune to it**: `pyproject.toml` sets
+  `pythonpath = ["src"]`, resolved from rootdir, so all 737 tests collected and passed
+  against the source tree while every installed entry point was broken. Green CI does not
+  prove the app launches.
+
+- `.python-version`, `.vscode/` and `.ruff_cache/` are now gitignored (and
+  `.python-version` untracked) so each checkout owns its own dev environment. Consequence:
+  a relocated checkout no longer auto-selects the pyenv env, so the environment must be
+  selected *before* `pip install -e .` or the editable install lands in the wrong
+  interpreter. Documented in CONTRIBUTING.md's new **Moving the checkout** section, along
+  with the hooks fix above.
+- Removed two stale vendor datasheet PDFs from `doc/`.
+
 ## [0.1.0] - 2026-09-01
 
 First tagged release. The sections below were written branch-by-branch during

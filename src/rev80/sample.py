@@ -1,10 +1,11 @@
+import math
 from dataclasses import dataclass, field
 from datetime import datetime
 
 import numpy as np
 
 import rev80
-from rev80 import CHANNEL_ROLES, DEFAULT_CHANNEL_ROLE, DEFAULT_ROTATION_UNIT, nextpow2
+from rev80 import CHANNEL_ROLES, DEFAULT_CHANNEL_ROLE, DEFAULT_ROTATION_UNIT
 from rev80.config import DEFAULT_CACHE_FRAMES
 from rev80.peaks import DEFAULT_THRESHOLD_DB as PEAK_THRESHOLD_DB_DEFAULT
 
@@ -18,15 +19,35 @@ log = rev80.get_logger(__name__)
 #: means envelope analysis works regardless of what F_max the user has
 #: picked for the Spectrum tab.
 #:
-#: Value validated on real hardware (PicoScope 4424A, see
-#: scripts/validate-streaming-capacity and picoscope.py's
-#: STREAMING_CEILING_HZ comment): 40000 Hz -> _choose_osr=2 -> raw ADC
-#: rate ~83.3 kHz/channel, clean at both 3 and 4 simultaneous channels,
-#: 0 overflow / 0 rate-degradation events, consistently across repeated
-#: 45s runs. 50000 Hz sits at the measured 100 kHz/channel ceiling with
-#: zero headroom and was not reliable run-to-run on identical hardware
-#: and settings (0-2 rate-degradation events); not used.
-RAW_SAMPLERATE_HZ: int = 40_000
+#: The value is 2.56 x the top F_max preset (10 kHz), which is what makes
+#: the analyzer internally consistent: the display rate is exactly
+#: 2.56 * maxfreq, so at the top preset display rate == acquisition rate and
+#: no preset can ever ask to display more than acquisition contains. Every
+#: preset then decimates from this rate by an exact integer factor
+#: (50/20/10/5/2/1), which is the cheapest and cleanest polyphase path.
+#:
+#: Hardware provenance, measured on a PicoScope 4424A
+#: (scripts/validate-streaming-capacity, and picoscope.py's
+#: STREAMING_CEILING_HZ comment), sustained 45 s at 3 and 4 channels:
+#:
+#:   raw rate    osr   ADC rate/ch   overflow   degraded transitions
+#:   25600 Hz     3      76.9 kHz       0         0, at 3 and 4 channels
+#:   40000 Hz     2     ~83.3 kHz       0         0, every run
+#:   50000 Hz     2     100.0 kHz       0         0 to 2, run-to-run
+#:
+#: 25600 Hz validated 2026-09-09 on s/n 12462/0067: effective_osr=3, actual
+#: raw ADC rate 76923 Hz/channel against 76800 requested (+0.16%, the driver's
+#: discrete timebase), 0 overflow and 0 rate-degradation transitions on both
+#: the 3- and 4-channel runs. The app-rate block arrives at 25641 Hz against
+#: 25600 (+0.16%, same quantisation); tests/test_picoscope_hw.py pins that
+#: within 5%. It asks less of the ADC than the 40000 Hz row, as expected.
+#:
+#: History: briefly set to 10_000 (dropping the 2.56 factor) to relieve GUI
+#: lag while streaming 4 channels. That silently clamped maxfreq to 3906 Hz
+#: -- the 5 kHz and 10 kHz presets could not be reached at all -- and halved
+#: envelope bandwidth. GUI cost is being addressed separately; it is not a
+#: reason to lower the acquisition rate below what the presets require.
+RAW_SAMPLERATE_HZ: int = 25_600
 
 
 def _opt_float(v) -> float | None:
@@ -56,8 +77,8 @@ class AcquisitionSettings:
       what's displayed/analysed from it.
 
     Arithmetic flow:
-        maxfreq  → samplerate = nextpow2(2.56 * maxfreq)   (display)
-        binsize  → blocksize  = nextpow2(samplerate / binsize)  (display)
+        maxfreq  → samplerate = 2.56 * maxfreq   (display)
+        binsize  → blocksize  = ceil(samplerate / binsize)  (display)
         RAW_SAMPLERATE_HZ → raw_blocksize, spanning the same
             acquisition_period as blocksize above  (acquisition/storage)
     """
@@ -279,22 +300,51 @@ class AcquisitionSettings:
 
     @property
     def samplerate(self) -> int:
-        """Minimum power-of-2 sample rate guaranteeing >=1.28x maxfreq at Nyquist.
+        """Display rate: exactly 2.56x maxfreq, the standard analyzer ratio.
 
-        Uses 2.56x maxfreq (rather than the bare 2x Nyquist minimum) before
-        rounding up to a power of two. Since nextpow2 only rounds up, this
-        guarantees Nyquist (samplerate/2) >= 1.28 * maxfreq, i.e. at least a
-        28% margin at every preset. This is the same oversampling ratio real
-        FFT vibration analyzers use, and provides the transition-band room
-        needed for the mandatory anti-alias filter applied upstream of this
-        setting (see PicoScopeStream).
+        2.56 (rather than the bare 2x Nyquist minimum) puts Nyquist at
+        1.28 * maxfreq, a 28% guard band for the mandatory anti-alias filter
+        applied upstream (see PicoScopeStream). It is the ratio real FFT
+        vibration analyzers use, and it is what the Acquisition dialog
+        advertises.
+
+        This used to be nextpow2(2.56 * maxfreq), which rounded *up* to a
+        power of two and so overstated the rate by up to 2x. That was
+        harmless only while raw_samplerate was large enough to absorb it.
+        Once RAW_SAMPLERATE_HZ came down to 2.56 x the top preset, the top
+        preset rounded to 32768 Hz against 25600 Hz of real data:
+        decimate_to_rate's `target_rate >= raw_rate` guard returned the block
+        undecimated at 25600 Hz while the dialog advertised 32.8 kS/s, and
+        n_fft_bins/binsize_actual were computed from the rate that did not
+        exist. Exact 2.56x cannot overshoot: maxfreq's own setter clamps to
+        raw_samplerate/2/1.28, which is precisely the condition
+        2.56 * maxfreq <= raw_samplerate.
+
+        The FFT length is `blocksize`, not this -- a power-of-two *rate* buys
+        nothing. Every preset rate here is 5-smooth (512, 1280, 2560, 5120,
+        12800, 25600) and divides RAW_SAMPLERATE_HZ exactly, so raw -> display
+        decimation is an exact integer factor at every setting.
         """
-        return nextpow2(int(2.56 * self._fm))
+        return int(round(2.56 * self._fm))
 
     @property
     def blocksize(self) -> int:
-        """Minimum power-of-2 block length achieving the requested binsize."""
-        return nextpow2(int(self.samplerate / self._df))
+        """Shortest block achieving the requested binsize: ceil(fs / binsize).
+
+        Was nextpow2(samplerate / binsize). With a power-of-two samplerate
+        that divided exactly and a frame was exactly 1/binsize seconds; with
+        an exact-2.56x samplerate it would round up to as much as 2x that,
+        making frames up to twice as long as the dialog's "1/binsize seconds"
+        claim. ceil() restores the invariant and additionally makes
+        binsize_actual land on the requested binsize exactly at every preset
+        (both grids divide evenly), while still never delivering a coarser
+        bin than asked for -- which is what binsize_actual documents.
+
+        Not a power of two any more. It does not need to be: this is a
+        Welch segment length handed to scipy's pocketfft, which is efficient
+        for any 5-smooth length, and every preset combination here is one.
+        """
+        return max(1, math.ceil(self.samplerate / self._df))
 
     @property
     def raw_samplerate(self) -> int:
@@ -416,10 +466,11 @@ class AcquisitionSettings:
         real resolution of 20.48 Hz rather than 20 (+2.4%); F_max=2000 / df=5
         claimed 1025 lines against an actual 820.
 
-        Using the whole (power-of-two) block makes n_fft_bins, binsize_actual
-        and acquisition_period consistent by construction, and keeps the FFT a
-        power of two. Since blocksize = nextpow2(samplerate / binsize), the
-        delivered resolution is always at least as fine as the one requested.
+        Using the whole block makes n_fft_bins, binsize_actual and
+        acquisition_period consistent by construction. Since
+        blocksize = ceil(samplerate / binsize), the delivered resolution is
+        always at least as fine as the one requested (and exactly equal to it
+        on the preset grid).
         """
         return self.blocksize
 
