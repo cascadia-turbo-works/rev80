@@ -71,7 +71,7 @@ if [[ "$STEP" == "all" || "$STEP" == "installer" ]]; then
 fi
 
 # ── Step 1: Fetch font ───────────────────────────────────────────────────────
-./fetch_font.sh
+./scripts/fetch_font.sh
 ## Font is gitignored; download on first build and cache locally.
 #FONT_FILE="assets/fonts/CommitMonoNerdFont-Regular.otf"
 #FONT_URL="https://github.com/ryanoasis/nerd-fonts/releases/download/v3.4.0/CommitMono.zip"
@@ -94,9 +94,14 @@ fi
 # quick --no-deps reinstall regenerates it fresh here so the frozen binary
 # always embeds the correct tag, even if it's been a while since the last
 # `pip install -e .` (e.g. a tag was applied after that).
-pip install -e . --no-deps -q
+
+echo "[2/5] Reinstall package with pip."
+#echo "Activate venv..."
+#source .venv/Scripts/activate # user must activate their venv.
+echo "pip install -e . -q" 
+pip install -e . -q --no-deps
 VERSION=$(python -c "import rev80; print(rev80.__version__)")
-echo "[2/5] Version: $VERSION"
+echo "Version: $VERSION"
 echo
 
 # ── Step 3: Collect PicoScope DLLs ──────────────────────────────────────────

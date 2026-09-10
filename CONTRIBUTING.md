@@ -7,6 +7,7 @@ reference, see **[README.md](README.md)**.
 ## Table of Contents
 
 - [Development environment](#development-environment)
+- [Moving the checkout](#moving-the-checkout)
 - [Rendering docs to PDF](#rendering-docs-to-pdf)
 - [Project layout](#project-layout)
 - [Testing](#testing)
@@ -20,8 +21,8 @@ reference, see **[README.md](README.md)**.
 Linux / macOS recommended.
 
 ```bash
-git clone <repo-url>/vibegui.git
-cd vibegui
+git clone <repo-url>/rev80.git
+cd rev80
 
 # Create and activate a virtual environment
 python -m venv .venv
@@ -40,6 +41,40 @@ pytest tests/
 # Launch the app against the source tree
 python -m rev80
 ```
+
+---
+
+## Moving the checkout
+
+Three things outside the repo are bound to its **absolute path** and break silently when the
+checkout moves. This has happened on every relocation so far, so run all of it in one pass:
+
+```bash
+cd <new-path>
+
+# 1. Re-point the editable install. Without this, `import rev80` and both console
+#    scripts fail with ModuleNotFoundError while `pytest` keeps passing — tests
+#    resolve via pyproject's `pythonpath = ["src"]`, which never consults the install.
+pyenv local <env>                  # or: source .venv/bin/activate
+python -c "import sys; print(sys.prefix)"   # confirm the intended env FIRST
+pip install -e ".[dev]"
+
+# 2. Re-enable git hooks. Use the relative path — an absolute `core.hooksPath`
+#    silently disables every hook (including the blocking `ruff` gate) after a move.
+git config core.hooksPath .githooks
+
+# 3. Verify
+rev80 --list-sensors               # must not raise ModuleNotFoundError
+git config --get core.hooksPath    # must print: .githooks
+```
+
+`.python-version` and `.vscode/` are gitignored so each checkout owns its own dev environment;
+they are not carried by `git clone`. Prefer `mv` over a fresh clone when relocating, or recreate
+them by hand. Uninstall any stale distribution left over from the `vibechecker` era with
+`pip uninstall vibechecker` — it is a separate dist and `pip install -e .` will not remove it.
+
+Nothing *inside* the repo hardcodes an absolute path, and the user-level state
+(`~/.config/rev80/`, `~/Documents/Rev80/data/`, the desktop entry) is path-independent.
 
 ---
 
