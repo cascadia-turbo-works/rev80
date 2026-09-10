@@ -35,8 +35,19 @@ CHANNEL_RANGE    = 8            # PS4000A_5V (index 8, ±5 V)
 
 FREQ_TOL_HZ      = 20.0         # acceptable deviation from SIGGEN_FREQ_HZ
 
-STREAM_SAMPLERATE = 50_000      # 50 kHz → Nyquist 25 kHz, resolves 500 Hz cleanly
-STREAM_BLOCKSIZE  = 50_000      # 1 s capture window
+# PicoScopeStream acquires at config.raw_samplerate (RAW_SAMPLERATE_HZ), never
+# at the maxfreq-derived display samplerate -- see the raw/display split in
+# sample.py. These pick a *legal* display config; every rate and timing
+# expectation below is derived from the config, never hardcoded, because the
+# rate the hardware is actually asked for is raw_samplerate.
+#
+# The previous constants (STREAM_SAMPLERATE/STREAM_BLOCKSIZE = 50_000) predated
+# that split: they asked for maxfreq=25 kHz, which the setter clamps, and then
+# asserted the delivered rate was within 40% of 50 kHz. The stream never ran at
+# 50 kHz -- the assertion passed only while raw_samplerate happened to be
+# 40 kHz, 20% away, and broke as soon as it became 25600.
+STREAM_MAXFREQ_HZ = 10_000.0    # top MAXFREQ_PRESETS entry → Nyquist 12.8 kHz
+STREAM_BINSIZE_HZ = 1.0         # 1 Hz bins → a 1 s acquisition window
 
 SIGGEN_CFG = {
     'freq_hz':    SIGGEN_FREQ_HZ,
@@ -66,10 +77,10 @@ hardware_skip = pytest.mark.skipif(
 
 
 def _make_stream_config(highpass: bool = True) -> vc.AcquisitionSettings:
-    """Return AcquisitionSettings tuned for 500 Hz detection at ~50 kHz."""
+    """Return AcquisitionSettings for 500 Hz detection at the acquisition rate."""
     cfg = vc.AcquisitionSettings()
-    cfg.maxfreq = STREAM_SAMPLERATE / 2   # → samplerate ≥ STREAM_SAMPLERATE
-    cfg.binsize = cfg.samplerate / STREAM_BLOCKSIZE  # → blocksize ≥ STREAM_BLOCKSIZE
+    cfg.maxfreq = STREAM_MAXFREQ_HZ
+    cfg.binsize = STREAM_BINSIZE_HZ
     cfg.highpass_enabled       = highpass
     cfg.channel_voltage_ranges = {0: CHANNEL_RANGE}
     cfg.coupling               = 'AC'
@@ -121,18 +132,27 @@ class TestPicoScopeHardwareStream:
         assert self.sample.unit == 'mV'
 
     def test_sample_blocksize_matches_config(self):
-        # The PicoScope rounds the sample rate to the nearest available time base,
-        # so the actual blocksize (derived from the actual samplerate) may differ
-        # from STREAM_BLOCKSIZE. Accept any positive blocksize.
+        # The PicoScope rounds the sample rate to the nearest available time
+        # base, so the delivered block length can differ slightly from
+        # raw_blocksize. Accept any positive blocksize.
         assert self.sample.blocksize > 0
 
     def test_samplerate_close_to_requested(self):
-        # The 4000A series uses discrete time bases; allow up to 40 % deviation
-        # from the requested rate (e.g., 50 kHz request → 66.7 kHz actual).
-        deviation = abs(self.sample.samplerate - STREAM_SAMPLERATE) / STREAM_SAMPLERATE
-        assert deviation < 0.40, (
-            f'sample.samplerate={self.sample.samplerate} deviates >{0.40:.0%} from '
-            f'requested {STREAM_SAMPLERATE}'
+        """The stream must deliver config.raw_samplerate.
+
+        This is the acquisition rate the whole raw/display split is built on:
+        VibeSample, HDF5 and envelope analysis all assume the block came in at
+        raw_samplerate. The 4000A uses discrete time bases, so the achieved
+        rate is quantised -- at 25600 Hz the driver picks a 39 us interval and
+        delivers 25641 Hz, +0.16%. 5% leaves room for quantisation at other
+        rates while still catching a real regression; the old 40% band was
+        wide enough to hide the rate being wrong by a factor of 1.56.
+        """
+        expected = _make_stream_config().raw_samplerate
+        deviation = abs(self.sample.samplerate - expected) / expected
+        assert deviation < 0.05, (
+            f'sample.samplerate={self.sample.samplerate} deviates '
+            f'{deviation:.1%} from the acquisition rate {expected}'
         )
 
     # --- signal level ---
@@ -228,7 +248,12 @@ class TestPicoScopeRetrigger:
         received = []
         stream = PicoScopeStream(cfg, lambda s: received.append(s),
                                  siggen_config=SIGGEN_CFG)
-        block_duration = STREAM_BLOCKSIZE / STREAM_SAMPLERATE
+        # One callback arrives per acquisition_period at raw_samplerate. Deriving
+        # this from the config rather than hardcoding it is what makes the test
+        # independent of RAW_SAMPLERATE_HZ: with the old hardcoded 1.0 s the
+        # sleep was shorter than the real 1.95 s period and no callback ever
+        # arrived, so the test reported a streaming failure that was its own.
+        block_duration = cfg.acquisition_period
 
         for _ in range(2):
             stream.start()

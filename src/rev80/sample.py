@@ -29,19 +29,17 @@ log = rev80.get_logger(__name__)
 #: (scripts/validate-streaming-capacity, and picoscope.py's
 #: STREAMING_CEILING_HZ comment), sustained 45 s at 3 and 4 channels:
 #:
-#:   raw rate    osr   ADC rate/ch    overflow   degraded transitions
-#:   40000 Hz     2     ~83.3 kHz  (m)     0         0, every run
-#:   50000 Hz     2     100.0 kHz  (m)     0         0 to 2, run-to-run
-#:   25600 Hz     3      76.8 kHz  (c)     -         NOT YET RE-MEASURED
+#:   raw rate    osr   ADC rate/ch   overflow   degraded transitions
+#:   25600 Hz     3      76.9 kHz       0         0, at 3 and 4 channels
+#:   40000 Hz     2     ~83.3 kHz       0         0, every run
+#:   50000 Hz     2     100.0 kHz       0         0 to 2, run-to-run
 #:
-#: (m) measured, (c) computed from osr -- the driver's achieved rate can
-#: differ from the requested one (see PicoScopeStream._report_samplerate),
-#: which is why the 40000 Hz row reads 83.3 rather than 80.0.
-#:
-#: 25600 Hz requests less of the ADC than the 40000 Hz configuration that
-#: measured clean, so it is not expected to regress USB streaming -- but that
-#: is an inference from the table, not a measurement.
-#: Re-run scripts/validate-streaming-capacity when a scope is attached.
+#: 25600 Hz validated 2026-09-09 on s/n 12462/0067: effective_osr=3, actual
+#: raw ADC rate 76923 Hz/channel against 76800 requested (+0.16%, the driver's
+#: discrete timebase), 0 overflow and 0 rate-degradation transitions on both
+#: the 3- and 4-channel runs. The app-rate block arrives at 25641 Hz against
+#: 25600 (+0.16%, same quantisation); tests/test_picoscope_hw.py pins that
+#: within 5%. It asks less of the ADC than the 40000 Hz row, as expected.
 #:
 #: History: briefly set to 10_000 (dropping the 2.56 factor) to relieve GUI
 #: lag while streaming 4 channels. That silently clamped maxfreq to 3906 Hz
