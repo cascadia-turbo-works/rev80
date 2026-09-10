@@ -48,9 +48,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   clamped to 3906 Hz — the 5 kHz and 10 kHz presets were unreachable — and envelope
   bandwidth was halved. 25600 Hz gives osr=3 (76.8 kHz/channel at the ADC), which asks
   *less* of the ADC than the 40000 Hz configuration measured clean on a 4424A.
-  **Not yet re-measured on hardware** — re-run `scripts/validate-streaming-capacity`
-  when a scope is attached. The GUI-load problem that motivated lowering the rate is
-  separate and still open.
+  **Validated on hardware 2026-09-09** (4424A s/n 12462/0067): `effective_osr=3`,
+  actual raw ADC rate 76923 Hz/channel against 76800 requested (+0.16%, the driver's
+  discrete timebase), **0 overflow and 0 rate-degradation transitions** over 45 s
+  sustained at both 3 and 4 simultaneous channels; all 9 AWG-loopback hardware tests
+  pass. The GUI-load problem that motivated lowering the rate is separate and still
+  open.
+
+- **`tests/test_picoscope_hw.py` asserted a sample rate the stream never requested.**
+  `STREAM_SAMPLERATE = 50_000` predated the raw/display split: `PicoScopeStream`
+  acquires at `raw_samplerate`, so 50 kHz was never asked of the hardware. The
+  assertion allowed 40% deviation — wide enough to hide the rate being wrong by a
+  factor of 1.56 — and passed only while `raw_samplerate` happened to be 40 kHz, 20%
+  away. At 25600 Hz it failed at 48.7%. Separately, `test_stream_start_stop_cycle`
+  computed its sleep as `STREAM_BLOCKSIZE / STREAM_SAMPLERATE` = 1.0 s against a real
+  `acquisition_period` of 1.95 s, so no callback could arrive and it reported a
+  streaming failure that was its own. Both now derive from the config
+  (`raw_samplerate`, `acquisition_period`) and the rate tolerance is 5%, against a
+  measured quantisation error of 0.16%.
 
 ### Changed
 - `tests/test_acquisition_settings.py`: `test_samplerate_is_power_of_two` and
