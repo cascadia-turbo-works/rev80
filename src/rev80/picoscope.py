@@ -743,9 +743,10 @@ class PicoScopeStream:
         sample.py) -- a fixed constant, not maxfreq-derived, so this no
         longer varies with what F_max the user picks. Validated at
         RAW_SAMPLERATE_HZ=40000 (osr=2, real margin) on real hardware -- see
-        the STREAMING_CEILING_HZ comment above. The constant is now 25600
-        (osr=3, 76.8 kHz/ch computed), which asks less of the ADC than the
-        measured-clean 40000 Hz case but has not itself been re-measured. This function still degrades
+        the STREAMING_CEILING_HZ comment above. The constant is now 25600,
+        measured on the same 4424A at osr=3 / 76923 Hz per channel, clean at
+        3 and 4 simultaneous channels (see the RAW_SAMPLERATE_HZ comment in
+        sample.py for the full table). This function still degrades
         gracefully, with a loud warning, if that constant is ever raised past
         what leaves real anti-alias headroom.
         """
