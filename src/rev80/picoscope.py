@@ -53,6 +53,14 @@ _MAX_OPEN_ATTEMPTS      = 2     # retries for ps4000aOpenUnit at detection / sta
 _OPEN_RETRY_DELAY_S     = 1.0   # seconds between open attempts
 _NOT_RESPONDING_DELAY_S = 2.0   # longer pause after PICO_NOT_RESPONDING (device resetting)
 
+#: Streaming-clock quantum, nanoseconds. Measured on a 4824A: the reachable
+#: streaming intervals are 12.5 ns apart (an 80 MHz timebase) and the driver
+#: floors a request to the grid rather than rounding it. See
+#: PicoScopeStream._start_streaming for the probe table and why snapping to
+#: this grid ourselves is worth 5x in sample-clock accuracy. Only ever an
+#: optimisation: the interval the driver reports back is what is believed.
+_TIMEBASE_NS = 12.5
+
 # Streaming watchdog / recovery tuning
 _WATCHDOG_TIMEOUT_S     = 5.0   # seconds of silence → assume device hung
 _MAX_RECONNECT_ATTEMPTS = 3     # recovery attempts before giving up
@@ -696,12 +704,66 @@ class PicoScopeStream:
         # STREAMING_CEILING_HZ / OSR_TARGET module comment for why this is
         # necessary and bounded.
         raw_samplerate = self.config.raw_samplerate * self._effective_osr
-        sample_interval_us = ctypes.c_int32(max(1, int(1e6 / raw_samplerate)))
+
+        # NANOSECONDS, not microseconds, and rounded rather than truncated.
+        #
+        # The interval is quantised to whole units of whatever time unit is
+        # named here, so the unit sets the achievable rate grid. In us this is
+        # brutally coarse at streaming rates: 1e6/76800 = 13.0208 truncated to
+        # 13 us, giving 76923 Hz against 76800 requested -- a 1600 ppm error
+        # that scaled every displayed frequency, and the reason
+        # _report_samplerate exists at all.
+        #
+        # Two things got worse downstream from that 41 Hz:
+        #   * every displayed frequency was 0.16% high, which is real error in
+        #     an instrument whose whole job is naming lines;
+        #   * 25641 is coprime with every display rate (5120 at F_max=2000), so
+        #     collector.decimate_to_rate's rational ratio could not reduce and
+        #     scipy designed a 512821-tap FIR on every call -- 73.6 ms per
+        #     channel per frame against 0.64 ms at an integer factor.
+        #
+        # ns is finer but NOT continuous, and the second half of this matters.
+        # Probed directly on the 4824A (s/n 13290/0013), requesting a range of
+        # intervals and reading back what the driver used:
+        #
+        #     requested ns   returned ns   rate/ch Hz   /osr Hz    ppm vs 25600
+        #        13021          13012       76852.14   25617.38        +679
+        #        13020          13012       76852.14   25617.38        +679
+        #        13015          13012       76852.14   25617.38        +679
+        #        13013          13012       76852.14   25617.38        +679
+        #        13012          13000       76923.08   25641.03       +1603
+        #        13000          13000       76923.08   25641.03       +1603
+        #        12995          12987       77071.29   25690.43       +3532
+        #        13025          13025       76775.43   25591.81        -320
+        #        13026          13025       76775.43   25591.81        -320
+        #        12500          12500       80000.00   26666.67      +41667
+        #
+        # Two facts fall out. The reachable points are 12.5 ns apart (12987.5,
+        # 13000, 13012.5, 13025 ...), i.e. an **80 MHz timebase**; and the
+        # driver **floors** to the grid rather than rounding, which is why
+        # asking for the arithmetically-correct 13021 lands a whole grid point
+        # high. So the naive round(1e9/fs) is better than the us request but
+        # still lands on the wrong side.
+        #
+        # Snapping to the grid ourselves, rounding to NEAREST and then ceil-ing
+        # into whole ns so the driver's floor lands where intended, reaches
+        # 13025 ns: -320 ppm, the best this hardware can do (8e7/1041 and
+        # 8e7/1042 straddle 76800 and 1042 is the nearer). Against +1603 ppm
+        # shipped previously, that is 5x better, and every displayed frequency
+        # improves with it -- a 1000 Hz line read 1001.6 Hz before.
+        #
+        # None of this is trusted blind: the driver writes back the interval it
+        # really used and that readback (below) is what everything downstream
+        # believes. A device with a different timebase simply floors to its own
+        # grid and reports it, exactly as before.
+        target_ns = 1e9 / raw_samplerate
+        grid_ns   = round(target_ns / _TIMEBASE_NS) * _TIMEBASE_NS
+        sample_interval_ns = ctypes.c_int32(max(1, math.ceil(grid_ns)))
 
         assert_pico_ok(ps.ps4000aRunStreaming(
             self._chandle,
-            ctypes.byref(sample_interval_us),
-            ps.PS4000A_TIME_UNITS['PS4000A_US'],
+            ctypes.byref(sample_interval_ns),
+            ps.PS4000A_TIME_UNITS['PS4000A_NS'],
             0,                               # maxPreTriggerSamples
             self.config.raw_blocksize * 4,       # maxPostTriggerSamples — driver buffer budget; autoStop=0 streams continuously regardless
             0,                               # autoStop = 0  → continuous
@@ -710,13 +772,16 @@ class PicoScopeStream:
             _DRIVER_BUFFER_SAMPLES,
         ))
 
-        # Read back the actual achieved raw (oversampled) sample rate (hardware
-        # may round the interval to a whole microsecond).
-        actual_us = sample_interval_us.value
-        actual_raw_fs = int(round(1e6 / actual_us))
-        if actual_raw_fs != raw_samplerate:
-            log.debug(f'PicoScope actual raw sample rate: {actual_raw_fs} Hz '
-                      f'(requested {raw_samplerate} Hz, osr={self._effective_osr})')
+        # Read back the actual achieved raw (oversampled) sample rate: the
+        # driver writes into sample_interval_ns whatever it could really use.
+        # Kept as a float -- rounding it to an int here is what would put the
+        # ns-resolution gain straight back in the bin (76799.02 -> 76799).
+        actual_ns = sample_interval_ns.value
+        actual_raw_fs = 1e9 / actual_ns if actual_ns > 0 else float(raw_samplerate)
+        if abs(actual_raw_fs - raw_samplerate) > 0.5:
+            log.debug(f'PicoScope actual raw sample rate: {actual_raw_fs:.2f} Hz '
+                      f'(requested {raw_samplerate} Hz, osr={self._effective_osr}, '
+                      f'interval {actual_ns} ns)')
         self._actual_raw_samplerate = actual_raw_fs
         self._actual_samplerate = self._report_samplerate(actual_raw_fs)
 
@@ -770,8 +835,9 @@ class PicoScopeStream:
         Oversampling itself *is* hidden from DataCollector / VibeSample / HDF5
         — that is what dividing by the (exact, integer) decimation ratio does.
         What must NOT be hidden is the rate the hardware actually ran at: the
-        driver rounds the streaming interval to a whole microsecond and writes
-        back what it used, which is generally not what was requested.
+        driver quantises the streaming interval to its own clock grid (12.5 ns
+        on the 4824A — see _start_streaming) and writes back what it used,
+        which is generally not what was requested.
 
         Reporting config.raw_samplerate instead scaled every displayed frequency by
         requested/actual. Measured at F_max=2000: requested 32768 Hz raw, driver
