@@ -217,6 +217,10 @@ class GUI:
 
     def __init__(self):
         self.context = None
+        # Render-loop failure bookkeeping — see _handle_render_error.
+        self._render_errors: dict[str, int] = {}
+        self._consecutive_render_errors: int = 0
+        self._cleaned_up: bool = False
         self.collector = rev80.DataCollector()
         self.registry = ScopeSensorRegistry()
         self._editing_scope_sensor_id: str | None = None
@@ -4838,19 +4842,104 @@ class GUI:
         log.info("Start DPG backend")
         _loaded = not initial_file   # False = load pending after first frame
         while dpg.is_dearpygui_running():
-            if not _loaded:
-                # Defer one frame so all DPG series are fully initialised
+            # Guarded: an unhandled exception here used to propagate out of
+            # run(), skip cleanup() entirely, and leave ps4000aCloseUnit
+            # uncalled — so the next launch failed with PICO_NOT_FOUND until
+            # the USB was replugged (audit S-01). It also downgrades a
+            # malformed .h5 (X-02, ZeroDivisionError on binsize=0) from a
+            # process-ending crash to a logged error.
+            try:
+                if not _loaded:
+                    # Defer one frame so all DPG series are fully initialised
+                    dpg.render_dearpygui_frame()
+                    self._load_from_path(initial_file)
+                    _loaded = True
+                    continue
+                self._poll_new_frames()
                 dpg.render_dearpygui_frame()
-                self._load_from_path(initial_file)
-                _loaded = True
-                continue
-            self._poll_new_frames()
-            dpg.render_dearpygui_frame()
+                self._note_render_success()
+            except Exception as exc:                         # noqa: BLE001
+                if not self._handle_render_error(exc):
+                    break
+
+    #: Consecutive failed render frames before giving up and shutting down.
+    #: A fault that repeats every frame is not transient, and spinning on it
+    #: forever is worse than exiting cleanly — at least an exit closes the
+    #: device. Sized so a brief burst of bad frames is ridden out.
+    MAX_CONSECUTIVE_RENDER_ERRORS: int = 30
+
+    def _handle_render_error(self, exc: BaseException) -> bool:
+        """Record a render-loop failure. Returns True to keep rendering.
+
+        Deduplicated by exception TYPE: a persistent fault would otherwise
+        write a traceback at frame rate and roll every other diagnostic out of
+        the rotating log, which is exactly the S-09 failure mode. The first of
+        each type gets a full traceback; repeats are counted silently and
+        summarised on shutdown.
+        """
+        key = type(exc).__name__
+        seen = self._render_errors.get(key, 0)
+        self._render_errors[key] = seen + 1
+        if seen == 0:
+            log.error('Exception in render loop (further %s suppressed): %s',
+                      key, exc, exc_info=exc)
+        self._consecutive_render_errors += 1
+        if self._consecutive_render_errors >= self.MAX_CONSECUTIVE_RENDER_ERRORS:
+            log.error(
+                'Render loop failed %d consecutive frames — shutting down '
+                'cleanly so the device is closed properly. Error counts: %s',
+                self._consecutive_render_errors, dict(self._render_errors),
+            )
+            return False
+        return True
+
+    def _note_render_success(self) -> None:
+        """A frame rendered. Clears the consecutive-failure streak."""
+        self._consecutive_render_errors = 0
 
     def cleanup(self):
+        """Shut down in dependency order, and never skip a step on failure.
+
+        Order matters: the monitor writer must flush and drain BEFORE the
+        device is closed and the DPG context destroyed. It is a daemon thread,
+        so anything still queued when the interpreter exits is lost — possibly
+        mid-h5py.File(..., 'a'), leaving a truncated session (audit S-01).
+
+        Each step is individually guarded: a wedged writer must not prevent
+        ps4000aCloseUnit from running, because a device left open is what
+        makes the NEXT launch fail with PICO_NOT_FOUND until the USB is
+        physically replugged.
+        """
+        if getattr(self, '_cleaned_up', False):
+            return
+        self._cleaned_up = True
         log.info("Cleanup app assets")
-        self.collector.disconnect_sensor()
-        dpg.destroy_context()
+
+        monitor = getattr(self, '_monitor', None)
+        if monitor is not None and getattr(monitor, 'is_recording', False):
+            try:
+                log.info("Stopping monitor session and flushing writer")
+                monitor.stop()
+            except Exception:                                # noqa: BLE001
+                log.exception('Monitor failed to stop cleanly — continuing so '
+                              'the device is still closed')
+
+        try:
+            self.collector.disconnect_sensor()
+        except Exception:                                    # noqa: BLE001
+            log.exception('disconnect_sensor() failed during cleanup')
+
+        # getattr: cleanup() runs from main()'s finally and must survive a GUI
+        # that failed partway through construction. It is the one method that
+        # cannot be allowed to raise — it is what closes the device.
+        render_errors = getattr(self, '_render_errors', None)
+        if render_errors:
+            log.warning('Render loop error totals this session: %s',
+                        dict(render_errors))
+        try:
+            dpg.destroy_context()
+        except Exception:                                    # noqa: BLE001
+            log.exception('destroy_context() failed during cleanup')
         log.info("App Exit")
 
     def serve(self):

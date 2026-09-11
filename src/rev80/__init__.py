@@ -1,9 +1,23 @@
-try:
-    from rev80._version import __version__  # noqa: F401
-except ImportError:
-    __version__ = "0.0.0+unknown"
+from rev80.logger import (  # noqa: F401
+    exception_handler,
+    get_logger,
+    install_excepthooks,
+    log_system_info,
+    resolve_version,
+    setup_logging,
+)
 
-from rev80.logger import exception_handler, get_logger, log_system_info, setup_logging  # noqa: F401
+try:
+    from rev80._version import __version__ as _stamped_version
+except ImportError:
+    _stamped_version = "0.0.0+unknown"
+
+# In a source checkout the working tree is the truth: _version.py is stamped by
+# a pre-commit hook that is not installed automatically, and has been observed
+# 100 commits stale — which makes a field log impossible to tie to a build
+# (audit H-03). In an installed or frozen build there is no git, and the stamp
+# is authoritative.
+__version__: str = resolve_version(_stamped_version)
 from rev80.util import *  # noqa: F401, F403
 
 PICOSCOPE_DRIVER_MISSING: bool = True

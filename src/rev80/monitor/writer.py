@@ -81,13 +81,19 @@ class MonitorWriterThread:
 
     def __init__(self, session: MonitorSession):
         self._session = session
-        self._queue: queue.Queue = queue.Queue()
+        # Bounded. An unbounded queue turns a slow disk into unbounded memory
+        # growth, and made the `except queue.Full` branch below unreachable
+        # dead code: enqueue() always returned True, and its return is what
+        # increments the capture counter, so the UI reported successes that
+        # were never written (audit S-02c).
+        self._queue: queue.Queue = queue.Queue(maxsize=self.MAX_QUEUE_DEPTH)
         self._stop_event = threading.Event()
         self._thread = threading.Thread(
             target=self._run, daemon=True, name='MonitorWriter'
         )
         self._error: Exception | None = None
         self._warned_depth = False
+        self._dropped = 0
         self._monitor_count: int = 0   # number of interval frames written
         self._burst_count: int = 0     # number of burst events written
         self._h5_initialised = False
@@ -98,6 +104,17 @@ class MonitorWriterThread:
     def stop(self, timeout: float = 10.0) -> None:
         self._stop_event.set()
         self._thread.join(timeout=timeout)
+
+    #: Maximum queued captures before new ones are dropped. Each item holds
+    #: whole frames, so this is a memory bound, not a latency one. Sized to
+    #: ride out a slow SD-card flush without letting a stalled writer consume
+    #: the process.
+    MAX_QUEUE_DEPTH: int = 64
+
+    @property
+    def dropped(self) -> int:
+        """Captures discarded because the queue was full."""
+        return self._dropped
 
     def enqueue(self, item: dict) -> bool:
         depth = self._queue.qsize()
@@ -110,7 +127,13 @@ class MonitorWriterThread:
             self._queue.put_nowait(item)
             return True
         except queue.Full:
-            log.error('MonitorWriter: queue full — capture dropped')
+            # Drop rather than block: back-pressure here would reach the render
+            # loop and stall acquisition behind the disk. The loss is counted
+            # and surfaced instead of being silent.
+            self._dropped += 1
+            log.error('MonitorWriter: queue full (%d deep) — capture dropped '
+                      '(%d dropped this session); disk cannot keep up',
+                      self._queue.qsize(), self._dropped)
             return False
 
     @property
