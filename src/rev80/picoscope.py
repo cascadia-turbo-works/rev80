@@ -27,17 +27,17 @@ ensure_pico_dlls_loadable()
 # the simulated path is unaffected.
 try:
     from picosdk.ps4000a import ps4000a as ps  # noqa: E402
-    from picosdk.functions import adc2mV, assert_pico_ok  # noqa: E402
+    from picosdk.functions import assert_pico_ok  # noqa: E402
     PICOSDK_AVAILABLE = True
     _PICOSDK_IMPORT_ERROR = None
 except Exception as _exc:   # CannotFindPicoSDKError, CannotOpenPicoSDKError, OSError
     ps = None
-    adc2mV = None
     assert_pico_ok = None
     PICOSDK_AVAILABLE = False
     _PICOSDK_IMPORT_ERROR = _exc
 
 import rev80  # noqa: E402
+from rev80 import _profile  # noqa: E402
 
 log = rev80.get_logger(__name__)
 
@@ -336,6 +336,51 @@ _AA_STOPBAND_DB: float = 100.0
 _AA_TRANSITION_FRAC: float = 0.20
 
 
+# ADC counts -> mV.
+#
+# picosdk.functions.adc2mV is NOT used, and must not be reinstated. It is a
+# per-sample Python list comprehension that boxes an np.int64 scalar per
+# element:
+#
+#     bufferV = [(np.int64(x) * vRange) / maxADC.value for x in bufferADC]
+#
+# It runs inside _streaming_callback, i.e. synchronously inside
+# ps4000aGetStreamingLatestValues, holding the GIL the whole time -- so its
+# cost is stolen directly from the GUI thread. Measured on this machine
+# (adc2mV + the np.array() re-box it needs, against the vectorised form
+# below):
+#
+#     samples/ch      adc2mV      vectorised    speedup
+#          4 096     4.22 ms        0.021 ms       201x
+#         19 200    19.86 ms        0.052 ms       382x
+#         38 400    40.28 ms        0.112 ms       361x
+#
+# At ~1.03 us/sample, _DRIVER_BUFFER_SAMPLES=1000 per callback and 76.9 kHz
+# per channel, the vendor helper consumed 0.079 CPU-seconds per wall-second
+# per channel -- 0.634 s/s at 8 channels, which made the GUI unusable and was
+# previously worked around by lowering RAW_SAMPLERATE_HZ (see CHANGELOG,
+# hotfix/RAW_SAMPLERATE).
+#
+# The operation ORDER below is load-bearing and is not a candidate for
+# "simplification" to a single pre-divided scale factor: multiplying by vRange
+# and then dividing by maxADC reproduces adc2mV bit-for-bit (verified over
+# every voltage-range index across the full int16 domain -- see
+# tests/test_adc_conversion.py), whereas x * (vRange / maxADC) rounds
+# differently in the last bit. This is a measurement path; it changes nothing.
+#
+# Copied from picosdk.functions.adc2mV rather than imported: it is a module
+# local there, and vendoring the table keeps the conversion working on the
+# no-SDK path that PICOSDK_AVAILABLE already supports.
+_CHANNEL_INPUT_RANGES_MV = (10, 20, 50, 100, 200, 500, 1000, 2000,
+                            5000, 10000, 20000, 50000, 100000, 200000)
+
+
+def _adc_to_mv(chunk_adc: np.ndarray, voltage_range: int, max_adc: int) -> np.ndarray:
+    """Vectorised ADC counts -> mV. Bit-identical to picosdk's adc2mV."""
+    v_range = _CHANNEL_INPUT_RANGES_MV[voltage_range]
+    return np.asarray(chunk_adc, dtype=np.int16).astype(np.float64) * v_range / max_adc
+
+
 @functools.lru_cache(maxsize=8)
 def _antialias_taps(factor: int) -> np.ndarray:
     """Kaiser-windowed FIR decimation kernel for an integer decimation factor.
@@ -583,7 +628,7 @@ class PicoScopeStream:
         are logged and we fall back to the next lower resolution.
 
         Note: picosdk always normalises ADC counts to the signed int16 range
-        (maxADC = 32767) regardless of resolution, so adc2mV() stays correct
+        (maxADC = 32767) regardless of resolution, so _adc_to_mv() stays correct
         without refreshing _maxADC here.
         """
         _PICO_NOT_SUPPORTED = 0x11F   # PICO_NOT_SUPPORTED_BY_THIS_DEVICE
@@ -909,19 +954,18 @@ class PicoScopeStream:
         chunks_mv = []
         buf_size = _DRIVER_BUFFER_SAMPLES
         end_idx  = startIndex + noOfSamples
-        for ch in self._enabled_channels:
-            if end_idx <= buf_size:
-                chunk_adc = self._driver_buffers[ch][startIndex:end_idx].copy()
-            else:
-                # Two-part read: tail of buffer + wrapped head
-                first  = self._driver_buffers[ch][startIndex:buf_size]
-                second = self._driver_buffers[ch][0:end_idx - buf_size]
-                chunk_adc = np.concatenate([first, second])
+        with _profile.timed(_profile.USB_ADC2MV):
+            for ch in self._enabled_channels:
+                if end_idx <= buf_size:
+                    chunk_adc = self._driver_buffers[ch][startIndex:end_idx].copy()
+                else:
+                    # Two-part read: tail of buffer + wrapped head
+                    first  = self._driver_buffers[ch][startIndex:buf_size]
+                    second = self._driver_buffers[ch][0:end_idx - buf_size]
+                    chunk_adc = np.concatenate([first, second])
 
-            chunks_mv.append(np.array(
-                adc2mV(chunk_adc, self.config.voltage_range_for(ch), self._maxADC),
-                dtype=np.float64,
-            ))
+                chunks_mv.append(_adc_to_mv(
+                    chunk_adc, self.config.voltage_range_for(ch), self._maxADC.value))
 
         N   = len(self._enabled_channels)
         end = self._acc_ptr + noOfSamples
@@ -951,7 +995,8 @@ class PicoScopeStream:
             # Anti-alias filter + decimate back down to the target blocksize.
             # DataCollector and everything downstream is unaware oversampling
             # happened — 'samplerate' below stays the target rate.
-            block = antialias_decimate(raw_block, self._effective_osr)
+            with _profile.timed(_profile.USB_ANTIALIAS):
+                block = antialias_decimate(raw_block, self._effective_osr)
 
             rel_time = self._last_data_time - self._stream_start
             # Consume the latch: it covers every callback that contributed to
@@ -1036,7 +1081,8 @@ class PicoScopeStream:
         while not self._stop_event.is_set():
             # Poll the driver
             try:
-                ps.ps4000aGetStreamingLatestValues(self._chandle, c_func_ptr, None)
+                with _profile.timed(_profile.USB_POLL):
+                    ps.ps4000aGetStreamingLatestValues(self._chandle, c_func_ptr, None)
             except Exception as e:
                 log.error(f'PicoScopeStream: GetStreamingLatestValues error: {e}')
                 if not self._try_recover():
