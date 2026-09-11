@@ -57,15 +57,15 @@ def _make_config(maxfreq=500, binsize=8.0, coupling='AC', enabled_channels=None,
 
 
 def _make_stream(config=None, monkeypatch=None):
-    """Return a PicoScopeStream with adc2mV patched to identity."""
+    """Return a PicoScopeStream with the ADC->mV conversion patched to identity."""
     if config is None:
         config = _make_config()
     received = []
     stream = PicoScopeStream(config, lambda samp: received.append(samp))
     stream._maxADC = ctypes.c_int16(32767)
     if monkeypatch is not None:
-        monkeypatch.setattr(pico_module, 'adc2mV',
-                            lambda buf, rng, maxADC: list(buf))
+        monkeypatch.setattr(pico_module, '_adc_to_mv',
+                            lambda buf, rng, max_adc: np.asarray(buf, dtype=np.float64))
     return stream, received
 
 
