@@ -490,9 +490,10 @@ class AcquisitionSettings:
         full 2.56/2 ratio.
 
         Nominal: derived from config.samplerate. The live spectrum is built on
-        the rate the hardware actually achieved, which differs by up to ~1.7%
-        (see PicoScopeStream._report_samplerate), so the realised line count
-        can differ by a line or two.
+        the rate the hardware actually achieved, so the realised line count can
+        differ by a line or two. That gap used to be as much as ~1.7%; snapping
+        the streaming interval to the device clock grid brought it to -320 ppm
+        on the 4824A (see PicoScopeStream._start_streaming).
         """
         df = self.binsize_actual
         n_below = int(self._fm / df + 1e-9) + 1      # bins at 0, df, 2df … <= fm
@@ -515,8 +516,13 @@ class VibeSample:
     status: str
     _timestamp: datetime
     # The rate the hardware actually achieved, post-decimation. Generally not
-    # an integer: the driver rounds the streaming interval to whole
-    # microseconds (see PicoScopeStream._report_samplerate).
+    # an integer: the driver quantises the streaming interval to its own clock
+    # grid (12.5 ns on the 4824A, i.e. an 80 MHz timebase) and reports back
+    # what it used. See PicoScopeStream._start_streaming for the measured grid
+    # and _report_samplerate for why the achieved rate, not the requested one,
+    # is what propagates. Anything persisting this must store it as a FLOAT --
+    # truncating 25591.81 to 25591 makes it coprime with every display rate,
+    # which is audit-grade slow (see collector.decimate_to_rate).
     samplerate: float
     unit: str
     overflow: bool
