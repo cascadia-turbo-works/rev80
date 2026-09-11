@@ -1,7 +1,9 @@
 import argparse
+import os
 import sys
 
 import rev80
+from rev80 import _profile
 
 
 def _init_config() -> int:
@@ -56,6 +58,9 @@ def _build_parser() -> argparse.ArgumentParser:
                            "false when --from-file is given)")
     gui.add_argument("--debug", action="store_true",
                       help="Verbose logging to stderr")
+    gui.add_argument("--profile", action="store_true",
+                      help="Collect per-stage pipeline timings and log the table on "
+                           "exit (see scripts/profile-pipeline for a sweep harness)")
 
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser(
@@ -103,6 +108,12 @@ def main():
         args.autodetect = args.from_file is None
 
     rev80.setup_logging(debug=args.debug)
+    # Before anything constructs a collector or a stream, so no frame is missed.
+    # REV80_PROFILE is honoured too: the flag is unreachable from a desktop
+    # launcher, which is exactly where a reproduction sometimes has to happen.
+    if args.profile or os.environ.get("REV80_PROFILE"):
+        _profile.enable()
+        rev80.get_logger().info("Pipeline profiling enabled")
     rev80.log_system_info()
     # Installs sys.excepthook AND threading.excepthook AND faulthandler.
     # The thread hook is the one that was missing: everything interesting
