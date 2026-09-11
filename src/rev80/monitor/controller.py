@@ -167,12 +167,31 @@ class MonitorController:
     def burst_frame_cap(max_burst_s: float, acquisition_period: float) -> int:
         """How many frames a burst may retain, derived from max_burst_s.
 
-        Burst capture held every frame AND every ChannelResult -- roughly 3x
-        the raw block each -- with no cap at all. At F_max 50 kHz that reached
-        ~2 GB before the single flush, which on the documented Raspberry Pi
-        target is an OOM kill: SIGKILL, no traceback, nothing in the log
-        (audit S-02a). Deriving the cap from the configured burst length keeps
-        it honest rather than a magic number.
+        Burst capture held every frame AND every ChannelResult, with no cap at
+        all, until the single flush at the end -- and S-02b meant max_burst_s
+        was inert on the anomaly path, so unattended there was no end. That is
+        an OOM kill on the documented Raspberry Pi target: SIGKILL, no
+        traceback, nothing in the log (audit S-02a).
+
+        Measured on 4 channels through the real pipeline, at RAW_SAMPLERATE_HZ
+        = 25600 (deep ndarray bytes reachable from one retained frame + its
+        ChannelResults):
+
+            binsize   period   raw block   retained   multiple
+              0.5 Hz   2.000 s   1.638 MB   4.517 MB    2.76x
+              1.0 Hz   1.000 s   0.819 MB   2.259 MB    2.76x
+              2.0 Hz   0.500 s   0.410 MB   1.130 MB    2.76x
+
+        The multiple is flat because retention is raw-rate storage plus its
+        derived views. What that means for growth is the point: **2.26 MB/s on
+        4 channels, or ~8.1 GB/h, independent of BOTH F_max and binsize** --
+        since the raw/display split, stored frames are the fixed-rate capture,
+        so a lower F_max no longer buys any headroom here the way it did when
+        this defect was first written up. At the shipped max_burst_s default of
+        600 s the cap holds one burst to ~1.36 GB.
+
+        Deriving the cap from the configured burst length keeps it honest
+        rather than a magic number.
         """
         if acquisition_period <= 0:
             return MonitorController.MIN_BURST_FRAMES
