@@ -47,6 +47,15 @@ class MonitorController:
         self._burst_trigger_rel:    float     = 0.0  # session rel_time at trigger
         self._last_frame_cache:     deque | None = None
 
+        # Resource trail. An OOM kill is SIGKILL: no traceback, no atexit, no
+        # log line — the process simply vanishes, which is exactly the
+        # "crashed with no evidence" report. The only way to attribute one
+        # afterwards is a trail written BEFORE it, so an unattended session
+        # logs memory, thread count, burst retention and writer queue depth on
+        # a slow cadence. Cheap, and it turns an unexplained disappearance into
+        # a readable ramp.
+        self._last_trail_mono: float = 0.0
+
     # ------------------------------------------------------------------
     # Public API — recording lifecycle
     # ------------------------------------------------------------------
@@ -150,6 +159,70 @@ class MonitorController:
     # Main callback
     # ------------------------------------------------------------------
 
+    #: Floor on retained burst frames, so a pathological acquisition_period
+    #: cannot produce a zero-length burst.
+    MIN_BURST_FRAMES: int = 4
+
+    @staticmethod
+    def burst_frame_cap(max_burst_s: float, acquisition_period: float) -> int:
+        """How many frames a burst may retain, derived from max_burst_s.
+
+        Burst capture held every frame AND every ChannelResult -- roughly 3x
+        the raw block each -- with no cap at all. At F_max 50 kHz that reached
+        ~2 GB before the single flush, which on the documented Raspberry Pi
+        target is an OOM kill: SIGKILL, no traceback, nothing in the log
+        (audit S-02a). Deriving the cap from the configured burst length keeps
+        it honest rather than a magic number.
+        """
+        if acquisition_period <= 0:
+            return MonitorController.MIN_BURST_FRAMES
+        n = int(float(max_burst_s) / float(acquisition_period)) + 1
+        return max(MonitorController.MIN_BURST_FRAMES, n)
+
+    @staticmethod
+    def capped_burst_end(now: float, duration_s: float,
+                         max_burst_s: float, burst_start: float) -> float:
+        """Burst end time, clamped so it cannot exceed max_burst_s.
+
+        The manual path went through IntervalGate.enter_burst(), which applies
+        this clamp. The ANOMALY path set _burst_end_mono directly and skipped
+        it -- so the cap was inert on exactly the path that fires unattended
+        (audit S-02b). A max_burst_s of 0 or None means unset, not
+        zero-length.
+        """
+        end = now + float(duration_s)
+        if max_burst_s and max_burst_s > 0:
+            end = min(end, float(burst_start) + float(max_burst_s))
+        return end
+
+    #: How often the unattended resource trail is written, in seconds.
+    #: Slow on purpose — this is a trend to read after the fact, not telemetry.
+    TRAIL_INTERVAL_S: float = 300.0
+
+    def _log_resource_trail(self, now: float) -> None:
+        """Periodically record memory, threads, retention and queue depth.
+
+        Never raises: a diagnostic that takes down the session it is
+        diagnosing is worse than no diagnostic.
+        """
+        if now - self._last_trail_mono < self.TRAIL_INTERVAL_S:
+            return
+        self._last_trail_mono = now
+        try:
+            from rev80.logger import format_resource_snapshot, resource_snapshot
+            writer = getattr(self, '_writer', None)
+            log.info(
+                'monitor trail: %s',
+                format_resource_snapshot(
+                    resource_snapshot(),
+                    burst_frames=len(self._burst_frames),
+                    queue=getattr(writer, 'queue_depth', -1),
+                    captures=self._monitor_count if hasattr(self, '_monitor_count') else -1,
+                ),
+            )
+        except Exception:                                    # noqa: BLE001
+            log.debug('resource trail failed', exc_info=True)
+
     def on_results(self, results: list, frame_cache: deque) -> None:
         """Called from GUI thread after process_samples(). Non-blocking."""
         if not self._recording or not results:
@@ -158,6 +231,8 @@ class MonitorController:
         self._last_frame_cache = frame_cache  # for trigger_burst() pre-trigger snapshot
         now      = time.monotonic()
         rel_time = now - self._start_mono
+
+        self._log_resource_trail(now)
 
         if self._in_burst:
             self._handle_burst_frame(results, frame_cache, now, rel_time)
@@ -192,6 +267,7 @@ class MonitorController:
         elapsed   = (now - self._start_mono) if self._recording else 0.0
         time_next = self._gate.time_to_next(now) if self._gate else 0.0
         depth     = self._writer.queue_depth if self._writer else 0
+        dropped   = self._writer.dropped if self._writer else 0
         err       = self._writer.error if self._writer else None
         session   = self._session
         if session and session.session_h5.exists():
@@ -205,6 +281,10 @@ class MonitorController:
             'burst_count':      self._burst_count,
             'next_capture_s':   time_next,
             'queue_depth':      depth,
+            # Surfaced rather than silent: enqueue() previously always
+            # reported success, so the capture counter it gates counted
+            # captures that were never written to disk (S-02c).
+            'dropped_captures': dropped,
             'total_bytes':      total_bytes,
             'error':            str(err) if err else None,
             'is_in_burst':       self._in_burst,
@@ -299,7 +379,18 @@ class MonitorController:
     def _start_burst(self, event: AnomalyEvent, results: list,
                      frame_cache: deque, now: float, rel_time: float) -> None:
         self._in_burst            = True
-        self._burst_end_mono      = now + event.burst_duration_s
+        # Through the shared clamp, so max_burst_s applies here too. This path
+        # previously set the end time directly and bypassed IntervalGate's
+        # cap entirely (audit S-02b).
+        max_burst_s = self._session.max_burst_s if self._session else 0.0
+        self._burst_end_mono      = self.capped_burst_end(
+            now, event.burst_duration_s, max_burst_s, burst_start=now)
+        self._max_burst_frames    = self.burst_frame_cap(
+            max_burst_s or event.burst_duration_s,
+            self._session.acquisition_period if self._session
+            and hasattr(self._session, 'acquisition_period') else 0.0,
+        )
+        self._warned_burst_cap    = False
         self._burst_id            = event.trigger_time.strftime('%Y-%m-%d-%H%M%S')
         # Trigger metadata reflects the t=0 frame (anomaly onset), which may
         # precede `now` by however long the hook's confirmation window took.
@@ -336,6 +427,23 @@ class MonitorController:
         latest = dict(frame_cache[-1]) if frame_cache else {}
         self._burst_frames.append(latest)
         self._burst_all_results.append(list(results))
+
+        # Hard cap on retention. The two lists are indexed together by
+        # _flush_burst, so they must be trimmed together or every overall
+        # lands against the wrong waveform.
+        cap = getattr(self, '_max_burst_frames', 0)
+        if cap and len(self._burst_frames) > cap:
+            if not getattr(self, '_warned_burst_cap', False):
+                self._warned_burst_cap = True
+                log.warning(
+                    'Monitor: burst retention hit its %d-frame cap — oldest '
+                    'frames are being dropped. The burst is running longer '
+                    'than max_burst_s allows for.', cap,
+                )
+            drop = len(self._burst_frames) - cap
+            del self._burst_frames[:drop]
+            del self._burst_all_results[:drop]
+            self._burst_pretrigger = max(0, self._burst_pretrigger - drop)
 
         # Keep EWMA adapting during burst but suppress retriggers
         if hasattr(self._anomaly_hook, 'update_baseline'):

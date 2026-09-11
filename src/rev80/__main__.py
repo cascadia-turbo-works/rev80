@@ -104,12 +104,22 @@ def main():
 
     rev80.setup_logging(debug=args.debug)
     rev80.log_system_info()
-    sys.excepthook = rev80.exception_handler
+    # Installs sys.excepthook AND threading.excepthook AND faulthandler.
+    # The thread hook is the one that was missing: everything interesting
+    # in this app runs off the main thread, and those deaths went to
+    # stderr, which is nowhere when launched from a desktop entry.
+    rev80.install_excepthooks()
     rev80.get_logger().info('Rev80 Launched')
     app = rev80.GUI()
-    app.initialize()
-    app.run(initial_file=args.from_file, autodetect=args.autodetect)
-    app.cleanup()
+    # try/finally, so cleanup() runs however run() exits. Without it any
+    # escaping exception skipped it entirely and ps4000aCloseUnit never ran,
+    # leaving the scope claimed until the USB was replugged (audit S-01).
+    # cleanup() is idempotent, so the loop's own guarded exit is harmless.
+    try:
+        app.initialize()
+        app.run(initial_file=args.from_file, autodetect=args.autodetect)
+    finally:
+        app.cleanup()
 
 
 if __name__ == "__main__":
