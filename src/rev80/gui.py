@@ -8,6 +8,7 @@ import h5py
 import numpy as np
 
 import rev80
+from rev80 import _profile
 from rev80 import envelope as rev80_env
 from rev80 import peaks as rev80_peaks
 import rev80.config as _cfg
@@ -1094,6 +1095,10 @@ class GUI:
 
     def _display_frame(self):
         """Process the current frame via collector and update all GUI plots."""
+        with _profile.timed(_profile.GUI_DISPLAY):
+            self._display_frame_inner()
+
+    def _display_frame_inner(self):
         if self.collector.is_streaming:
             self._set_stream_status("active")
             self._schedule_status_timeout()
@@ -4855,8 +4860,16 @@ class GUI:
                     self._load_from_path(initial_file)
                     _loaded = True
                     continue
-                self._poll_new_frames()
-                dpg.render_dearpygui_frame()
+                # gui.frame is the whole loop body (the true frame period);
+                # gui.render is dearpygui alone. The two side by side are what
+                # tell a main-thread cost from a hardware-thread one stealing
+                # the GIL: a long render with a short proc.total means the
+                # acquisition thread is the problem, and the reverse means the
+                # DSP is.
+                with _profile.timed(_profile.GUI_FRAME):
+                    self._poll_new_frames()
+                    with _profile.timed(_profile.GUI_RENDER):
+                        dpg.render_dearpygui_frame()
                 self._note_render_success()
             except Exception as exc:                         # noqa: BLE001
                 if not self._handle_render_error(exc):
@@ -4936,6 +4949,16 @@ class GUI:
         if render_errors:
             log.warning('Render loop error totals this session: %s',
                         dict(render_errors))
+
+        # The profile table, if --profile was given. Guarded and placed after
+        # disconnect_sensor for the same reason every other step here is: a
+        # diagnostic must never be what prevents ps4000aCloseUnit from running.
+        if _profile.is_enabled():
+            try:
+                log.info('\n%s', _profile.report('pipeline profile (session)'))
+            except Exception:                                # noqa: BLE001
+                log.exception('Failed to emit the pipeline profile')
+
         try:
             dpg.destroy_context()
         except Exception:                                    # noqa: BLE001
