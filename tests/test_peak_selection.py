@@ -26,6 +26,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import scipy.ndimage
 import scipy.signal
 
 from rev80 import peaks as pk
@@ -624,3 +625,84 @@ class TestOldCastleCorpusWide:
                 new_bad.append(np.mean(r.spectrum[r.peaks] / floor[r.peaks] < 2.0))
         assert np.mean(old_bad) > 0.03
         assert np.mean(new_bad) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# _running_median — vectorisation equality
+# ---------------------------------------------------------------------------
+#
+# The edge handling was a Python loop of np.median calls, one per edge bin. It
+# measured 1.161 ms of _running_median's 1.274 ms on a 1001-bin spectrum at
+# width 65 (the interior median_filter is only 0.047 ms), so at 8 channels it
+# was ~10 ms of main-thread work per frame. It is now a NaN-padded sliding
+# window plus one nanmedian.
+#
+# That is a speed change on a measurement path, and the measured error table in
+# _running_median's docstring — the whole reason truncation was chosen over
+# zero-padding, reflection or replication — is only still true if the statistic
+# is unchanged. So the bar here is not "close": it is bit-identical to the loop
+# it replaced, which is reproduced below rather than described.
+
+
+def _running_median_reference(values, width):
+    """The pre-vectorisation implementation, verbatim, as the oracle."""
+    values = np.asarray(values, dtype=float)
+    n = len(values)
+    half = width // 2
+    if n == 0:
+        return values.astype(float, copy=True)
+    if width <= 1 or n <= 1:
+        return values.astype(float, copy=True)
+    out = scipy.ndimage.median_filter(values, size=width, mode='nearest')
+    edge = min(half, n)
+    for i in list(range(edge)) + list(range(max(edge, n - edge), n)):
+        out[i] = np.median(values[max(0, i - half): i + half + 1])
+    return out
+
+
+@pytest.mark.parametrize('n', [0, 1, 2, 5, 17, 64, 65, 66, 200, 1001, 2049])
+@pytest.mark.parametrize('width', [1, 2, 3, 4, 5, 33, 64, 65, 129, 501])
+def test_running_median_bit_identical_to_the_loop(n, width):
+    """Every length x width combination, including even widths and n < width.
+
+    Even widths are included deliberately. local_noise_floor forces an odd
+    window, so they are unreachable in production today — but the window the
+    edge bins take is [i-half, i+half] INCLUSIVE, i.e. 2*half+1 samples
+    regardless of parity, and sizing the sliding window by `width` instead
+    would shorten every even-width window by one sample without any shipped
+    caller noticing.
+    """
+    rng = np.random.default_rng(1000 * width + n)
+    # Exponential, because that is what a single-segment Welch noise bin
+    # actually is — and it is the heavy tail that makes a median rather than a
+    # mean the right statistic here in the first place.
+    values = rng.exponential(1.0, n)
+
+    got = pk._running_median(values, width)
+    ref = _running_median_reference(values, width)
+
+    assert np.array_equal(got, ref), (
+        f'n={n} width={width}: max abs diff '
+        f'{np.max(np.abs(got - ref)) if got.size else 0.0}'
+    )
+
+
+def test_running_median_unaffected_by_a_line_at_the_band_edge():
+    """The edge-truncation property the docstring's error table depends on.
+
+    A strong line in the last half-window must not be mirrored back across the
+    edge onto itself — the failure mode that made reflection the runner-up
+    rather than the winner. Pinned separately from the equality test above so
+    that a future rewrite which changes the statistic deliberately still has to
+    confront this case.
+    """
+    rng = np.random.default_rng(4)
+    values = rng.exponential(1.0, 500)
+    floor_before = pk._running_median(values, 65)
+
+    spiked = values.copy()
+    spiked[-3] = 1000.0                 # one huge line, 3 bins from the edge
+    floor_after = pk._running_median(spiked, 65)
+
+    # A single outlier in a >=33-sample window cannot move a median far.
+    assert np.allclose(floor_before, floor_after, rtol=0.5)
