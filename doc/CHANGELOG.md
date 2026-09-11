@@ -474,6 +474,132 @@ First tagged release. The sections below were written branch-by-branch during
 development and are kept as originally recorded, grouped here under the
 release they shipped in.
 
+### feature/raw-stream-retention (2026-08-31)
+
+#### Added
+- **Acquisition rate decoupled from the display `F_max`.** Envelope/demodulation
+  analysis needs Nyquist headroom into the 2–20 kHz range where bearing housing
+  resonances live, but `F_max` is a *display* setting users routinely set to
+  1–2 kHz per ISO route-monitoring convention — and at that `F_max`, acquisition
+  itself discarded everything above Nyquist before any analysis ever saw it. The
+  raw stream is now retained at full bandwidth and `F_max` governs only what the
+  Spectrum tab displays.
+  - **`AcquisitionSettings.raw_samplerate` / `.raw_blocksize`** — a second,
+    independent rate pair, fixed at `RAW_SAMPLERATE_HZ` and *not* maxfreq-derived.
+    This is what `PicoScopeStream` acquires, what `VibeSample` / the HDF5 file /
+    `frame_cache` hold, and what envelope analysis reads. `samplerate` /
+    `blocksize` keep their previous maxfreq/binsize derivation and become
+    display-only. One frame is one time window at two sample counts: `raw_blocksize`
+    and `blocksize` span the same `acquisition_period`.
+  - **`RAW_SAMPLERATE_HZ = 40000`** as shipped here, validated on a PicoScope 4424A
+    up to 4 simultaneous channels. (Later reduced to a briefly-set `10_000` to
+    relieve GUI lag, then corrected to **25600** = 2.56 × the top preset — see
+    hotfix/RAW_SAMPLERATE under [Unreleased], which is also where the display-rate
+    derivation this split exposed was fixed.)
+  - **`collector.decimate_to_rate()`** — anti-alias filter + resample from the raw
+    rate down to the display rate before Welch. Generalises
+    `picoscope.antialias_decimate`'s integer-factor decimation to an arbitrary
+    rational ratio via `resample_poly`, because a maxfreq-driven display rate is not
+    in general a clean divisor of a fixed raw rate. `antialias_decimate` itself is
+    deliberately untouched — that is the electrically validated hardware acquisition
+    path — but the two are pinned to the same stopband target (`_AA_STOPBAND_DB`,
+    through `scipy.signal.kaiser_beta`) rather than to two independently chosen
+    filter designs. The ratio is `Fraction.limit_denominator(1000)`, and the function
+    returns the rate it *actually* achieved (`raw_rate * up / down`), not the one it
+    was asked for.
+  - **`DataCollector.eu_scaled_raw(ch, sample)`** — the high-pass-filtered signal in
+    the sensor's own native EU at the raw rate. Converts mV → EU but skips the
+    SI/target-unit conversion and every integration order: envelope analysis
+    demodulates the raw sensor signal directly and has no target unit of its own.
+  - **`DataCollector.current_frame()`** — the `{ch: VibeSample}` dict for the frame
+    currently displayed, using the same streaming-vs-browse cursor selection
+    `process_samples()` uses, so a consumer needing the raw `VibeSample` rather than
+    a decimated `ChannelResult` reaches the same frame without re-deriving the index.
+  - The **Envelope tab is rewired** onto `eu_scaled_raw()` via `current_frame()`,
+    instead of `process_sample()`'s now-decimated `ChannelResult`. Without this the
+    one feature the whole split exists for would still have been display-rate-limited.
+  - **`simulation._RawRateView`** — presents `config` at `raw_samplerate` /
+    `raw_blocksize` to the signal generators, so `SimulatedSensor` generates *and
+    reports* at the same rate `PicoScopeStream` delivers. Without it the simulated
+    path silently generated at the display rate and offline dev/CI never exercised
+    the raw→display decimation at all — the simulator would have defeated the
+    retention it is supposed to test. Proxying leaves every generator, and the tests
+    that call them directly against a real `AcquisitionSettings`, unchanged.
+  - **`scripts/validate-streaming-capacity`** — sustained continuous-streaming stress
+    test against a real PicoScope: configurable duration, rate and channel count,
+    reporting overflow count, rate-degradation transitions (the streaming-rate
+    watchdog in `picoscope.py`) and actual vs. requested raw ADC delivery rate. Exit
+    status is 0 only on zero overflow *and* zero degradation transitions. This is how
+    `RAW_SAMPLERATE_HZ` was chosen, and it is the reusable diagnostic for
+    re-validating it against different hardware or a different expected channel
+    count — rather than the measurement being re-derived by hand each time.
+  - Monitor config dialog: a **>10 GB/year red warning** on the storage estimate.
+    Per-year storage no longer scales down with a low `F_max`, because every stored
+    frame is now the raw-rate capture.
+
+---
+
+### hotfix/cli-ux-refactor (2026-08-30)
+
+#### Added
+- **`desktop.py` — Linux desktop integration**, driven by `rev80
+  --install-desktop-entry` / `--uninstall-desktop-entry`. Writes a
+  `~/.local/share/applications/rev80.desktop` entry plus a hicolor PNG icon set
+  under `~/.local/share/icons/`, then best-effort refreshes the desktop and icon
+  caches so the launcher appears without a re-login. Windows is unaffected — the
+  frozen build gets its Start Menu shortcut from the Inno Setup installer — and
+  both commands refuse to run off Linux rather than half-installing.
+  - The launcher's `Exec` is resolved as the `rev80` console script **next to the
+    running interpreter** first, falling back to `PATH`. That is where pip places
+    console scripts for a `--user`, venv or system install, so the entry points at
+    the environment rev80 was actually installed into rather than whatever happens
+    to be first on `PATH`. If that directory is not on `PATH`, `install()` says so
+    and prints the `export` line — the launcher works either way, the terminal
+    command does not.
+  - **The icon set is PNG, not the source SVG.** Qt/KDE's SVG renderer does not
+    render this icon correctly, breaking it in both the launcher and the taskbar; a
+    plain hicolor PNG set at fixed sizes works everywhere.
+  - `uninstall()` removes only the entry and the icons it installed, and reports
+    "nothing to do" rather than failing when there is nothing there.
+- **Unified `rev80` CLI** — a `headless` subcommand, top-level info commands
+  (`--init-config`, `--list-devices`, `--list-sensors`, `--edit-config`) that need
+  neither GUI nor hardware, and `--version`. `rev80-headless` remains as a
+  standalone shortcut.
+- **`CONTRIBUTING.md`** — `README.md` split into user-facing documentation and
+  dev/build concerns (dev environment, project layout, testing, icon regeneration,
+  Windows installer build).
+
+#### Fixed
+- **A non-editable `pip install .` produced a broken app.** `logging.yaml` and the
+  icon font were not shipped as package data, and `resource_path()` assumed a source
+  checkout — it resolved relative to the *project root*, which does not exist once
+  the package is installed normally. `resource_path()` now resolves relative to the
+  package's own directory, correct for an editable checkout, a normal install and a
+  frozen `sys._MEIPASS` bundle alike; anything resolved this way must physically live
+  under `src/rev80/` and be declared in `pyproject.toml`'s
+  `[tool.setuptools.package-data]`. The editable checkout every test runs against is
+  precisely the one layout that hid this.
+- **`.githooks/pre-commit` restored** — the ruff check and the `_version.py`
+  git-describe stamp, extended to re-render `doc/*.pdf` from `README.md`,
+  `CONTRIBUTING.md`, `doc/PROGRESS.md` and `doc/CHANGELOG.md` via
+  `scripts/render_md.sh` when those are staged. Ruff is warn-only here against 209
+  pre-existing findings — a gate on the backlog, not on the commit.
+
+#### Changed
+- **`_paths.data_dir()` is always `~/Documents/Rev80/data`**, in development and
+  frozen builds alike, instead of `./DEVDATA` in development. `DEVDATA` remains test
+  scratch space only, hardcoded independently in `tests/`. A dev run and a shipped
+  run now write measurements to the same place the user is told to look.
+
+#### Removed
+- **`ScopeSensor.target_unit`** and `effective_target_unit()` — dead. The registry
+  field was never user-settable and always defaulted to a wrong value. The
+  display/integration target is a per-channel setting (`channel_target_units`) and is
+  unchanged: one sensor may be wired to several channels with different targets, so
+  the target never belonged on the sensor definition.
+
+---
+
 ### feature/spectral-averaging (2026-08-29)
 
 #### Added
