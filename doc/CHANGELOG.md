@@ -9,6 +9,142 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### fix/stability-cluster (2026-08-30, merged 2026-09-11)
+
+The four audit findings about the app *staying up* rather than measuring
+correctly: two criticals (S-01, S-02) plus the two that decide whether a crash
+leaves anything to read (H-07, H-03). Written against develop at 2026-08-30 and
+merged unchanged after the tachometer and raw-rate work landed; every defect
+below was still live at merge, and the merge needed no conflict resolution.
+**927 unit tests and all 23 hardware tests pass on the merged result** (4424A,
+AWG loopback).
+
+Ordered deliberately: evidence first, because fixing S-01 and S-02 blind would
+mean that if the app still died there would still be nothing to read.
+
+#### Added
+- **`logger.install_excepthooks()`** (idempotent, replaces the bare
+  `sys.excepthook = ...` line in both front ends) — three crash routes, each
+  previously leaving a different amount of nothing.
+  - **`threading.excepthook`.** `sys.excepthook` covers only the main thread,
+    and everything interesting runs off it: the PicoScope poll thread, the
+    simulation generator, the monitor writer, the autoconnect and reprocess
+    workers. Those deaths went to stderr — nowhere, when launched from a
+    desktop entry. Now routed to the rotating log, naming the thread and noting
+    that anything waiting on it will hang rather than fail. Verified end to
+    end: a raising worker writes a full traceback to `error.log`.
+  - **`faulthandler`** → `log/faulthandler.log`, the only evidence that
+    survives a SIGSEGV and what distinguishes a driver-level crash (X-05) from
+    an OOM kill, which leaves nothing at all. Verified by deliberately
+    dereferencing NULL: the file names the exact frame and lists the loaded
+    extension modules.
+  - **A periodic resource line** (`MonitorController`, every 5 minutes during a
+    session): RSS, thread count, burst frame retention, writer queue depth.
+    SIGKILL cannot be trapped, so the only possible evidence predates it — this
+    turns an unexplained disappearance into a readable ramp, and it is exactly
+    the ramp S-02 produces. It never raises: a diagnostic that takes down the
+    session it is diagnosing is worse than no diagnostic.
+- **`tests/test_app_lifecycle.py`** (177), **`tests/test_bounded_resources.py`**
+  (233), **`tests/test_crash_evidence.py`** (150).
+
+#### Fixed
+- **S-01 (critical) — shutdown was skippable, and skipping it stranded the
+  device.** Two defects that compound, and together explain both halves of the
+  reported symptom: *"I came back and the session was truncated, and then the
+  scope wouldn't connect until I replugged it."*
+  - `GUI.cleanup()` never called `self._monitor.stop()`, and the writer is a
+    **daemon** thread, so the interpreter killed it without unwinding —
+    possibly mid-`h5py.File(…, 'a')` — with captures still queued.
+    `MonitorController.stop()` already flushed the partial burst and drained the
+    writer correctly; it was simply never reached on app close. `cleanup()` now
+    stops the monitor **first**, then closes the device, then destroys the DPG
+    context, each step individually guarded — a wedged writer must not prevent
+    `ps4000aCloseUnit`, because a device left open is what makes the next launch
+    fail with `PICO_NOT_FOUND`.
+  - `GUI.run()`'s loop body had no `try/except` and `__main__.main()` had no
+    `try/finally`, so any exception in the render path skipped `cleanup()`
+    entirely. `main()` now wraps `run()` in `try/finally` and `cleanup()` is
+    idempotent, so the loop's own guarded exit is harmless. This also downgrades
+    **X-02** — a shared `.h5` with `binsize=0` raising `ZeroDivisionError` in the
+    render path — from a process-ending crash that strands the device to a
+    logged error.
+  - Render-loop policy, as chosen: log once per exception **type**, keep
+    rendering, and give up after `MAX_CONSECUTIVE_RENDER_ERRORS` (30) consecutive
+    failures by breaking the loop so shutdown still runs *through* `cleanup()`.
+    Deduplication matters because a persistent fault would otherwise write a
+    traceback at frame rate and roll every other diagnostic out of the rotating
+    log — exactly the **S-09** failure mode. A successful frame clears the
+    streak, so occasional bad frames over a long run cannot accumulate into a
+    shutdown; per-type totals are logged once on exit.
+  - `cleanup()` reads `_render_errors` through `getattr`: it runs from `main()`'s
+    `finally` and must survive a GUI that failed partway through construction. It
+    is the one method that cannot be allowed to raise, because it is what closes
+    the device.
+- **S-02 (critical) — every resource an unattended run can grow is now bounded.**
+  Three defects compounding into the most likely way an overnight session dies,
+  and the one leaving the least evidence: an OOM kill is SIGKILL — no traceback,
+  no `atexit`, no log line. The app simply vanishes.
+  - **(a) Burst retention had no cap at all**, holding every frame *and* every
+    `ChannelResult` until the single flush. Now capped by `burst_frame_cap()`,
+    derived from `max_burst_s` and the acquisition period rather than a magic
+    number, with a floor so a pathological period cannot produce a zero-length
+    burst. `_burst_frames` and `_burst_all_results` are trimmed **together**,
+    because `_flush_burst` indexes them in parallel — trimming one alone would
+    put every overall against the wrong waveform. Hitting the cap warns once.
+  - **(b) `max_burst_s` was inert on the path that fires unattended.** It was
+    enforced only inside `IntervalGate.enter_burst()`, which only the *manual*
+    path calls; the anomaly path set `_burst_end_mono` directly. Both now go
+    through a shared `capped_burst_end()`; 0/`None` still means unset rather than
+    zero-length. `IntervalGate._burst_start` is also initialised in `__init__` —
+    the retrigger branch reads it, and it was one refactor from an
+    `AttributeError` in the monitor's hot path.
+  - **(c) The writer queue was `queue.Queue()` with no maxsize**, so its
+    `except queue.Full` branch was unreachable dead code and `enqueue()` always
+    returned True. That return gates the capture counter, so **the UI reported
+    successes that were never written to disk.** The queue is now bounded; on
+    full it drops rather than blocks — back-pressure there would reach the render
+    loop and stall acquisition behind the disk — and the drops are counted,
+    logged with the queue depth, and surfaced in `status_snapshot()` as
+    `dropped_captures`. A loss nobody can see is the same defect in a new place.
+- **H-03 — a field log could not be tied to a build.** `__version__` now resolves
+  from `git describe` in a source checkout, falling back to the stamped
+  `_version.py` in an installed or frozen build. The stamp comes from a
+  pre-commit hook that is **not** installed automatically, and was observed 100
+  commits stale.
+
+#### Measured
+- **Burst retention costs 2.76x the raw block**, measured on 4 channels through
+  the real pipeline at `RAW_SAMPLERATE_HZ` = 25600 (deep ndarray bytes reachable
+  from one retained frame plus its `ChannelResults`):
+
+  | binsize | acq. period | raw block | retained | multiple |
+  |---|---|---|---|---|
+  | 0.5 Hz | 2.000 s | 1.638 MB | 4.517 MB | 2.76x |
+  | 1.0 Hz | 1.000 s | 0.819 MB | 2.259 MB | 2.76x |
+  | 2.0 Hz | 0.500 s | 0.410 MB | 1.130 MB | 2.76x |
+
+  Uncapped growth is therefore **2.26 MB/s on 4 channels, ~8.1 GB/h,
+  independent of both F_max and binsize** — since the raw/display split, stored
+  frames are the fixed-rate capture, so a low F_max no longer buys headroom here
+  the way it did when this defect was first written up (the original note cited
+  ~2 GB at an F_max 50 kHz preset that no longer exists). At the shipped
+  `max_burst_s` default of 600 s the cap holds one burst to ~1.36 GB. The
+  docstring carries this table.
+
+#### Notes
+- All three fixes revert-checked — removing the monitor stop, the render-error
+  deduplication, or `cleanup()`'s idempotence each makes tests fail.
+- **The first revert-check pass found a hole worth recording:** reverting the
+  writer queue to unbounded still passed all 15 tests, because the helper built
+  its own queue with an explicit `maxsize` and nothing exercised
+  `MonitorWriterThread`'s real `__init__`. Same shape as the power-vs-amplitude
+  gap in feature/spectral-averaging. Tests that drive the real constructor were
+  added; the revert now fails as it should.
+- **H-01 is not addressed** — `_build_anomaly_hook` is still copy-pasted between
+  `gui.py` and `headless.py`.
+
+---
+
 ### feature/tachometer (R43) (2026-09-01)
 
 #### Added
