@@ -43,7 +43,11 @@ rev80 = "rev80.__main__:main"
 gui = []
 # ruff is bounded: its default rule set and fix behaviour shift between
 # minor releases, so an unbounded `ruff` makes CI lint non-reproducible.
-dev = ["pytest", "ipykernel", "pyinstaller", "ruff>=0.15,<0.17"]
+# `build` is the PEP 517 frontend used by `./scripts/build.sh wheel` and by
+# the release workflow's wheel job. Note it cannot be invoked as
+# `python -m build` from the repo root: the repo's own build/ directory
+# shadows it as an implicit namespace package. build.sh handles this.
+dev = ["pytest", "ipykernel", "pyinstaller", "ruff>=0.15,<0.17", "build"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
