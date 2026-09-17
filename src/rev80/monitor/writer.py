@@ -271,7 +271,7 @@ class MonitorWriterThread:
 
             gate_grp.attrs['timestamp']    = timestamp_str
             gate_grp.attrs['rel_time']     = rel_time
-            gate_grp.attrs['samplerate']   = int(first_sample.samplerate) if first_sample else 0
+            gate_grp.attrs['samplerate']   = float(first_sample.samplerate) if first_sample else 0.0
             gate_grp.attrs['status']       = str(first_sample.status) if first_sample else ''
             gate_grp.attrs['overall_json'] = overall_json
             gate_grp.attrs['peaks_json']   = peaks_json
@@ -342,7 +342,7 @@ class MonitorWriterThread:
                 fi_grp = bid_grp.create_group(str(frame_index))
                 fi_grp.attrs['timestamp']     = first_sample.timestamp if first_sample else timestamp_str
                 fi_grp.attrs['rel_time']      = float(first_sample.rel_time) if first_sample else rel_time
-                fi_grp.attrs['samplerate']    = int(first_sample.samplerate) if first_sample else 0
+                fi_grp.attrs['samplerate']    = float(first_sample.samplerate) if first_sample else 0.0
                 fi_grp.attrs['status']        = str(first_sample.status) if first_sample else ''
                 fi_grp.attrs['is_pretrigger'] = is_pre
 

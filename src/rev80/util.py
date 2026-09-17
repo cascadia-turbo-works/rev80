@@ -658,6 +658,22 @@ class UI_Elements:
     def ch_peaks_table(ch: int) -> str:
         return f'CH{ch}_PEAKS_TABLE'
 
+    # The peaks table's columns, rows and cells are a persistent widget pool
+    # refreshed in place, not rebuilt each frame -- see
+    # GUI._update_fft_peaks_table for the measurement that forced that. These
+    # tags are what make the pool addressable.
+    @staticmethod
+    def ch_peak_col(ch: int, col: int) -> str:
+        return f'CH{ch}_PEAKS_COL{col}'
+
+    @staticmethod
+    def ch_peak_row(ch: int, row: int) -> str:
+        return f'CH{ch}_PEAKS_ROW{row}'
+
+    @staticmethod
+    def ch_peak_cell(ch: int, row: int, col: int) -> str:
+        return f'CH{ch}_PEAKS_R{row}C{col}'
+
     @staticmethod
     def plt_time_series(ch: int) -> str:
         return f'PLT_TIME_CH{ch}'

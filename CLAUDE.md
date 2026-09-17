@@ -94,6 +94,7 @@ rate, it skips to the latest frame — all earlier frames remain in the
 | `monitor/writer.py` | `MonitorWriterThread` — daemon thread accumulating captures into one `session.h5` (v6; every capture and burst records `rpm`/`speed_ok`) |
 | `monitor/gate.py` | `IntervalGate` — snap-to-grid capture scheduler; burst entry/exit with `max_burst_s` |
 | `monitor/anomaly.py` | `RmsThresholdHook` (default 50%, see below), `SpectralThresholdHook`, `FixedThresholdHook`, `CompositeAnomalyHook`, `valid_results()` — the single place the speed gate is applied |
+| `_profile.py` | Per-stage pipeline timing (`rev80 --profile`, `scripts/profile-pipeline`). Thirteen stages grouped by thread; a shared no-op when disabled, bounded rings when enabled. See *Profiling* below |
 | `_paths.py` | Runtime-safe path resolution — editable checkout, non-editable pip install, and PyInstaller frozen bundle all resolve correctly; `resource_path()`, `data_dir()`, `log_dir()` |
 | `_pico_loader.py` | Windows-only: registers PicoSDK DLL search path before `picosdk` import |
 | `desktop.py` | Linux-only: `install()`/`uninstall()` a `~/.local/share/applications/rev80.desktop` launcher entry + icon, driven by `rev80 --install-desktop-entry` / `--uninstall-desktop-entry` |
@@ -104,7 +105,7 @@ rate, it skips to the latest frame — all earlier frames remain in the
 - `DataCollector.receive_data` wraps each channel in a `VibeSample` at the raw acquisition rate, carrying the frame's `overflow` and `degraded` flags. The sample is **in mV**: the mV→EU sensitivity divide happens later, inside `process_sample()`, not here. (This passage claimed the opposite until Sep 2026 — `VibeSample.unit` is `'mV'`, and the tachometer's fixed-mV threshold depends on it being so.) A **tachometer-role channel branches here**: it skips the highpass entirely and is edge-detected instead (measured — the filter's overshoot on each falling edge re-crosses the threshold, turning 31 edges into 108 at 15% duty, so an 1800 RPM shaft reads 6270). The per-channel Butterworth highpass filter is applied later, in `process_sample()`, still at the raw rate; anti-aliasing for the acquisition Nyquist is not applied here at all — it happens upstream in `PicoScopeStream`, before the ADC's own Nyquist limit can fold high-frequency content into the passband, and is not user-configurable.
 - `DataCollector._data_callback` appends the frame to a 32-frame ring cache (deque) and sets `new_frame_event`. All consumers — GUI render loop, `collect_sample`, tests — read from `frame_cache` via `new_frame_event`; there is no separate callbacks fan-out. `DataCollector.current_frame()` returns the same `{ch: VibeSample}` dict as whatever `process_samples()` would currently process (respecting the streaming-vs-browse cursor), for a consumer — the Envelope tab — that needs the raw `VibeSample` rather than a decimated `ChannelResult`.
 - `process_samples()` iterates `config.vibration_channels`, **not** `enabled_channels`: a tachometer produces no `ChannelResult` at all. Letting one through is what yields overall 1515 mV, crest 5.00, kurtosis 15.94 and 63 "peaks" on a square wave — a reading that looks like a severely failing bearing and raises nothing. RPM is trended separately (`tach_trend`/`get_rpm_trend()`) because a shaft speed must never pass through `UNIT_TO_SI`, `amplitude_scale` or `integration_steps`.
-- `DataCollector.process_sample()` (not `VibeSample.process()`) decimates the raw-rate `VibeSample` down to the display rate (`collector.decimate_to_rate()` — rational-ratio `scipy.signal.resample_poly`, reusing the hardware anti-alias filter's Kaiser stopband design; cached on the sample) and produces the `ChannelResult`. Per frame: Welch PSD (one segment — `nperseg == blocksize`), optional averaging over N frames, five integration orders, spectrum truncated at `maxfreq`, peaks, overall, waveform, crest factor and kurtosis. `ChannelResult.time_data`/`.samplerate` are display-rate. `DataCollector.eu_scaled_raw(ch, sample)` instead returns the highpass-filtered signal in the sensor's own EU *at the raw rate*, skipping decimation entirely — this is what envelope/demodulation analysis (`gui.py`'s `_update_envelope_plot`) reads, so a low `maxfreq` never limits envelope bandwidth.
+- `DataCollector.process_sample()` (not `VibeSample.process()`) decimates the raw-rate `VibeSample` down to the display rate (`collector.decimate_to_rate()` — `scipy.signal.resample_poly` at a **denominator-bounded** rational ratio, reusing the hardware anti-alias filter's Kaiser stopband design; cached on the sample. The bound is not cosmetic: `resample_poly` designs a `2*10*max(up,down)+1` tap FIR per call, and an unreduced ratio against the real, non-round hardware clock produced a **512821-tap** filter at 73.6 ms per channel per frame — invisible offline, because `SimulatedSensor` reports a rate that reduces and hardware does not. The function returns the **achieved** rate; every consumer must use that, not `config.samplerate`) and produces the `ChannelResult`. Per frame: Welch PSD (one segment — `nperseg == blocksize`), optional averaging over N frames, five integration orders, spectrum truncated at `maxfreq`, peaks, overall, waveform, crest factor and kurtosis. `ChannelResult.time_data`/`.samplerate` are display-rate. `DataCollector.eu_scaled_raw(ch, sample)` instead returns the highpass-filtered signal in the sensor's own EU *at the raw rate*, skipping decimation entirely — this is what envelope/demodulation analysis (`gui.py`'s `_update_envelope_plot`) reads, so a low `maxfreq` never limits envelope bandwidth.
 - **Everything scalar is measured over the declared band** (`config.band`), applied as a mask on the rFFT. All five integration orders share one masked, Hann-tapered path — including order 0, because the mask is itself a transform-domain multiply and carries the same circular-wrap sensitivity the taper exists to control.
 - **Averaging is in the power domain**: average |X|², sqrt at the end; the overall combines as `sqrt(mean(squares))`. Averaging magnitudes converges ~11% low on a noise floor and is invisible on a coherent line — the trap that passed 17 tests before two were added to catch it.
 - **Crest factor and kurtosis are computed on the displayed trace and never averaged.** Averaging is for steady-state estimation; those exist to catch the frame that is *not* steady.
@@ -116,7 +117,7 @@ rate, it skips to the latest frame — all earlier frames remain in the
 Two independent rate pairs, not one:
 
 - **Raw/acquisition** — `raw_samplerate` is fixed (`RAW_SAMPLERATE_HZ` in `sample.py`, 25.6 kHz = 2.56 × the 10 kHz top `MAXFREQ_PRESETS` entry; not `maxfreq`-derived, not user-configurable). `raw_blocksize` is derived from it and `acquisition_period`. This is what `PicoScopeStream`/`SimulatedSensor` actually produce, what `VibeSample`/HDF5 hold, and what envelope analysis (`DataCollector.eu_scaled_raw`) reads.
-- **Display** — changing `maxfreq` auto-adjusts `samplerate` to **exactly** `2.56 * maxfreq` (Nyquist = 1.28x maxfreq, the margin the mandatory anti-alias filter needs); changing `binsize` auto-adjusts `blocksize` to `ceil(samplerate / binsize)`. Neither is rounded to a power of two any more: `nextpow2` overstated the display rate by up to 2x, and once `RAW_SAMPLERATE_HZ` came down to 2.56 × the top preset that made the top preset advertise 32.8 kS/s against 25.6 kS/s of real data. Exact 2.56x cannot overshoot — `maxfreq`'s clamp (`<= raw_samplerate/2/1.28`) *is* the condition `2.56 * maxfreq <= raw_samplerate` — and it makes raw→display decimation an exact integer factor at every preset. This is what the Acquisition dialog's "Sample Rate" field shows and what the Spectrum tab's Welch PSD runs at — `DataCollector` decimates the raw signal down to it in `process_sample()`. `samplerate`, `blocksize`, `nperseg`, `binsize_actual`, `n_fft_bins` and `band_*_resolved` are all **read-only derived properties**.
+- **Display** — changing `maxfreq` auto-adjusts `samplerate` to **exactly** `2.56 * maxfreq` (Nyquist = 1.28x maxfreq, the margin the mandatory anti-alias filter needs); changing `binsize` auto-adjusts `blocksize` to `ceil(samplerate / binsize)`. Neither is rounded to a power of two any more: `nextpow2` overstated the display rate by up to 2x, and once `RAW_SAMPLERATE_HZ` came down to 2.56 × the top preset that made the top preset advertise 32.8 kS/s against 25.6 kS/s of real data. Exact 2.56x cannot overshoot — `maxfreq`'s clamp (`<= raw_samplerate/2/1.28`) *is* the condition `2.56 * maxfreq <= raw_samplerate` — and it makes raw→display decimation an exact integer factor at every preset **when the raw clock is exactly `RAW_SAMPLERATE_HZ`**. On real hardware it is not: the driver's streaming clock runs on a 12.5 ns grid, so the achieved rate is ~25591.8 Hz (−320 ppm, the closest reachable point — see `PicoScopeStream._start_streaming` for the probe table). The integer factor is preserved anyway because `decimate_to_rate` bounds the ratio's denominator and reports the rate it actually achieved. **F_max itself stays the round number the user selected**; the sub-Hz difference lives in the frequency axis, where correctness matters, not on a control — the same treatment `highpass_fc` gets as a declared edge. This is what the Acquisition dialog's "Sample Rate" field shows and what the Spectrum tab's Welch PSD runs at — `DataCollector` decimates the raw signal down to it in `process_sample()`. `samplerate`, `blocksize`, `nperseg`, `binsize_actual`, `n_fft_bins` and `band_*_resolved` are all **read-only derived properties**.
 
 These are enforced in the setters — do not bypass them by setting private `_fm`/`_df` directly (the read-only-property design makes it impossible anyway). `maxfreq`'s setter also clamps to what `raw_samplerate` can back (`<= raw_samplerate/2/1.28`) and logs a warning if a caller (e.g. `headless.py --maxfreq`) asks for more.
 
@@ -270,6 +271,41 @@ The unattended datalogger, and the newest ~1800 lines. Two front ends drive it: 
 - **Measure before choosing a constant**, and record the table next to it. `picoscope.py`, `_dsp.py`, `peaks.py` and `simulation.py` all follow this; two constants there contradict the textbook value and the measurement is why.
 - **Verify electrically when hardware is attached.** AWG loopback on channel A, as in `tests/test_picoscope_hw.py`, is how measurement changes get closed out.
 - Keep `doc/CHANGELOG.md`, `doc/PROGRESS.md` and `README.md` current **in the same change**, not as a later pass. `CONTRIBUTING.md` holds dev-environment, layout and build instructions.
+
+### Profiling
+
+`src/rev80/_profile.py` times thirteen named pipeline stages, from the driver
+callback to `render_dearpygui_frame()`. It costs 442 ns per call when disabled
+(0.27 ms per wall-second at the busiest call site), so it ships permanently.
+
+```bash
+rev80 --profile                          # logs the stage table on exit
+REV80_PROFILE=1 rev80                    # same, reachable from a desktop launcher
+./scripts/profile-pipeline               # channel-count sweep, simulated
+./scripts/profile-pipeline --hardware --channels 1,3,4,8
+```
+
+Stages are grouped by **thread**, because that is the whole question: main-thread
+time (`proc.*`, `gui.*`) blocks the mouse, acquisition-thread time (`usb.*`,
+`ingest.*`) steals the GIL from it, and the two need opposite fixes. Reading
+`gui.render` beside `proc.total` tells them apart. The stages **nest** — `usb.poll`
+contains everything the app callback does, `proc.total` contains
+`proc.decimate`/`psd`/`peaks` — so subtract, never add.
+
+Two rules this work established:
+
+- **A performance claim measured only against `SimulatedSensor` is not a
+  measurement.** The largest defect found here — a 512821-tap FIR redesigned per
+  channel per frame — was 73.6 ms on hardware and 0.64 ms in every offline test,
+  because `SimulatedSensor` reports exactly 25600 Hz and real hardware reports a
+  clock that does not reduce. Green CI was not evidence, again. `profile-pipeline`
+  therefore defaults `--raw-rate` to the hardware-realistic value, not the nominal
+  one.
+- **A speed change on a measurement path ships with an equality test**, not a
+  tolerance. `tests/test_adc_conversion.py` and the `_running_median` block in
+  `tests/test_peak_selection.py` both assert bit-identity against the
+  implementation they replaced, including one test asserting that the obvious
+  "simplification" is *not* equivalent.
 
 ## Offline analysis
 

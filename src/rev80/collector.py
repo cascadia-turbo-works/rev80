@@ -13,6 +13,7 @@ import scipy.signal
 
 import rev80
 from rev80 import _dsp
+from rev80 import _profile
 from rev80 import peaks as rev80_peaks
 from rev80._paths import data_dir
 from rev80.picoscope import _AA_STOPBAND_DB
@@ -21,6 +22,25 @@ from rev80.tach import TachSettings, tach_result
 from rev80.util import CHANNEL_ROLES, DEFAULT_CHANNEL_ROLE
 
 log = rev80.get_logger("collector")
+
+#: Denominator caps tried, coarsest first, when reducing the raw->display
+#: resample ratio. The first cap landing within _RESAMPLE_RATE_TOL wins; if
+#: none does, the closest is used. Stops at 256 because the FIR resample_poly
+#: designs is 2*10*max(up,down)+1 taps: 5121 at the cap, ~1 ms on a 12800
+#: sample block, against 512821 taps and 73.6 ms unbounded. See
+#: decimate_to_rate for the measurement.
+_RESAMPLE_DENOM_LADDER = (4, 8, 16, 32, 64, 128, 256)
+
+#: Relative rate error accepted in exchange for a cheaper ratio. Measured on a
+#: 4824A, the grid-snapped streaming clock lands 3.2e-4 from nominal (-320 ppm,
+#: the closest its 12.5 ns timebase can reach), so 1e-3 clears it with room and
+#: the ladder stops at the exact integer factor at every shipped preset. The
+#: bound is the safety net for an off-preset F_max, not the normal path.
+#:
+#: It is a bound on the RESAMPLE approximation only, and does not add to the
+#: clock error: the rate returned by decimate_to_rate is exact for the ratio
+#: used, and the frequency axis is built from it.
+_RESAMPLE_RATE_TOL = 1e-3
 
 
 def decimate_to_rate(block: np.ndarray, raw_rate: float, target_rate: float) -> 'tuple[np.ndarray, float]':
@@ -38,15 +58,55 @@ def decimate_to_rate(block: np.ndarray, raw_rate: float, target_rate: float) -> 
     it here -- the one thing pinned to match the hardware path is the
     stopband target (_AA_STOPBAND_DB), via kaiser_beta.
 
-    Returns (resampled, actual_rate). actual_rate is exact
-    (raw_rate * up / down); target_rate is only ever approximated by the
-    nearest up/down with denominator <= 1000, which keeps the polyphase
-    filter design tractable -- the same spirit as the small integer factors
-    the hardware path already uses.
+    Returns (resampled, actual_rate), where actual_rate is EXACT
+    (raw_rate * up / down) and target_rate is only ever approached. Every
+    consumer must use the returned rate, not config.samplerate: it is what the
+    frequency axis is correct against.
+
+    Bounding the ratio
+    ------------------
+    resample_poly designs a `2*10*max(up, down)+1` tap FIR on every call, so
+    the ratio's denominator is a direct cost multiplier and has to be bounded.
+    It nominally was, but `limit_denominator` was applied to each rate
+    SEPARATELY before dividing -- and both rates are integers there, so each
+    reduced to denominator 1 and the quotient's denominator was never bounded
+    at all. On real hardware that was invisible right up until it wasn't: the
+    driver ran at 25641 Hz (see PicoScopeStream._start_streaming for why), 5120
+    and 25641 are coprime, and scipy dutifully designed a **512821-tap** filter
+    per channel per frame. Measured, 12800-sample block:
+
+        raw rate      up/down     taps     ms/call    out len
+        25600.00        1/5        101       0.64       2560   <- simulated
+        25641.00     5120/25641  512821     73.62       2556   <- hardware
+
+    At 8 channels that is 589 ms of main-thread work against a 500 ms frame,
+    and it never showed up offline because SimulatedSensor reports exactly
+    25600. The short output was its own defect: 2556 < nperseg silently tripped
+    Welch's fallback, so the delivered bin width was not the one the UI stated.
+
+    The bound is now applied to the ratio, via the smallest denominator cap
+    that gets within _RESAMPLE_RATE_TOL of the requested rate. Every shipped
+    preset lands on its exact integer factor; an off-preset F_max costs a few
+    thousand taps rather than half a million. Measured worst case under the cap
+    is 1.05 ms, against 73.62 ms without it.
     """
     if target_rate >= raw_rate:
         return block, raw_rate
-    ratio = Fraction(target_rate).limit_denominator(1000) / Fraction(raw_rate).limit_denominator(1000)
+
+    exact = Fraction(target_rate) / Fraction(raw_rate)
+    ratio = None
+    for cap in _RESAMPLE_DENOM_LADDER:
+        candidate = exact.limit_denominator(cap)
+        if candidate.numerator < 1:
+            continue                    # cap too coarse to represent the ratio
+        if ratio is None or abs(float(candidate) / float(exact) - 1.0) < \
+                            abs(float(ratio) / float(exact) - 1.0):
+            ratio = candidate
+        if abs(float(candidate) / float(exact) - 1.0) <= _RESAMPLE_RATE_TOL:
+            break
+    if ratio is None:
+        return block, raw_rate
+
     up, down = ratio.numerator, ratio.denominator
     if down <= 1:
         return block, raw_rate
@@ -701,6 +761,10 @@ class DataCollector:
         Applies per-channel mV→EU sensitivity conversion then an optional
         Butterworth highpass filter before forwarding to _data_callback().
         """
+        with _profile.timed(_profile.INGEST_RECV):
+            self._receive_data(samp)
+
+    def _receive_data(self, samp: dict):
         data_arr = np.asarray(samp["data"])
         channels = samp.get("channels", [0])
 
@@ -712,7 +776,11 @@ class DataCollector:
         degraded: bool = samp.get("degraded", False)
         samples: dict[int, rev80.VibeSample] = {}
 
-        samplerate = samp.get("samplerate", self.config.samplerate)
+        # raw_samplerate, not samplerate: `samp` carries a RAW-rate block, and
+        # tagging it with the display rate would make every VibeSample lie
+        # about its own time base. Unreachable today (both PicoScopeStream and
+        # SimulatedSensor always set the key) but wrong if it were ever hit.
+        samplerate = float(samp.get("samplerate", self.config.raw_samplerate))
         for i, ch in enumerate(channels):
             col  = min(i, data_arr.shape[1] - 1)
             data = np.ascontiguousarray(data_arr[:, col], dtype=np.float64)
@@ -785,7 +853,8 @@ class DataCollector:
         key = (sample.samplerate, target_rate, sample._filter_config_key)
         if sample.decimated_mv is not None and sample._decimation_config_key == key:
             return sample.decimated_mv, sample.decimated_samplerate
-        decimated, actual_rate = decimate_to_rate(filtered_mv, sample.samplerate, target_rate)
+        with _profile.timed(_profile.PROC_DECIMATE):
+            decimated, actual_rate = decimate_to_rate(filtered_mv, sample.samplerate, target_rate)
         sample.decimated_mv          = decimated
         sample.decimated_samplerate  = actual_rate
         sample._decimation_config_key = key
@@ -833,51 +902,52 @@ class DataCollector:
         if sample.psd_mv is not None and sample._psd_config_key == psd_key:
             return sample.freq_hz, sample.psd_mv
 
-        # Segment = the whole block, so the computed spectrum matches the line
-        # count and bin width the UI states. See config.nperseg.
-        nperseg  = min(config.nperseg, len(decimated_mv))
-        noverlap = min(nperseg - 1, int(nperseg * config.welch_overlap))
-        freq_hz, psd_mv = scipy.signal.welch(
-            decimated_mv, fs=float(samplerate),
-            window=config.fft_window, nperseg=nperseg, noverlap=noverlap,
-            nfft=nperseg, scaling='spectrum', detrend='linear', average='mean',
-        )
-        sample.psd_mv          = psd_mv
-        sample.freq_hz         = freq_hz
-        sample._psd_config_key = psd_key
-
-        # 5-order mV RMS overalls via time-domain IFFT. sqrt(mean(x²)) on the
-        # IFFT signal avoids the Welch window normalisation artifact (Hann
-        # leakage inflates sqrt(sum(psd)) by sqrt(3/2) for a pure tone).
-        #
-        # All five orders run the same way: Hann taper, band mask, back to the
-        # time domain, RMS with the window's power gain divided out. Order 0
-        # used to skip the taper, on the grounds that a passthrough performs no
-        # transform-domain multiply and so has no wrap discontinuity to
-        # suppress. Band-limiting removed that premise -- the mask IS such a
-        # multiply, and therefore a circular convolution in time, with exactly
-        # the wrap sensitivity the taper exists to control.
-        #
-        # An un-tapered transform plus Parseval was measured as the
-        # alternative. It is exact for in-band content but its band edge is a
-        # rectangular window's, with -13 dB first sidelobes: a 3x tone at 30 Hz
-        # against a 100 Hz lower edge leaked in at only -22 dB, inflating the
-        # overall by +2.7%. Hann rejects the same tone by -84 dB, and -100 to
-        # -144 dB in the other cases measured, at a cost of 4.9e-4 worst-case
-        # in-band error over the preset grid. Band rejection is what an
-        # instrument needs here; the fifth decimal place is not.
-        hann_w, hann_gain = _dsp.hann_taper(N)
-        masked_hann = np.where(_dsp.band_mask(freq_td, band_fmin, band_fmax),
-                               np.fft.rfft(decimated_mv * hann_w), 0.0)
-        for i, n_ord in enumerate(range(-2, 3)):
-            if n_ord == 0:
-                time_ord = np.fft.irfft(masked_hann, n=N)
-            else:
-                time_ord = _dsp.integrate_rfft(masked_hann, freq_td, n_ord, N)
-            sample.overall_ampl_by_integration_order[i] = float(
-                np.sqrt(np.mean(np.square(time_ord))) / hann_gain
+        with _profile.timed(_profile.PROC_PSD):
+            # Segment = the whole block, so the computed spectrum matches the line
+            # count and bin width the UI states. See config.nperseg.
+            nperseg  = min(config.nperseg, len(decimated_mv))
+            noverlap = min(nperseg - 1, int(nperseg * config.welch_overlap))
+            freq_hz, psd_mv = scipy.signal.welch(
+                decimated_mv, fs=float(samplerate),
+                window=config.fft_window, nperseg=nperseg, noverlap=noverlap,
+                nfft=nperseg, scaling='spectrum', detrend='linear', average='mean',
             )
-        return freq_hz, psd_mv
+            sample.psd_mv          = psd_mv
+            sample.freq_hz         = freq_hz
+            sample._psd_config_key = psd_key
+
+            # 5-order mV RMS overalls via time-domain IFFT. sqrt(mean(x²)) on the
+            # IFFT signal avoids the Welch window normalisation artifact (Hann
+            # leakage inflates sqrt(sum(psd)) by sqrt(3/2) for a pure tone).
+            #
+            # All five orders run the same way: Hann taper, band mask, back to the
+            # time domain, RMS with the window's power gain divided out. Order 0
+            # used to skip the taper, on the grounds that a passthrough performs no
+            # transform-domain multiply and so has no wrap discontinuity to
+            # suppress. Band-limiting removed that premise -- the mask IS such a
+            # multiply, and therefore a circular convolution in time, with exactly
+            # the wrap sensitivity the taper exists to control.
+            #
+            # An un-tapered transform plus Parseval was measured as the
+            # alternative. It is exact for in-band content but its band edge is a
+            # rectangular window's, with -13 dB first sidelobes: a 3x tone at 30 Hz
+            # against a 100 Hz lower edge leaked in at only -22 dB, inflating the
+            # overall by +2.7%. Hann rejects the same tone by -84 dB, and -100 to
+            # -144 dB in the other cases measured, at a cost of 4.9e-4 worst-case
+            # in-band error over the preset grid. Band rejection is what an
+            # instrument needs here; the fifth decimal place is not.
+            hann_w, hann_gain = _dsp.hann_taper(N)
+            masked_hann = np.where(_dsp.band_mask(freq_td, band_fmin, band_fmax),
+                                   np.fft.rfft(decimated_mv * hann_w), 0.0)
+            for i, n_ord in enumerate(range(-2, 3)):
+                if n_ord == 0:
+                    time_ord = np.fft.irfft(masked_hann, n=N)
+                else:
+                    time_ord = _dsp.integrate_rfft(masked_hann, freq_td, n_ord, N)
+                sample.overall_ampl_by_integration_order[i] = float(
+                    np.sqrt(np.mean(np.square(time_ord))) / hann_gain
+                )
+            return freq_hz, psd_mv
 
     def _psd_for(self, ch: int, sample: 'rev80.VibeSample'):
         """Just the PSD of one frame, for the averaging accumulator."""
@@ -1071,12 +1141,13 @@ class DataCollector:
         seg_len    = min(config.nperseg, len(filtered_mv))
         seg_step   = max(1, seg_len - min(seg_len - 1, int(seg_len * config.welch_overlap)))
         n_segments = 1 + max(0, len(filtered_mv) - seg_len) // seg_step
-        peaks = rev80_peaks.select_peaks(
-            spectrum_amp,
-            window=config.fft_window,
-            threshold_db=config.peak_threshold_db,
-            n_segments=n_segments,
-        )
+        with _profile.timed(_profile.PROC_PEAKS):
+            peaks = rev80_peaks.select_peaks(
+                spectrum_amp,
+                window=config.fft_window,
+                threshold_db=config.peak_threshold_db,
+                n_segments=n_segments,
+            )
 
         # ── 7. Overall amplitude in target unit ───────────────────────
         # Reuse the IFFT-based mV RMS cached in step 3; apply unit scale + amp mode.
@@ -1287,6 +1358,10 @@ class DataCollector:
         Uses the latest frame when streaming; uses _cache_cursor when browsing.
         Appends to trend only during streaming.
         """
+        with _profile.timed(_profile.PROC_TOTAL):
+            return self._process_samples()
+
+    def _process_samples(self) -> list['rev80.ChannelResult']:
         cache = self.data["frame_cache"]
         if not cache:
             return []
@@ -2059,7 +2134,7 @@ class DataCollector:
                     ch   = int(ch_str)
                     data = np.asarray(grp[ch_str]["data"][()], dtype=np.float64)
                     ts   = str(grp.attrs.get("timestamp", ""))
-                    sr   = int(grp.attrs.get("samplerate", self.config.samplerate))
+                    sr   = float(grp.attrs.get("samplerate", self.config.raw_samplerate))
                     try:
                         ts_dt = _dt.fromisoformat(ts)
                     except ValueError:
@@ -2097,7 +2172,8 @@ class DataCollector:
                             ch   = int(ch_str)
                             data = np.asarray(fi_grp[ch_str]["data"][()], dtype=np.float64)
                             ts   = str(fi_grp.attrs.get("timestamp", ""))
-                            sr   = int(fi_grp.attrs.get("samplerate", self.config.samplerate))
+                            sr   = float(fi_grp.attrs.get("samplerate",
+                                                          self.config.raw_samplerate))
                             try:
                                 ts_dt = _dt.fromisoformat(ts)
                             except ValueError:
