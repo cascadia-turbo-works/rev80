@@ -9,6 +9,80 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### build/ci — release automation (2026-09-17)
+
+Tagging `vX.Y.Z` now builds the Windows installer and the Python wheel and
+attaches both to a **draft** GitHub Release, replacing the manual "boot into
+Windows, pull, run `scripts/build.sh`" step. Prompted by the move from the
+self-hosted `catherby` remote to `github.com/cascadia-turbo-works/rev80`.
+
+Not yet executed against a real remote — see *Rehearsing it* in
+`CONTRIBUTING.md` before trusting a release.
+
+#### Added
+- **`.github/workflows/release.yml`** — four jobs on a `v*` tag: a test gate,
+  a wheel/sdist build (ubuntu), a driver-less installer build (windows), and
+  `gh release create --draft`. The gate exists so a tag cannot cut a release
+  from a red tree; it runs one Python version, since the full matrix already
+  ran on the branch.
+- **`scripts/build.sh wheel`** — builds the wheel and sdist, which `build.sh`
+  had never done, and the only target that runs off Windows.
+- **`scripts/build.sh … nodlls`** — skips DLL collection. Hosted Windows
+  runners have no PicoSDK and it has no reliable unattended install, so CI
+  installers are **driver-less**: they work, but the user installs PicoSDK
+  themselves and the `.iss` already warns when it is missing. A local
+  `./scripts/build.sh` is unchanged and still bundles the DLLs.
+- **`build` added to the `dev` extra.**
+
+#### Fixed
+- **`fetch_font.sh` silently shipped a font-less installer on failure.** It has
+  no `set -e` and returned the status of its final `echo`, so a failed `curl`
+  or a missing `unzip` exited 0; `build.sh` carried on and `rev80.spec` printed
+  its "fonts not found" warning into a log nobody reads. Every failure path now
+  exits non-zero with a reason.
+- **…and it downloaded a font the repo already tracks.** `assets/fonts/CommitMonoNerdFont-Regular.otf`
+  is committed and byte-identical to the download (sha256 `4eda301c…`, verified
+  before the change). The tracked copy is now the primary source and the
+  download a fallback, which takes the release build off the network — and off
+  Git Bash's non-guaranteed `unzip` on the Windows runner.
+
+#### Changed
+- **`ci.yml` triggers on branch pushes only** (`push: branches: ['**']`). A
+  bare `push:` also matches tags, so tagging would have run the full 4-job
+  matrix alongside `release.yml` and its own gate.
+- **`CLAUDE.md` no longer claims the pre-commit hook stamps `_version.py`.** It
+  has not since the setuptools_scm move; the hook has carried a comment saying
+  so while the doc said the opposite. The release workflow's correctness rests
+  on the real mechanism, so the passage is now explicit about it.
+
+#### Notes for the next person
+- **`fetch-depth: 0` is load-bearing and its failure is silent.** `setuptools_scm`
+  reads `git describe`; a shallow checkout has no tags, falls back to
+  `0.0.0+unknown`, and ships `Rev80Setup-0.0.0+unknown.exe` with nothing
+  failing. Both build jobs assert against that string rather than trusting the
+  checkout. A dirty tree is the same hazard from the other end — it appends
+  `+d<date>`, which is why `_version.py`, `installer/version.iss`,
+  `drivers/*.dll` and the fetched font are all gitignored.
+- **`python -m build` cannot run from the repo root.** This repo's own `build/`
+  directory shadows the `build` PyPI package as an implicit namespace package:
+  `import build` succeeds and `python -m build` dies with *No module named
+  `build.__main__`*. Compounding it, `python` is a pyenv shim that picks its
+  version from the cwd, so simply running from elsewhere selects a different
+  interpreter. `build.sh wheel` handles both — resolve the interpreter to an
+  absolute path, then run from a scratch cwd with the repo passed explicitly.
+- **A tag trigger ignores branches.** GitHub Actions has no notion of "tagged
+  on main"; any `v*` tag anywhere builds. Accepted deliberately. Legacy `rc0.x`
+  tags do not match `v*`.
+- **The wheel is a release asset, not a PyPI package.** `picosdk` is a direct
+  git URL dependency and PyPI rejects those.
+- **Releases are drafts** because the exe and installer remain unsigned.
+- The `--sdist` and `--wheel` invocations are deliberately separate so the
+  wheel is built from the source tree, on the theory that setuptools_scm's
+  git-tracked file finder would drop the gitignored font. Measured: it does
+  not, `package_data` wins. Kept as belt-and-braces and recorded as measured
+  rather than left as a claim.
+
+
 ### fix/stability-cluster (2026-08-30, merged 2026-09-11)
 
 The four audit findings about the app *staying up* rather than measuring
