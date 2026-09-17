@@ -9,6 +9,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-09-17
+
 
 ### fix/stability-cluster (2026-08-30, merged 2026-09-11)
 

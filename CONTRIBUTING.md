@@ -311,7 +311,7 @@ Use a throwaway tag rather than a real version the first time, and check that th
 installer job's log reports a real version rather than the fallback:
 
 ```bash
-git tag v0.0.1-citest && git push origin v0.0.1-citest
+git tag v0.0.1rcx && git push origin v0.0.1rcx
 # ...then delete the draft release and:
-git push origin :v0.0.1-citest && git tag -d v0.0.1-citest
+git push origin :v0.0.1rcx && git tag -d v0.0.1rcx
 ```
