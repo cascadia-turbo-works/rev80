@@ -31,6 +31,8 @@ installer/version.iss
 # ── Build & installer artifacts ───────────────────────────────────────────────
 dist/
 build/rev80/
+# setuptools scratch dir, left behind by `python -m build` (build.sh wheel)
+build/lib/
 installer/Output/
 *.spec.bak
 
