@@ -267,6 +267,32 @@ v4 with per-channel orders matrix; v3 files loaded in best-effort degraded mode.
 |---|--------|-------------|
 | R28 | May 2026 | Configurable frame cache depth (integer selector in Acquisition config tab) with live recording-window and total-memory derived displays |
 
+### Phase 5 — GUI responsiveness profiling (Sep 2026)
+
+`experimental/profiling`. The GUI stuttered on every processing call, worse
+with every enabled channel, after the mandatory anti-alias filter and
+oversampled streaming landed. Built per-stage timing (`src/rev80/_profile.py`,
+`rev80 --profile`, `scripts/profile-pipeline`) before changing anything, then
+fixed the three causes it indicted: an unbounded raw->display resample ratio
+designing a 512821-tap FIR per channel per frame *on hardware only*, the vendor
+`adc2mV` per-sample Python loop holding the GIL inside the driver callback, and
+a per-channel peaks table destroyed and rebuilt every frame. See
+`doc/CHANGELOG.md` for the measured before/after on each.
+
+**The standing tool.** `scripts/profile-pipeline` sweeps channel counts and
+prints a per-stage table, simulated or against real hardware. Its `--raw-rate`
+defaults to the hardware-realistic clock rather than the nominal one, because
+the largest defect found here was invisible at exactly 25600 Hz -- the whole
+test suite passed at 0.64 ms per call while the instrument stalled at 73.6.
+A performance claim measured only against `SimulatedSensor` is not a
+measurement.
+
+### Requirements added in Phase 5
+
+| # | Source | Requirement |
+|---|--------|-------------|
+| R47 | Sep 2026 | Settling indicator while the measurement chain stabilises |
+
 ---
 
 ## Requirements Tracker
@@ -301,6 +327,7 @@ v4 with per-channel orders matrix; v3 files loaded in best-effort degraded mode.
 | R44 | Aug 2026 | **Tachometer support in `rev80-headless`** — deferred, not rejected. Headless currently must *refuse* tach-role channels rather than ignore them: it builds its config from the same `devices/*.yaml` and iterates `enabled_channels`, so a GUI-configured tach channel would be high-passed, given an overall, trended and fed to the anomaly hooks as though it were vibration. Measured on a 5 % duty pulse train at 1800 RPM through the real `process_sample`: overall 1514.9 mV, crest 5.00, **kurtosis 15.94**, 63 spectral peaks — an analyst reviewing that session concludes a bearing is failing badly. It also drifts on nothing: a tach LED ageing from 5.0 V to 4.5 V moves that channel's overall by exactly −10 %, the shipped `RmsThresholdHook` threshold, on three consecutive frames. Revisit once R43 lands. | 🔲 TODO |
 | R45 | Sep 2026 | **Motor-state judgement from the tachometer** — a stopped shaft and a disconnected cable can produce an identical block: flat and near zero, whenever the reflector happens to sit away from the sensor. Only the parked-reflector case (flat at the high rail) and turning-below-the-floor (real pulses, fewer than MIN_EDGES) are distinguishable today, so `no_signal` is reported as exactly that and nothing is inferred about the machine. Making "motor stopped" trustworthy needs *history* — a channel that read cleanly and then ceased is a stop; one that never read is a setup problem — which is a small state machine belonging with whatever consumes the state rather than in `tach.py`. Until then the GUI must not claim a machine is stopped on the strength of a flat line. | 🔲 TODO |
 | R46 | Sep 2026 | **Surface velocity from reflector size and duty cycle** — with reflector arc length L, measured duty d and shaft rate f, the reflector subtends d of a revolution, so circumference is L/d and surface velocity is v = f·L/d. The tape doubles as a shaft-diameter measurement, giving surface speed without anyone measuring the shaft — directly useful on rollers, belts and web handling. **Duty cycle is now captured** (`TachResult.duty_cycle` / `.pulse_widths_s`, persisted in v5), so the remaining work is the reflector-size input and the `v = f·L/duty` readout. Sensor geometry — an optical tach's spot width, a proximity probe's inductive field — inflates the observed duty; by decision the operator accounts for that when measuring the tape or key, so no correction is applied in software. | 🔲 TODO |
+| R47 | Sep 2026 | **Settling indicator while the measurement chain stabilises.** The first frame of a stream reads conspicuously high — approximately 2x on the overall — and is displayed, trended and alarmed on as though it were a valid measurement. Real analysers show "acquiring"/"settling" and withhold the reading until the chain has stabilised. Three candidates to separate before fixing, and they are not equally likely: the IEPE coupler's own AC-coupling RC transient after `ps4000aRunStreaming` (real electrical signal, which no digital filter can remove, and the most probable of the three); the `resample_poly` anti-alias FIR's block-edge transient; and the first-block high-pass state — noting `filter_block` already seeds `zi` from the block mean via `_seed_zi` rather than from zero, so that one should already be handled and is the least likely. Measure the settling time rather than assuming it, then withhold or flag frames inside it and exclude them from the trend, the baseline and anomaly evaluation exactly the way overflow/degraded frames already are (`valid_results()`). Raised while profiling GUI responsiveness (Sep 2026); deliberately deferred there as out of scope. | 🔲 TODO |
 | — | Future | Proximity probe support | ✅ Done — scope sensor with EU in displacement units |
 | — | Future | Web portal for data sharing | ❌ Abandoned |
 | — | Future | MCC DAQ tooling (USB-1608FS-Plus) | ❌ Abandoned — PicoScope oscilloscope replaces DAQ for all current use cases |

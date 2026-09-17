@@ -1,0 +1,283 @@
+#!/usr/bin/env python3
+"""profile-pipeline — per-stage timing sweep over the acquisition pipeline.
+
+Why this exists
+---------------
+The GUI stuttered on every processing call, worse with every enabled channel.
+Three separate things were causing it -- a 512821-tap FIR redesigned per channel
+per frame on the main thread, a per-sample Python loop in the vendor ADC
+conversion holding the GIL on the hardware thread, and ~164 dearpygui widget
+create/destroy calls per channel per frame -- and all three are linear in
+channel count, so the symptom alone cannot tell them apart. Only per-stage
+timing can, which is what rev80._profile and this harness are for.
+
+It sweeps channel counts and prints one stage table per count, so a cost that
+scales with channels is obvious and a constant one is obvious too.
+
+Usage
+-----
+    ./scripts/profile-pipeline                                  # simulated, 1..8 channels
+    ./scripts/profile-pipeline --channels 1,4,8 --seconds 30
+    ./scripts/profile-pipeline --hardware                       # against a real PicoScope
+    ./scripts/profile-pipeline --cprofile --channels 8          # + pstats for drill-down
+
+THE SIMULATED DEFAULT LIES ABOUT ONE THING, DELIBERATELY CORRECTED HERE.
+SimulatedSensor reports exactly RAW_SAMPLERATE_HZ (25600), which reduces
+against every display rate to a small integer factor. Real hardware does not:
+the driver clock is quantised, so the reported rate is 25599.67 (ns-timed) or
+25641 (the old us-timed request), and a rate that does not reduce is precisely
+what made decimate_to_rate 115x more expensive on hardware than in CI. So
+--raw-rate defaults to the ns-timed hardware value rather than the nominal one.
+Pass `--raw-rate 25600` to see the misleadingly clean numbers CI sees.
+
+Exit status is 0 unless the run could not be set up (no device, bad arguments).
+It reports; it does not judge -- there is no pass threshold for "feels smooth".
+"""
+
+import argparse
+import cProfile
+import pstats
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
+import rev80  # noqa: E402
+import rev80.sensor as _sensor_mod  # noqa: E402
+from rev80 import _profile  # noqa: E402
+from rev80.sample import RAW_SAMPLERATE_HZ  # noqa: E402
+from rev80.scope_sensor import ScopeSensor  # noqa: E402
+
+#: What the driver really delivers with the streaming interval requested in
+#: whole NANOSECONDS: round(1e9/76800) = 13021 ns -> 76799.02 Hz, / osr 3.
+HW_RATE_NS = (1e9 / 13021) / 3.0
+
+#: The same with the interval requested in whole MICROSECONDS, which is what
+#: shipped before this branch: int(1e6/76800) = 13 us -> 76923 Hz, / 3. Kept
+#: reachable so the regression can be reproduced on demand.
+HW_RATE_US = 76923.0 / 3.0
+
+
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description="Per-stage timing sweep over the rev80 acquisition pipeline.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument("--channels", default="1,2,3,4,6,8",
+                   help="Comma-separated channel COUNTS to sweep (default: 1,2,3,4,6,8)")
+    p.add_argument("--seconds", type=float, default=15.0,
+                   help="Seconds of streaming per channel count (default: 15)")
+    p.add_argument("--hardware", action="store_true",
+                   help="Stream from a real PicoScope instead of SimulatedSensor")
+    p.add_argument("--device", default=None,
+                   help="Serial substring to select a device (--hardware only)")
+    p.add_argument("--raw-rate", type=float, default=None,
+                   help=f"Raw rate the SIMULATED sensor reports, Hz. Default "
+                        f"{HW_RATE_NS:.2f} (what ns-timed hardware delivers). "
+                        f"Use {RAW_SAMPLERATE_HZ} for the nominal rate CI sees, or "
+                        f"{HW_RATE_US:.2f} to reproduce the us-timed regression.")
+    p.add_argument("--maxfreq", type=float, default=None,
+                   help="F_max preset to profile at (default: the shipped default)")
+    p.add_argument("--binsize", type=float, default=None,
+                   help="Bin width to profile at (default: the shipped default)")
+    p.add_argument("--envelope", action="store_true",
+                   help="Enable envelope analysis, which the GUI leaves off by default")
+    p.add_argument("--cprofile", action="store_true",
+                   help="Also write a pstats file per channel count for drill-down")
+    p.add_argument("--outdir", default=None,
+                   help="Where --cprofile writes its .pstats files (default: cwd)")
+    return p.parse_args()
+
+
+def _build_config(n_channels: int, args: argparse.Namespace):
+    cfg = rev80.AcquisitionSettings()
+    if args.maxfreq is not None:
+        cfg.maxfreq = args.maxfreq
+    if args.binsize is not None:
+        cfg.binsize = args.binsize
+    cfg.enabled_channels     = list(range(n_channels))
+    cfg.channel_voltage_ranges = {ch: 7 for ch in range(n_channels)}  # +/-1 V, app default
+    cfg.coupling             = "AC"
+    cfg.envelope_enabled     = bool(args.envelope)
+    return cfg
+
+
+def _connect(cfg, args: argparse.Namespace):
+    """Return a started DataCollector, or None if no device could be used."""
+    if args.hardware:
+        sensors = rev80.VibeSensor.find()
+        if not sensors:
+            print("No PicoScope found.", file=sys.stderr)
+            return None
+        if args.device:
+            sensors = [s for s in sensors if args.device in str(s.serial_number)]
+            if not sensors:
+                print(f"No device matching {args.device!r}.", file=sys.stderr)
+                return None
+        sensor = sensors[0]
+        print(f"Device: {sensor.model_name} s/n {sensor.serial_number}")
+    else:
+        sensor = rev80.VibeSensor.simulated()
+
+    dc = rev80.DataCollector(config=cfg)
+    dc.connect_sensor(sensor)
+    # Every channel needs a ScopeSensor or process_sample stays in mV and skips
+    # the unit conversion the real GUI always does.
+    acc = ScopeSensor(name="profile-accel", sensitivity=100.0, engineering_units="g")
+    for ch in cfg.enabled_channels:
+        dc.set_scope_sensor(ch, acc)
+    return dc
+
+
+def _run_one(n_channels: int, args: argparse.Namespace) -> dict:
+    """Stream for --seconds at n_channels, consuming frames like the GUI does."""
+    cfg = _build_config(n_channels, args)
+    dc  = _connect(cfg, args)
+    if dc is None:
+        return {}
+
+    _profile.reset()
+    frames = overflow = degraded_frames = 0
+    stream_stats: dict = {}
+    t0 = time.monotonic()
+    try:
+        dc.start_stream()
+        # Snapshot the stream's own rate reporting while it still exists:
+        # disconnect_sensor() drops the reference, and reading it afterwards
+        # silently yielded None for every rate field.
+        stream_stats = {
+            "actual_raw": getattr(dc.stream, "_actual_raw_samplerate", None),
+            "osr":        getattr(dc.stream, "_effective_osr", None),
+        }
+        deadline = t0 + args.seconds
+        while time.monotonic() < deadline:
+            # Exactly what GUI._poll_new_frames does: wait on the event, clear
+            # it, run the full per-channel DSP pass. No DPG, so the numbers
+            # here are the pipeline's own cost with the renderer subtracted.
+            if not dc.new_frame_event.wait(timeout=2.0):
+                continue
+            dc.new_frame_event.clear()
+            frame = dc.data["frame_cache"][-1] if dc.data["frame_cache"] else {}
+            frames += 1
+            for s in frame.values():
+                overflow        += bool(getattr(s, "overflow", False))
+                degraded_frames += bool(getattr(s, "degraded", False))
+            dc.process_samples()
+        stream_stats["eff_rate"] = getattr(dc.stream, "effective_samplerate", None)
+        stream_stats["degraded"] = bool(dc.stream_degraded)
+    finally:
+        try:
+            dc.stop_stream()
+        finally:
+            dc.disconnect_sensor()
+
+    elapsed = time.monotonic() - t0
+    return {
+        "frames":       frames,
+        "elapsed":      elapsed,
+        "overflow":     overflow,
+        "degraded":     degraded_frames,
+        "snapshot":     _profile.snapshot(),
+        "report":       _profile.report(f"channels = {n_channels}"),
+        "eff_rate":     stream_stats.get("eff_rate"),
+        "actual_raw":   stream_stats.get("actual_raw"),
+        "osr":          stream_stats.get("osr"),
+        "rate_degraded": stream_stats.get("degraded", False),
+        "config":       cfg,
+    }
+
+
+def main() -> int:
+    args = _parse_args()
+    try:
+        counts = [int(c) for c in args.channels.split(",") if c.strip()]
+    except ValueError:
+        print(f"Bad --channels: {args.channels!r}", file=sys.stderr)
+        return 1
+    if not counts:
+        print("--channels selected nothing", file=sys.stderr)
+        return 1
+
+    if not args.hardware:
+        # Force the reported raw rate WITHOUT changing what is generated:
+        # sensor.py binds RAW_SAMPLERATE_HZ by value at import, and it is the
+        # only place the simulated payload's 'samplerate' key comes from. So
+        # patching it here reports a hardware-realistic rate while
+        # config.raw_samplerate -- and therefore raw_blocksize -- stays
+        # nominal. That is exactly the real hardware condition: the right
+        # number of samples, arriving at a clock that is not a round number.
+        rate = args.raw_rate if args.raw_rate is not None else HW_RATE_NS
+        _sensor_mod.RAW_SAMPLERATE_HZ = rate
+        print(f"Simulated sensor reporting raw rate {rate:.4f} Hz "
+              f"(nominal {RAW_SAMPLERATE_HZ})")
+
+    _profile.enable()
+    cfg0 = _build_config(counts[0], args)
+    print(f"F_max {cfg0.maxfreq:g} Hz   bin {cfg0.binsize:g} Hz   "
+          f"display {cfg0.samplerate} Hz x {cfg0.blocksize}   "
+          f"raw {cfg0.raw_samplerate} Hz x {cfg0.raw_blocksize}   "
+          f"period {cfg0.acquisition_period:.3f} s")
+    print(f"Envelope analysis: {'ON' if args.envelope else 'off'}")
+    print()
+
+    outdir  = Path(args.outdir) if args.outdir else Path.cwd()
+    summary = []
+
+    for n in counts:
+        print(f"=== {n} channel(s), {args.seconds:g} s " + "=" * 40)
+        if args.cprofile:
+            pr = cProfile.Profile()
+            pr.enable()
+            res = _run_one(n, args)
+            pr.disable()
+            path = outdir / f"profile-{n}ch.pstats"
+            pstats.Stats(pr).dump_stats(str(path))
+            print(f"(cProfile written to {path})")
+        else:
+            res = _run_one(n, args)
+
+        if not res:
+            return 1
+
+        print(res["report"])
+        rate_line = ""
+        if res["actual_raw"]:
+            rate_line = f"   actual raw {res['actual_raw']:.2f} Hz (osr {res['osr']})"
+        if res["eff_rate"]:
+            rate_line += f"   delivered {res['eff_rate']:.0f} Hz"
+        print(f"frames {res['frames']}  overflow {res['overflow']}  "
+              f"degraded {res['degraded']}  rate_degraded "
+              f"{res['rate_degraded']}{rate_line}")
+        print()
+
+        snap = res["snapshot"]
+        summary.append((n, res, snap))
+
+    # One table ranking the stages that scale, which is the question the whole
+    # harness exists to answer.
+    print("=== ms per wall-second, by channel count " + "=" * 30)
+    stages = [s for s in _profile.STAGES if any(s in snap for _, _, snap in summary)]
+    head = f'{"stage":<16}' + ''.join(f'{n:>9}ch' for n, _, _ in summary)
+    print(head)
+    print('-' * len(head))
+    for stage in stages:
+        cells = []
+        for _, _, snap in summary:
+            st = snap.get(stage)
+            cells.append(f'{st["mean_ms"] * st["per_s"]:>11.1f}' if st else f'{"-":>11}')
+        print(f'{stage:<16}' + ''.join(cells))
+    print()
+    print("Read it as: main-thread stages (proc.*, gui.*) blocking the mouse,")
+    print("hardware-thread stages (usb.*, ingest.*) stealing the GIL from it.")
+    print()
+    print("NOTE: usb.poll CONTAINS usb.adc2mv, usb.antialias and ingest.receive --")
+    print("the app callback runs synchronously inside ps4000aGetStreamingLatestValues.")
+    print("Do not add those four together; subtract them from usb.poll to get the")
+    print("driver's own overhead. Likewise proc.total contains proc.decimate/psd/peaks,")
+    print("and gui.frame contains gui.display and gui.render.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

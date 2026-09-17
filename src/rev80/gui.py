@@ -1,6 +1,7 @@
 # Rev80 frontend
 
 import threading
+import time
 from pathlib import Path
 
 import dearpygui.dearpygui as dpg
@@ -8,6 +9,7 @@ import h5py
 import numpy as np
 
 import rev80
+from rev80 import _profile
 from rev80 import envelope as rev80_env
 from rev80 import peaks as rev80_peaks
 import rev80.config as _cfg
@@ -227,12 +229,26 @@ class GUI:
         # Channel the Tachometer tab switched on implicitly when it was
         # claimed, so releasing the role can switch it back off again.
         self._tach_implicit_enable: int | None = None
+        # Peaks-table widget pool: how many rows each channel's table has been
+        # grown to, and the last state rendered into it. See
+        # _update_fft_peaks_table.
+        self._peaks_table_rows: dict[int, int] = {}
+        # Cached automatic demodulation bands, keyed (channel, samplerate).
+        # See _env_band_for.
+        self._env_auto_band: dict[tuple, tuple] = {}
+        # Last values pushed for two widgets whose state changes far less often
+        # than once per frame. See _update_browse_label / _update_frame_info.
+        self._browse_enabled: bool | None = None
+        self._frame_info_height: int | None = None
+        self._peaks_table_state: dict[int, tuple] = {}
         self._num_channels: int = _DEFAULT_NUM_CHANNELS
         self._channel_themes: list = []
         self._peak_themes: list = []
         self._sect_theme = None
         self._toggle_themes: dict = {}  # 'active'|'waiting'|'idle' → dpg theme
-        self._status_timer: threading.Timer | None = None
+        # Stale-frame watchdog deadline (monotonic seconds), or None when
+        # disarmed. See _schedule_status_timeout.
+        self._status_deadline: float | None = None
         self.found_sensors: list = []
         self._autoscale_pending: bool = False  # True → autoscale on next frame
         self._was_streaming_before_config: bool = False  # stream state when config opened
@@ -285,15 +301,29 @@ class GUI:
                 dpg.bind_item_theme(ui.ACQ_TOGGLE, theme)
 
     def _schedule_status_timeout(self):
-        """Re-arm watchdog: revert stream indicator to yellow if no data arrives."""
-        if self._status_timer is not None:
-            self._status_timer.cancel()
-        timeout = 2.0 * self.collector.config.acquisition_period
-        self._status_timer = threading.Timer(timeout, self._on_status_timeout)
-        self._status_timer.daemon = True
-        self._status_timer.start()
+        """Re-arm the stale-frame watchdog: one float store.
 
-    def _on_status_timeout(self):
+        This used to cancel a threading.Timer and construct a new one -- an OS
+        thread -- on EVERY displayed frame, and then flip a dearpygui widget
+        from that thread. Both halves were wrong. The thread churn is pure
+        waste at 2 frames/s and worse at higher rates, and _set_stream_status
+        is a DPG call, which has no business running off the render thread at
+        all.
+
+        A deadline checked in _poll_new_frames does the same job: the render
+        loop already runs every tick whether or not a frame arrived, which is
+        exactly when this check needs to happen.
+        """
+        self._status_deadline = (time.monotonic()
+                                 + 2.0 * self.collector.config.acquisition_period)
+
+    def _check_status_timeout(self):
+        """Flip the indicator to 'Waiting' when frames have stopped arriving."""
+        if self._status_deadline is None:
+            return
+        if time.monotonic() < self._status_deadline:
+            return
+        self._status_deadline = None
         if self.collector.is_streaming:
             self._set_stream_status("waiting")
 
@@ -415,21 +445,77 @@ class GUI:
     # ------------------------------------------------------------------
 
     def _update_fft_peaks_table(self, columns: list[str], rows: list[tuple], ch: int):
+        """Refresh one channel's peaks table in place, reusing its widgets.
+
+        This used to delete every column and row and build them again from
+        scratch, once per vibration channel, every frame -- from BOTH branches
+        of _update_freq_plot, so it ran even with zero peaks. select_peaks
+        reports a corpus median of 40 lines, so at 40 rows that was ~164 widget
+        create/destroy calls per channel per frame (2 columns + 40 rows
+        destroyed, 2 columns + 40 rows + 80 texts created), plus a full
+        dearpygui table layout pass. It scaled strictly with channel count --
+        ~1300 widget operations per frame at 8 channels, roughly 80% of all
+        per-frame DPG traffic -- and was one of the three causes of the mouse
+        stutter this branch was opened to find.
+
+        Every plot *series* in this file was already updated the right way,
+        with set_value on an item created once in _add_channel_series. This is
+        the same idea for a table: columns and rows are created on demand,
+        relabelled or set_value'd thereafter, and surplus rows are hidden
+        rather than deleted. The pool only ever grows to the largest row count
+        a channel has actually needed, so the common case costs nothing extra.
+        """
+        with _profile.timed(_profile.GUI_PEAKS_TBL):
+            self._update_fft_peaks_table_inner(columns, rows, ch)
+
+    def _update_fft_peaks_table_inner(self, columns: list[str], rows: list[tuple], ch: int):
         table_tag = ui.ch_peaks_table(ch)
         if not dpg.does_item_exist(table_tag):
             return
-        children = dpg.get_item_children(table_tag)
-        if isinstance(children, dict):
-            for sub in children.values():
-                for tag in sub:
-                    dpg.delete_item(tag)
-        limit = dpg.get_value(ui.FFT_PEAKS_DISPLAY_COUNT)
-        for col in columns:
-            dpg.add_table_column(label=col, parent=table_tag)
-        for row in rows[:limit]:
-            with dpg.table_row(parent=table_tag):
-                for val in row:
-                    dpg.add_text(f"{val}")
+        limit = int(dpg.get_value(ui.FFT_PEAKS_DISPLAY_COUNT) or _DEFAULT_PEAK_DISPLAY_CAP)
+        shown = rows[:max(0, limit)]
+
+        pool = self._peaks_table_rows.get(ch, 0)
+        # Self-healing, in the spirit of _ensure_legends: if the table was
+        # rebuilt underneath us the pooled row tags are gone, and reusing the
+        # stale count would address widgets that no longer exist.
+        if pool and not dpg.does_item_exist(ui.ch_peak_row(ch, 0)):
+            pool = 0
+            self._peaks_table_state.pop(ch, None)
+
+        # Neither the headings nor a single cell changed -- nothing to push.
+        state = (tuple(columns), tuple(shown))
+        if pool and self._peaks_table_state.get(ch) == state:
+            return
+        self._peaks_table_state[ch] = state
+
+        # Columns persist and are relabelled. The amplitude heading really does
+        # change (it carries the unit and the amplitude mode), but a relabel is
+        # one call against a table rebuild.
+        for c, label in enumerate(columns):
+            col_tag = ui.ch_peak_col(ch, c)
+            if dpg.does_item_exist(col_tag):
+                dpg.configure_item(col_tag, label=label)
+            else:
+                dpg.add_table_column(label=label, tag=col_tag, parent=table_tag)
+
+        n_cols = len(columns)
+        while pool < len(shown):
+            with dpg.table_row(parent=table_tag, tag=ui.ch_peak_row(ch, pool)):
+                for c in range(n_cols):
+                    dpg.add_text("", tag=ui.ch_peak_cell(ch, pool, c))
+            pool += 1
+        self._peaks_table_rows[ch] = pool
+
+        for i in range(pool):
+            if i < len(shown):
+                for c in range(n_cols):
+                    cell = ui.ch_peak_cell(ch, i, c)
+                    if dpg.does_item_exist(cell):
+                        dpg.set_value(cell, f"{shown[i][c]}")
+                dpg.configure_item(ui.ch_peak_row(ch, i), show=True)
+            else:
+                dpg.configure_item(ui.ch_peak_row(ch, i), show=False)
 
     def _get_amplitude_mode(self, ch: int) -> str:
         """Return amplitude mode: channel config → default '0-P'."""
@@ -448,7 +534,7 @@ class GUI:
             self._last_time_x0_ms = float(time[0])
         dpg.set_value(ui.plt_time_series(ch), [time.tolist(), signal.tolist()])
 
-    def _env_band_for(self, signal: np.ndarray, samplerate: float):
+    def _env_band_for(self, signal: np.ndarray, samplerate: float, ch: int):
         """Demodulation band to use: the typed one, else auto from this frame.
 
         Returns (lo, hi) or None when no usable band can be formed -- too
@@ -460,10 +546,39 @@ class GUI:
         hi = float(dpg.get_value(ui.ENV_BAND_HI) or 0.0)
         if lo > 0 and hi > lo:
             return (lo, hi)
+
+        # Cached per channel. suggest_band runs a full rFFT of the raw block
+        # and a direct np.convolve over it, and it ran once per channel per
+        # frame. Caching is not only cheaper, it is what _on_env_auto_band's
+        # docstring already says is wanted -- "the band then stays put across
+        # frames instead of drifting each time". A band that moves every frame
+        # makes the envelope plot's own axis unstable, which is the opposite
+        # of what an analyst comparing frames needs.
+        #
+        # Invalidated by the sample rate changing, and explicitly by
+        # _invalidate_auto_band() when the user acts on the band controls.
+        key = (ch, float(samplerate))
+        if key in self._env_auto_band:
+            return self._env_auto_band[key]
         try:
-            return rev80_env.suggest_band(signal, samplerate, fmax=samplerate / 2.0)
+            band = rev80_env.suggest_band(signal, samplerate, fmax=samplerate / 2.0)
         except (ValueError, IndexError):
             return None
+        self._env_auto_band[key] = band
+        return band
+
+    def _invalidate_auto_band(self, sender=None, data=None):
+        """Drop cached auto bands so the next frame re-derives them."""
+        self._env_auto_band.clear()
+
+    def _on_env_band_change(self, sender=None, data=None):
+        """Band edited by hand: forget any cached auto band, then redraw.
+
+        Clearing a typed band back to 0 has to fall through to a FRESH auto
+        selection, not the one cached before the band was typed in.
+        """
+        self._invalidate_auto_band()
+        self._redraw()
 
     def _update_env_fmax_warning(self, samplerate: float):
         """Warn when the raw acquisition bandwidth is too narrow for envelope analysis.
@@ -506,6 +621,39 @@ class GUI:
         """
         if not self.collector.config.envelope_enabled:
             return
+        # Second gate, and the one the docstring above always claimed: enabled
+        # is not the same as on screen. With the Envelope tab enabled but the
+        # user sitting on Spectrum, this whole chain -- a butter design, a
+        # sosfiltfilt, a Hilbert transform and, when the band is auto, a
+        # suggest_band convolution -- ran for every channel every frame for a
+        # plot nobody could see. Checking the PLOT rather than the tab is
+        # deliberate: an unselected tab still renders its own header button, so
+        # the tab itself reports visible either way.
+        if not self._envelope_on_screen():
+            return
+        with _profile.timed(_profile.GUI_ENVELOPE):
+            self._update_envelope_plot_inner(sample, ch)
+
+    @staticmethod
+    def _envelope_on_screen() -> bool:
+        """Is the Envelope plot actually being rendered?
+
+        Fails OPEN. Skipping the work costs CPU; skipping it wrongly leaves a
+        blank plot on a bearing job with no indication why, which is the worse
+        failure by a wide margin. So any surprise from the visibility query --
+        a missing item, a dearpygui version that does not track `visible` for
+        this widget type (it raises KeyError for a tab, for instance) -- means
+        "run it", not "skip it".
+
+        Queries the PLOT rather than the tab deliberately: an unselected tab
+        still renders its own header button and reports visible either way.
+        """
+        try:
+            return bool(dpg.is_item_visible(ui.PLT_ENV))
+        except Exception:                                    # noqa: BLE001
+            return True
+
+    def _update_envelope_plot_inner(self, sample: 'rev80.VibeSample | None', ch: int):
         tag = ui.plt_env_series(ch)
         if not dpg.does_item_exist(tag):
             return
@@ -514,7 +662,7 @@ class GUI:
             return
         signal, samplerate, _unit = self.collector.eu_scaled_raw(ch, sample)
         self._update_env_fmax_warning(samplerate)
-        band = self._env_band_for(signal, samplerate)
+        band = self._env_band_for(signal, samplerate, ch)
         if band is None:
             dpg.set_value(tag, [[], []])
             return
@@ -550,7 +698,11 @@ class GUI:
         if ch is None:
             return
         signal, samplerate, _unit = self.collector.eu_scaled_raw(ch, raw_frame[ch])
-        band = self._env_band_for(signal, samplerate)
+        # Drop the cache first: this button means "pick one from the frame I am
+        # looking at NOW", so returning a band derived from an earlier frame
+        # would make it do nothing visible.
+        self._invalidate_auto_band()
+        band = self._env_band_for(signal, samplerate, ch)
         if band is None:
             return
         dpg.set_value(ui.ENV_BAND_LO, float(band[0]))
@@ -932,10 +1084,16 @@ class GUI:
         cursor = self.collector._cache_cursor
         label = f"Frame {n - cursor} / {n}" if n else "No frames"
         dpg.set_value(ui.ACQ_BROWSE_LABEL, label)
+        # configure_item only on an actual transition. This is four calls per
+        # frame pushing a value that changes twice in a session -- once when
+        # streaming starts and once when it stops.
         can_browse = (not self.collector.is_streaming) and n > 1
-        for tag in [ui.ACQ_BROWSE_FIRST, ui.ACQ_BROWSE_PREV, ui.ACQ_BROWSE_NEXT, ui.ACQ_BROWSE_LAST]:
-            if dpg.does_item_exist(tag):
-                dpg.configure_item(tag, enabled=can_browse)
+        if can_browse != self._browse_enabled:
+            self._browse_enabled = can_browse
+            for tag in [ui.ACQ_BROWSE_FIRST, ui.ACQ_BROWSE_PREV,
+                        ui.ACQ_BROWSE_NEXT, ui.ACQ_BROWSE_LAST]:
+                if dpg.does_item_exist(tag):
+                    dpg.configure_item(tag, enabled=can_browse)
 
         # Vertical cursor on trend plot showing current browse position
         self._update_trend_cursor()
@@ -1021,7 +1179,13 @@ class GUI:
         sess_h   = (1 + 2 + 2 + 1 + 1 + 1) * _CARD_LINE_H + _SEP_H if has_session else 0
         # header + Start Time (2) + End Time (2) + Captures + Bursts + Interval + sep
         card_h = _CARD_BASE_H + always_h + burst_h + sess_h
-        dpg.configure_item(ui.FRAME_INFO_SECTION, height=card_h, show=True)
+        # Height only on change: a configure_item(height=) forces a dearpygui
+        # relayout of the card, and this one is identical frame after frame.
+        if card_h != self._frame_info_height:
+            self._frame_info_height = card_h
+            dpg.configure_item(ui.FRAME_INFO_SECTION, height=card_h, show=True)
+        else:
+            dpg.configure_item(ui.FRAME_INFO_SECTION, show=True)
 
     def _update_trend_cursor(self):
         """Show/hide a vertical line on the trend plot at the browsed frame's rel_time."""
@@ -1091,9 +1255,14 @@ class GUI:
         """Live-toggle the Envelope tab from the dialog checkbox, ahead of Apply/Close."""
         if dpg.does_item_exist(ui.TAB_ENVELOPE):
             dpg.configure_item(ui.TAB_ENVELOPE, show=bool(dpg.get_value(ui.ACQ_DLG_ENV_ENABLED)))
+        self._invalidate_auto_band()
 
     def _display_frame(self):
         """Process the current frame via collector and update all GUI plots."""
+        with _profile.timed(_profile.GUI_DISPLAY):
+            self._display_frame_inner()
+
+    def _display_frame_inner(self):
         if self.collector.is_streaming:
             self._set_stream_status("active")
             self._schedule_status_timeout()
@@ -1155,6 +1324,7 @@ class GUI:
         # the measurable-speed floor, and whatever frame is currently loaded.
         # It early-returns when its dialog is not on screen.
         self._update_tach_tab()
+        self._check_status_timeout()
         if not self.collector.new_frame_event.is_set():
             return
         self.collector.new_frame_event.clear()
@@ -1459,9 +1629,7 @@ class GUI:
             return
         self.collector.stop_stream()
         self._update_browse_label()
-        if self._status_timer is not None:
-            self._status_timer.cancel()
-            self._status_timer = None
+        self._status_deadline = None
         self._set_stream_status("idle")
         self._update_monitor_card()
 
@@ -4488,12 +4656,12 @@ class GUI:
                                 dpg.add_input_float(
                                     label="-", tag=ui.ENV_BAND_LO, default_value=0.0,
                                     min_value=0.0, step=0, format="%.0f", width=80,
-                                    callback=self._redraw,
+                                    callback=self._on_env_band_change,
                                 )
                                 dpg.add_input_float(
                                     label="Hz", tag=ui.ENV_BAND_HI, default_value=0.0,
                                     min_value=0.0, step=0, format="%.0f", width=80,
-                                    callback=self._redraw,
+                                    callback=self._on_env_band_change,
                                 )
                                 _auto = dpg.add_button(label="Auto",
                                                        tag=ui.ENV_BAND_AUTO,
@@ -4855,8 +5023,16 @@ class GUI:
                     self._load_from_path(initial_file)
                     _loaded = True
                     continue
-                self._poll_new_frames()
-                dpg.render_dearpygui_frame()
+                # gui.frame is the whole loop body (the true frame period);
+                # gui.render is dearpygui alone. The two side by side are what
+                # tell a main-thread cost from a hardware-thread one stealing
+                # the GIL: a long render with a short proc.total means the
+                # acquisition thread is the problem, and the reverse means the
+                # DSP is.
+                with _profile.timed(_profile.GUI_FRAME):
+                    self._poll_new_frames()
+                    with _profile.timed(_profile.GUI_RENDER):
+                        dpg.render_dearpygui_frame()
                 self._note_render_success()
             except Exception as exc:                         # noqa: BLE001
                 if not self._handle_render_error(exc):
@@ -4936,6 +5112,16 @@ class GUI:
         if render_errors:
             log.warning('Render loop error totals this session: %s',
                         dict(render_errors))
+
+        # The profile table, if --profile was given. Guarded and placed after
+        # disconnect_sensor for the same reason every other step here is: a
+        # diagnostic must never be what prevents ps4000aCloseUnit from running.
+        if _profile.is_enabled():
+            try:
+                log.info('\n%s', _profile.report('pipeline profile (session)'))
+            except Exception:                                # noqa: BLE001
+                log.exception('Failed to emit the pipeline profile')
+
         try:
             dpg.destroy_context()
         except Exception:                                    # noqa: BLE001

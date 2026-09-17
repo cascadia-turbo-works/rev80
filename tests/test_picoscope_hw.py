@@ -17,6 +17,7 @@ Run alongside the full suite (hardware tests skip if scope absent):
     pytest tests/ -v
 """
 
+import math
 import time
 
 import numpy as np
@@ -25,7 +26,7 @@ import pytest
 import rev80 as vc
 import rev80.sample
 from rev80 import tach as rev80_tach
-from rev80.picoscope import PicoScopeStream
+from rev80.picoscope import _TIMEBASE_NS, PicoScopeStream
 
 # ---------------------------------------------------------------------------
 # Signal generator parameters  (siggen output → Channel A loopback)
@@ -339,28 +340,57 @@ class TestPicoScopeTachometer:
         assert res.rpm == pytest.approx(freq_hz * 60.0, rel=2e-3)
 
     def test_reported_rate_is_the_hardware_rate_not_the_constant(self):
-        """The quantisation trap. The driver rounds the streaming interval to a
-        whole microsecond, so the delivered rate is never exactly
+        """The quantisation trap. The driver can only run the ADC at points on
+        its own clock grid, so the delivered rate is never exactly
         RAW_SAMPLERATE_HZ. Anything computed from the constant reads wrong on
         hardware and is exactly right in CI -- the worst combination a defect
         can have.
 
-        The expectation is *derived* from the constant and the oversample ratio
-        rather than hardcoded. It was 41666.5, which was correct only while
-        RAW_SAMPLERATE_HZ was 40000 (osr=2, 12.5 us -> 12 us, a 4.166% error);
-        at 25600 (osr=3, 13.02 us -> 13 us) the hardware delivers 25641.0 Hz,
-        a 0.160% error, and the hardcoded form failed the merge. Derived, this
-        reproduces both measured values to within 4e-6 and survives the next
-        change to either input.
+        The expectation is *derived* from the constant, the oversample ratio
+        and the clock grid rather than hardcoded, because a hardcoded one has
+        now gone stale twice:
+
+          - 41666.5 was correct only while RAW_SAMPLERATE_HZ was 40000
+            (osr=2, 12.5 us -> 12 us, 4.166% error), and failed the merge that
+            moved the constant to 25600;
+          - the us-derived form that replaced it (osr=3, 13.02 us -> 13 us ->
+            25641.0 Hz, 0.160% error) failed in turn when the streaming
+            interval moved to ns snapped to the device's 12.5 ns grid
+            (13025 ns -> 25591.81 Hz, -0.032% error).
+
+        So this now derives from _TIMEBASE_NS, and additionally asserts the
+        property that actually matters and does not depend on how the interval
+        is requested: the delivered rate is CLOSE to nominal, and closer than
+        whole-microsecond quantisation could ever have been. That second
+        assertion is what would have caught the ns change regressing rather
+        than improving accuracy, which a bare equality check cannot.
         """
         res, _ = _capture_tach(30.0)
         assert res is not None
         raw = rev80.sample.RAW_SAMPLERATE_HZ
         osr = PicoScopeStream._choose_osr(raw)
-        interval_us = round(1e6 / (raw * osr))       # driver quantises to whole us
-        expected = 1e6 / interval_us / osr
-        assert res.samplerate == pytest.approx(expected, rel=1e-3)
+
+        # Same derivation the driver is asked for: nearest point on the clock
+        # grid, ceil-ed into whole ns because the driver floors a request.
+        target_ns   = 1e9 / (raw * osr)
+        grid_ns     = round(target_ns / _TIMEBASE_NS) * _TIMEBASE_NS
+        interval_ns = math.ceil(grid_ns)
+        expected    = 1e9 / interval_ns / osr
+        assert res.samplerate == pytest.approx(expected, rel=1e-4)
+
+        # The point of the whole test: not the constant.
         assert res.samplerate != raw
+
+        # And better than the microsecond request it replaced. Derived, not
+        # hardcoded, so it keeps meaning something if RAW_SAMPLERATE_HZ moves.
+        us_rate  = 1e6 / round(1e6 / (raw * osr)) / osr
+        err_now  = abs(res.samplerate / raw - 1.0)
+        err_us   = abs(us_rate / raw - 1.0)
+        assert err_now < err_us, (
+            f'grid-snapped ns request is {err_now * 1e6:.0f} ppm from nominal, '
+            f'no better than the {err_us * 1e6:.0f} ppm whole-us request'
+        )
+        assert err_now < 1e-3, f'{err_now * 1e6:.0f} ppm from nominal'
 
     def test_adaptive_threshold_survives_ac_coupling(self):
         """AC coupling removes the mean, and on a pulse train the mean IS the
