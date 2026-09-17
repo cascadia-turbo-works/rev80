@@ -1,0 +1,183 @@
+name: Release
+
+# Pushing a vX.Y.Z tag builds the Windows installer and the Python wheel and
+# attaches both to a DRAFT GitHub Release, for review before publishing.
+#
+# Two things worth knowing before editing this file:
+#
+#   1. A tag trigger fires wherever the tag points. GitHub Actions has no
+#      notion of "tagged on main" -- any v* tag on any branch builds a
+#      release. That is a deliberate choice, not an oversight.
+#
+#   2. fetch-depth: 0 is load-bearing everywhere below. setuptools_scm
+#      derives the version from `git describe`, and the default shallow
+#      checkout has no tags reachable, so the version silently becomes
+#      0.0.0+unknown and the release ships Rev80Setup-0.0.0+unknown.exe.
+#      Both build jobs assert against that rather than trusting it.
+#
+# The installer built here is DRIVER-LESS: hosted Windows runners have no
+# PicoSDK, so `nodlls` skips DLL collection. Users install PicoSDK separately
+# and the installer warns them if it is missing. A local ./scripts/build.sh
+# still bundles the DLLs.
+
+on:
+  push:
+    tags: ['v*']
+
+# gh release create writes to the repo.
+permissions:
+  contents: write
+
+# Releases must not race each other; unlike CI, do not cancel one in flight.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # A tag must not be able to cut a release from a red tree. Single Python
+  # version -- the full matrix already ran on the branch via ci.yml.
+  test:
+    name: Test gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # dearpygui's compiled extension links against libX11 at load time.
+      # The suite never creates a viewport, so no GL and no X server needed.
+      - name: Install X11 runtime library
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libx11-6
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Lint
+        run: python -m ruff check src/ tests/
+
+      - name: Test
+        run: python -m pytest tests/ -q
+
+  wheel:
+    name: Wheel + sdist
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # Only the PEP 517 frontend is needed; build.sh installs the package
+      # itself with --no-deps, so numpy/scipy/h5py never get built here.
+      - name: Install build frontend
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+
+      - name: Build
+        run: ./scripts/build.sh wheel
+
+      - name: Verify version is not the setuptools_scm fallback
+        run: |
+          ls -l dist/
+          if ls dist/ | grep -q '0\.0\.0+unknown'; then
+            echo "::error::setuptools_scm fell back to 0.0.0+unknown - no tags reachable. Check fetch-depth: 0."
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
+
+  installer:
+    name: Windows installer
+    needs: test
+    runs-on: windows-latest
+    defaults:
+      run:
+        # build.sh is bash; Git Bash ships on the Windows runner image and
+        # provides the cygpath/taskkill the script already uses.
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          # This interpreter is frozen into the bundle and shipped to users.
+          # Changing it changes what they run -- a deliberate decision, not a
+          # routine bump.
+          python-version: "3.12"
+          architecture: x64
+          cache: pip
+
+      # Not preinstalled. Chocolatey puts iscc.exe at
+      # C:\Program Files (x86)\Inno Setup 6\, which build.sh's find_iscc()
+      # already probes.
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      # The dev extra carries PyInstaller. picosdk installs from a pinned git
+      # URL (pip needs git, present on the image); the native PicoSDK driver
+      # is deliberately absent.
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Build installer (driver-less)
+        run: ./scripts/build.sh all nodlls
+
+      - name: Verify version is not the setuptools_scm fallback
+        run: |
+          ls -l installer/Output/
+          if ls installer/Output/ | grep -q '0\.0\.0+unknown'; then
+            echo "::error::setuptools_scm fell back to 0.0.0+unknown - no tags reachable. Check fetch-depth: 0."
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer
+          path: installer/Output/Rev80Setup-*.exe
+          if-no-files-found: error
+
+  release:
+    name: Draft release
+    needs: [wheel, installer]
+    runs-on: ubuntu-latest
+    steps:
+      # No `name:` -- downloads every artifact, each into its own directory.
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -R artifacts/
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --generate-notes \
+            --title "$GITHUB_REF_NAME" \
+            artifacts/installer/*.exe \
+            artifacts/wheel/*
