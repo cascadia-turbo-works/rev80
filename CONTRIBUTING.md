@@ -235,7 +235,22 @@ pip install -e ".[dev]"
 ./scripts/build.sh dlls         # collect PicoScope DLLs into drivers/ only
 ./scripts/build.sh pyinstaller  # PyInstaller only (skips DLL collection)
 ./scripts/build.sh installer    # Inno Setup only (requires dist/ to exist)
+./scripts/build.sh wheel        # Python wheel + sdist (runs anywhere, no Windows tooling)
+
+# Flags, any position
+./scripts/build.sh all clean    # force a full PyInstaller cache wipe
+./scripts/build.sh all nodlls   # skip DLL collection -> driver-less bundle
 ```
+
+`nodlls` is what CI uses; see [Automated releases](#automated-releases). `wheel`
+is the only target that runs off Windows.
+
+> **`python -m build` does not work from the repo root.** This repo has its own
+> `build/` directory, which shadows the `build` PyPI package as an implicit
+> namespace package: `import build` succeeds and `python -m build` fails with
+> *No module named build.__main__*. `./scripts/build.sh wheel` runs it from a
+> scratch directory to sidestep this — use that rather than calling the
+> frontend directly.
 
 ### Output
 
@@ -243,6 +258,8 @@ pip install -e ".[dev]"
 | --- | --- |
 | `dist/rev80/rev80.exe` | Standalone executable (no install needed) |
 | `installer/Output/Rev80Setup-<version>.exe` | Installer with Start Menu shortcut and uninstaller |
+| `dist/rev80-<version>-py3-none-any.whl` | Python wheel (`./scripts/build.sh wheel`) |
+| `dist/rev80-<version>.tar.gz` | Source distribution |
 
 ### Known constraints
 
@@ -250,4 +267,51 @@ pip install -e ".[dev]"
 - **DearPyGui pinned to 2.0.0** — versions above 2.0.0 have a known viewport crash on Windows.
 - **USB kernel driver** — `ps4000a.dll` is the user-mode library; the USB kernel driver is installed separately by PicoSDK. Reboot required before first hardware connection.
 - **Code signing** — the installer and executable are unsigned; Windows SmartScreen will warn on first run. Sign with `osslsigncode` and a certificate if you need this.
-- **No CI/dedicated build server** — this build only runs on real Windows hardware (PyInstaller cross-compilation isn't reliable, and PicoSDK's DLLs are Windows-only), so it's currently a manual step: boot into Windows, pull, run `scripts/build.sh`. There's no GitHub Actions workflow for it.
+- **Local builds still need real Windows hardware** — PyInstaller cross-compilation isn't reliable and PicoSDK's DLLs are Windows-only, so a full local build means: boot into Windows, pull, run `scripts/build.sh`. Tagged releases are automated instead — see below.
+
+---
+
+## Automated releases
+
+Pushing a `vX.Y.Z` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml),
+which builds the installer and the wheel and attaches both to a **draft** GitHub
+Release. Review it, then publish by hand — the exe is unsigned, so a release is
+worth a look before it goes out.
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+# -> test gate -> wheel (ubuntu) + installer (windows) -> draft release
+```
+
+Four things about it are worth knowing before you rely on it:
+
+- **CI installers are driver-less.** GitHub's hosted Windows runners have no
+  PicoSDK and it has no reliable unattended install, so the release build passes
+  `nodlls`. The bundle works, but the user must install PicoSDK themselves; the
+  installer warns when it is missing. A local `./scripts/build.sh` is unchanged
+  and still bundles `ps4000a.dll` + `picoipp.dll`.
+- **A tag trigger ignores branches.** GitHub Actions has no notion of "tagged on
+  main" — any `v*` tag, on any branch, builds a release. Deliberate, but it means
+  a stray tag produces a draft.
+- **The version comes from `git describe`.** Every job checks out with
+  `fetch-depth: 0`; without tags `setuptools_scm` falls back to `0.0.0+unknown`
+  and the release would ship `Rev80Setup-0.0.0+unknown.exe` with nothing failing.
+  Both build jobs assert against that string, because it is the failure here that
+  is otherwise silent.
+- **The wheel is a release asset, not a PyPI package.** `picosdk` is a direct
+  git URL dependency and PyPI rejects those. Publishing to PyPI would mean
+  restructuring that dependency first.
+
+Legacy `rc0.x` tags predate this and do not match `v*`; they will not trigger anything.
+
+### Rehearsing it
+
+Use a throwaway tag rather than a real version the first time, and check that the
+installer job's log reports a real version rather than the fallback:
+
+```bash
+git tag v0.0.1-citest && git push origin v0.0.1-citest
+# ...then delete the draft release and:
+git push origin :v0.0.1-citest && git tag -d v0.0.1-citest
+```

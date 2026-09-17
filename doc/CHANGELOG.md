@@ -9,267 +9,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
-### experimental/profiling (2026-09-11)
-
-GUI responsiveness. Since the mandatory Kaiser anti-alias filter and
-oversampled streaming landed, the GUI stuttered on every processing call:
-bearable at 3 enabled channels, progressively worse to 8, on a 4824A. The
-bottleneck was not known -- USB transfer, DSP and dearpygui rendering were all
-plausible -- so this branch builds per-stage timing first and fixes what the
-measurements actually indict.
-
-**It was not a throughput problem, and that is why it was hard to find.**
-Processing never got ahead of acquisition and the frame queue never backed up.
-It could not: the 32-frame ring cache is *designed* to skip to the latest
-frame, so a main-thread overrun surfaces as latency and never as a backlog.
-Looking at queue depth found nothing because there was nothing there to find.
-
-Three independent causes, each **linear in enabled channel count** -- which is
-why the symptom alone could not separate them.
-
-#### Added
-- **`src/rev80/_profile.py`** -- per-stage timing for the whole pipeline, from
-  the driver callback to `render_dearpygui_frame()`. Thirteen named stages
-  grouped by *thread*, because which thread a cost lands on is the entire
-  question: main-thread time blocks the mouse, hardware-thread time steals the
-  GIL, and the two need completely different fixes. `gui.render` beside
-  `proc.total` is what makes that call unambiguous from now on.
-  Near-zero when off -- measured **442 ns/call disabled** (3015 ns enabled) net
-  of loop baseline, i.e. 0.27 ms per wall-second at the busiest call site, so
-  the instrumentation ships permanently rather than being compiled out. Bounded
-  by construction (fixed-length ring per stage): a diagnostic that becomes the
-  next S-02 is worse than no diagnostic.
-- **`rev80 --profile`** (and `REV80_PROFILE=1`, reachable from a desktop
-  launcher where a flag is not) -- logs the stage table on exit, from inside
-  `cleanup()`'s guarded ordering where it can never prevent `ps4000aCloseUnit`.
-- **`scripts/profile-pipeline`** -- channel-count sweep printing one stage table
-  per count, simulated or `--hardware`. Its `--raw-rate` **defaults to the
-  hardware-realistic clock, not the nominal one**, because the headline defect
-  below is invisible at exactly 25600 Hz.
-- **`tests/test_adc_conversion.py`** (6 cases x 14 ranges),
-  **`tests/test_display_rate.py`** (38), and a bit-exactness suite for
-  `_running_median` in `tests/test_peak_selection.py` (110).
-
-#### Fixed
-- **Cause 1 -- `decimate_to_rate` designed a 512,821-tap FIR on every call, on
-  real hardware only.** `resample_poly` builds a `2*10*max(up,down)+1` tap
-  filter, so the ratio's denominator is a direct cost multiplier. It was
-  nominally bounded, but `limit_denominator` was applied to each rate
-  *separately before dividing* -- and both are integers there, so each reduced
-  to denominator 1 and the ratio was never bounded at all.
-
-  Invisible offline, because `SimulatedSensor` reports exactly 25600 Hz, which
-  reduces against every display rate to a small integer factor. The driver did
-  not: the streaming interval was requested in whole **microseconds**, and
-  `int(1e6 / 76800)` truncated 13.02 to 13, giving 76923 Hz and a reported
-  25641. 5120 and 25641 are coprime. Measured, 12800-sample block:
-
-  | raw rate | up / down | taps | ms/call | out length |
-  |---|---|---|---|---|
-  | 25600.00 (simulated) | 1 / 5 | 101 | **0.64** | 2560 |
-  | 25641.00 (hardware) | 5120 / 25641 | **512 821** | **73.62** | **2556** |
-
-  At 8 channels that is 589 ms of main-thread work against a 500 ms frame.
-  **Green CI was not evidence here either** -- the whole test suite passed at
-  0.64 ms while the instrument stalled at 73.6.
-
-  It was also a measurement defect, not only a speed one: 2556 < `nperseg`
-  silently tripped Welch's fallback, so the delivered bin width was not the one
-  the Spectrum tab stated.
-
-  Fixed in two independent halves, either of which is sufficient:
-  - **The streaming interval is now requested in nanoseconds, snapped to the
-    device's clock grid.** This is a frequency-axis accuracy fix in its own
-    right -- every displayed line was 0.16% high, so a 1000 Hz line read
-    1001.6 Hz.
-
-    The naive version of this change (`round(1e9/76800)` = 13021 ns) was
-    measured on the 4824A and did *not* do what the arithmetic said. Probing
-    the driver with a range of intervals and reading back what it used shows
-    the reachable points are **12.5 ns apart** -- an 80 MHz timebase -- and
-    that the driver **floors** to the grid rather than rounding, so 13021
-    lands a whole grid point high:
-
-    | requested ns | returned ns | rate/ch Hz | /osr Hz | ppm vs 25600 |
-    |---|---|---|---|---|
-    | 13000 (and 13012) | 13000 | 76923.08 | 25641.03 | **+1603** |
-    | 13021 (naive round) | 13012 | 76852.14 | 25617.38 | **+679** |
-    | 13025 (grid-snapped) | 13025 | 76775.43 | 25591.81 | **-320** |
-
-    8e7/1041 and 8e7/1042 straddle 76800 and 1042 is the nearer, so -320 ppm
-    is the best this hardware can reach. Rounding to nearest on the grid and
-    then ceil-ing into whole ns -- so the driver's floor lands where intended
-    -- gets there: **5x better than shipped, not the 100x the ns resolution
-    alone suggested.** Recorded here because the arithmetic and the hardware
-    disagreed, and the hardware won.
-
-    None of it is trusted blind. The driver still writes back the interval it
-    really used and that readback is what everything downstream believes, so a
-    device with a different timebase floors to its own grid and reports it,
-    exactly as before. The snap is only ever an optimisation.
-  - **The ratio bound is applied to the ratio**, via the coarsest denominator
-    cap that lands within `_RESAMPLE_RATE_TOL`. Every shipped preset now
-    reduces to its exact integer factor; an off-preset F_max costs a few
-    thousand taps instead of half a million. Measured worst case under the cap
-    is **1.05 ms**, and at the real hardware rate **73.62 ms -> 0.42 ms**, with
-    the output length back to the declared 2560.
-
-    These two halves are independent, and it is worth being clear about which
-    one does what: **the ratio bound is what makes it fast** (0.42 ms at either
-    clock), and **the grid snap is what makes it accurate**. Neither substitutes
-    for the other.
-
-  **The user-facing F_max preset is unchanged and stays a round number.** The
-  sub-Hz difference between requested and achieved display rate is internal,
-  where it belongs -- it is what the frequency axis is correct against -- and
-  is never surfaced as a fiddly number on a control. Same treatment
-  `highpass_fc` already gets: a declared edge, with the real value underneath.
-
-  Two consequences of a now-fractional raw rate were chased down: the HDF5 and
-  monitor-session readback paths did `int(samplerate)`, which would truncate
-  25599.67 to 25599 -- coprime again -- so **replay would have silently taken
-  the expensive path the live display no longer does**, violating the rule that
-  replay reproduces what the live display showed. Both are `float` now, as is
-  what `MonitorWriterThread` writes. `receive_data`'s missing-key fallback also
-  read `config.samplerate` (display) for what is a raw-rate block; unreachable
-  today, wrong if ever hit, now `raw_samplerate`.
-
-- **Cause 2 -- `picosdk.functions.adc2mV` is a per-sample Python loop, run
-  inside the driver callback holding the GIL.** It is literally
-  `[(np.int64(x) * vRange) / maxADC.value for x in bufferADC]`, boxing a numpy
-  scalar per sample, and its cost is therefore stolen directly from the GUI
-  thread. Replaced with a vectorised `_adc_to_mv()`:
-
-  | samples/ch | `adc2mV` | vectorised | speedup |
-  |---|---|---|---|
-  | 4 096 | 4.22 ms | 0.021 ms | 201x |
-  | 19 200 | 19.86 ms | 0.052 ms | 382x |
-  | 38 400 | 40.28 ms | 0.112 ms | 361x |
-
-  At ~1.03 us/sample and 76.9 kHz per channel that was 0.079 CPU-seconds per
-  wall-second per channel -- **0.634 s/s at 8 channels**. Measured effect on a
-  60 Hz-style main loop, p95 tick latency against a 0.5 ms target:
-
-  | channels | 1 | 3 | 4 | 8 |
-  |---|---|---|---|---|
-  | `adc2mV` | 1.42 ms | 4.67 ms | 5.75 ms | **5.76 ms** |
-  | vectorised | 0.58 ms | 0.59 ms | 0.59 ms | **0.59 ms** |
-
-  The replacement is **bit-identical**, not merely close, over every voltage
-  range across the full int16 domain -- provided the operation order is kept:
-  `x * vRange / maxADC`, never `x * (vRange / maxADC)`, which rounds
-  differently in the last bit. `tests/test_adc_conversion.py` asserts the
-  equality *and* that the tempting pre-divided form is not equivalent, so the
-  comment explaining it is backed by a test.
-
-  This also explains an earlier workaround: `RAW_SAMPLERATE_HZ` was lowered
-  "to relieve GUI lag while streaming 4 channels" (hotfix/RAW_SAMPLERATE,
-  2026-09-09). Lowering the rate reduced the sample count through this loop.
-  That trade may now be reclaimable.
-
-- **Cause 3 -- the per-channel peaks table was destroyed and rebuilt every
-  frame.** `_update_fft_peaks_table` deleted every column and row and built
-  them again, once per vibration channel per frame, from *both* branches of
-  `_update_freq_plot` -- so it ran even with zero peaks. `select_peaks` reports
-  a corpus median of 40 lines, so that was **~164 widget create/destroy
-  operations per channel per frame** plus a full dearpygui table layout pass:
-  ~1300 per frame at 8 channels, roughly 80% of all per-frame DPG traffic.
-
-  Columns and rows are now a persistent pool, created on demand, relabelled or
-  `set_value`'d thereafter, with surplus rows hidden rather than deleted; a
-  frame whose contents are unchanged pushes nothing at all. Every plot *series*
-  in this file was already updated that way -- this is the same idea applied to
-  a table. Self-healing if the table is ever rebuilt underneath it, in the
-  spirit of `_ensure_legends`.
-
-#### Changed
-- **`peaks._running_median`'s edge handling is vectorised.** It was a Python
-  loop of `np.median` calls, one per edge bin, and it was **91% of the
-  function's cost** -- the `scipy.ndimage.median_filter` over the interior is
-  only 0.047 ms of it, which is the opposite of where one would look.
-
-  | | before | after |
-  |---|---|---|
-  | median_filter (interior) | 0.047 ms | 0.047 ms |
-  | edge bins | 1.161 ms | 0.408 ms |
-  | `_running_median` total | **1.274 ms** | **0.563 ms** |
-
-  The statistic is unchanged and that is the entire constraint: the truncated
-  window and the measured error table that chose it over zero-padding,
-  reflection and replication are untouched, and the new code is asserted
-  **bit-identical** to the loop it replaces across 110 length x width
-  combinations. Even widths are covered deliberately -- unreachable today since
-  `local_noise_floor` forces an odd window, but the edge window is
-  `[i-half, i+half]` inclusive, i.e. `2*half+1` samples whatever the parity,
-  and sizing it by `width` would have quietly shortened every even case.
-- **The stale-frame watchdog no longer spawns a thread per frame.**
-  `_schedule_status_timeout` cancelled a `threading.Timer` and constructed a
-  new one on every displayed frame, then flipped a dearpygui widget *from that
-  timer thread*. Both halves were wrong -- the second more so than the first,
-  since no DPG call belongs off the render thread. It is now a deadline checked
-  in `_poll_new_frames`, which already runs every tick whether or not a frame
-  arrived, which is exactly when the check needs to happen.
-- **Envelope analysis is gated on being on screen**, which its docstring always
-  claimed and the code never did -- `envelope_enabled` is a config flag, not a
-  statement about the selected tab. With the tab enabled but the user on
-  Spectrum, a `butter` design, a `sosfiltfilt`, a Hilbert transform and (on an
-  auto band) a `suggest_band` convolution ran for every channel every frame for
-  a plot nobody could see: ~2.8 ms/channel, plus 1.4-1.9 ms when auto. The gate
-  tests the *plot*, not the tab -- an unselected tab still renders its own
-  header button and reports visible either way.
-- **`suggest_band` is cached per channel** rather than recomputed every frame.
-  Also better behaviour, not only cheaper: `_on_env_auto_band`'s docstring
-  already says the band should "stay put across frames instead of drifting each
-  time", and a band that moves every frame makes the envelope plot's own axis
-  unstable. Invalidated when the band fields are edited, when the Envelope tab
-  is toggled, and by the Auto button -- which means "pick one from the frame I
-  am looking at now" and must not return an earlier frame's answer.
-- Two per-frame `configure_item` calls that push an unchanged value are now
-  change-only: the four browse-button `enabled=` flags (which change twice in a
-  session), and the Frame info card's `height=`, which forces a dearpygui
-  relayout each time.
-
-#### Where it stands now
-`./scripts/profile-pipeline --hardware --channels 1,3,4,8 --seconds 12` on the
-4824A (s/n 13290/0013), ms of work per wall-second:
-
-| stage | 1 ch | 3 ch | 4 ch | 8 ch |
-|---|---|---|---|---|
-| `usb.poll` | 57.9 | 73.7 | 83.1 | 128.6 |
-| `usb.adc2mv` | 9.2 | 12.8 | 14.6 | 23.0 |
-| `usb.antialias` | 7.8 | 19.8 | 26.6 | **58.3** |
-| `ingest.receive` | 1.4 | 2.5 | 3.1 | 7.5 |
-| `proc.total` | 13.9 | 30.8 | 40.2 | **84.1** |
-| `proc.decimate` | 2.2 | 5.0 | 6.3 | 13.3 |
-| `proc.psd` | 6.3 | 13.7 | 17.9 | 36.6 |
-| `proc.peaks` | 3.5 | 7.8 | 10.3 | 22.1 |
-
-Zero overflow, zero rate degradation at every count. `usb.poll` *contains* the
-three stages below it -- the app callback runs synchronously inside
-`ps4000aGetStreamingLatestValues` -- and `proc.total` contains
-`proc.decimate`/`psd`/`peaks`, so these are nested, not additive; the harness
-says so in its own output.
-
-`proc.total` at 8 channels is 39.5 ms mean against a 500 ms frame: ~8% of the
-main thread, where it was over budget before.
-
-**The profiling's own next finding, recorded rather than acted on.** With
-`adc2mV` gone, `usb.antialias` is now the largest single cost on the
-acquisition thread -- the mandatory Kaiser FIR decimating a (38400, 8) block
-per frame. That is real, necessary work rather than a defect, and 58 ms/s is
-not currently hurting anything. It is simply where the next look should start
-if one is ever needed, and it is only visible at all because the
-instrumentation now exists.
-
-#### Not done, deliberately
-Adaptive streaming rate by channel count, and capping the enabled channel
-count. Both were on the table at the start and both trade away measurement
-capability to work around a Python loop and an unreduced fraction; Causes 1 and
-2 remove the reason for either. Moving `process_samples()` off the render
-thread is also not done: it would change the `new_frame_event` contract that
-browse mode, `collect_sample`, the monitor and the tests all depend on, and
-Cause 1 alone removes ~589 ms of the ~610 ms main-thread budget at 8 channels.
-If a hitch survives, it earns its own branch and its own measurements.
 
 ### fix/stability-cluster (2026-08-30, merged 2026-09-11)
 
@@ -865,6 +604,342 @@ on a PicoScope 4424A (serial 12462/0067) with AWG loopback on channel A.
   interpreter. Documented in CONTRIBUTING.md's new **Moving the checkout** section, along
   with the hooks fix above.
 - Removed two stale vendor datasheet PDFs from `doc/`.
+
+### experimental/profiling (2026-09-11)
+
+GUI responsiveness. Since the mandatory Kaiser anti-alias filter and
+oversampled streaming landed, the GUI stuttered on every processing call:
+bearable at 3 enabled channels, progressively worse to 8, on a 4824A. The
+bottleneck was not known -- USB transfer, DSP and dearpygui rendering were all
+plausible -- so this branch builds per-stage timing first and fixes what the
+measurements actually indict.
+
+**It was not a throughput problem, and that is why it was hard to find.**
+Processing never got ahead of acquisition and the frame queue never backed up.
+It could not: the 32-frame ring cache is *designed* to skip to the latest
+frame, so a main-thread overrun surfaces as latency and never as a backlog.
+Looking at queue depth found nothing because there was nothing there to find.
+
+Three independent causes, each **linear in enabled channel count** -- which is
+why the symptom alone could not separate them.
+
+#### Added
+- **`src/rev80/_profile.py`** -- per-stage timing for the whole pipeline, from
+  the driver callback to `render_dearpygui_frame()`. Thirteen named stages
+  grouped by *thread*, because which thread a cost lands on is the entire
+  question: main-thread time blocks the mouse, hardware-thread time steals the
+  GIL, and the two need completely different fixes. `gui.render` beside
+  `proc.total` is what makes that call unambiguous from now on.
+  Near-zero when off -- measured **442 ns/call disabled** (3015 ns enabled) net
+  of loop baseline, i.e. 0.27 ms per wall-second at the busiest call site, so
+  the instrumentation ships permanently rather than being compiled out. Bounded
+  by construction (fixed-length ring per stage): a diagnostic that becomes the
+  next S-02 is worse than no diagnostic.
+- **`rev80 --profile`** (and `REV80_PROFILE=1`, reachable from a desktop
+  launcher where a flag is not) -- logs the stage table on exit, from inside
+  `cleanup()`'s guarded ordering where it can never prevent `ps4000aCloseUnit`.
+- **`scripts/profile-pipeline`** -- channel-count sweep printing one stage table
+  per count, simulated or `--hardware`. Its `--raw-rate` **defaults to the
+  hardware-realistic clock, not the nominal one**, because the headline defect
+  below is invisible at exactly 25600 Hz.
+- **`tests/test_adc_conversion.py`** (6 cases x 14 ranges),
+  **`tests/test_display_rate.py`** (38), and a bit-exactness suite for
+  `_running_median` in `tests/test_peak_selection.py` (110).
+
+#### Fixed
+- **Cause 1 -- `decimate_to_rate` designed a 512,821-tap FIR on every call, on
+  real hardware only.** `resample_poly` builds a `2*10*max(up,down)+1` tap
+  filter, so the ratio's denominator is a direct cost multiplier. It was
+  nominally bounded, but `limit_denominator` was applied to each rate
+  *separately before dividing* -- and both are integers there, so each reduced
+  to denominator 1 and the ratio was never bounded at all.
+
+  Invisible offline, because `SimulatedSensor` reports exactly 25600 Hz, which
+  reduces against every display rate to a small integer factor. The driver did
+  not: the streaming interval was requested in whole **microseconds**, and
+  `int(1e6 / 76800)` truncated 13.02 to 13, giving 76923 Hz and a reported
+  25641. 5120 and 25641 are coprime. Measured, 12800-sample block:
+
+  | raw rate | up / down | taps | ms/call | out length |
+  |---|---|---|---|---|
+  | 25600.00 (simulated) | 1 / 5 | 101 | **0.64** | 2560 |
+  | 25641.00 (hardware) | 5120 / 25641 | **512 821** | **73.62** | **2556** |
+
+  At 8 channels that is 589 ms of main-thread work against a 500 ms frame.
+  **Green CI was not evidence here either** -- the whole test suite passed at
+  0.64 ms while the instrument stalled at 73.6.
+
+  It was also a measurement defect, not only a speed one: 2556 < `nperseg`
+  silently tripped Welch's fallback, so the delivered bin width was not the one
+  the Spectrum tab stated.
+
+  Fixed in two independent halves, either of which is sufficient:
+  - **The streaming interval is now requested in nanoseconds, snapped to the
+    device's clock grid.** This is a frequency-axis accuracy fix in its own
+    right -- every displayed line was 0.16% high, so a 1000 Hz line read
+    1001.6 Hz.
+
+    The naive version of this change (`round(1e9/76800)` = 13021 ns) was
+    measured on the 4824A and did *not* do what the arithmetic said. Probing
+    the driver with a range of intervals and reading back what it used shows
+    the reachable points are **12.5 ns apart** -- an 80 MHz timebase -- and
+    that the driver **floors** to the grid rather than rounding, so 13021
+    lands a whole grid point high:
+
+    | requested ns | returned ns | rate/ch Hz | /osr Hz | ppm vs 25600 |
+    |---|---|---|---|---|
+    | 13000 (and 13012) | 13000 | 76923.08 | 25641.03 | **+1603** |
+    | 13021 (naive round) | 13012 | 76852.14 | 25617.38 | **+679** |
+    | 13025 (grid-snapped) | 13025 | 76775.43 | 25591.81 | **-320** |
+
+    8e7/1041 and 8e7/1042 straddle 76800 and 1042 is the nearer, so -320 ppm
+    is the best this hardware can reach. Rounding to nearest on the grid and
+    then ceil-ing into whole ns -- so the driver's floor lands where intended
+    -- gets there: **5x better than shipped, not the 100x the ns resolution
+    alone suggested.** Recorded here because the arithmetic and the hardware
+    disagreed, and the hardware won.
+
+    None of it is trusted blind. The driver still writes back the interval it
+    really used and that readback is what everything downstream believes, so a
+    device with a different timebase floors to its own grid and reports it,
+    exactly as before. The snap is only ever an optimisation.
+  - **The ratio bound is applied to the ratio**, via the coarsest denominator
+    cap that lands within `_RESAMPLE_RATE_TOL`. Every shipped preset now
+    reduces to its exact integer factor; an off-preset F_max costs a few
+    thousand taps instead of half a million. Measured worst case under the cap
+    is **1.05 ms**, and at the real hardware rate **73.62 ms -> 0.42 ms**, with
+    the output length back to the declared 2560.
+
+    These two halves are independent, and it is worth being clear about which
+    one does what: **the ratio bound is what makes it fast** (0.42 ms at either
+    clock), and **the grid snap is what makes it accurate**. Neither substitutes
+    for the other.
+
+  **The user-facing F_max preset is unchanged and stays a round number.** The
+  sub-Hz difference between requested and achieved display rate is internal,
+  where it belongs -- it is what the frequency axis is correct against -- and
+  is never surfaced as a fiddly number on a control. Same treatment
+  `highpass_fc` already gets: a declared edge, with the real value underneath.
+
+  Two consequences of a now-fractional raw rate were chased down: the HDF5 and
+  monitor-session readback paths did `int(samplerate)`, which would truncate
+  25599.67 to 25599 -- coprime again -- so **replay would have silently taken
+  the expensive path the live display no longer does**, violating the rule that
+  replay reproduces what the live display showed. Both are `float` now, as is
+  what `MonitorWriterThread` writes. `receive_data`'s missing-key fallback also
+  read `config.samplerate` (display) for what is a raw-rate block; unreachable
+  today, wrong if ever hit, now `raw_samplerate`.
+
+- **Cause 2 -- `picosdk.functions.adc2mV` is a per-sample Python loop, run
+  inside the driver callback holding the GIL.** It is literally
+  `[(np.int64(x) * vRange) / maxADC.value for x in bufferADC]`, boxing a numpy
+  scalar per sample, and its cost is therefore stolen directly from the GUI
+  thread. Replaced with a vectorised `_adc_to_mv()`:
+
+  | samples/ch | `adc2mV` | vectorised | speedup |
+  |---|---|---|---|
+  | 4 096 | 4.22 ms | 0.021 ms | 201x |
+  | 19 200 | 19.86 ms | 0.052 ms | 382x |
+  | 38 400 | 40.28 ms | 0.112 ms | 361x |
+
+  At ~1.03 us/sample and 76.9 kHz per channel that was 0.079 CPU-seconds per
+  wall-second per channel -- **0.634 s/s at 8 channels**. Measured effect on a
+  60 Hz-style main loop, p95 tick latency against a 0.5 ms target:
+
+  | channels | 1 | 3 | 4 | 8 |
+  |---|---|---|---|---|
+  | `adc2mV` | 1.42 ms | 4.67 ms | 5.75 ms | **5.76 ms** |
+  | vectorised | 0.58 ms | 0.59 ms | 0.59 ms | **0.59 ms** |
+
+  The replacement is **bit-identical**, not merely close, over every voltage
+  range across the full int16 domain -- provided the operation order is kept:
+  `x * vRange / maxADC`, never `x * (vRange / maxADC)`, which rounds
+  differently in the last bit. `tests/test_adc_conversion.py` asserts the
+  equality *and* that the tempting pre-divided form is not equivalent, so the
+  comment explaining it is backed by a test.
+
+  This also explains an earlier workaround: `RAW_SAMPLERATE_HZ` was lowered
+  "to relieve GUI lag while streaming 4 channels" (hotfix/RAW_SAMPLERATE,
+  2026-09-09). Lowering the rate reduced the sample count through this loop.
+  That trade may now be reclaimable.
+
+- **Cause 3 -- the per-channel peaks table was destroyed and rebuilt every
+  frame.** `_update_fft_peaks_table` deleted every column and row and built
+  them again, once per vibration channel per frame, from *both* branches of
+  `_update_freq_plot` -- so it ran even with zero peaks. `select_peaks` reports
+  a corpus median of 40 lines, so that was **~164 widget create/destroy
+  operations per channel per frame** plus a full dearpygui table layout pass:
+  ~1300 per frame at 8 channels, roughly 80% of all per-frame DPG traffic.
+
+  Columns and rows are now a persistent pool, created on demand, relabelled or
+  `set_value`'d thereafter, with surplus rows hidden rather than deleted; a
+  frame whose contents are unchanged pushes nothing at all. Every plot *series*
+  in this file was already updated that way -- this is the same idea applied to
+  a table. Self-healing if the table is ever rebuilt underneath it, in the
+  spirit of `_ensure_legends`.
+
+#### Changed
+- **`peaks._running_median`'s edge handling is vectorised.** It was a Python
+  loop of `np.median` calls, one per edge bin, and it was **91% of the
+  function's cost** -- the `scipy.ndimage.median_filter` over the interior is
+  only 0.047 ms of it, which is the opposite of where one would look.
+
+  | | before | after |
+  |---|---|---|
+  | median_filter (interior) | 0.047 ms | 0.047 ms |
+  | edge bins | 1.161 ms | 0.408 ms |
+  | `_running_median` total | **1.274 ms** | **0.563 ms** |
+
+  The statistic is unchanged and that is the entire constraint: the truncated
+  window and the measured error table that chose it over zero-padding,
+  reflection and replication are untouched, and the new code is asserted
+  **bit-identical** to the loop it replaces across 110 length x width
+  combinations. Even widths are covered deliberately -- unreachable today since
+  `local_noise_floor` forces an odd window, but the edge window is
+  `[i-half, i+half]` inclusive, i.e. `2*half+1` samples whatever the parity,
+  and sizing it by `width` would have quietly shortened every even case.
+- **The stale-frame watchdog no longer spawns a thread per frame.**
+  `_schedule_status_timeout` cancelled a `threading.Timer` and constructed a
+  new one on every displayed frame, then flipped a dearpygui widget *from that
+  timer thread*. Both halves were wrong -- the second more so than the first,
+  since no DPG call belongs off the render thread. It is now a deadline checked
+  in `_poll_new_frames`, which already runs every tick whether or not a frame
+  arrived, which is exactly when the check needs to happen.
+- **Envelope analysis is gated on being on screen**, which its docstring always
+  claimed and the code never did -- `envelope_enabled` is a config flag, not a
+  statement about the selected tab. With the tab enabled but the user on
+  Spectrum, a `butter` design, a `sosfiltfilt`, a Hilbert transform and (on an
+  auto band) a `suggest_band` convolution ran for every channel every frame for
+  a plot nobody could see: ~2.8 ms/channel, plus 1.4-1.9 ms when auto. The gate
+  tests the *plot*, not the tab -- an unselected tab still renders its own
+  header button and reports visible either way.
+- **`suggest_band` is cached per channel** rather than recomputed every frame.
+  Also better behaviour, not only cheaper: `_on_env_auto_band`'s docstring
+  already says the band should "stay put across frames instead of drifting each
+  time", and a band that moves every frame makes the envelope plot's own axis
+  unstable. Invalidated when the band fields are edited, when the Envelope tab
+  is toggled, and by the Auto button -- which means "pick one from the frame I
+  am looking at now" and must not return an earlier frame's answer.
+- Two per-frame `configure_item` calls that push an unchanged value are now
+  change-only: the four browse-button `enabled=` flags (which change twice in a
+  session), and the Frame info card's `height=`, which forces a dearpygui
+  relayout each time.
+
+#### Where it stands now
+`./scripts/profile-pipeline --hardware --channels 1,3,4,8 --seconds 12` on the
+4824A (s/n 13290/0013), ms of work per wall-second:
+
+| stage | 1 ch | 3 ch | 4 ch | 8 ch |
+|---|---|---|---|---|
+| `usb.poll` | 57.9 | 73.7 | 83.1 | 128.6 |
+| `usb.adc2mv` | 9.2 | 12.8 | 14.6 | 23.0 |
+| `usb.antialias` | 7.8 | 19.8 | 26.6 | **58.3** |
+| `ingest.receive` | 1.4 | 2.5 | 3.1 | 7.5 |
+| `proc.total` | 13.9 | 30.8 | 40.2 | **84.1** |
+| `proc.decimate` | 2.2 | 5.0 | 6.3 | 13.3 |
+| `proc.psd` | 6.3 | 13.7 | 17.9 | 36.6 |
+| `proc.peaks` | 3.5 | 7.8 | 10.3 | 22.1 |
+
+Zero overflow, zero rate degradation at every count. `usb.poll` *contains* the
+three stages below it -- the app callback runs synchronously inside
+`ps4000aGetStreamingLatestValues` -- and `proc.total` contains
+`proc.decimate`/`psd`/`peaks`, so these are nested, not additive; the harness
+says so in its own output.
+
+`proc.total` at 8 channels is 39.5 ms mean against a 500 ms frame: ~8% of the
+main thread, where it was over budget before.
+
+**The profiling's own next finding, recorded rather than acted on.** With
+`adc2mV` gone, `usb.antialias` is now the largest single cost on the
+acquisition thread -- the mandatory Kaiser FIR decimating a (38400, 8) block
+per frame. That is real, necessary work rather than a defect, and 58 ms/s is
+not currently hurting anything. It is simply where the next look should start
+if one is ever needed, and it is only visible at all because the
+instrumentation now exists.
+
+#### Not done, deliberately
+Adaptive streaming rate by channel count, and capping the enabled channel
+count. Both were on the table at the start and both trade away measurement
+capability to work around a Python loop and an unreduced fraction; Causes 1 and
+2 remove the reason for either. Moving `process_samples()` off the render
+thread is also not done: it would change the `new_frame_event` contract that
+browse mode, `collect_sample`, the monitor and the tests all depend on, and
+Cause 1 alone removes ~589 ms of the ~610 ms main-thread budget at 8 channels.
+If a hitch survives, it earns its own branch and its own measurements.
+
+### build/ci — release automation (2026-09-17)
+
+Tagging `vX.Y.Z` now builds the Windows installer and the Python wheel and
+attaches both to a **draft** GitHub Release, replacing the manual "boot into
+Windows, pull, run `scripts/build.sh`" step. Prompted by the move from the
+self-hosted `catherby` remote to `github.com/cascadia-turbo-works/rev80`.
+
+Not yet executed against a real remote — see *Rehearsing it* in
+`CONTRIBUTING.md` before trusting a release.
+
+#### Added
+- **`.github/workflows/release.yml`** — four jobs on a `v*` tag: a test gate,
+  a wheel/sdist build (ubuntu), a driver-less installer build (windows), and
+  `gh release create --draft`. The gate exists so a tag cannot cut a release
+  from a red tree; it runs one Python version, since the full matrix already
+  ran on the branch.
+- **`scripts/build.sh wheel`** — builds the wheel and sdist, which `build.sh`
+  had never done, and the only target that runs off Windows.
+- **`scripts/build.sh … nodlls`** — skips DLL collection. Hosted Windows
+  runners have no PicoSDK and it has no reliable unattended install, so CI
+  installers are **driver-less**: they work, but the user installs PicoSDK
+  themselves and the `.iss` already warns when it is missing. A local
+  `./scripts/build.sh` is unchanged and still bundles the DLLs.
+- **`build` added to the `dev` extra.**
+
+#### Fixed
+- **`fetch_font.sh` silently shipped a font-less installer on failure.** It has
+  no `set -e` and returned the status of its final `echo`, so a failed `curl`
+  or a missing `unzip` exited 0; `build.sh` carried on and `rev80.spec` printed
+  its "fonts not found" warning into a log nobody reads. Every failure path now
+  exits non-zero with a reason.
+- **…and it downloaded a font the repo already tracks.** `assets/fonts/CommitMonoNerdFont-Regular.otf`
+  is committed and byte-identical to the download (sha256 `4eda301c…`, verified
+  before the change). The tracked copy is now the primary source and the
+  download a fallback, which takes the release build off the network — and off
+  Git Bash's non-guaranteed `unzip` on the Windows runner.
+
+#### Changed
+- **`ci.yml` triggers on branch pushes only** (`push: branches: ['**']`). A
+  bare `push:` also matches tags, so tagging would have run the full 4-job
+  matrix alongside `release.yml` and its own gate.
+- **`CLAUDE.md` no longer claims the pre-commit hook stamps `_version.py`.** It
+  has not since the setuptools_scm move; the hook has carried a comment saying
+  so while the doc said the opposite. The release workflow's correctness rests
+  on the real mechanism, so the passage is now explicit about it.
+
+#### Notes for the next person
+- **`fetch-depth: 0` is load-bearing and its failure is silent.** `setuptools_scm`
+  reads `git describe`; a shallow checkout has no tags, falls back to
+  `0.0.0+unknown`, and ships `Rev80Setup-0.0.0+unknown.exe` with nothing
+  failing. Both build jobs assert against that string rather than trusting the
+  checkout. A dirty tree is the same hazard from the other end — it appends
+  `+d<date>`, which is why `_version.py`, `installer/version.iss`,
+  `drivers/*.dll` and the fetched font are all gitignored.
+- **`python -m build` cannot run from the repo root.** This repo's own `build/`
+  directory shadows the `build` PyPI package as an implicit namespace package:
+  `import build` succeeds and `python -m build` dies with *No module named
+  `build.__main__`*. Compounding it, `python` is a pyenv shim that picks its
+  version from the cwd, so simply running from elsewhere selects a different
+  interpreter. `build.sh wheel` handles both — resolve the interpreter to an
+  absolute path, then run from a scratch cwd with the repo passed explicitly.
+- **A tag trigger ignores branches.** GitHub Actions has no notion of "tagged
+  on main"; any `v*` tag anywhere builds. Accepted deliberately. Legacy `rc0.x`
+  tags do not match `v*`.
+- **The wheel is a release asset, not a PyPI package.** `picosdk` is a direct
+  git URL dependency and PyPI rejects those.
+- **Releases are drafts** because the exe and installer remain unsigned.
+- The `--sdist` and `--wheel` invocations are deliberately separate so the
+  wheel is built from the source tree, on the theory that setuptools_scm's
+  git-tracked file finder would drop the gitignored font. Measured: it does
+  not, `package_data` wins. Kept as belt-and-braces and recorded as measured
+  rather than left as a claim.
+
 
 ## [0.1.0] - 2026-09-01
 

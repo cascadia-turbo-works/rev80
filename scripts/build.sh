@@ -9,6 +9,7 @@
 #       b) PICO_DLL_DIR env var pointing at a directory with ps4000a.dll + picoipp.dll
 #       c) vendor/pico/ in project root (gitignored) containing the same DLLs
 #      Source: C:\Program Files\Pico Technology\SDK\lib\ on any PicoSDK install
+#      ...or pass `nodlls` to skip bundling them entirely (see below).
 #   - Inno Setup 6.x installed
 #
 # Usage:
@@ -16,6 +17,17 @@
 #   ./build.sh dlls         # DLL collection only
 #   ./build.sh pyinstaller  # PyInstaller only (skip DLL collection)
 #   ./build.sh installer    # Inno Setup only (requires dist/ to exist)
+#   ./build.sh wheel        # Python wheel + sdist only (no Windows tooling needed)
+#
+# Flags (any position):
+#   clean    force a full PyInstaller cache wipe
+#   nodlls   skip DLL collection and ship a driver-less bundle. This is what
+#            .github/workflows/release.yml uses: GitHub's hosted Windows
+#            runners have no PicoSDK, and collect_pico_dlls.py exits when it
+#            cannot find the DLLs. The resulting installer runs fine on a
+#            machine that has PicoSDK installed separately -- rev80.spec
+#            bundles drivers/ whether or not it holds DLLs, and
+#            _pico_loader.ensure_pico_dlls_loadable() warns rather than raises.
 
 set -euo pipefail
 
@@ -24,8 +36,12 @@ STEP="${1:-all}"
 # adding new dependencies or if the build cache seems corrupt):
 #   ./build.sh all clean
 PYINSTALLER_CLEAN=""
+# `nodlls` skips step 3 so the build works where PicoSDK cannot be installed
+# (CI runners). See the Flags note in the header.
+NODLLS=""
 for arg in "$@"; do
     [[ "$arg" == "clean" ]] && PYINSTALLER_CLEAN="--clean"
+    [[ "$arg" == "nodlls" ]] && NODLLS="1"
 done
 
 # Locate iscc.exe — try PATH first, then common install locations.
@@ -100,14 +116,64 @@ echo "[2/5] Reinstall package with pip."
 #source .venv/Scripts/activate # user must activate their venv.
 echo "pip install -e . -q" 
 pip install -e . -q --no-deps
-VERSION=$(python -c "import rev80; print(rev80.__version__)")
+# Prefer the live package, but fall back to reading the stamp directly: the
+# `wheel` target runs on a bare runner where --no-deps means numpy/scipy/h5py
+# are absent, so `import rev80` would fail even though _version.py is correct.
+VERSION=$(python -c "import rev80; print(rev80.__version__)" 2>/dev/null \
+    || sed -n 's/^__version__ = "\(.*\)"$/\1/p' src/rev80/_version.py)
 echo "Version: $VERSION"
 echo
 
+# ── Step 2b: Python wheel + sdist ────────────────────────────────────────────
+if [[ "$STEP" == "wheel" ]]; then
+    echo "[*] Building wheel and sdist..."
+
+    # This repo contains its own build/ directory (rev80.spec,
+    # collect_pico_dlls.py). With no __init__.py it is an implicit namespace
+    # package, so whenever python's cwd is the repo root it shadows the `build`
+    # PyPI package: `import build` succeeds and `python -m build` then dies with
+    # "No module named build.__main__". Every invocation below therefore runs
+    # from a scratch cwd with the repo passed as an explicit source directory.
+    BUILD_ROOT="$(pwd)"
+    BUILD_TMP="$(mktemp -d)"
+    trap 'rm -rf "$BUILD_TMP"' EXIT
+
+    # Resolve the interpreter to an absolute path first. `python` is a pyenv
+    # shim here and pyenv picks its version from the *cwd* (.python-version
+    # selects the project venv), so a bare `python` inside BUILD_TMP would be a
+    # different interpreter with different packages.
+    PYBIN="$(python -c 'import sys; print(sys.executable)')"
+
+    if ! ( cd "$BUILD_TMP" && "$PYBIN" -c "import build.__main__" ) 2>/dev/null; then
+        echo "ERROR: the 'build' package is missing. Install it with:"
+        echo "    pip install build"
+        exit 1
+    fi
+
+    rm -f dist/*.whl dist/*.tar.gz
+    # --sdist and --wheel are deliberately separate invocations, so the wheel is
+    # built straight from the source tree rather than from the sdist (which is
+    # what a bare `python -m build` does). The concern is the fetched font: it
+    # is gitignored, and setuptools_scm installs a file finder that lists
+    # git-tracked files for the sdist. Measured 2026-09-17: the sdist does
+    # carry it anyway -- package_data wins over the file finder -- so this is
+    # belt-and-braces, not a fix for an observed break. Verify with:
+    #   python -c "import zipfile,glob; print([n for n in \
+    #       zipfile.ZipFile(glob.glob('dist/*.whl')[0]).namelist() \
+    #       if n.endswith('.otf')])"
+    ( cd "$BUILD_TMP" && "$PYBIN" -m build --sdist --outdir "$BUILD_ROOT/dist" "$BUILD_ROOT" )
+    ( cd "$BUILD_TMP" && "$PYBIN" -m build --wheel --outdir "$BUILD_ROOT/dist" "$BUILD_ROOT" )
+    echo
+fi
+
 # ── Step 3: Collect PicoScope DLLs ──────────────────────────────────────────
-if [[ "$STEP" == "all" || "$STEP" == "dlls" ]]; then
+if [[ ( "$STEP" == "all" || "$STEP" == "dlls" ) && -z "$NODLLS" ]]; then
     echo "[3/5] Collecting PicoScope DLLs..."
     python build/collect_pico_dlls.py
+    echo
+elif [[ -n "$NODLLS" ]]; then
+    echo "[3/5] Skipping DLL collection (nodlls) -- driver-less build."
+    echo "      Users must install PicoSDK separately; the installer warns if it is missing."
     echo
 fi
 
@@ -137,5 +203,9 @@ fi
 
 echo "============================================================"
 echo "  Build complete."
-echo "  Installer: installer/Output/Rev80Setup-*.exe"
+if [[ "$STEP" == "wheel" ]]; then
+    echo "  Wheel/sdist: dist/"
+else
+    echo "  Installer: installer/Output/Rev80Setup-*.exe"
+fi
 echo "============================================================"

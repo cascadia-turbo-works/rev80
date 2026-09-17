@@ -184,7 +184,12 @@ Writes a v5 `session.h5` file loadable by the GUI session browser or `--from-fil
 ## Installing on Windows
 
 1. Install **PicoSDK 11.1.418** (or PicoScope 7 for Windows) from [picotech.com/downloads](https://www.picotech.com/downloads). **Restart your computer** after installation so Windows registers the USB kernel driver.
-2. Run **`Rev80Setup-<version>.exe`** and follow the installer. It creates a Start Menu shortcut and an uninstaller. No admin rights required.
+2. Download **`Rev80Setup-<version>.exe`** from the [Releases page](https://github.com/cascadia-turbo-works/rev80/releases), run it, and follow the installer. It creates a Start Menu shortcut and an uninstaller. No admin rights required.
+
+> **Step 1 is required, not optional.** Released installers do not bundle the
+> PicoScope drivers — they are built on hosted CI machines that cannot install
+> PicoSDK. Rev80 will start without it and run the simulated sensor, but it
+> will not find a scope. The installer warns you if PicoSDK is missing.
 
 > **SmartScreen warning:** the installer is currently unsigned. Click *More info → Run anyway* to proceed.
 
