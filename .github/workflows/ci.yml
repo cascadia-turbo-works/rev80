@@ -1,7 +1,11 @@
 name: CI
 
+# Branches only. A bare `push:` also matches tag pushes, which would run this
+# whole matrix alongside release.yml on every release -- and release.yml
+# carries its own test gate.
 on:
   push:
+    branches: ['**']
   pull_request:
 
 # A new push to the same branch cancels the previous run.
