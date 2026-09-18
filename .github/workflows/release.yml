@@ -15,10 +15,15 @@ name: Release
 #      0.0.0+unknown and the release ships Rev80Setup-0.0.0+unknown.exe.
 #      Both build jobs assert against that rather than trusting it.
 #
-# The installer built here is DRIVER-LESS: hosted Windows runners have no
-# PicoSDK, so `nodlls` skips DLL collection. Users install PicoSDK separately
-# and the installer warns them if it is missing. A local ./scripts/build.sh
-# still bundles the DLLs.
+# The installer built here is DRIVER-LESS: the build passes `nodlls`, so the
+# DLLs are not bundled. Users install PicoSDK separately and the installer
+# warns them if it is missing. A local ./scripts/build.sh still bundles them.
+#
+# Note this is now a CHOICE, not a constraint. PicoSDK *is* installed on the
+# runner -- it has to be, or the picosdk Python wrapper will not install at all
+# (see the long comment on that step). Dropping `nodlls` to ship a
+# driver-bundled installer is therefore a one-word change, gated only on the
+# Pico redistribution licence.
 
 on:
   push:
@@ -133,6 +138,85 @@ jobs:
       # already probes.
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
+
+      # PicoSDK has to be present before pip runs, and not for the reason the
+      # rest of this file avoids it. picosdk's own setup.py probes for the
+      # native DLLs at INSTALL time and refuses to build without them:
+      #
+      #     if sys.platform == 'win32':
+      #         result = ctypes.WinDLL(find_library(name))   # find_library -> None
+      #     ...
+      #     except OSError:                                  # TypeError isn't caught
+      #     if not atleast1dll: exit(1)                      # and this would fail anyway
+      #
+      # On Linux the same line is cdll.LoadLibrary(None), which is legal and
+      # returns a handle to the main program -- so the probe passes and the
+      # ubuntu jobs install fine. That asymmetry is why CI was green for weeks
+      # while this job could never have worked.
+      #
+      # Pre-installing the wrapper does not help: the dependency is a direct
+      # git URL, so pip re-clones and re-runs setup.py for metadata regardless.
+      #
+      # NOTE this is not the same requirement as bundling the DLLs. The build
+      # below still passes `nodlls`; this only makes the wrapper installable.
+      # The reboot PicoSDK asks for registers the USB *kernel driver*, which
+      # matters for talking to a scope and not for loading a user-mode DLL --
+      # and no scope is attached here.
+      - name: Cache PicoSDK installer
+        id: picosdk-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\PicoSDK.exe
+          key: picosdk-x64-11.1.0.481
+
+      - name: Download PicoSDK
+        if: steps.picosdk-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -UseBasicParsing `
+            -Uri 'https://www.picotech.com/download/software/sr/PicoSDK_x64_11.1.0.481.exe' `
+            -OutFile "$env:RUNNER_TEMP\PicoSDK.exe"
+
+      - name: Install PicoSDK
+        shell: pwsh
+        run: |
+          $lib = 'C:\Program Files\Pico Technology\SDK\lib'
+          Write-Host '--- silent install ---'
+          $p = Start-Process -FilePath "$env:RUNNER_TEMP\PicoSDK.exe" `
+                 -ArgumentList '/quiet','/norestart' -Wait -PassThru
+          Write-Host "installer exit code: $($p.ExitCode)"
+
+          if (-not (Test-Path $lib)) {
+            # Fall back to extracting the bundle rather than installing it.
+            # 7z is preinstalled on windows-latest. This needs no registry
+            # entries and no reboot -- setup.py only has to LoadLibrary a file.
+            Write-Host '--- lib dir absent; extracting instead ---'
+            $lib = "$env:RUNNER_TEMP\picosdk-lib"
+            & 7z e "$env:RUNNER_TEMP\PicoSDK.exe" -o"$lib" -y `
+                'ps4000a.dll' 'picoipp.dll' -r | Select-Object -Last 5
+          }
+
+          if (-not (Test-Path $lib)) {
+            Write-Host '::error::PicoSDK produced no lib directory by either route.'
+            exit 1
+          }
+          Get-ChildItem $lib -Filter '*.dll' | Select-Object Name,Length
+          # Persist for later steps: find_library() searches PATH.
+          Add-Content -Path $env:GITHUB_PATH -Value $lib
+
+      # This is picosdk's exact precondition, checked before pip so a failure
+      # names the cause instead of surfacing as a TypeError inside a build
+      # subprocess.
+      - name: Verify the wrapper's install-time probe will pass
+        shell: pwsh
+        run: |
+          $found = python -c "from ctypes.util import find_library; print(find_library('ps4000a'))"
+          Write-Host "find_library('ps4000a') -> $found"
+          if ($found -eq 'None' -or [string]::IsNullOrWhiteSpace($found)) {
+            Write-Host '::error::ps4000a.dll not on PATH - picosdk setup.py would exit(1).'
+            exit 1
+          }
+          python -c "import ctypes; ctypes.WinDLL(r'$found'); print('WinDLL load OK')"
 
       # The dev extra carries PyInstaller. picosdk installs from a pinned git
       # URL (pip needs git, present on the image); the native PicoSDK driver
