@@ -28,10 +28,6 @@ name: Release
 on:
   push:
     tags: ['v*']
-    # TEMPORARY -- remove before merging to main. workflow_dispatch below only
-    # becomes usable once this file is on the default branch, so a push trigger
-    # is the only way to exercise the Windows job from this branch first.
-    branches: ['fix/ci-picosdk']
   # Run the pipeline by hand against any ref, to test it without spending a
   # version number. Only usable once this file has reached the default branch.
   workflow_dispatch:
