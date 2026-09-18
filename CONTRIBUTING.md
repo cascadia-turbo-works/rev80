@@ -286,11 +286,38 @@ git push origin v0.2.0
 
 Four things about it are worth knowing before you rely on it:
 
-- **CI installers are driver-less.** GitHub's hosted Windows runners have no
-  PicoSDK and it has no reliable unattended install, so the release build passes
-  `nodlls`. The bundle works, but the user must install PicoSDK themselves; the
-  installer warns when it is missing. A local `./scripts/build.sh` is unchanged
-  and still bundles `ps4000a.dll` + `picoipp.dll`.
+- **CI installers are driver-less — by choice, not by constraint.** The release
+  build passes `nodlls`, so no DLLs are bundled; the user installs PicoSDK
+  themselves and the installer warns when it is missing. A local
+  `./scripts/build.sh` is unchanged and still bundles `ps4000a.dll` +
+  `picoipp.dll`. Dropping `nodlls` to ship a driver-bundled installer is a
+  one-word change, gated only on the Pico redistribution licence.
+- **PicoSDK *is* installed on the Windows runner**, which is a separate
+  requirement from bundling. `picosdk`'s own `setup.py` probes for the native
+  DLLs at **install** time and refuses to build without them, so without the SDK
+  `pip install` fails before any of our code runs:
+
+  ```
+  TypeError: argument of type 'NoneType' is not iterable
+  ERROR: Failed to build 'picosdk' when getting requirements to build wheel
+  ```
+
+  `find_library()` returns `None`, `ctypes.WinDLL(None)` raises `TypeError` —
+  which its `except OSError` does not catch — and its `if not atleast1dll:
+  exit(1)` would have failed anyway. On Linux the same line is
+  `cdll.LoadLibrary(None)`, which is legal and returns a handle to the main
+  program, so the probe passes; **that is why the ubuntu jobs install picosdk
+  happily and a Windows job cannot.** Pre-installing the wrapper does not help
+  either: the dependency is a direct git URL, so pip re-clones and re-runs
+  `setup.py` for metadata regardless.
+
+  The workflow silent-installs the SDK (`/quiet /norestart`, cached by version)
+  and puts its `lib` directory on `PATH`. **No reboot is needed** — the restart
+  PicoSDK asks for registers the USB *kernel driver*, which matters for talking
+  to a scope, not for `LoadLibrary`-ing a user-mode DLL, and no scope is
+  attached to a runner. Measured 2026-09-17: `find_library('ps4000a')` resolved
+  and `WinDLL` loaded it in the same job, with the 7z extraction fallback
+  unused.
 - **A tag trigger ignores branches.** GitHub Actions has no notion of "tagged on
   main" — any `v*` tag, on any branch, builds a release. Deliberate, but it means
   a stray tag produces a draft.
