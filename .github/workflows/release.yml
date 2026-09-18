@@ -52,11 +52,11 @@ jobs:
     name: Test gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -82,11 +82,11 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -109,7 +109,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: wheel
           path: |
@@ -127,11 +127,11 @@ jobs:
         # provides the cygpath/taskkill the script already uses.
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           # This interpreter is frozen into the bundle and shipped to users.
           # Changing it changes what they run -- a deliberate decision, not a
@@ -171,7 +171,7 @@ jobs:
       # and no scope is attached here.
       - name: Cache PicoSDK installer
         id: picosdk-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ runner.temp }}\PicoSDK.exe
           key: picosdk-x64-11.1.0.481
@@ -244,7 +244,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: installer
           path: installer/Output/Rev80Setup-*.exe
@@ -260,7 +260,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     steps:
       # No `name:` -- downloads every artifact, each into its own directory.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           path: artifacts
 
@@ -269,10 +269,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           ls -R artifacts/
+          # Collected by find rather than a path glob. This job only ever runs
+          # on a tag, so a branch test never exercises it -- which makes it the
+          # one step where a change in how download-artifact lays out its
+          # output would go unnoticed until a real release. find does not care
+          # how deeply it nests.
+          mapfile -t FILES < <(find artifacts -type f \
+            \( -name '*.exe' -o -name '*.whl' -o -name '*.tar.gz' \) | sort)
+          printf 'attaching: %s\n' "${FILES[@]}"
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "::error::No artifacts found to attach."
+            exit 1
+          fi
           gh release create "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --draft \
             --generate-notes \
             --title "$GITHUB_REF_NAME" \
-            artifacts/installer/*.exe \
-            artifacts/wheel/*
+            "${FILES[@]}"
