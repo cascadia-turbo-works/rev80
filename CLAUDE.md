@@ -81,7 +81,7 @@ rate, it skips to the latest frame — all earlier frames remain in the
 | `scope_sensor_registry.py` | `ScopeSensorRegistry` — YAML-backed global sensor library (`scope_sensors.yaml`); CRUD by ID/name; loaded from `~/.config/rev80/` |
 | `simulation.py` | `SimulatedSensor` (threading-based fake stream) + signal generators (`GenerateTone`, bearing-defect) for offline dev/test |
 | `sample.py` | `AcquisitionSettings` — two independent rate pairs: fixed `raw_samplerate`/`raw_blocksize` (`RAW_SAMPLERATE_HZ`, what's actually acquired/stored) and derived `samplerate`/`blocksize`/`nperseg`/band (from `maxfreq`/`binsize`, display/Spectrum-tab only); declared band; averaging; per-channel names, target units, amplitude modes, couplings, voltage ranges. `VibeSample` (one channel's raw block at the raw rate, with cached PSD/decimated/filtered data) + `ChannelResult` (frozen display result, display-rate) |
-| `tach.py` | Tachometer channels — `TachSettings`, `TachResult`, Schmitt edge detection with sub-sample interpolation, median-of-intervals rate estimation, duty cycle. Free of dearpygui/h5py/`DataCollector` imports; every constant carries the bench measurement that justifies it. **One pulse/rev** (D-6): at 1 ppr every interval is exactly one revolution, so encoder division error and once-per-rev speed modulation cancel by construction (0.0013% vs 0.091% for a 60-line encoder at any window length) |
+| `tach.py` | Tachometer channels — `TachSettings`, `TachResult`, Schmitt edge detection with sub-sample interpolation, median-of-intervals rate estimation, duty cycle. Free of dearpygui/h5py/`DataCollector` imports; every constant carries the bench measurement that justifies it. **One pulse/rev** (D-6) is the default and the accurate case: at 1 ppr every interval is exactly one revolution, so encoder division error and once-per-rev speed modulation cancel by construction (0.0013% vs 0.091% for a 60-line encoder at any window length). `pulses_per_rev` is user-configurable, made safe by `MIN_REVS`/`min_edges_for()` gating on whole revolutions rather than a fixed edge count |
 | `_dsp.py` | Windowing and band helpers, each carrying the measured error table that justifies it: `hann_taper`/`tukey_taper`, `band_mask`, `band_rms`, `integrate_rfft`, `butter_knee_for_edge`, `crest_factor`, `kurtosis` |
 | `peaks.py` | Significance-based spectral peak selection — per-bin local noise floor via a running median, feeding array-valued `height`/`prominence` into one `find_peaks` call. A line is reported when it stands above **its own** neighbourhood, not by top-N amplitude |
 | `envelope.py` | Envelope (demodulation) analysis — `envelope_spectrum()` (band-pass → Hilbert magnitude → DC removal → amplitude spectrum) and `suggest_band()`. The band-pass, not the Hilbert transform, is the load-bearing step. Reads the raw-rate signal via `DataCollector.eu_scaled_raw()`, not the maxfreq-decimated `ChannelResult`, so a low display `maxfreq` never limits what it can see |
@@ -165,12 +165,24 @@ that number, not in the abstract.
   so above ~55% duty a fixed level is never reached and the shaft reads as
   stopped on a machine that is running. Reproduced on the bench at 70% and 85%
   duty; `tests/test_picoscope_hw.py` keeps it.
-- **One pulse per revolution** (D-6). Not merely the common installation but the
-  accurate one: at 1 ppr every interval is exactly one revolution, so encoder
-  division error and once-per-rev speed modulation cancel by construction —
-  0.0013% against 0.091% for a 60-line encoder at *any* window length.
-  `pulses_per_rev` survives in the code and a non-1 value is honoured with a
-  warning, never silently clamped.
+- **One pulse per revolution is the default and the recommendation** (D-6), and
+  the accurate configuration: at 1 ppr every interval is exactly one revolution,
+  so encoder division error and once-per-rev speed modulation cancel by
+  construction — 0.0013% against 0.091% for a 60-line encoder at *any* window
+  length. `pulses_per_rev` **is user-configurable** (Tachometer tab, Sep 2026),
+  because a keyphasor already fitted to a machine cannot be chosen away.
+- **The gate is `MIN_REVS` whole revolutions, not a fixed edge count.** This is
+  what makes a configurable ppr safe: a block must hold two turns before any
+  rate is reported, so what 1 ppr gets by construction a finer encoder gets by
+  averaging over enough of a revolution. `MIN_REVS = 2.0` and
+  `min_edges_for(ppr)` replaced `MIN_EDGES = 3`, which they reproduce exactly at
+  1 ppr. Nine edges of a 6 ppr encoder is 1.5 turns: it used to pass and report
+  a speed drawn from a fraction of a turn. Two consequences the UI must keep
+  saying, because both are counter-intuitive: a finer encoder does **not** read
+  a slower shaft (the floor goes 180 → 121 RPM at a 1 s block, a third, not
+  sixtyfold — a smaller binsize is the fix), and it runs into
+  `MIN_SAMPLES_PER_PULSE` (~70 samples/pulse, so 600 RPM at 60 ppr), which is a
+  front-end caution because only the front end knows the sample rate.
 - **`rpm` is `None`, never `0.0`,** when there is no usable reading. "I cannot
   see a tach signal" and "the shaft is stopped" send an analyst to different
   places — and note the two are not currently distinguishable from a flat block

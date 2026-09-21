@@ -9,6 +9,79 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### feature/tachometer — configurable pulses/rev, gated on revolutions (2026-09-18)
+
+`pulses_per_rev` becomes a user-facing control, and the minimum-data gate it
+depends on changes from a fixed edge count to whole shaft revolutions.
+
+D-6 has not been repealed: 1 ppr is still the default and still the accurate
+configuration, for the reason it always was. What changed is the recognition
+that a keyphasor or an encoder already bolted to a machine is not something the
+operator can choose away, and that refusing to divide by it means refusing the
+machine.
+
+#### Changed
+- **`MIN_EDGES = 3` → `MIN_REVS = 2.0` plus `min_edges_for(ppr)`.** The two
+  agree exactly at 1 ppr — three edges, two intervals, two whole turns — and
+  nowhere else: three edges of a 60-line encoder is 0.033 of a revolution.
+  `test_three_edges_is_two_whole_revolutions_at_one_ppr` pins the equivalence.
+- **A block under `MIN_REVS` now reports no rate.** Measured through the real
+  `tach_result`: a 6 ppr block holding 1.5 revolutions has 10 rising edges,
+  three times the old gate, and passed it — returning `quality='ok'` and
+  1800.0 RPM computed from a fraction of a turn, where division error and
+  once-per-rev modulation have not yet cancelled (0.580% mean / 1.898% worst at
+  0.05 rev, against 0.091% from one full turn). Revert-checked: restoring the
+  fixed gate makes `test_high_ppr_block_under_min_revs_reports_no_reading` fail
+  with `rpm=1799.9999999999998` where it wants `None`.
+- **The quality string stays `'too_few_edges'`** though the constraint is now
+  revolutions. The test is still on the edge count, and the string is written
+  into every stored HDF5 tach group — renaming it would strand files for a
+  wording improvement.
+- **`TachSettings.from_dict` no longer warns on ppr != 1.** It is a supported
+  setting with a control of its own. The warning now fires on what is actually
+  wrong — a zero, negative or fractional ppr, which is a corrupt file rather
+  than a configuration, and whose fallback to 1 changes the reported speed.
+
+#### Added
+- **Pulses/rev in the Tachometer tab**, with the D-6 rationale in its tooltip.
+- **`slowest_rpm_for(block_s, ppr)`**, replacing an open-coded
+  `MIN_EDGES * 60 / t_block` in `gui.py`, and carrying the binsize table that
+  the module docstring used to hold loose. The docstring table is now derived
+  from the function, with a test asserting they agree.
+- **`MIN_SAMPLES_PER_PULSE = 70` and a live caution in the tab** when the
+  configured ppr pushes the pulse rate past what edge interpolation can
+  resolve (~0.8% error below it, measured; 6000 RPM at 6 ppr, 600 at 60). It
+  is a caution and not a gate: a degraded reading is still a reading.
+
+#### Fixed
+- **The tach preview plot's x-axis used the shaft period where it meant the
+  pulse period.** Invisible at 1 ppr, where they are the same number; at 6 ppr
+  the window is six times too wide and the trace collapses to a stripe.
+
+#### Verified electrically
+Closed out on a 4424A (AWG loopback, channel A), 27 hardware tests passing:
+- **ppr divides the hardware rate exactly once**, at 1, 2 and 6 pulses/rev
+  against a 60 Hz square — 3600, 1800 and 600 RPM within the published
+  ±0.2% of reading.
+- **The gate withholds on real edges.** 5 Hz in a 1 s block is ~5 rising
+  edges: 300 RPM at 1 ppr, and at 6 ppr it is 0.8 of a revolution, which used
+  to return 50 RPM with `quality='ok'` and now returns `None`.
+
+#### Notes for the next person
+- **A finer encoder does not read a slower shaft, and the UI must keep saying
+  so.** The gate is two revolutions either way; all a higher ppr recovers is the
+  one pulse period of phase-safety margin, which is a whole revolution at 1 ppr
+  and 1/60th of one at 60. The floor goes 180 → 121 RPM at a 1 s block — a
+  third, not sixtyfold. The way to read a slower shaft is a longer block.
+- **`MIN_REVS = 2.0` and not the 1.0 the error table alone justifies**, because
+  the statistical floor binds harder at 1 ppr: one revolution there is a single
+  interval, with no spread. 2.0 also makes each half-block span one revolution,
+  so `_MIN_EDGES_FOR_DRIFT` needs no revolution-based companion — at 1.0 a
+  steady shaft with a load zone would read as 'unsteady'.
+- **Replay inherits the gate, which is the point.** A file captured at 1 ppr and
+  reinterpreted as a 60-line encoder now withholds the rate rather than dividing
+  0.97 of a revolution by 60 and reporting 29 RPM for a 1762 RPM shaft.
+
 ## [0.1.3] - 2026-09-17
 
 

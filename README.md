@@ -573,24 +573,42 @@ instead of sliding. If the rate reads nothing, the picture tells you which of th
 three usual causes it is: the pulse is too small, the threshold is in the wrong
 place, or the coupling is stripping the DC.
 
-### One pulse per revolution
+### Pulses per revolution
 
-Rev80 assumes one reflective tape or one keyway. This is not a simplification —
-it is the accurate configuration. At 1 pulse/rev every measured interval is
-exactly one revolution, so encoder division error and once-per-rev speed
-modulation cancel inside each interval rather than having to average out. Measured
-against a 60-line encoder with realistic division error: **0.0013% at 1 ppr,
-against 0.091% at 60 ppr no matter how long you observe for.**
+Rev80 defaults to one reflective tape or one keyway, and recommends it. This is
+not a simplification — it is the accurate configuration. At 1 pulse/rev every
+measured interval is exactly one revolution, so encoder division error and
+once-per-rev speed modulation cancel inside each interval rather than having to
+average out. Measured against a 60-line encoder with realistic division error:
+**0.0013% at 1 ppr, against 0.091% at 60 ppr no matter how long you observe
+for.**
+
+A keyphasor or an encoder already bolted to the machine is not something you can
+choose away, so **Pulses/rev** in the Tachometer tab takes any whole number and
+divides it out correctly. What keeps that honest is that the gate is
+*revolutions*, not pulses: no rate is reported until two whole turns are inside
+the block, so the cancellation a 1 ppr install gets by construction, a finer
+encoder gets by observing enough of a revolution for it to average out.
+
+Two things a high pulse count costs you, both shown in the tab when they bite:
+
+- **It does not read a slower shaft.** The gate is two revolutions either way. A
+  60-line encoder at a 1 s block reaches 121 RPM against 180 — a third, not
+  sixtyfold. Use a smaller bin size for a slow machine.
+- **It runs into the sample rate.** Edge interpolation needs about 70 samples
+  per pulse; below that accuracy falls to ~0.8%. That is 6000 RPM at 6 ppr and
+  600 RPM at 60 ppr. The acquisition rate is fixed and cannot be raised to
+  compensate.
 
 ### What it reports, and its limits
 
 Accuracy is **±0.2% of reading** from 300 to 10200 RPM, verified by AWG loopback
 on the instrument itself.
 
-Three pulses must fall inside one acquisition block, so the bin size sets a
-slowest measurable shaft — `180 / T_block` RPM, i.e. 180 RPM at 1 Hz bins and
-1800 RPM at 10 Hz bins. The Tachometer tab shows the figure for your current
-settings. Below it the reading is absent rather than wrong; it does not stop you
+Two whole revolutions must fall inside one acquisition block, so the bin size
+sets a slowest measurable shaft — `180 / T_block` RPM at 1 pulse/rev, i.e. 180
+RPM at 1 Hz bins and 1800 RPM at 10 Hz bins. The Tachometer tab shows the figure
+for your current settings. Below it the reading is absent rather than wrong; it does not stop you
 configuring the tach against a machine that is not running.
 
 A shaft speed always carries its unit on screen. 30 is a plausible RPM, a

@@ -386,7 +386,7 @@ def test_settings_from_dict_coerces_types_and_fills_defaults():
     assert tach.TachSettings.from_dict({}) == tach.TachSettings()
 
 
-# --- pulses per rev is clamped to 1 by the UI, not by the code (D-6) --------
+# --- pulses per rev, and the minimum-revolutions gate (D-6) -----------------
 
 def test_default_is_one_pulse_per_rev():
     """D-6: the preponderance of installs is one reflective tape or one
@@ -400,25 +400,119 @@ def test_default_is_one_pulse_per_rev():
 
 
 def test_three_edges_is_two_whole_revolutions_at_one_ppr():
-    """Which is why there is no separate minimum-revolutions gate: MIN_EDGES
-    already is one, at the only ppr the UI can produce."""
-    assert tach.MIN_EDGES == 3
+    """The gate is revolutions, and at 1 ppr it lands exactly where the old
+    fixed MIN_EDGES = 3 did -- three edges, two intervals, two whole turns.
+    This test is the one that pins the generalisation as behaviour-preserving
+    at the only ppr the UI used to produce.
+    """
+    assert tach.MIN_REVS == 2.0
+    assert tach.min_edges_for(1) == 3
     x = make_pulses(1800.0, HW_FS, duration_s=3.2 * 60.0 / 1800.0)
     r = tach.tach_result(x, HW_FS, ch=0, rel_time=0.0)
     assert r.quality == tach.QUALITY_OK
-    assert r.n_edges >= tach.MIN_EDGES
+    assert r.n_edges >= tach.min_edges_for(1)
 
 
-def test_non_unity_ppr_is_honoured_and_warns(caplog):
-    """Never silently clamp to 1. A hand-edited YAML carrying ppr=6 clamped to
-    1 would read 6x high with nothing on screen to say so -- the silent-wrong
-    -number class this project keeps finding. Honour it, and say it is
-    unsupported.
+@pytest.mark.parametrize('ppr, edges', [(1, 3), (2, 5), (6, 13), (60, 121)])
+def test_min_edges_scales_with_pulses_per_rev(ppr, edges):
+    """MIN_REVS whole revolutions, whatever the encoder divides them into.
+
+    A fixed edge count is the wrong constraint above 1 ppr: three edges of a
+    60-line encoder is 0.033 of a revolution, where the measured error is
+    0.580% mean / 1.898% worst against 0.091% from one full turn (the table
+    beside MIN_REVS). The number of edges that buys is a consequence of the
+    encoder, not a constant.
+    """
+    assert tach.min_edges_for(ppr) == edges
+
+
+def test_high_ppr_block_holding_min_revs_reads_correctly():
+    ppr = 6
+    rpm = 1800.0
+    # Comfortably more than MIN_REVS turns, so the gate is not what is on test.
+    x = make_ramped_pulses(rpm, HW_FS, ppr=ppr, duty=0.3, rise_samples=2,
+                           duration_s=3.0 * 60.0 / rpm)
+    r = tach.tach_result(x, HW_FS, settings=tach.TachSettings(pulses_per_rev=ppr))
+    assert r.quality == tach.QUALITY_OK
+    assert r.rpm == pytest.approx(rpm, rel=0.01)
+    assert r.n_edges >= tach.min_edges_for(ppr)
+
+
+def test_high_ppr_block_under_min_revs_reports_no_reading():
+    """The defect the old fixed gate let through.
+
+    A 6 ppr block holding 1.3 revolutions has 9 edges -- three times the old
+    MIN_EDGES -- and so passed, reporting an rpm drawn from a fraction of a
+    turn, where once-per-rev modulation and division error have not yet
+    cancelled. The reading must be withheld, and it must be withheld as
+    'too few edges' rather than 'no signal': the cable is fine and the pulse
+    train is healthy, the block is simply too short for this shaft.
+    """
+    ppr = 6
+    rpm = 1800.0
+    pulse_period = 60.0 / (rpm * ppr)
+    x = make_ramped_pulses(rpm, HW_FS, ppr=ppr, duty=0.3, rise_samples=2,
+                           duration_s=9.4 * pulse_period)
+    s = tach.TachSettings(pulses_per_rev=ppr)
+    r = tach.tach_result(x, HW_FS, settings=s)
+    assert 3 <= r.n_edges < tach.min_edges_for(ppr), (
+        'the block must hold more than the old fixed MIN_EDGES = 3, or this '
+        'test does not discriminate')
+    assert r.rpm is None
+    assert r.quality == tach.QUALITY_TOO_FEW_EDGES
+
+
+def test_slowest_measurable_shaft_matches_the_documented_table():
+    """180/T_block at 1 ppr -- the block must span whole pulse periods, not
+    intervals, because the start phase is arbitrary. The docstring table is
+    derived from this function; if they disagree the table is a lie.
+    """
+    for t_block, floor in ((4.0, 45.0), (2.0, 90.0), (1.0, 180.0),
+                           (0.5, 360.0), (0.2, 900.0), (0.1, 1800.0)):
+        assert tach.slowest_rpm_for(t_block, 1) == pytest.approx(floor)
+
+
+def test_more_pulses_per_rev_barely_lowers_the_speed_floor():
+    """A finer encoder buys 1.5x at the very most, not `ppr`x.
+
+    The tempting assumption is that 60 pulses per revolution reads a shaft 60
+    times slower. It does not: the gate is MIN_REVS whole *revolutions* either
+    way, so the floor is bounded below by MIN_REVS * 60 / T_block = 120 RPM at
+    a 1 s block however finely the revolution is divided. All that more pulses
+    recover is the one pulse period of phase-safety margin, which is a whole
+    revolution at 1 ppr and 1/60th of one at 60 ppr:
+
+        ppr      floor @ T=1 s
+          1        180 RPM
+          2        150
+          6        130
+         60        121
+          inf      120   (the MIN_REVS bound)
+
+    An operator fitting a 60-line encoder to reach a slower machine has bought
+    a third, and the UI must not imply otherwise. The way to read a slower
+    shaft is a longer block -- a smaller binsize.
+    """
+    bound = tach.MIN_REVS * 60.0 / 1.0
+    floors = [tach.slowest_rpm_for(1.0, ppr) for ppr in (1, 2, 6, 60)]
+
+    assert floors == sorted(floors, reverse=True), 'must not increase with ppr'
+    assert all(f >= bound for f in floors), 'MIN_REVS is the hard bound'
+    assert floors[0] / floors[-1] < 1.5, 'the whole gain is one pulse period'
+    assert floors[-1] == pytest.approx(bound, rel=0.02), (
+        'at 60 ppr the phase-safety period is negligible and the floor is the '
+        'MIN_REVS bound itself')
+
+
+def test_non_unity_ppr_is_honoured_without_warning(caplog):
+    """ppr is a supported setting now (it has a control in the Tachometer
+    tab), so loading one must not log a warning. The accuracy caution belongs
+    where the sample rate is known -- the GUI -- not here.
     """
     with caplog.at_level('WARNING'):
         s = tach.TachSettings.from_dict({'pulses_per_rev': 6})
     assert s.pulses_per_rev == 6, 'must not silently clamp'
-    assert any('pulses_per_rev' in rec.message for rec in caplog.records)
+    assert not [r for r in caplog.records if 'pulses_per_rev' in r.message]
 
 
 def test_unity_ppr_does_not_warn(caplog):
@@ -426,6 +520,18 @@ def test_unity_ppr_does_not_warn(caplog):
         s = tach.TachSettings.from_dict({'pulses_per_rev': 1})
     assert s.pulses_per_rev == 1
     assert not [r for r in caplog.records if 'pulses_per_rev' in r.message]
+
+
+@pytest.mark.parametrize('bad', [0, -6, 0.5])
+def test_unusable_ppr_falls_back_to_one_and_says_so(bad, caplog):
+    """Zero or negative pulses per revolution is not a configuration, it is a
+    corrupt file. Falling back to 1 is the only sane reading, but it changes
+    the reported speed, so it is never silent.
+    """
+    with caplog.at_level('WARNING'):
+        s = tach.TachSettings.from_dict({'pulses_per_rev': bad})
+    assert s.pulses_per_rev == 1
+    assert any('pulses_per_rev' in rec.message for rec in caplog.records)
 
 
 # --- duty cycle (R46 prerequisite) ---------------------------------------

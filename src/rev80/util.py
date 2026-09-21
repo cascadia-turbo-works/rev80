@@ -400,6 +400,7 @@ class UI_Elements:
     TACH_THRESH_MV       = 'TACH_THRESH_MV'
     TACH_MIN_AMPL_MV     = 'TACH_MIN_AMPL_MV'
     TACH_REFLECTOR_MM    = 'TACH_REFLECTOR_MM'
+    TACH_PPR             = 'TACH_PPR'
     TACH_ROTATION_UNIT   = 'TACH_ROTATION_UNIT'
     TACH_PLOT            = 'TACH_PLOT'
     TACH_PLOT_X          = 'TACH_PLOT_X'
@@ -429,6 +430,7 @@ class UI_Elements:
         return f'CH{ch}_TACH_DETAIL'
     TACH_QUALITY         = 'TACH_QUALITY'
     TACH_FLOOR           = 'TACH_FLOOR'
+    TACH_PPR_WARN        = 'TACH_PPR_WARN'
     # Shaft-rate readout on the main display.
     RPM_TEXT             = 'RPM_TEXT'
 

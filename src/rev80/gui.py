@@ -784,6 +784,7 @@ class GUI:
             (ui.TACH_THRESH_MV, s.threshold_mv),
             (ui.TACH_MIN_AMPL_MV, s.min_amplitude_mv),
             (ui.TACH_REFLECTOR_MM, s.reflector_size_mm),
+            (ui.TACH_PPR, s.pulses_per_rev),
         ):
             if dpg.does_item_exist(tag):
                 dpg.set_value(tag, val)
@@ -855,7 +856,7 @@ class GUI:
         def _g(tag, default):
             return dpg.get_value(tag) if dpg.does_item_exist(tag) else default
         return rev80_tach.TachSettings(
-            pulses_per_rev=1,          # D-6: not user-configurable
+            pulses_per_rev=max(1, int(_g(ui.TACH_PPR, 1))),
             polarity=str(_g(ui.TACH_POLARITY, 'rising')),
             threshold_mode=str(_g(ui.TACH_THRESH_MODE, 'adaptive')),
             threshold_mv=float(_g(ui.TACH_THRESH_MV, 2500.0)),
@@ -884,11 +885,12 @@ class GUI:
         if not dpg.is_item_shown(ui.DLG_CONFIG):
             return
 
-        # Slowest measurable shaft, from the block length. Information only:
-        # an operator must be able to set the tach up against a machine that
-        # is not running.
+        # Slowest measurable shaft, from the block length and the configured
+        # pulses/rev. Information only: an operator must be able to set the
+        # tach up against a machine that is not running.
         t_block = 1.0 / max(self.collector.config.binsize, 1e-9)
-        floor_rpm = rev80_tach.MIN_EDGES * 60.0 / t_block
+        ppr = max(1, int(self._tach_settings_from_ui().pulses_per_rev))
+        floor_rpm = rev80_tach.slowest_rpm_for(t_block, ppr)
         if dpg.does_item_exist(ui.TACH_FLOOR):
             dpg.set_value(
                 ui.TACH_FLOOR,
@@ -919,14 +921,36 @@ class GUI:
             return
 
         res = self.collector.tach_for(ch, sample)
+
+        # Two independent cautions, either of which opens the box. The floor
+        # is about the block being too short for this shaft; the sampling one
+        # is about the pulse rate being too fast for the fixed acquisition
+        # rate, which only a ppr above 1 can cause.
+        show_floor = res.quality in (rev80_tach.QUALITY_TOO_FEW_EDGES,
+                                     rev80_tach.QUALITY_NO_SIGNAL)
+        samples_per_pulse = (
+            float(sample.samplerate) * 60.0 / (res.rpm * ppr)
+            if res.rpm else None)
+        show_ppr = (samples_per_pulse is not None
+                    and samples_per_pulse < rev80_tach.MIN_SAMPLES_PER_PULSE)
+        if dpg.does_item_exist(ui.TACH_PPR_WARN):
+            if show_ppr:
+                dpg.set_value(
+                    ui.TACH_PPR_WARN,
+                    f"{icons.IC['warning']}  {samples_per_pulse:.0f} samples "
+                    f"per pulse at {ppr}/rev -- below "
+                    f"{rev80_tach.MIN_SAMPLES_PER_PULSE}, accuracy degrades to "
+                    f"~0.8%. Use fewer pulses per revolution.")
+            dpg.configure_item(ui.TACH_PPR_WARN, show=show_ppr)
+        if dpg.does_item_exist(ui.TACH_FLOOR):
+            dpg.configure_item(ui.TACH_FLOOR, show=show_floor)
         if dpg.does_item_exist(ui.TACH_WARN_BOX):
             # Only a warning when it is actually biting. The floor is normal
             # information at configure time, not a fault -- an operator must be
             # able to set the tach up against a machine that is not running.
-            dpg.configure_item(
-                ui.TACH_WARN_BOX,
-                show=res.quality in (rev80_tach.QUALITY_TOO_FEW_EDGES,
-                                     rev80_tach.QUALITY_NO_SIGNAL))
+            dpg.configure_item(ui.TACH_WARN_BOX,
+                               show=show_floor or show_ppr,
+                               height=34 if show_floor != show_ppr else 56)
         fs = float(sample.samplerate)
         x = np.asarray(sample.data, dtype=np.float64)
         t_axis = np.arange(x.size) / fs
@@ -954,9 +978,12 @@ class GUI:
                       [edges_shifted.tolist(), [level] * edges_shifted.size])
 
         # A couple of periods of lead-in and run-out, so the pulses sit inside
-        # the frame rather than against its edges.
+        # the frame rather than against its edges. The period here is the
+        # *pulse* period, not the shaft period: at 6 pulses/rev a window of
+        # n_edges shaft revolutions is six times too wide and the trace
+        # collapses to a stripe.
         if res.shaft_hz:
-            period = 1.0 / res.shaft_hz
+            period = 1.0 / (res.shaft_hz * max(1, res.pulses_per_rev))
             dpg.set_axis_limits(ui.TACH_PLOT_X, -2.0 * period,
                                 (res.n_edges + 2) * period)
         else:
@@ -3847,6 +3874,27 @@ class GUI:
                                     default_value=0.0, step=1.0,
                                     width=_DLG_FIELD_W // 2,
                                     callback=lambda s, d: self._on_tach_settings_change())
+                            with dpg.group(horizontal=True):
+                                _pr = dpg.add_input_int(
+                                    label="Pulses/rev", tag=ui.TACH_PPR,
+                                    default_value=1, min_value=1, step=1,
+                                    min_clamped=True, width=_DLG_FIELD_W // 2,
+                                    callback=lambda s, d: self._on_tach_settings_change())
+                            _tip(_pr,
+                                 "How many pulses the sensor sees per shaft "
+                                 "revolution. One reflective tape or one keyway "
+                                 "is 1.\n\n"
+                                 "Leave this at 1 wherever you have the choice. "
+                                 "At 1 pulse/rev every interval is exactly one "
+                                 "revolution, so encoder division error and "
+                                 "once-per-rev speed modulation cancel by "
+                                 "construction: 0.0013% against 0.091% for a "
+                                 "60-line encoder at any window length.\n\n"
+                                 "A higher value is divided out correctly, but "
+                                 "a rate is only reported once the block holds "
+                                 "two whole revolutions -- so a finer encoder "
+                                 "does NOT read a slower shaft. Use a smaller "
+                                 "bin size for that.")
                             _tip(_ru, "Applies to every shaft-rate readout in the app.")
                             _tip(_rf,
                                  "Arc length of the reflective tape or key, "
@@ -3888,16 +3936,29 @@ class GUI:
                                                   show=False) as _wb:
                                 _fl = dpg.add_text("", tag=ui.TACH_FLOOR,
                                                    color=_c("ORANGE"))
+                                _pw = dpg.add_text("", tag=ui.TACH_PPR_WARN,
+                                                   color=_c("ORANGE"), show=False)
                             dpg.bind_item_theme(_wb, ui.TACH_WARN_THEME)
                             _tip(_fl,
-                                 "Three pulses must fall inside one acquisition "
-                                 "block for a rate to be resolved, so the block "
-                                 "length (1/bin size) sets a slowest measurable "
-                                 "shaft.\n\n"
+                                 "Two whole shaft revolutions must fall inside "
+                                 "one acquisition block for a rate to be "
+                                 "resolved, so the block length (1/bin size) "
+                                 "sets a slowest measurable shaft.\n\n"
+                                 "More pulses per revolution does not lower it "
+                                 "meaningfully -- the gate is revolutions, not "
+                                 "pulses. A smaller bin size does.\n\n"
                                  "This is information, not a limit on setup: "
                                  "configure the tach against a stopped machine "
                                  "with your best guess and it will read once the "
                                  "shaft turns.")
+                            _tip(_pw,
+                                 "Sub-sample edge interpolation needs about 70 "
+                                 "samples per pulse. Below that the estimator "
+                                 "collapses to ~0.8% error -- the median locks "
+                                 "onto the modal integer sample period.\n\n"
+                                 "Measured on the bench. Fewer pulses per "
+                                 "revolution is the fix; the acquisition rate "
+                                 "is fixed and cannot be raised.")
                             with dpg.plot(label="Tach signal", height=200,
                                           width=-1, tag=ui.TACH_PLOT):
                                 dpg.add_plot_axis(dpg.mvXAxis, label="s from first pulse",
