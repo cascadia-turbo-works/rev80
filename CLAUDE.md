@@ -188,7 +188,9 @@ that number, not in the abstract.
   places — and note the two are not currently distinguishable from a flat block
   (R45).
 - **Storage is edge times, not the waveform** (D-2): ~30 float64 per second
-  against 41666. `pulses_per_rev` is a post-hoc divisor, so RPM stays a *view* on
+  against 41666 — in measurement files *and* monitor sessions; the monitor
+  writer silently stored the waveform until Sep 2026 because it never passed
+  `role=`. `pulses_per_rev` is a post-hoc divisor, so RPM stays a *view* on
   stored data; what is traded away is re-thresholding after capture.
 - Measured accuracy **±0.2% of reading**, 300–10200 RPM, verified by AWG
   loopback. Below `180/T_block` RPM no rate can be resolved — surfaced as
