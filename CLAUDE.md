@@ -81,7 +81,7 @@ rate, it skips to the latest frame — all earlier frames remain in the
 | `scope_sensor_registry.py` | `ScopeSensorRegistry` — YAML-backed global sensor library (`scope_sensors.yaml`); CRUD by ID/name; loaded from `~/.config/rev80/` |
 | `simulation.py` | `SimulatedSensor` (threading-based fake stream) + signal generators (`GenerateTone`, bearing-defect) for offline dev/test |
 | `sample.py` | `AcquisitionSettings` — two independent rate pairs: fixed `raw_samplerate`/`raw_blocksize` (`RAW_SAMPLERATE_HZ`, what's actually acquired/stored) and derived `samplerate`/`blocksize`/`nperseg`/band (from `maxfreq`/`binsize`, display/Spectrum-tab only); declared band; averaging; per-channel names, target units, amplitude modes, couplings, voltage ranges. `VibeSample` (one channel's raw block at the raw rate, with cached PSD/decimated/filtered data) + `ChannelResult` (frozen display result, display-rate) |
-| `tach.py` | Tachometer channels — `TachSettings`, `TachResult`, Schmitt edge detection with sub-sample interpolation, median-of-intervals rate estimation, duty cycle. Free of dearpygui/h5py/`DataCollector` imports; every constant carries the bench measurement that justifies it. **One pulse/rev** (D-6): at 1 ppr every interval is exactly one revolution, so encoder division error and once-per-rev speed modulation cancel by construction (0.0013% vs 0.091% for a 60-line encoder at any window length) |
+| `tach.py` | Tachometer channels — `TachSettings`, `TachResult`, Schmitt edge detection with sub-sample interpolation, median-of-intervals rate estimation, duty cycle. Free of dearpygui/h5py/`DataCollector` imports; every constant carries the bench measurement that justifies it. **One pulse/rev** (D-6) is the default and the accurate case: at 1 ppr every interval is exactly one revolution, so encoder division error and once-per-rev speed modulation cancel by construction (0.0013% vs 0.091% for a 60-line encoder at any window length). `pulses_per_rev` is user-configurable, made safe by `MIN_REVS`/`min_edges_for()` gating on whole revolutions rather than a fixed edge count |
 | `_dsp.py` | Windowing and band helpers, each carrying the measured error table that justifies it: `hann_taper`/`tukey_taper`, `band_mask`, `band_rms`, `integrate_rfft`, `butter_knee_for_edge`, `crest_factor`, `kurtosis` |
 | `peaks.py` | Significance-based spectral peak selection — per-bin local noise floor via a running median, feeding array-valued `height`/`prominence` into one `find_peaks` call. A line is reported when it stands above **its own** neighbourhood, not by top-N amplitude |
 | `envelope.py` | Envelope (demodulation) analysis — `envelope_spectrum()` (band-pass → Hilbert magnitude → DC removal → amplitude spectrum) and `suggest_band()`. The band-pass, not the Hilbert transform, is the load-bearing step. Reads the raw-rate signal via `DataCollector.eu_scaled_raw()`, not the maxfreq-decimated `ChannelResult`, so a low display `maxfreq` never limits what it can see |
@@ -89,10 +89,11 @@ rate, it skips to the latest frame — all earlier frames remain in the
 | `config.py` | OS-aware device config directory (`~/.config/rev80/` on Linux, `%APPDATA%/rev80/` on Windows); per-device YAML persistence with atomic writes; default config fallback |
 | `gui.py` | `GUI` class — dearpygui 3-panel layout (controls / plots / results), `_poll_new_frames()` render loop, config dialogs (Device/Channels/Sensor/Spectrum/Siggen), spectrum FFT window/preset controls, per-channel result cards, trend plot, HDF5 file load/save |
 | `logger.py` | YAML-configured logging; rotating log files written to `log/`. `install_excepthooks()` (idempotent) installs `sys.excepthook`, **`threading.excepthook`** — everything interesting runs off the main thread, and those deaths previously went to stderr, which is nowhere when launched from a desktop entry (audit H-07) — and `faulthandler`, whose `log/faulthandler.log` is the only evidence that survives a SIGSEGV and is what distinguishes a driver-level crash from an OOM kill |
-| `headless.py` | No-GUI front end: interval datalogger, anomaly hooks, session summary. **Refuses tachometer-role channels** (R44) — out of scope has to mean "does not do it", not "does it wrong". Shares no code with the GUI's copy of the same logic — see the H-01 warning below |
+| `headless.py` | No-GUI front end: interval datalogger, anomaly hooks, session summary. **Runs a tachometer** (R44, Sep 2026 — it used to refuse one). The role decision is `config.channel_role_state`, shared with the GUI, and the session's channel snapshot is `monitor.session.channel_snapshot_for` — do not re-implement either here; `_build_anomaly_hook` is still copy-pasted, see the H-01 warning below |
 | `monitor/controller.py` | `MonitorController` — interval/burst state machine, pre-trigger ring buffer, anomaly dispatch |
-| `monitor/writer.py` | `MonitorWriterThread` — daemon thread accumulating captures into one `session.h5` (v6; every capture and burst records `rpm`/`speed_ok`) |
+| `monitor/writer.py` | `MonitorWriterThread` — daemon thread accumulating captures into one `session.h5` (v6; every capture and burst records `rpm`/`speed_ok`). Both `_write_channel_group` call sites must pass `role=role_of_sample(sample)`: the parameter defaults to `'vibration'`, and omitting it stored a tach channel's whole waveform in every session (fixed Sep 2026) |
 | `monitor/gate.py` | `IntervalGate` — snap-to-grid capture scheduler; burst entry/exit with `max_burst_s` |
+| `monitor/session.py` | `MonitorSession` record plus the **shared session factory** both front ends build through: `session_from()`, `channel_snapshot_for()`, `sensor_snapshot_for()`, `pre_buffer_frames_for()`, `required_cache_frames()`. Neither `gui.py` nor `headless.py` may construct a `MonitorSession` itself — that is how `max_burst_s` and the pre-trigger cache depth drifted, and `tests/test_session_from.py` asserts it |
 | `monitor/anomaly.py` | `RmsThresholdHook` (default 50%, see below), `SpectralThresholdHook`, `FixedThresholdHook`, `CompositeAnomalyHook`, `valid_results()` — the single place the speed gate is applied |
 | `_profile.py` | Per-stage pipeline timing (`rev80 --profile`, `scripts/profile-pipeline`). Thirteen stages grouped by thread; a shared no-op when disabled, bounded rings when enabled. See *Profiling* below |
 | `_paths.py` | Runtime-safe path resolution — editable checkout, non-editable pip install, and PyInstaller frozen bundle all resolve correctly; `resource_path()`, `data_dir()`, `log_dir()` |
@@ -165,18 +166,32 @@ that number, not in the abstract.
   so above ~55% duty a fixed level is never reached and the shaft reads as
   stopped on a machine that is running. Reproduced on the bench at 70% and 85%
   duty; `tests/test_picoscope_hw.py` keeps it.
-- **One pulse per revolution** (D-6). Not merely the common installation but the
-  accurate one: at 1 ppr every interval is exactly one revolution, so encoder
-  division error and once-per-rev speed modulation cancel by construction —
-  0.0013% against 0.091% for a 60-line encoder at *any* window length.
-  `pulses_per_rev` survives in the code and a non-1 value is honoured with a
-  warning, never silently clamped.
+- **One pulse per revolution is the default and the recommendation** (D-6), and
+  the accurate configuration: at 1 ppr every interval is exactly one revolution,
+  so encoder division error and once-per-rev speed modulation cancel by
+  construction — 0.0013% against 0.091% for a 60-line encoder at *any* window
+  length. `pulses_per_rev` **is user-configurable** (Tachometer tab, Sep 2026),
+  because a keyphasor already fitted to a machine cannot be chosen away.
+- **The gate is `MIN_REVS` whole revolutions, not a fixed edge count.** This is
+  what makes a configurable ppr safe: a block must hold two turns before any
+  rate is reported, so what 1 ppr gets by construction a finer encoder gets by
+  averaging over enough of a revolution. `MIN_REVS = 2.0` and
+  `min_edges_for(ppr)` replaced `MIN_EDGES = 3`, which they reproduce exactly at
+  1 ppr. Nine edges of a 6 ppr encoder is 1.5 turns: it used to pass and report
+  a speed drawn from a fraction of a turn. Two consequences the UI must keep
+  saying, because both are counter-intuitive: a finer encoder does **not** read
+  a slower shaft (the floor goes 180 → 121 RPM at a 1 s block, a third, not
+  sixtyfold — a smaller binsize is the fix), and it runs into
+  `MIN_SAMPLES_PER_PULSE` (~70 samples/pulse, so 600 RPM at 60 ppr), which is a
+  front-end caution because only the front end knows the sample rate.
 - **`rpm` is `None`, never `0.0`,** when there is no usable reading. "I cannot
   see a tach signal" and "the shaft is stopped" send an analyst to different
   places — and note the two are not currently distinguishable from a flat block
   (R45).
 - **Storage is edge times, not the waveform** (D-2): ~30 float64 per second
-  against 41666. `pulses_per_rev` is a post-hoc divisor, so RPM stays a *view* on
+  against 41666 — in measurement files *and* monitor sessions; the monitor
+  writer silently stored the waveform until Sep 2026 because it never passed
+  `role=`. `pulses_per_rev` is a post-hoc divisor, so RPM stays a *view* on
   stored data; what is traded away is re-thresholding after capture.
 - Measured accuracy **±0.2% of reading**, 300–10200 RPM, verified by AWG
   loopback. Below `180/T_block` RPM no rate can be resolved — surfaced as
@@ -240,7 +255,7 @@ Config lives in `$XDG_CONFIG_HOME/rev80/` (default `~/.config/rev80/`) on Linux,
 
 | File | Role |
 |---|---|
-| `acquisition.yaml` | instance-wide defaults — acquisition settings **and the whole `monitor:` / `monitor.anomaly:` block**. The primary tuning surface for unattended runs. |
+| `acquisition.yaml` | instance-wide defaults — acquisition settings **and the whole `monitor:` / `monitor.anomaly:` block**. The primary tuning surface for unattended runs. `max_burst_s` has no widget and is edited here only; the GUI preserves it on save rather than rewriting it (it used to write a 600.0 literal back over any hand edit). |
 | `devices/picoscope-{model}-{serial}.yaml` | per-device channel assignments, acquisition settings, siggen config. Loaded on connect, saved on disconnect or explicit GUI action. |
 | `devices/picoscope-defaults.yaml` | template applied to a device seen for the first time. |
 | `scope_sensors.yaml` | global IEPE sensor library (below). |
@@ -260,8 +275,11 @@ The unattended datalogger, and the newest ~1800 lines. Two front ends drive it: 
 **Known-bad areas — read before changing anything here.** S-01, S-02, H-07 and H-03 were closed by `fix/stability-cluster` (Sep 2026); the invariants they installed are recorded here because the failure modes were silent and re-breaking them would be silent too. The rest are open audit findings, not hypotheticals:
 
 - **S-01 (critical) — FIXED.** `GUI.cleanup()` now stops the monitor **first**, then closes the device, then destroys the DPG context, each step individually guarded, and is idempotent; `main()` wraps `run()` in `try/finally` and the render loop body is guarded. Keep that order and those guards: the writer is a daemon thread, so anything still queued at interpreter exit is lost — possibly mid-`h5py.File(…, 'a')` — and a wedged writer must never prevent `ps4000aCloseUnit`, because a device left open is what makes the next launch fail with `PICO_NOT_FOUND` until the USB is replugged. Render-loop errors are logged **once per exception type** (a per-frame traceback would roll the log, which is S-09 again) and the loop gives up after `MAX_CONSECUTIVE_RENDER_ERRORS` by breaking *through* `cleanup()`, never around it.
-- **S-02 (critical) — FIXED.** Three bounds, all of which must stay. The writer queue is `queue.Queue(maxsize=MAX_QUEUE_DEPTH)`; on full it **drops rather than blocks** (back-pressure there would reach the render loop and stall acquisition behind the disk) and the drops are counted and surfaced as `dropped_captures` — unbounded, its `except queue.Full` branch was dead code and `enqueue` always returned True, so the UI counted captures never written. Both the manual and the anomaly burst paths now go through the shared `capped_burst_end()`, so `max_burst_s` applies to the path that fires unattended. `_burst_frames` and `_burst_all_results` are capped by `burst_frame_cap()` and trimmed **together**, because `_flush_burst` indexes them in parallel — trimming one alone puts every overall against the wrong waveform. Measured: retention costs 2.76× the raw block, growing at ~2.26 MB/s (~8.1 GB/h) on 4 channels **independent of F_max and binsize**, since stored frames are the fixed-rate capture. Uncapped that is an OOM kill: SIGKILL, no traceback, nothing in the log.
-- **H-01** `_build_anomaly_hook` is copy-pasted between `gui.py` and `headless.py` and has already diverged. One bug there is two bugs. `tests/test_anomaly_hook_build.py` tests **both copies** and asserts their defaults match — keep it that way, or extract the shared factory it keeps recommending.
+- **S-02 (critical) — FIXED.** Three bounds, all of which must stay. (`max_burst_s`
+  was nevertheless unreachable until Sep 2026: seeded in `acquisition.yaml`, printed
+  in the headless summary, and never read — both front ends passed a hardcoded 600.0.
+  Read it from the config; do not reintroduce the literal.) The writer queue is `queue.Queue(maxsize=MAX_QUEUE_DEPTH)`; on full it **drops rather than blocks** (back-pressure there would reach the render loop and stall acquisition behind the disk) and the drops are counted and surfaced as `dropped_captures` — unbounded, its `except queue.Full` branch was dead code and `enqueue` always returned True, so the UI counted captures never written. Both the manual and the anomaly burst paths now go through the shared `capped_burst_end()`, so `max_burst_s` applies to the path that fires unattended. `_burst_frames` and `_burst_all_results` are capped by `burst_frame_cap()` and trimmed **together**, because `_flush_burst` indexes them in parallel — trimming one alone puts every overall against the wrong waveform. Measured: retention costs 2.76× the raw block, growing at ~2.26 MB/s (~8.1 GB/h) on 4 channels **independent of F_max and binsize**, since stored frames are the fixed-rate capture. Uncapped that is an OOM kill: SIGKILL, no traceback, nothing in the log.
+- **H-01** `_build_anomaly_hook` is copy-pasted between `gui.py` and `headless.py` and has already diverged. It is the **last** such pair: three more were found and extracted in Sep 2026, two of which had already drifted — the device-config channel decision (now `config.channel_role_state`; the copies disagreed on the default for a missing `enabled` key), the session channel snapshot (now `monitor.session.channel_snapshot_for`; neither copy recorded the channel role), and the whole `MonitorSession` construction (now `monitor.session.session_from`, with `sensor_snapshot_for`, `pre_buffer_frames_for` and `required_cache_frames`; headless had lost the `+1` that makes the frame cache hold the trigger frame as well as the pre-trigger window, and both pinned `max_burst_s` to a literal). `_build_anomaly_hook` is the harder one — its copies read from different sources (DPG widgets vs a config dict), so it needs a parameter object rather than a straight extraction. One bug there is two bugs, and `_build_anomaly_hook` is the last uncorrected instance. `tests/test_anomaly_hook_build.py` tests **both copies** and asserts their defaults match — keep it that way, or extract the shared factory it keeps recommending.
 - The **spectral** anomaly hook is unwired from the GUI (`GUI_ANOMALY_HOOK_TYPES`) because it fires on essentially every healthy frame: it tests every bin against a fixed %, while Welch runs one segment so each bin is χ²(2) with σ equal to its own mean. Still reachable from headless. Fix-or-remove is tracked as **R39**.
 
 ## Working on this codebase

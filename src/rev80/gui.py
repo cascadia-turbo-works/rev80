@@ -21,7 +21,6 @@ from rev80 import tach as rev80_tach
 from rev80.util import (
     ANOMALY_HOOK_LABELS,
     DEFAULT_RMS_ALPHA,
-    DEFAULT_CHANNEL_ROLE,
     DEFAULT_ROTATION_UNIT,
     DEFAULT_SPEC_ALPHA,
     ROTATION_UNIT_LABELS,
@@ -784,6 +783,7 @@ class GUI:
             (ui.TACH_THRESH_MV, s.threshold_mv),
             (ui.TACH_MIN_AMPL_MV, s.min_amplitude_mv),
             (ui.TACH_REFLECTOR_MM, s.reflector_size_mm),
+            (ui.TACH_PPR, s.pulses_per_rev),
         ):
             if dpg.does_item_exist(tag):
                 dpg.set_value(tag, val)
@@ -855,7 +855,7 @@ class GUI:
         def _g(tag, default):
             return dpg.get_value(tag) if dpg.does_item_exist(tag) else default
         return rev80_tach.TachSettings(
-            pulses_per_rev=1,          # D-6: not user-configurable
+            pulses_per_rev=max(1, int(_g(ui.TACH_PPR, 1))),
             polarity=str(_g(ui.TACH_POLARITY, 'rising')),
             threshold_mode=str(_g(ui.TACH_THRESH_MODE, 'adaptive')),
             threshold_mv=float(_g(ui.TACH_THRESH_MV, 2500.0)),
@@ -884,11 +884,12 @@ class GUI:
         if not dpg.is_item_shown(ui.DLG_CONFIG):
             return
 
-        # Slowest measurable shaft, from the block length. Information only:
-        # an operator must be able to set the tach up against a machine that
-        # is not running.
+        # Slowest measurable shaft, from the block length and the configured
+        # pulses/rev. Information only: an operator must be able to set the
+        # tach up against a machine that is not running.
         t_block = 1.0 / max(self.collector.config.binsize, 1e-9)
-        floor_rpm = rev80_tach.MIN_EDGES * 60.0 / t_block
+        ppr = max(1, int(self._tach_settings_from_ui().pulses_per_rev))
+        floor_rpm = rev80_tach.slowest_rpm_for(t_block, ppr)
         if dpg.does_item_exist(ui.TACH_FLOOR):
             dpg.set_value(
                 ui.TACH_FLOOR,
@@ -919,14 +920,36 @@ class GUI:
             return
 
         res = self.collector.tach_for(ch, sample)
+
+        # Two independent cautions, either of which opens the box. The floor
+        # is about the block being too short for this shaft; the sampling one
+        # is about the pulse rate being too fast for the fixed acquisition
+        # rate, which only a ppr above 1 can cause.
+        show_floor = res.quality in (rev80_tach.QUALITY_TOO_FEW_EDGES,
+                                     rev80_tach.QUALITY_NO_SIGNAL)
+        samples_per_pulse = (
+            float(sample.samplerate) * 60.0 / (res.rpm * ppr)
+            if res.rpm else None)
+        show_ppr = (samples_per_pulse is not None
+                    and samples_per_pulse < rev80_tach.MIN_SAMPLES_PER_PULSE)
+        if dpg.does_item_exist(ui.TACH_PPR_WARN):
+            if show_ppr:
+                dpg.set_value(
+                    ui.TACH_PPR_WARN,
+                    f"{icons.IC['warning']}  {samples_per_pulse:.0f} samples "
+                    f"per pulse at {ppr}/rev -- below "
+                    f"{rev80_tach.MIN_SAMPLES_PER_PULSE}, accuracy degrades to "
+                    f"~0.8%. Use fewer pulses per revolution.")
+            dpg.configure_item(ui.TACH_PPR_WARN, show=show_ppr)
+        if dpg.does_item_exist(ui.TACH_FLOOR):
+            dpg.configure_item(ui.TACH_FLOOR, show=show_floor)
         if dpg.does_item_exist(ui.TACH_WARN_BOX):
             # Only a warning when it is actually biting. The floor is normal
             # information at configure time, not a fault -- an operator must be
             # able to set the tach up against a machine that is not running.
-            dpg.configure_item(
-                ui.TACH_WARN_BOX,
-                show=res.quality in (rev80_tach.QUALITY_TOO_FEW_EDGES,
-                                     rev80_tach.QUALITY_NO_SIGNAL))
+            dpg.configure_item(ui.TACH_WARN_BOX,
+                               show=show_floor or show_ppr,
+                               height=34 if show_floor != show_ppr else 56)
         fs = float(sample.samplerate)
         x = np.asarray(sample.data, dtype=np.float64)
         t_axis = np.arange(x.size) / fs
@@ -954,9 +977,12 @@ class GUI:
                       [edges_shifted.tolist(), [level] * edges_shifted.size])
 
         # A couple of periods of lead-in and run-out, so the pulses sit inside
-        # the frame rather than against its edges.
+        # the frame rather than against its edges. The period here is the
+        # *pulse* period, not the shaft period: at 6 pulses/rev a window of
+        # n_edges shaft revolutions is six times too wide and the trace
+        # collapses to a stripe.
         if res.shaft_hz:
-            period = 1.0 / res.shaft_hz
+            period = 1.0 / (res.shaft_hz * max(1, res.pulses_per_rev))
             dpg.set_axis_limits(ui.TACH_PLOT_X, -2.0 * period,
                                 (res.n_edges + 2) * period)
         else:
@@ -3023,7 +3049,10 @@ class GUI:
             'interval_s':        float(interval_s),
             'pre_burst_s':       float(_get(ui.MON_DLG_PRE_BUFFER,  30.0)),
             'burst_duration_s':  float(_get(ui.MON_DLG_BURST_DUR,   120.0)),
-            'max_burst_s':       600.0,
+            # Preserved, not rewritten: there is no widget for it, so a
+            # literal here silently undid any hand edit to the YAML.
+            'max_burst_s':       float(
+                acq_cfg.get('monitor', {}).get('max_burst_s', 600.0)),
             'output_dir':        str(_get(ui.MON_DLG_OUTPUT_DIR, '')).strip() or None,
             'compression':       'gzip' if _get(ui.MON_DLG_COMPRESS, True) else 'none',
             'compression_level': 4,
@@ -3140,60 +3169,35 @@ class GUI:
         cooldown_enabled = bool(dpg.get_value(ui.MON_ANOM_COOLDOWN_ENABLED)) if dpg.does_item_exist(ui.MON_ANOM_COOLDOWN_ENABLED) else False
         cooldown_s       = float(dpg.get_value(ui.MON_ANOM_COOLDOWN_S)) if dpg.does_item_exist(ui.MON_ANOM_COOLDOWN_S) else 0.0
 
-        cfg = self.collector.config
-        block_s = cfg.blocksize / cfg.samplerate
-        pre_buffer_n = max(1, int(pre_buf_s / block_s)) if block_s > 0 else 1
+        from rev80.monitor.session import required_cache_frames, session_from
 
         now_local  = datetime.now()
         session_id = now_local.strftime('%Y-%m-%d-%H%M%S')
 
-        if out_dir_s:
-            output_dir = Path(out_dir_s) / session_id
-        else:
-            output_dir = rev80.data_dir() / "monitor" / session_id
+        # max_burst_s has no widget -- it is an acquisition.yaml-only setting.
+        # Read it rather than pinning it to a literal: it is the bound that
+        # stops an unattended burst growing until the OOM killer takes the
+        # process (audit S-02).
+        mon_saved = _cfg.load_acquisition_config().get('monitor', {})
 
-        # Build config snapshots for embedding in every capture file
-        acq_snapshot = cfg.to_dict()
-        ch_snapshot: dict = {}
-        for ch in cfg.enabled_channels:
-            sc = self.collector.scope_sensors.get(ch)
-            ch_snapshot[str(ch)] = {
-                'name':           cfg.name_for(ch),
-                'unit':           'mV',
-                'coupling':       cfg.coupling_for(ch),
-                'voltage_range':  cfg.voltage_range_for(ch),
-                'scope_sensor_id': sc.id if sc else '',
-                'target_unit':    cfg.target_unit_for(ch),
-                'amplitude_mode': cfg.amplitude_mode_for(ch),
-            }
-        seen: set = set()
-        sensor_snapshot: dict = {}
-        for sc in self.collector.scope_sensors.values():
-            if sc.id not in seen:
-                seen.add(sc.id)
-                sensor_snapshot[sc.id] = sc.to_dict()
-
-        session = rev80.MonitorSession(
+        session = session_from(
+            collector=self.collector,
             session_id=session_id,
             start_time=now_local,
             interval_s=float(interval_s),
-            pre_buffer_frames=pre_buffer_n,
+            pre_buffer_s=pre_buf_s,
             burst_duration_s=burst_dur,
-            max_burst_s=600.0,
-            session_dir=output_dir,
+            max_burst_s=float(mon_saved.get('max_burst_s', 600.0)),
+            output_dir=out_dir_s or None,
             compression="gzip" if compress else "none",
-            compression_level=4,
             cooldown_enabled=cooldown_enabled,
             cooldown_s=cooldown_s,
-            acq_snapshot=acq_snapshot,
-            channel_snapshot=ch_snapshot,
-            sensor_snapshot=sensor_snapshot,
         )
 
-        # Enlarge frame cache to hold pre-trigger frames + trigger frame.
-        # +1 ensures frame_cache[-n:] yields n true pre-trigger frames with the
-        # trigger frame at cache[-1] (which becomes burst_frames[n_pretrigger]).
-        self.collector.resize_frame_cache(max(self.collector.config.cache_frames, pre_buffer_n + 1))
+        # The frame cache must hold the pre-trigger window *plus* the trigger
+        # frame; the rule is shared with headless, which had lost the +1.
+        self.collector.resize_frame_cache(required_cache_frames(
+            self.collector.config.cache_frames, session.pre_buffer_frames))
 
         if self._monitor is None:
             self._monitor = rev80.MonitorController()
@@ -3665,13 +3669,16 @@ class GUI:
             if ch >= self._num_channels:
                 continue
             sensor_id = info.get("sensor_id")
-            enabled = info.get("enabled", True)
             voltage_range = info.get("voltage_range", 7)
             coupling = info.get("coupling", "AC")
             channel_name = info.get("channel_name", "")
             target_unit = info.get("target_unit", "")
             amplitude_mode = info.get("amplitude_mode", "")
-            role = str(info.get("role") or DEFAULT_CHANNEL_ROLE)
+            # The role decision is shared with headless (audit H-01), and it
+            # owns `enabled` too: a tach-role channel is forced on, because
+            # config.tach_channels filters by enabled_channels and a claimed
+            # -but-disabled tach is one that silently does not run.
+            role, tach_settings, enabled = _cfg.channel_role_state(info)
             sensor = self.registry.find_by_id(sensor_id) if sensor_id else None
             self.collector.set_scope_sensor(ch, sensor)
             self.collector.config.channel_voltage_ranges[ch] = voltage_range
@@ -3684,9 +3691,7 @@ class GUI:
                 self.collector.config.channel_amplitude_modes[ch] = amplitude_mode
             if role == 'tachometer':
                 self.collector.config.channel_roles[ch] = role
-                self.collector.set_tach_settings(
-                    ch, rev80_tach.TachSettings.from_dict(info.get("tach") or {}))
-                enabled = True   # a claimed channel is sampled; see apply_tach_claim
+                self.collector.set_tach_settings(ch, tach_settings)
             else:
                 self.collector.config.channel_roles.pop(ch, None)
                 self.collector.set_tach_settings(ch, None)
@@ -3847,6 +3852,27 @@ class GUI:
                                     default_value=0.0, step=1.0,
                                     width=_DLG_FIELD_W // 2,
                                     callback=lambda s, d: self._on_tach_settings_change())
+                            with dpg.group(horizontal=True):
+                                _pr = dpg.add_input_int(
+                                    label="Pulses/rev", tag=ui.TACH_PPR,
+                                    default_value=1, min_value=1, step=1,
+                                    min_clamped=True, width=_DLG_FIELD_W // 2,
+                                    callback=lambda s, d: self._on_tach_settings_change())
+                            _tip(_pr,
+                                 "How many pulses the sensor sees per shaft "
+                                 "revolution. One reflective tape or one keyway "
+                                 "is 1.\n\n"
+                                 "Leave this at 1 wherever you have the choice. "
+                                 "At 1 pulse/rev every interval is exactly one "
+                                 "revolution, so encoder division error and "
+                                 "once-per-rev speed modulation cancel by "
+                                 "construction: 0.0013% against 0.091% for a "
+                                 "60-line encoder at any window length.\n\n"
+                                 "A higher value is divided out correctly, but "
+                                 "a rate is only reported once the block holds "
+                                 "two whole revolutions -- so a finer encoder "
+                                 "does NOT read a slower shaft. Use a smaller "
+                                 "bin size for that.")
                             _tip(_ru, "Applies to every shaft-rate readout in the app.")
                             _tip(_rf,
                                  "Arc length of the reflective tape or key, "
@@ -3888,16 +3914,29 @@ class GUI:
                                                   show=False) as _wb:
                                 _fl = dpg.add_text("", tag=ui.TACH_FLOOR,
                                                    color=_c("ORANGE"))
+                                _pw = dpg.add_text("", tag=ui.TACH_PPR_WARN,
+                                                   color=_c("ORANGE"), show=False)
                             dpg.bind_item_theme(_wb, ui.TACH_WARN_THEME)
                             _tip(_fl,
-                                 "Three pulses must fall inside one acquisition "
-                                 "block for a rate to be resolved, so the block "
-                                 "length (1/bin size) sets a slowest measurable "
-                                 "shaft.\n\n"
+                                 "Two whole shaft revolutions must fall inside "
+                                 "one acquisition block for a rate to be "
+                                 "resolved, so the block length (1/bin size) "
+                                 "sets a slowest measurable shaft.\n\n"
+                                 "More pulses per revolution does not lower it "
+                                 "meaningfully -- the gate is revolutions, not "
+                                 "pulses. A smaller bin size does.\n\n"
                                  "This is information, not a limit on setup: "
                                  "configure the tach against a stopped machine "
                                  "with your best guess and it will read once the "
                                  "shaft turns.")
+                            _tip(_pw,
+                                 "Sub-sample edge interpolation needs about 70 "
+                                 "samples per pulse. Below that the estimator "
+                                 "collapses to ~0.8% error -- the median locks "
+                                 "onto the modal integer sample period.\n\n"
+                                 "Measured on the bench. Fewer pulses per "
+                                 "revolution is the fix; the acquisition rate "
+                                 "is fixed and cannot be raised.")
                             with dpg.plot(label="Tach signal", height=200,
                                           width=-1, tag=ui.TACH_PLOT):
                                 dpg.add_plot_axis(dpg.mvXAxis, label="s from first pulse",

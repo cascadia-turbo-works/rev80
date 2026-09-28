@@ -9,6 +9,205 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### feature/tachometer — one session factory, and two bugs it was hiding (2026-09-21)
+
+Follow-on from R44: an inventory of what still differed between `gui.py` and
+`headless.py`. `MonitorSession` was constructed field-by-field in both, fourteen
+arguments each, and two of those fields had drifted or died.
+
+#### Fixed
+- **Headless kept one fewer pre-trigger frame than asked for.** The GUI sized
+  the frame cache to `pre_buffer_n + 1`, headless to `pre_buffer_frames`. The
+  `+ 1` is what the GUI's own comment says it is for: `MonitorController`
+  slices `frame_cache[-n:]` and the trigger frame then becomes
+  `burst_frames[n]`, so a cache of exactly n yields n-1 true pre-trigger
+  frames — the trigger frame has taken a slot. Nothing reports the achieved
+  count, so every unattended burst was silently one frame short of its
+  configured lead-in. Now `monitor.session.required_cache_frames()`, called
+  from both.
+- **`max_burst_s` was a setting that did nothing.** Seeded in
+  `acquisition.yaml` by `config.py`, printed in the headless session summary,
+  and **never read**: both front ends passed a hardcoded `600.0` to
+  `MonitorSession`, and the GUI's config save wrote `600.0` back as a literal,
+  undoing any hand edit the next time anyone touched the monitor dialog. So
+  `max_burst_s: 120` printed "max 120s", enforced 600, and reverted itself.
+  It is the bound that stops an unattended burst growing until the OOM killer
+  takes the process (audit S-02, measured at ~2.26 MB/s / ~8.1 GB/h on four
+  channels), which makes a cap nobody can change the wrong kind of defect to
+  leave in place. Both front ends now read it; the GUI preserves it on save
+  rather than rewriting it. There is still no widget for it — it is an
+  `acquisition.yaml`-only setting, and now genuinely is one.
+
+#### Added
+- **`monitor.session.session_from()`** — the single `MonitorSession`
+  constructor, keyword-only, because fourteen positional fields is how the two
+  copies drifted without anyone noticing. With it, `sensor_snapshot_for()`
+  (the deduplicate-by-id loop both front ends had their own copy of) and
+  `pre_buffer_frames_for()` (the same formula with the divide-by-zero guard
+  placed differently in each).
+- Tests asserting by source inspection that neither front end constructs
+  `MonitorSession` directly, sizes the cache itself, or pins the burst cap to
+  a literal — the same technique `tests/test_anomaly_hook_build.py` uses on
+  the one copy that remains.
+
+#### Notes for the next person
+- **`_build_anomaly_hook` is now the last duplicated pair.** It is the harder
+  one: the two copies read from genuinely different sources (DPG widgets vs a
+  config dict) and would need a parameter object between them, rather than the
+  straight extraction the other three took.
+
+### feature/tachometer — headless runs a tachometer (R44) (2026-09-21)
+
+`rev80-headless` used to *refuse* tach-role channels: it reads the same
+`devices/*.yaml` the GUI writes, and a tach fed through the vibration path
+measures overall 1514.9 mV, crest 5.00, kurtosis 15.94 and 63 spectral peaks
+on a 5% duty 1800 RPM square — an analyst reviewing that session concludes a
+bearing is failing badly. Out of scope had to mean "does not do it".
+
+It now runs one. The pipeline below `receive_data` was already role-aware, so
+most of this is wiring — but the survey that said so was wrong in three
+places, and those are the substance of this change.
+
+#### Added
+- **`config.channel_role_state()`** — the single decision for what a
+  `channels/{ch}` block means: role, tach calibration, enabled. The GUI and
+  headless each had their own copy and had **already drifted** (the GUI
+  defaulted a missing `enabled` to True, headless to False). Also hardens the
+  loader: an unrecognised role reads as vibration with a warning rather than
+  propagating, because raising out of a config loader is how the sensor
+  library was once erased (audit X-01).
+- **`monitor.session.channel_snapshot_for()`** — same story for the
+  per-channel snapshot embedded in `session.h5`. Both copies omitted the
+  channel `role`, so a loaded session could only infer it from the absence of
+  a `data` dataset. Tach channels now also carry their calibration, keeping
+  the shaft speed re-derivable at a different `pulses_per_rev`.
+- **`sensor._simulate_tach_sources()`** — nothing in the package ever set
+  `SimulatedSensor.channel_sources`; only tests did. A simulated tach channel
+  therefore received the same accelerometer waveform as the vibration input
+  and read `no_signal`, which meant **neither front end could be dry-run
+  against a tachometer offline**. Uses `machine_with_tach_sources` so the
+  pulse train stays locked to the vibration channel's own shaft rate.
+- **Tachometer block in the headless session summary** — channel, threshold
+  mode, polarity, pulses/rev, and both limits a non-unity ppr runs into: the
+  slowest measurable shaft (`slowest_rpm_for`) and the
+  `MIN_SAMPLES_PER_PULSE` accuracy ceiling. An unattended run has no
+  Tachometer tab to show these live, and neither is recoverable from the
+  session file afterwards.
+- **Shaft speed on the headless status line**, `--` and never `0` when there
+  is no reading (R45), with an `[off-speed]` tag when the gate excludes a
+  frame.
+
+#### Fixed
+- **Every monitor session stored a tachometer channel's full waveform.**
+  `_write_channel_group` takes `role=` and defaults it to `'vibration'`;
+  `DataCollector.save_data` passed it and `MonitorWriterThread` never did, on
+  either of its two call sites. That is ~427x the stored size per frame
+  (25600 samples against 60 edge times, measured) on the one code path that
+  runs unattended for hours, and it lost the per-frame rpm, quality and edge
+  times with it — decision D-2 held in measurement files and nowhere else.
+  Now derived from the sample itself via `collector.role_of_sample`, which is
+  the test `monitor/controller.py` already used for the pre-trigger overall.
+- **`_apply_overrides` was dead code.** Nothing called it: `run()` inlined its
+  own maxfreq/binsize copy and handled `--channels` separately, by editing
+  the device file's `enabled` flags. It has been unreachable since the Rev80
+  rebrand (`62dd2c2`). `run()` now calls it, and `--channels` reconciles
+  against the roles: dropping the tachometer is honoured — it is an explicit
+  instruction — but never silent, because the session would otherwise record
+  `rpm=NaN` on every capture with the speed gate failing closed, excluding
+  every frame from trending and alarming with nothing saying why.
+- **`--channels` no longer writes `enabled: false` onto a tach channel.** That
+  flag is owned by the role (`channel_role_state` forces a claimed channel on,
+  since `tach_channels` filters by `enabled_channels`), so persisting it wrote
+  a flag every loader then ignores. The run-scoped exclusion belongs in
+  `_apply_overrides`, and that is where it now happens.
+
+#### Notes for the next person
+- **The R44 survey's premise was right and three of its facts were wrong.**
+  It read `monitor/controller.py`'s `if sample.tach is not None: continue` as
+  "the monitor stores a tach as edge times"; that branch only keeps the tach
+  out of the pre-trigger overall. Reading a guard as evidence of a feature is
+  how all three of these survived.
+- **Verified end to end offline**, which was not possible before
+  `_simulate_tach_sources`: `rev80-headless --device sim` against a device
+  file with a tach-role channel reads 3600 RPM on a 60 Hz simulated shaft,
+  writes `edge_times`/`pulse_widths` and no `data` for that channel, records
+  `rpm`/`speed_ok` on every capture, and carries the roles in
+  `/metadata/channels`.
+
+
+### feature/tachometer — configurable pulses/rev, gated on revolutions (2026-09-18)
+
+`pulses_per_rev` becomes a user-facing control, and the minimum-data gate it
+depends on changes from a fixed edge count to whole shaft revolutions.
+
+D-6 has not been repealed: 1 ppr is still the default and still the accurate
+configuration, for the reason it always was. What changed is the recognition
+that a keyphasor or an encoder already bolted to a machine is not something the
+operator can choose away, and that refusing to divide by it means refusing the
+machine.
+
+#### Changed
+- **`MIN_EDGES = 3` → `MIN_REVS = 2.0` plus `min_edges_for(ppr)`.** The two
+  agree exactly at 1 ppr — three edges, two intervals, two whole turns — and
+  nowhere else: three edges of a 60-line encoder is 0.033 of a revolution.
+  `test_three_edges_is_two_whole_revolutions_at_one_ppr` pins the equivalence.
+- **A block under `MIN_REVS` now reports no rate.** Measured through the real
+  `tach_result`: a 6 ppr block holding 1.5 revolutions has 10 rising edges,
+  three times the old gate, and passed it — returning `quality='ok'` and
+  1800.0 RPM computed from a fraction of a turn, where division error and
+  once-per-rev modulation have not yet cancelled (0.580% mean / 1.898% worst at
+  0.05 rev, against 0.091% from one full turn). Revert-checked: restoring the
+  fixed gate makes `test_high_ppr_block_under_min_revs_reports_no_reading` fail
+  with `rpm=1799.9999999999998` where it wants `None`.
+- **The quality string stays `'too_few_edges'`** though the constraint is now
+  revolutions. The test is still on the edge count, and the string is written
+  into every stored HDF5 tach group — renaming it would strand files for a
+  wording improvement.
+- **`TachSettings.from_dict` no longer warns on ppr != 1.** It is a supported
+  setting with a control of its own. The warning now fires on what is actually
+  wrong — a zero, negative or fractional ppr, which is a corrupt file rather
+  than a configuration, and whose fallback to 1 changes the reported speed.
+
+#### Added
+- **Pulses/rev in the Tachometer tab**, with the D-6 rationale in its tooltip.
+- **`slowest_rpm_for(block_s, ppr)`**, replacing an open-coded
+  `MIN_EDGES * 60 / t_block` in `gui.py`, and carrying the binsize table that
+  the module docstring used to hold loose. The docstring table is now derived
+  from the function, with a test asserting they agree.
+- **`MIN_SAMPLES_PER_PULSE = 70` and a live caution in the tab** when the
+  configured ppr pushes the pulse rate past what edge interpolation can
+  resolve (~0.8% error below it, measured; 6000 RPM at 6 ppr, 600 at 60). It
+  is a caution and not a gate: a degraded reading is still a reading.
+
+#### Fixed
+- **The tach preview plot's x-axis used the shaft period where it meant the
+  pulse period.** Invisible at 1 ppr, where they are the same number; at 6 ppr
+  the window is six times too wide and the trace collapses to a stripe.
+
+#### Verified electrically
+Closed out on a 4424A (AWG loopback, channel A), 27 hardware tests passing:
+- **ppr divides the hardware rate exactly once**, at 1, 2 and 6 pulses/rev
+  against a 60 Hz square — 3600, 1800 and 600 RPM within the published
+  ±0.2% of reading.
+- **The gate withholds on real edges.** 5 Hz in a 1 s block is ~5 rising
+  edges: 300 RPM at 1 ppr, and at 6 ppr it is 0.8 of a revolution, which used
+  to return 50 RPM with `quality='ok'` and now returns `None`.
+
+#### Notes for the next person
+- **A finer encoder does not read a slower shaft, and the UI must keep saying
+  so.** The gate is two revolutions either way; all a higher ppr recovers is the
+  one pulse period of phase-safety margin, which is a whole revolution at 1 ppr
+  and 1/60th of one at 60. The floor goes 180 → 121 RPM at a 1 s block — a
+  third, not sixtyfold. The way to read a slower shaft is a longer block.
+- **`MIN_REVS = 2.0` and not the 1.0 the error table alone justifies**, because
+  the statistical floor binds harder at 1 ppr: one revolution there is a single
+  interval, with no spread. 2.0 also makes each half-block span one revolution,
+  so `_MIN_EDGES_FOR_DRIFT` needs no revolution-based companion — at 1.0 a
+  steady shaft with a load zone would read as 'unsteady'.
+- **Replay inherits the gate, which is the point.** A file captured at 1 ppr and
+  reinterpreted as a 60-line encoder now withholds the rate rather than dividing
+  0.97 of a revolution by 60 and reporting 29 RPM for a 1762 RPM shaft.
+
 ## [0.1.3] - 2026-09-17
 
 

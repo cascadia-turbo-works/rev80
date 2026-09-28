@@ -466,6 +466,42 @@ class TestPicoScopeTachometer:
         assert ac_adaptive.rpm == pytest.approx(FREQ * 60.0, rel=3e-3), (
             'adaptive tracks the block span and is unaffected by duty')
 
+    @pytest.mark.parametrize('ppr', [1, 2, 6])
+    def test_pulses_per_rev_divides_the_hardware_rate(self, ppr):
+        """The AWG produces the *pulse* rate; ppr is the divisor to the shaft.
+
+        60 Hz of square wave is 3600 RPM at 1 pulse/rev and 600 at 6, and the
+        divide happens exactly once in the chain. Same published +-0.2 % of
+        reading as the 1 ppr sweep -- 60 Hz is 3600/ppr RPM with well over the
+        two revolutions the gate wants inside a 1 s block at every value here.
+        """
+        res, _ = _capture_tach(
+            60.0, settings=rev80_tach.TachSettings(pulses_per_rev=ppr))
+        assert res is not None and res.rpm is not None
+        assert res.quality == rev80_tach.QUALITY_OK
+        assert res.rpm == pytest.approx(60.0 * 60.0 / ppr, rel=2e-3)
+
+    def test_a_block_under_min_revs_withholds_the_rate_electrically(self):
+        """The MIN_REVS gate, demonstrated on real edges rather than synthetic.
+
+        5 Hz of square wave in a 1 s block is ~5 rising edges. Read as 1
+        pulse/rev that is 5 revolutions and a good 300 RPM reading. Read as a
+        6-line encoder it is 0.8 of a revolution -- more than the three edges
+        the old fixed gate asked for, and it used to return 50 RPM with
+        quality 'ok', computed from a fraction of a turn. It must now withhold.
+        """
+        ok, _ = _capture_tach(5.0)
+        assert ok is not None and ok.rpm == pytest.approx(300.0, rel=2e-3)
+        assert 3 <= ok.n_edges < rev80_tach.min_edges_for(6), (
+            'the capture must clear the old gate and miss the new one, or '
+            'this test does not discriminate')
+
+        gated, _ = _capture_tach(
+            5.0, settings=rev80_tach.TachSettings(pulses_per_rev=6))
+        assert gated is not None
+        assert gated.rpm is None
+        assert gated.quality == rev80_tach.QUALITY_TOO_FEW_EDGES
+
     def test_duty_cycle_is_measured(self):
         """The built-in square is 50 % duty; duty is what R46 turns into a
         surface velocity."""
