@@ -21,7 +21,6 @@ from rev80 import tach as rev80_tach
 from rev80.util import (
     ANOMALY_HOOK_LABELS,
     DEFAULT_RMS_ALPHA,
-    DEFAULT_CHANNEL_ROLE,
     DEFAULT_ROTATION_UNIT,
     DEFAULT_SPEC_ALPHA,
     ROTATION_UNIT_LABELS,
@@ -3050,7 +3049,10 @@ class GUI:
             'interval_s':        float(interval_s),
             'pre_burst_s':       float(_get(ui.MON_DLG_PRE_BUFFER,  30.0)),
             'burst_duration_s':  float(_get(ui.MON_DLG_BURST_DUR,   120.0)),
-            'max_burst_s':       600.0,
+            # Preserved, not rewritten: there is no widget for it, so a
+            # literal here silently undid any hand edit to the YAML.
+            'max_burst_s':       float(
+                acq_cfg.get('monitor', {}).get('max_burst_s', 600.0)),
             'output_dir':        str(_get(ui.MON_DLG_OUTPUT_DIR, '')).strip() or None,
             'compression':       'gzip' if _get(ui.MON_DLG_COMPRESS, True) else 'none',
             'compression_level': 4,
@@ -3167,60 +3169,35 @@ class GUI:
         cooldown_enabled = bool(dpg.get_value(ui.MON_ANOM_COOLDOWN_ENABLED)) if dpg.does_item_exist(ui.MON_ANOM_COOLDOWN_ENABLED) else False
         cooldown_s       = float(dpg.get_value(ui.MON_ANOM_COOLDOWN_S)) if dpg.does_item_exist(ui.MON_ANOM_COOLDOWN_S) else 0.0
 
-        cfg = self.collector.config
-        block_s = cfg.blocksize / cfg.samplerate
-        pre_buffer_n = max(1, int(pre_buf_s / block_s)) if block_s > 0 else 1
+        from rev80.monitor.session import required_cache_frames, session_from
 
         now_local  = datetime.now()
         session_id = now_local.strftime('%Y-%m-%d-%H%M%S')
 
-        if out_dir_s:
-            output_dir = Path(out_dir_s) / session_id
-        else:
-            output_dir = rev80.data_dir() / "monitor" / session_id
+        # max_burst_s has no widget -- it is an acquisition.yaml-only setting.
+        # Read it rather than pinning it to a literal: it is the bound that
+        # stops an unattended burst growing until the OOM killer takes the
+        # process (audit S-02).
+        mon_saved = _cfg.load_acquisition_config().get('monitor', {})
 
-        # Build config snapshots for embedding in every capture file
-        acq_snapshot = cfg.to_dict()
-        ch_snapshot: dict = {}
-        for ch in cfg.enabled_channels:
-            sc = self.collector.scope_sensors.get(ch)
-            ch_snapshot[str(ch)] = {
-                'name':           cfg.name_for(ch),
-                'unit':           'mV',
-                'coupling':       cfg.coupling_for(ch),
-                'voltage_range':  cfg.voltage_range_for(ch),
-                'scope_sensor_id': sc.id if sc else '',
-                'target_unit':    cfg.target_unit_for(ch),
-                'amplitude_mode': cfg.amplitude_mode_for(ch),
-            }
-        seen: set = set()
-        sensor_snapshot: dict = {}
-        for sc in self.collector.scope_sensors.values():
-            if sc.id not in seen:
-                seen.add(sc.id)
-                sensor_snapshot[sc.id] = sc.to_dict()
-
-        session = rev80.MonitorSession(
+        session = session_from(
+            collector=self.collector,
             session_id=session_id,
             start_time=now_local,
             interval_s=float(interval_s),
-            pre_buffer_frames=pre_buffer_n,
+            pre_buffer_s=pre_buf_s,
             burst_duration_s=burst_dur,
-            max_burst_s=600.0,
-            session_dir=output_dir,
+            max_burst_s=float(mon_saved.get('max_burst_s', 600.0)),
+            output_dir=out_dir_s or None,
             compression="gzip" if compress else "none",
-            compression_level=4,
             cooldown_enabled=cooldown_enabled,
             cooldown_s=cooldown_s,
-            acq_snapshot=acq_snapshot,
-            channel_snapshot=ch_snapshot,
-            sensor_snapshot=sensor_snapshot,
         )
 
-        # Enlarge frame cache to hold pre-trigger frames + trigger frame.
-        # +1 ensures frame_cache[-n:] yields n true pre-trigger frames with the
-        # trigger frame at cache[-1] (which becomes burst_frames[n_pretrigger]).
-        self.collector.resize_frame_cache(max(self.collector.config.cache_frames, pre_buffer_n + 1))
+        # The frame cache must hold the pre-trigger window *plus* the trigger
+        # frame; the rule is shared with headless, which had lost the +1.
+        self.collector.resize_frame_cache(required_cache_frames(
+            self.collector.config.cache_frames, session.pre_buffer_frames))
 
         if self._monitor is None:
             self._monitor = rev80.MonitorController()
@@ -3692,13 +3669,16 @@ class GUI:
             if ch >= self._num_channels:
                 continue
             sensor_id = info.get("sensor_id")
-            enabled = info.get("enabled", True)
             voltage_range = info.get("voltage_range", 7)
             coupling = info.get("coupling", "AC")
             channel_name = info.get("channel_name", "")
             target_unit = info.get("target_unit", "")
             amplitude_mode = info.get("amplitude_mode", "")
-            role = str(info.get("role") or DEFAULT_CHANNEL_ROLE)
+            # The role decision is shared with headless (audit H-01), and it
+            # owns `enabled` too: a tach-role channel is forced on, because
+            # config.tach_channels filters by enabled_channels and a claimed
+            # -but-disabled tach is one that silently does not run.
+            role, tach_settings, enabled = _cfg.channel_role_state(info)
             sensor = self.registry.find_by_id(sensor_id) if sensor_id else None
             self.collector.set_scope_sensor(ch, sensor)
             self.collector.config.channel_voltage_ranges[ch] = voltage_range
@@ -3711,9 +3691,7 @@ class GUI:
                 self.collector.config.channel_amplitude_modes[ch] = amplitude_mode
             if role == 'tachometer':
                 self.collector.config.channel_roles[ch] = role
-                self.collector.set_tach_settings(
-                    ch, rev80_tach.TachSettings.from_dict(info.get("tach") or {}))
-                enabled = True   # a claimed channel is sampled; see apply_tach_claim
+                self.collector.set_tach_settings(ch, tach_settings)
             else:
                 self.collector.config.channel_roles.pop(ch, None)
                 self.collector.set_tach_settings(ch, None)

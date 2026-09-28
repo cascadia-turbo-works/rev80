@@ -152,6 +152,21 @@ prompt. Edit it to set channel coupling, voltage range, and sensor assignments, 
 
 **Channel persistence:** `--channels 0 1` updates the `enabled` flag in the saved device
 config so the setting is sticky across restarts — you do not need to repeat the flag.
+A **tachometer** channel is the exception: its enabled flag is owned by the role, so
+`--channels` leaves the saved config alone and drops the tach for that run only, with a
+warning (see below).
+
+**Tachometer:** headless runs one. Configure it in the GUI's Tachometer tab, or by hand in
+`devices/picoscope-<model>-<SN>.yaml` — set the channel's `role: tachometer` and fill its
+`tach:` block. On start the session summary names the channel, its threshold mode, polarity
+and pulses/rev, and prints the slowest shaft the current bin size can resolve; during the run
+the shaft speed appears on the status line, as `--` and never `0` when there is no reading.
+Every capture and burst in `session.h5` records the speed, and the tach channel stores its
+edge times rather than a waveform.
+
+If `--channels` excludes the tachometer, headless says so and runs without a speed
+reference — no speed is recorded, and if the speed gate is enabled it fails closed, so
+nothing is trended or alarmed on. The override is honoured, never silently.
 
 **Confirmation gate:** Before connecting, headless prints a session summary (device, channels,
 sample rate, monitor interval, anomaly config, config file paths) and waits for Enter. Use
@@ -173,7 +188,9 @@ rev80-headless --start-now
 # One-liner with explicit overrides (changes persisted to device config)
 rev80-headless --channels 0 1 --interval 300 --start-now
 
-# Simulated sensor — offline testing, no hardware
+# Simulated sensor — offline testing, no hardware. A tach-role channel in the
+# device config gets a real pulse train, locked to the vibration channel's own
+# shaft rate, so the whole path can be dry-run before it goes in a cabinet.
 rev80-headless --device sim --interval 10 --start-now
 ```
 

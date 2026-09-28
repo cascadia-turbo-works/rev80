@@ -351,6 +351,51 @@ def _merge_acquisition(data: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def channel_role_state(info: dict) -> tuple[str, Any, bool]:
+    """Resolve one `channels/{ch}` block into (role, tach calibration, enabled).
+
+    **The single place that decides what a device-config channel entry means.**
+    The GUI (`gui._restore_channel_assignments`) and headless
+    (`headless._apply_channel_config`) both read the same `devices/*.yaml` and
+    both used to make this decision in their own copy of the code. They had
+    already drifted -- the GUI defaulted a missing `enabled` to True and
+    headless to False -- which is audit H-01's shape exactly: one rule written
+    twice, differing, with nothing asserting the two agree. Call this from both
+    rather than adding a third copy.
+
+    Three rules, none of them obvious from the YAML alone:
+
+    - **A tachometer-role channel is always enabled.** `config.tach_channels`
+      filters by `enabled_channels`, so a claimed-but-disabled channel is a
+      tach that silently does not run. Claiming a channel is a request to
+      sample it (see `gui.apply_tach_claim`).
+    - **A missing `enabled` is False**, matching `_BUILTIN_CHANNEL_TEMPLATE`.
+      In practice this never fires on a loaded file, because `_merge_device`
+      fills every key from that template before anyone sees the dict; it
+      decides only for a dict built some other way.
+    - **An unrecognised role reads as vibration**, with a warning. A hand-edited
+      or newer-than-this-build role must not take down an unattended run --
+      raising out of a config loader is how the sensor library was once erased
+      (audit X-01).
+
+    Returns the `TachSettings` for a tachometer and None for anything else, so
+    the caller can hand it straight to `DataCollector.set_tach_settings`.
+    """
+    from rev80.tach import TachSettings
+    from rev80.util import CHANNEL_ROLES, DEFAULT_CHANNEL_ROLE
+
+    role = str(info.get('role') or DEFAULT_CHANNEL_ROLE)
+    if role not in CHANNEL_ROLES:
+        log.warning('Unknown channel role %r — treating it as %r.',
+                    role, DEFAULT_CHANNEL_ROLE)
+        role = DEFAULT_CHANNEL_ROLE
+
+    if role != 'tachometer':
+        return role, None, bool(info.get('enabled', False))
+
+    return role, TachSettings.from_dict(info.get('tach') or {}), True
+
+
 def _merge_device(data: dict[str, Any]) -> dict[str, Any]:
     """Return device data with missing per-channel keys filled from built-in template.
 

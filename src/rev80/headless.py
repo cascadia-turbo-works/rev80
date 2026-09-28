@@ -86,59 +86,32 @@ def _edit_config() -> int:
 
 # ── Helpers used only during a live session ────────────────────────────────────
 
-def _build_session(collector, args, session_id, anom_cfg=None):
-    from datetime import datetime, timezone
-    from pathlib import Path
-    import rev80
+def _build_session(collector, args, session_id, anom_cfg=None, mon_cfg=None):
+    """Assemble this run's MonitorSession from the CLI args and config.
 
-    cfg     = collector.config
-    block_s = cfg.blocksize / cfg.samplerate if cfg.samplerate else 1.0
-    pre_n   = max(1, int(args.pre_buffer / block_s))
-
-    session_dir = (
-        Path(args.output) / session_id
-        if args.output
-        else rev80.data_dir() / "monitor" / session_id
-    )
-
-    ch_snapshot: dict = {}
-    for ch in cfg.enabled_channels:
-        sc = collector.scope_sensors.get(ch)
-        ch_snapshot[str(ch)] = {
-            "name":            cfg.name_for(ch),
-            "unit":            "mV",
-            "coupling":        cfg.coupling_for(ch),
-            "voltage_range":   cfg.voltage_range_for(ch),
-            "scope_sensor_id": sc.id if sc else "",
-            "target_unit":     cfg.target_unit_for(ch),
-            "amplitude_mode":  cfg.amplitude_mode_for(ch),
-        }
-
-    seen: set = set()
-    sensor_snapshot: dict = {}
-    for sc in collector.scope_sensors.values():
-        if sc.id not in seen:
-            seen.add(sc.id)
-            sensor_snapshot[sc.id] = sc.to_dict()
+    The construction itself is `monitor.session.session_from`, shared with the
+    GUI -- this only decides which of the args and config values feed it.
+    """
+    from rev80.monitor.session import session_from
 
     anom_cfg = anom_cfg or {}
-
-    from rev80.monitor.session import MonitorSession
-    return MonitorSession(
+    mon_cfg = mon_cfg or {}
+    return session_from(
+        collector         = collector,
         session_id        = session_id,
-        start_time        = datetime.now(timezone.utc),
         interval_s        = float(args.interval),
-        pre_buffer_frames = pre_n,
+        pre_buffer_s      = float(args.pre_buffer),
         burst_duration_s  = float(args.burst_duration),
-        max_burst_s       = 600.0,
-        session_dir       = session_dir,
+        # From acquisition.yaml, not a literal. This is the bound that stops
+        # an unattended burst growing until the OOM killer takes the process
+        # (audit S-02), and it was hardcoded here while the session summary
+        # printed the configured value -- so setting it did nothing and said
+        # it had.
+        max_burst_s       = float(mon_cfg.get("max_burst_s", 600.0)),
+        output_dir        = args.output,
         compression       = "none" if args.no_compress else "gzip",
-        compression_level = 4,
         cooldown_enabled  = bool(anom_cfg.get("cooldown_enabled", False)),
         cooldown_s        = float(anom_cfg.get("cooldown_s", 0.0)),
-        acq_snapshot      = cfg.to_dict(),
-        channel_snapshot  = ch_snapshot,
-        sensor_snapshot   = sensor_snapshot,
     )
 
 
@@ -219,40 +192,83 @@ def _build_anomaly_hook(anom_cfg: dict, config, pre_buffer_s: float = 0.0):
 
 
 
-def _apply_channel_config(config, device_cfg: dict) -> None:
+def _persist_channel_override(device_cfg: dict, channels) -> bool:
+    """Write a --channels override into the device config. True if it changed.
+
+    `--channels` is sticky: it edits `devices/*.yaml` so the next run without
+    the flag keeps the same selection.
+
+    **Tachometer-role channels are skipped.** Their stored `enabled` flag is
+    owned by the role -- `channel_role_state` forces a claimed channel on,
+    because `config.tach_channels` filters by `enabled_channels` and a
+    claimed-but-disabled tach is one that silently does not run. Persisting
+    `enabled: False` on one would write a flag that every loader then ignores.
+    A `--channels` list that omits the tach still drops it **for this run**,
+    in `_apply_overrides`, which is where the run-scoped decision belongs.
+    """
+    from rev80.config import channel_role_state
+
+    wanted = set(int(c) for c in channels)
+    changed = False
+    for ch, info in device_cfg.get("channels", {}).items():
+        role, _, _ = channel_role_state(info)
+        if role == 'tachometer':
+            continue
+        want = int(ch) in wanted
+        if info.get("enabled") != want:
+            info["enabled"] = want
+            changed = True
+    return changed
+
+
+def _apply_channel_config(config, device_cfg: dict) -> dict:
     """Load per-channel fields from a device config into `config`.
 
-    Derives enabled_channels from each channel's 'enabled' flag, and
-    **refuses tachometer-role channels** (R44).
+    Derives `enabled_channels` from each channel's role and 'enabled' flag, and
+    returns `{ch: TachSettings}` for the tachometer channels.
 
-    Tachometry is out of scope for rev80-headless, but out of scope has to
-    mean "does not do it" rather than "does it wrong". Headless reads the same
-    devices/*.yaml the GUI writes, so a channel the operator configured as a
-    tachometer would otherwise be enabled here, high-passed, given an overall,
-    trended, and fed to the anomaly hooks as vibration. Measured on a 5% duty
-    pulse train at 1800 RPM through the real process_sample: overall 1514.9 mV,
-    crest factor 5.00, kurtosis 15.94 and 63 spectral peaks -- an analyst
-    reviewing that session concludes a bearing is failing badly. It also drifts
-    on nothing: a tach LED ageing from 5.0 V to 4.5 V of pulse amplitude moves
-    that channel's overall by exactly -10%, the shipped RmsThresholdHook
-    threshold, on three consecutive frames.
+    **Returns the calibration rather than applying it** because
+    `set_tach_settings` lives on `DataCollector` and this runs before the
+    collector exists. Keeping the function pure is also what makes it testable,
+    which is the point: headless used to *refuse* tach-role channels here and
+    that refusal was pinned by no test at all.
 
-    Extracted from run() so the refusal is testable. See R44 in doc/PROGRESS.md
-    for the revisit.
+    R44: headless now runs a tachometer. Everything below `receive_data` was
+    already role-aware -- the collector edge-detects instead of high-passing,
+    `process_samples` iterates `vibration_channels` so a tach yields no
+    `ChannelResult`, the session writer records `rpm`/`speed_ok` on every
+    capture and burst, and `valid_results()` applies the speed gate -- so this
+    was the only layer opting out. What the refusal was protecting against is
+    real and is now prevented by the role rather than by exclusion: a pulse
+    train through the vibration path measures overall 1514.9 mV, crest 5.00,
+    kurtosis 15.94 and 63 spectral peaks on a 5% duty 1800 RPM square, which
+    reads as a bearing failing badly.
+
+    The role decision itself is `config.channel_role_state`, shared with the
+    GUI. Do not re-implement it here (audit H-01).
     """
-    from rev80.util import DEFAULT_CHANNEL_ROLE
+    from rev80.config import channel_role_state
 
     enabled_channels = []
-    refused = []
+    tach_settings = {}
     for ch_key, info in device_cfg.get("channels", {}).items():
         ch = int(ch_key)
-        role = str(info.get("role") or DEFAULT_CHANNEL_ROLE)
+        role, settings, enabled = channel_role_state(info)
         if role == 'tachometer':
             config.channel_roles[ch] = role
-            if info.get("enabled", False):
-                refused.append(ch)
-            continue
-        if info.get("enabled", False):
+            tach_settings[ch] = settings
+            if not info.get("tach"):
+                # Usable defaults -- adaptive threshold, rising, 1 ppr -- but
+                # the operator configured a tach channel and believes it
+                # carries their calibration. An unattended run must not take
+                # the defaults without saying so.
+                log.warning(
+                    "Channel %d is a tachometer with no saved calibration; "
+                    "using defaults (adaptive threshold, rising, 1 pulse/rev). "
+                    "Set it up in the GUI's Tachometer tab.", ch)
+        else:
+            config.channel_roles.pop(ch, None)
+        if enabled:
             enabled_channels.append(ch)
         if info.get("voltage_range") is not None:
             config.channel_voltage_ranges[ch] = info["voltage_range"]
@@ -260,17 +276,16 @@ def _apply_channel_config(config, device_cfg: dict) -> None:
             config.channel_couplings[ch] = info["coupling"]
         if info.get("channel_name"):
             config.channel_names[ch] = info["channel_name"]
-        if info.get("target_unit"):
-            config.channel_target_units[ch] = info["target_unit"]
-        if info.get("amplitude_mode"):
-            config.channel_amplitude_modes[ch] = info["amplitude_mode"]
-    if refused:
-        log.info(
-            "Not enabling tachometer channel(s) %s: rev80-headless does not "
-            "support tachometry (R44). Use the GUI for tach measurements.",
-            ", ".join(str(c) for c in sorted(refused)))
+        if role != 'tachometer':
+            # A tachometer has no sensor, no engineering unit and no amplitude
+            # mode. Letting these through would put a unit on a shaft speed.
+            if info.get("target_unit"):
+                config.channel_target_units[ch] = info["target_unit"]
+            if info.get("amplitude_mode"):
+                config.channel_amplitude_modes[ch] = info["amplitude_mode"]
     if enabled_channels:
         config.enabled_channels = sorted(enabled_channels)
+    return tach_settings
 
 
 def _apply_overrides(config, args) -> None:
@@ -279,12 +294,73 @@ def _apply_overrides(config, args) -> None:
     if args.binsize:
         config.binsize = float(args.binsize)
     if args.channels:
+        before_tach = set(config.tach_channels)
         config.enabled_channels = sorted(set(int(c) for c in args.channels))
+        # --channels overwrites the enabled set wholesale, and a tach channel
+        # dropped that way fails silently in the worst way: `config.tach_channels`
+        # filters by enabled_channels, so the session records rpm=NaN on every
+        # capture and `speed_ok()` fails closed, which excludes every frame from
+        # trending, baselines and alarms. Nothing else would say why. The
+        # override is still honoured -- it is an explicit instruction -- but it
+        # is never silent.
+        dropped = sorted(before_tach - set(config.enabled_channels))
+        if dropped:
+            log.warning(
+                "--channels excludes tachometer channel(s) %s. Running without "
+                "a speed reference: rpm is not recorded, and if the speed gate "
+                "is enabled it fails closed and nothing will be trended or "
+                "alarmed on.", ", ".join(str(c) for c in dropped))
 
 
 # ── Session summary ────────────────────────────────────────────────────────────
 
-def _print_session_summary(sensor, config, args, mon_cfg, anom_cfg, device_path) -> None:
+def _tach_summary_lines(config, tach_settings: dict) -> list:
+    """The tachometer block of the session summary, or [] when none is fitted.
+
+    A headless run is unattended: the summary printed at start is the only
+    place the operator sees what the tach was actually configured as, and
+    there is no Tachometer tab to show the live floor on. Both limits that
+    a configured `pulses_per_rev` runs into are therefore stated up front,
+    because neither can be discovered later from the session file.
+    """
+    from rev80 import tach as _tach
+
+    channels = [ch for ch in config.tach_channels if ch in tach_settings]
+    if not channels:
+        return []
+
+    t_block = 1.0 / max(config.binsize, 1e-9)
+    lines = ["  Tachometer"]
+    for ch in channels:
+        s = tach_settings[ch]
+        ppr = max(1, int(s.pulses_per_rev))
+        lines.append(
+            f"    ch{ch} {config.name_for(ch)}   {s.threshold_mode} threshold, "
+            f"{s.polarity}, {ppr} pulse/rev"
+            + (f", reflector {s.reflector_size_mm:g} mm" if s.reflector_size_mm else "")
+        )
+        floor = _tach.slowest_rpm_for(t_block, ppr)
+        lines.append(
+            f"      Slowest shaft  {floor:,.0f} RPM  "
+            f"({_tach.MIN_REVS:g} rev in a {t_block:.2f} s block)"
+        )
+        if ppr > 1:
+            # The other limit, and the one a higher ppr is actually bought
+            # with: below MIN_SAMPLES_PER_PULSE the edge interpolation stops
+            # recovering sub-sample position and accuracy falls to ~0.8%.
+            ceiling = (config.raw_samplerate * 60.0
+                       / (_tach.MIN_SAMPLES_PER_PULSE * ppr))
+            lines.append(
+                f"      Full accuracy  to {ceiling:,.0f} RPM  "
+                f"({_tach.MIN_SAMPLES_PER_PULSE} samples/pulse at {ppr}/rev); "
+                f"above it, ~0.8%"
+            )
+    return lines
+
+
+
+def _print_session_summary(sensor, config, args, mon_cfg, anom_cfg, device_path,
+                           tach_settings: dict | None = None) -> None:
     from rev80.config import acquisition_config_path
 
     interval_s    = args.interval
@@ -298,7 +374,9 @@ def _print_session_summary(sensor, config, args, mon_cfg, anom_cfg, device_path)
     )
 
     ch_labels = "  ".join(
-        f"{config.name_for(ch)} (ch{ch})" for ch in config.enabled_channels
+        f"{config.name_for(ch)} (ch{ch})"
+        + (" [tach]" if config.role_for(ch) == 'tachometer' else "")
+        for ch in config.enabled_channels
     )
     anom_enabled = anom_cfg.get("enabled", False)
     hook_type    = anom_cfg.get("hook_type", "rms").upper()
@@ -311,6 +389,10 @@ def _print_session_summary(sensor, config, args, mon_cfg, anom_cfg, device_path)
     print(f"  Sample rate {config.samplerate} Hz   block {config.blocksize}   "
           f"resolution {config.binsize:.3g} Hz")
     print()
+    for line in _tach_summary_lines(config, tach_settings or {}):
+        print(line)
+    if tach_settings:
+        print()
     print("  Monitor")
     print(f"    Interval  {interval_str}  ({interval_s:.0f}s)")
     print(f"    Pre-burst {pre_burst_s:.0f}s   Burst {burst_dur_s:.0f}s  "
@@ -366,6 +448,7 @@ def run(args: argparse.Namespace) -> int:
     import rev80.config as _cfg
     from rev80.collector import DataCollector
     from rev80.monitor.controller import MonitorController
+    from rev80.monitor.session import required_cache_frames
     from rev80.sample import AcquisitionSettings
 
     shutdown = threading.Event()
@@ -423,16 +506,8 @@ def run(args: argparse.Namespace) -> int:
         device_cfg = _cfg.load_device_config(sensor.model_name, sensor.serial_number)
 
     # Apply --channels override: update enabled flags and persist
-    if args.channels:
-        enabled_set = set(int(c) for c in args.channels)
-        changed = False
-        for ch, info in device_cfg.get("channels", {}).items():
-            want = ch in enabled_set
-            if info.get("enabled") != want:
-                info["enabled"] = want
-                changed = True
-        if changed:
-            _cfg.save_device_config(sensor.model_name, sensor.serial_number, device_cfg)
+    if args.channels and _persist_channel_override(device_cfg, args.channels):
+        _cfg.save_device_config(sensor.model_name, sensor.serial_number, device_cfg)
 
     if args.interval is None:
         args.interval      = float(mon_cfg.get("interval_s",      600))
@@ -447,21 +522,20 @@ def run(args: argparse.Namespace) -> int:
 
     config = AcquisitionSettings.from_dict(acq_cfg.get("acquisition", {}))
 
-    _apply_channel_config(config, device_cfg)
-
-    # CLI overrides (maxfreq, binsize; --channels already applied above)
-    if args.maxfreq:
-        config.maxfreq = float(args.maxfreq)
-    if args.binsize:
-        config.binsize = float(args.binsize)
+    tach_settings = _apply_channel_config(config, device_cfg)
+    _apply_overrides(config, args)
 
     collector = DataCollector()
     collector.config = config
+    for ch, settings in tach_settings.items():
+        if ch in config.enabled_channels:
+            collector.set_tach_settings(ch, settings)
     collector.init_trend_channels()
 
     # ── Summary + confirmation gate ───────────────────────────────────────────
     anom_cfg = mon_cfg.get("anomaly", {})
-    _print_session_summary(sensor, config, args, mon_cfg, anom_cfg, device_path)
+    _print_session_summary(sensor, config, args, mon_cfg, anom_cfg, device_path,
+                           tach_settings)
     if not getattr(args, 'start_now', False):
         try:
             input("Press Enter to start monitoring, or Ctrl+C to abort… ")
@@ -478,12 +552,13 @@ def run(args: argparse.Namespace) -> int:
 
     # ── Build session ─────────────────────────────────────────────────────────
     session_id = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H%M%S")
-    session    = _build_session(collector, args, session_id, anom_cfg)
+    session    = _build_session(collector, args, session_id, anom_cfg, mon_cfg)
     monitor    = MonitorController()
 
     anomaly_hook = _build_anomaly_hook(anom_cfg, config, pre_buffer_s=float(args.pre_buffer))
 
-    collector.resize_frame_cache(max(config.cache_frames, session.pre_buffer_frames))
+    collector.resize_frame_cache(required_cache_frames(
+        config.cache_frames, session.pre_buffer_frames))
     monitor.start(session, anomaly_hook=anomaly_hook)
 
     print(f"Session {session_id} — recording to {session.session_dir}")
@@ -521,10 +596,26 @@ def run(args: argparse.Namespace) -> int:
         burst_tag = f"  \033[33m[BURST {snap['burst_remaining_s']:.0f}s]\033[0m" \
                     if snap["is_in_burst"] else ""
 
+        # Shaft speed rides on the header line rather than getting a row of
+        # its own: a tachometer channel produces no ChannelResult, so there is
+        # nothing to put in the per-channel block, and one speed applies to
+        # every channel anyway. `--` and never `0` when there is no reading --
+        # "I cannot see a tach signal" and "the shaft is stopped" send an
+        # analyst to different places (R45).
+        rpm = next((r.rpm for r in results if getattr(r, 'rpm', None) is not None),
+                   None)
+        if config.tach_channels:
+            gated = any(not getattr(r, 'speed_ok', True) for r in results)
+            rpm_tag = (f"  {rpm:,.0f} RPM" if rpm is not None else "  -- RPM")
+            if gated:
+                rpm_tag += " \033[33m[off-speed]\033[0m"
+        else:
+            rpm_tag = ""
+
         lines = [f"\033[2K\r\033[90m[{h:02d}:{m:02d}:{s:02d}]  "
                  f"cap #{snap['capture_count']}  "
                  f"next {snap['next_capture_s']:.0f}s  "
-                 f"{snap['total_bytes'] / 1e6:.1f} MB{burst_tag}\033[0m"]
+                 f"{snap['total_bytes'] / 1e6:.1f} MB{rpm_tag}{burst_tag}\033[0m"]
 
         baseline = snap.get('baseline', {})
         for r in results:

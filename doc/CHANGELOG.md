@@ -9,6 +9,132 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### feature/tachometer — one session factory, and two bugs it was hiding (2026-09-21)
+
+Follow-on from R44: an inventory of what still differed between `gui.py` and
+`headless.py`. `MonitorSession` was constructed field-by-field in both, fourteen
+arguments each, and two of those fields had drifted or died.
+
+#### Fixed
+- **Headless kept one fewer pre-trigger frame than asked for.** The GUI sized
+  the frame cache to `pre_buffer_n + 1`, headless to `pre_buffer_frames`. The
+  `+ 1` is what the GUI's own comment says it is for: `MonitorController`
+  slices `frame_cache[-n:]` and the trigger frame then becomes
+  `burst_frames[n]`, so a cache of exactly n yields n-1 true pre-trigger
+  frames — the trigger frame has taken a slot. Nothing reports the achieved
+  count, so every unattended burst was silently one frame short of its
+  configured lead-in. Now `monitor.session.required_cache_frames()`, called
+  from both.
+- **`max_burst_s` was a setting that did nothing.** Seeded in
+  `acquisition.yaml` by `config.py`, printed in the headless session summary,
+  and **never read**: both front ends passed a hardcoded `600.0` to
+  `MonitorSession`, and the GUI's config save wrote `600.0` back as a literal,
+  undoing any hand edit the next time anyone touched the monitor dialog. So
+  `max_burst_s: 120` printed "max 120s", enforced 600, and reverted itself.
+  It is the bound that stops an unattended burst growing until the OOM killer
+  takes the process (audit S-02, measured at ~2.26 MB/s / ~8.1 GB/h on four
+  channels), which makes a cap nobody can change the wrong kind of defect to
+  leave in place. Both front ends now read it; the GUI preserves it on save
+  rather than rewriting it. There is still no widget for it — it is an
+  `acquisition.yaml`-only setting, and now genuinely is one.
+
+#### Added
+- **`monitor.session.session_from()`** — the single `MonitorSession`
+  constructor, keyword-only, because fourteen positional fields is how the two
+  copies drifted without anyone noticing. With it, `sensor_snapshot_for()`
+  (the deduplicate-by-id loop both front ends had their own copy of) and
+  `pre_buffer_frames_for()` (the same formula with the divide-by-zero guard
+  placed differently in each).
+- Tests asserting by source inspection that neither front end constructs
+  `MonitorSession` directly, sizes the cache itself, or pins the burst cap to
+  a literal — the same technique `tests/test_anomaly_hook_build.py` uses on
+  the one copy that remains.
+
+#### Notes for the next person
+- **`_build_anomaly_hook` is now the last duplicated pair.** It is the harder
+  one: the two copies read from genuinely different sources (DPG widgets vs a
+  config dict) and would need a parameter object between them, rather than the
+  straight extraction the other three took.
+
+### feature/tachometer — headless runs a tachometer (R44) (2026-09-21)
+
+`rev80-headless` used to *refuse* tach-role channels: it reads the same
+`devices/*.yaml` the GUI writes, and a tach fed through the vibration path
+measures overall 1514.9 mV, crest 5.00, kurtosis 15.94 and 63 spectral peaks
+on a 5% duty 1800 RPM square — an analyst reviewing that session concludes a
+bearing is failing badly. Out of scope had to mean "does not do it".
+
+It now runs one. The pipeline below `receive_data` was already role-aware, so
+most of this is wiring — but the survey that said so was wrong in three
+places, and those are the substance of this change.
+
+#### Added
+- **`config.channel_role_state()`** — the single decision for what a
+  `channels/{ch}` block means: role, tach calibration, enabled. The GUI and
+  headless each had their own copy and had **already drifted** (the GUI
+  defaulted a missing `enabled` to True, headless to False). Also hardens the
+  loader: an unrecognised role reads as vibration with a warning rather than
+  propagating, because raising out of a config loader is how the sensor
+  library was once erased (audit X-01).
+- **`monitor.session.channel_snapshot_for()`** — same story for the
+  per-channel snapshot embedded in `session.h5`. Both copies omitted the
+  channel `role`, so a loaded session could only infer it from the absence of
+  a `data` dataset. Tach channels now also carry their calibration, keeping
+  the shaft speed re-derivable at a different `pulses_per_rev`.
+- **`sensor._simulate_tach_sources()`** — nothing in the package ever set
+  `SimulatedSensor.channel_sources`; only tests did. A simulated tach channel
+  therefore received the same accelerometer waveform as the vibration input
+  and read `no_signal`, which meant **neither front end could be dry-run
+  against a tachometer offline**. Uses `machine_with_tach_sources` so the
+  pulse train stays locked to the vibration channel's own shaft rate.
+- **Tachometer block in the headless session summary** — channel, threshold
+  mode, polarity, pulses/rev, and both limits a non-unity ppr runs into: the
+  slowest measurable shaft (`slowest_rpm_for`) and the
+  `MIN_SAMPLES_PER_PULSE` accuracy ceiling. An unattended run has no
+  Tachometer tab to show these live, and neither is recoverable from the
+  session file afterwards.
+- **Shaft speed on the headless status line**, `--` and never `0` when there
+  is no reading (R45), with an `[off-speed]` tag when the gate excludes a
+  frame.
+
+#### Fixed
+- **Every monitor session stored a tachometer channel's full waveform.**
+  `_write_channel_group` takes `role=` and defaults it to `'vibration'`;
+  `DataCollector.save_data` passed it and `MonitorWriterThread` never did, on
+  either of its two call sites. That is ~427x the stored size per frame
+  (25600 samples against 60 edge times, measured) on the one code path that
+  runs unattended for hours, and it lost the per-frame rpm, quality and edge
+  times with it — decision D-2 held in measurement files and nowhere else.
+  Now derived from the sample itself via `collector.role_of_sample`, which is
+  the test `monitor/controller.py` already used for the pre-trigger overall.
+- **`_apply_overrides` was dead code.** Nothing called it: `run()` inlined its
+  own maxfreq/binsize copy and handled `--channels` separately, by editing
+  the device file's `enabled` flags. It has been unreachable since the Rev80
+  rebrand (`62dd2c2`). `run()` now calls it, and `--channels` reconciles
+  against the roles: dropping the tachometer is honoured — it is an explicit
+  instruction — but never silent, because the session would otherwise record
+  `rpm=NaN` on every capture with the speed gate failing closed, excluding
+  every frame from trending and alarming with nothing saying why.
+- **`--channels` no longer writes `enabled: false` onto a tach channel.** That
+  flag is owned by the role (`channel_role_state` forces a claimed channel on,
+  since `tach_channels` filters by `enabled_channels`), so persisting it wrote
+  a flag every loader then ignores. The run-scoped exclusion belongs in
+  `_apply_overrides`, and that is where it now happens.
+
+#### Notes for the next person
+- **The R44 survey's premise was right and three of its facts were wrong.**
+  It read `monitor/controller.py`'s `if sample.tach is not None: continue` as
+  "the monitor stores a tach as edge times"; that branch only keeps the tach
+  out of the pre-trigger overall. Reading a guard as evidence of a feature is
+  how all three of these survived.
+- **Verified end to end offline**, which was not possible before
+  `_simulate_tach_sources`: `rev80-headless --device sim` against a device
+  file with a tach-role channel reads 3600 RPM on a 60 Hz simulated shaft,
+  writes `edge_times`/`pulse_widths` and no `data` for that channel, records
+  `rpm`/`speed_ok` on every capture, and carries the roles in
+  `/metadata/channels`.
+
+
 ### feature/tachometer — configurable pulses/rev, gated on revolutions (2026-09-18)
 
 `pulses_per_rev` becomes a user-facing control, and the minimum-data gate it
