@@ -115,6 +115,21 @@ def decimate_to_rate(block: np.ndarray, raw_rate: float, target_rate: float) -> 
     return resampled, raw_rate * up / down
 
 
+def role_of_sample(sample) -> str:
+    """'tachometer' when this sample carries a tach reading, else 'vibration'.
+
+    For writers that hold frames but no `AcquisitionSettings` -- the monitor
+    writer thread runs off a queue and has only the samples. `receive_data`
+    populates `sample.tach` for tach-role channels and nothing else, so the
+    sample carries its own role; `monitor/controller.py` already relied on
+    exactly this test to keep a tach out of the pre-trigger overall.
+
+    `DataCollector.save_data` uses `config.role_for` instead, which is
+    authoritative there because it has the config in hand.
+    """
+    return 'tachometer' if getattr(sample, 'tach', None) is not None else 'vibration'
+
+
 def _write_channel_group(h5_grp, ch: int, sample: 'rev80.VibeSample',
                          compression: str | None = None,
                          compression_opts: int | None = None,

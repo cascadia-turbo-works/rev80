@@ -109,22 +109,32 @@ requires the previous state to be a decided low, so `y0 <= hi < y1` and the
 denominator is strictly positive. Measured minimum across 2880 real edges:
 1461.7 mV. The guard in the code is defensive only.
 
-One pulse per revolution (decision D-6)
----------------------------------------
-The UI offers no pulses/rev control; every installation is treated as one
-reflective tape or one keyway. This is not only the common case, it is the
-accurate one. At 1 ppr **every interval is exactly one shaft revolution**, so
-the two dominant error sources -- encoder division error and once-per-rev speed
-modulation from load zone, misalignment or a reciprocating load -- cancel inside
-each interval by construction. Above 1 ppr they cancel only once a whole
-revolution has been observed, and extra pulses buy nothing before that (see the
-table beside MIN_EDGES). Measured: 0.0013% at 1 ppr from three edges, against
-0.091% for a 60-line encoder at any window length.
+One pulse per revolution, and the revolutions gate (decision D-6)
+-----------------------------------------------------------------
+One pulse per revolution is the **default and the recommendation**, and not
+merely because it is the common installation. At 1 ppr **every interval is
+exactly one shaft revolution**, so the two dominant error sources -- encoder
+division error and once-per-rev speed modulation from load zone, misalignment
+or a reciprocating load -- cancel inside each interval by construction. Above
+1 ppr they cancel only once a whole revolution has been observed, and extra
+pulses buy nothing before that (see the table beside MIN_REVS). Measured:
+0.0013% at 1 ppr from three edges, against 0.091% for a 60-line encoder at any
+window length.
 
-`pulses_per_rev` and the divide in `estimate_rpm` are retained so the capability
-can be restored without rework. A value other than 1 is **honoured and warned
-about, never silently clamped**: clamping would report an integer multiple of
-the true speed with nothing on screen to say so.
+`pulses_per_rev` is user-configurable, because a keyphasor or an encoder
+already fitted to a machine is not something the operator can choose away, and
+refusing to divide by it means refusing the machine. What makes that safe is
+that **the gate is revolutions, not edges**: `MIN_REVS` whole turns must be in
+the block before a rate is reported at all, so the accuracy that 1 ppr gets by
+construction, a higher ppr gets by observing enough of a revolution for the
+same cancellation to happen by averaging. A block holding 9 edges of a 6 ppr
+encoder is 1.5 revolutions; it used to pass the fixed three-edge test and
+report a speed drawn from a fraction of a turn, and now reads 'too_few_edges'.
+
+What a non-unity ppr cannot escape is the sample-rate limit: full accuracy
+wants >= ~70 samples per pulse, i.e. a pulse rate at or below ~600 Hz, so
+60 ppr binds at 600 RPM and 1024 ppr at 35. That check needs the sample rate
+and so lives in the front end (see `gui._update_tach_tab`), not here.
 
 Not built, deliberately: inferring ppr by detecting multi-modal pulse periods.
 Unequally spaced reflectors are already reported 'inconsistent' by the
@@ -132,17 +142,13 @@ interval_spread test whenever the two gaps differ by more than ~90 degrees of
 shaft rotation; a near-evenly-spaced pair reads an exact integer multiple, which
 is the most obvious possible error to a technician who knows the machine.
 
-What still binds at 1 ppr is block length. Guaranteeing MIN_EDGES rising edges
-regardless of start phase needs a block spanning three periods, so the slowest
-measurable shaft is 180/T_block RPM, where T_block = 1/binsize:
-
-    binsize    T_block    slowest shaft
-    0.25 Hz     4.00 s        45 RPM
-    0.5  Hz     2.00 s        90 RPM
-    1    Hz     1.00 s       180 RPM
-    2    Hz     0.50 s       360 RPM
-    5    Hz     0.20 s       900 RPM
-    10   Hz     0.10 s      1800 RPM
+What binds regardless of ppr is block length -- see `slowest_rpm_for()`, which
+carries the table. Guaranteeing the edges regardless of start phase needs whole
+pulse periods, giving 180/T_block RPM at 1 ppr, where T_block = 1/binsize. A
+finer encoder recovers only the one period of phase-safety margin and never
+beats MIN_REVS * 60 / T_block: 60 ppr at a 1 s block reaches 121 RPM against
+180, a third, not sixtyfold. **The way to read a slower shaft is a longer
+block**, i.e. a smaller binsize.
 
 At 10 Hz bins nothing below 1800 RPM can be read at all. This is the one case
 where a legitimate setup returns no reading, and it is the front end's job to
@@ -150,6 +156,7 @@ say so rather than show a blank.
 """
 
 import logging
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -227,18 +234,19 @@ SPEED_DRIFT_MAX_PCT: float = 1.0
 # NOTE: the only constant in this module still set from simulation rather than
 # from the bench. It wants a load step on a real machine to confirm.
 
-MIN_EDGES: int = 3
-# Two intervals is the minimum from which a median and a spread both mean
-# something -- and at 1 pulse/rev, which is the only value the UI can produce
-# (see the module docstring on D-6), three edges is exactly **two whole shaft
-# revolutions**. That is why there is no separate minimum-revolutions gate:
-# MIN_EDGES already is one.
+MIN_REVS: float = 2.0
+# The gate is **whole shaft revolutions**, not a fixed edge count. Two
+# intervals is the minimum from which a median and a spread both mean
+# something, and at 1 pulse/rev two intervals is exactly two revolutions --
+# which is why this was written as MIN_EDGES = 3 while 1 ppr was the only
+# value the UI could produce. The two spellings agree there and nowhere else:
+# three edges of a 60-line encoder is 0.033 of a revolution.
 #
-# The distinction matters only above 1 ppr, where a pulse is a fraction of a
-# revolution and the two dominant error sources -- encoder division error and
-# once-per-rev speed modulation -- do not cancel until a whole revolution has
-# been observed. Measured, 60-line encoder, +-0.05 deg division error, 0.5%
-# once-per-rev modulation, 40 random start phases:
+# Above 1 ppr a pulse is a fraction of a revolution and the two dominant error
+# sources -- encoder division error and once-per-rev speed modulation -- do not
+# cancel until a whole revolution has been observed. Measured, 60-line encoder,
+# +-0.05 deg division error, 0.5% once-per-rev modulation, 40 random start
+# phases:
 #
 #     revolutions   pulses   mean err   worst err
 #        0.05          3      0.580%     1.898%
@@ -252,11 +260,73 @@ MIN_EDGES: int = 3
 # 1 ppr gives 0.0013% from three edges -- 70x better than 60 ppr reaches at any
 # window length -- because every interval is itself one full revolution, so the
 # cancellation is by construction rather than by averaging.
+#
+# The error table says one revolution is enough. The value is 2.0 because the
+# statistical floor -- two intervals, for a median and a spread -- binds harder
+# at 1 ppr, where one revolution is a single interval and has no spread at all.
+# Taking the worse of the two as a single number keeps one gate rather than
+# two, and lands on today's behaviour exactly at 1 ppr.
+
+
+def min_edges_for(pulses_per_rev: int) -> int:
+    """Rising edges needed to span MIN_REVS whole revolutions.
+
+    N intervals is N/ppr revolutions, and N intervals needs N+1 edges. At
+    1 ppr this returns 3, which is the fixed MIN_EDGES this replaced.
+    """
+    ppr = max(1, int(pulses_per_rev))
+    return int(math.ceil(MIN_REVS * ppr)) + 1
+
+
+def slowest_rpm_for(block_s: float, pulses_per_rev: int = 1) -> float:
+    """The slowest shaft a block of this length can resolve, at any start phase.
+
+    Guaranteeing N edges regardless of where the block opens needs N whole
+    pulse *periods*, not N-1: a block that opens just after a pulse loses one.
+    N periods is N/ppr revolutions, so the floor is a property of the block
+    length alone -- dividing a revolution more finely does not reach a slower
+    machine, and the UI must not imply it does.
+
+        binsize    T_block    slowest shaft
+        0.25 Hz     4.00 s        45 RPM
+        0.5  Hz     2.00 s        90 RPM
+        1    Hz     1.00 s       180 RPM
+        2    Hz     0.50 s       360 RPM
+        5    Hz     0.20 s       900 RPM
+        10   Hz     0.10 s      1800 RPM
+    """
+    ppr = max(1, int(pulses_per_rev))
+    if block_s <= 0:
+        return float('inf')
+    return min_edges_for(ppr) * 60.0 / ppr / float(block_s)
+
+
+MIN_SAMPLES_PER_PULSE: int = 70
+# Below roughly this many samples per pulse period, sub-sample interpolation
+# stops recovering the edge position and the estimator collapses to ~0.8%
+# error -- the median locks onto the modal integer period and the compressed
+# [0.29, 0.71] interpolated fraction cannot reconstruct the rest. Measured on
+# the bench; the three-regime table is in the module docstring. 70 samples is a
+# 600 Hz pulse rate at this hardware's raw rate.
+#
+# This is the limit `pulses_per_rev` actually runs into, and it binds sooner
+# than pulse-width considerations do: 1 ppr never binds (36000 RPM), 6 ppr at
+# 6000 RPM, 60 ppr at 600 RPM, 1024 ppr at 35. Checking it needs the sample
+# rate and the current speed, so it is enforced as a front-end caution rather
+# than a gate -- a degraded reading is still a reading, and refusing it would
+# be worse than flagging it.
 
 _MIN_EDGES_FOR_DRIFT: int = 5
 # Drift compares the median interval of each half of the block, so it needs
 # two intervals per half. Below this, drift is reported as 0.0 -- unmeasurable,
 # not zero.
+#
+# It needs no revolution-based companion: MIN_REVS already guarantees the whole
+# block spans two revolutions, so each half spans one, and once-per-rev
+# modulation cancels inside each half rather than reading as drift. That is the
+# second reason MIN_REVS is 2.0 and not the 1.0 the error table alone would
+# justify -- a 1.0 gate would have each half spanning half a revolution and
+# would report a steady shaft with a load zone as 'unsteady'.
 
 QUALITY_OK = 'ok'
 QUALITY_NO_SIGNAL = 'no_signal'
@@ -319,16 +389,24 @@ class TachSettings:
             v = str(d.get(key, default) or default)
             return v if v in allowed else default
 
-        ppr = max(1, int(d.get('pulses_per_rev', 1) or 1))
-        if ppr != 1:
-            # Honoured, not clamped. Clamping a hand-edited ppr=6 to 1 would
-            # report six times the true speed with nothing on screen saying so,
-            # which is worse than the unsupported configuration itself.
+        # ppr is a supported setting with a control of its own, so a value
+        # above 1 is loaded silently. The accuracy caution it carries (>= ~70
+        # samples per pulse, i.e. a pulse rate at or below ~600 Hz) needs the
+        # sample rate to be quantitative, so it belongs in the front end, not
+        # here. Only an unusable value is warned about: 0, a negative, or a
+        # fraction is a corrupt file rather than a configuration, and falling
+        # back to 1 changes the reported speed, so it is never silent.
+        raw_ppr = d.get('pulses_per_rev', 1)
+        try:
+            ppr = int(raw_ppr)
+        except (TypeError, ValueError):
+            ppr = 0
+        if ppr < 1 or ppr != float(raw_ppr if raw_ppr is not None else 1):
             log.warning(
-                'pulses_per_rev=%d is an unsupported configuration: the UI only '
-                'produces 1 pulse/rev, and accuracy above 1 ppr degrades until a '
-                'whole revolution has been observed (0.091%% vs 0.0013%%). The '
-                'value is being honoured, not clamped.', ppr)
+                'pulses_per_rev=%r is not a positive whole number; falling '
+                'back to 1. The reported shaft speed changes as a result.',
+                raw_ppr)
+            ppr = 1
 
         return cls(
             pulses_per_rev=ppr,
@@ -590,9 +668,13 @@ def estimate_rpm(edge_idx: np.ndarray,
     # Note this reports 'too_few_edges' and not 'no_signal' even for zero
     # edges: whether there is a signal at all is a question about the block's
     # span, which only tach_result has seen. A healthy 2 V pulse train from a
-    # shaft too slow to put MIN_EDGES pulses in one block is not a dead cable,
-    # and telling the operator otherwise sends them to the wrong place.
-    if edges.size < MIN_EDGES or fs <= 0:
+    # shaft too slow to put MIN_REVS revolutions in one block is not a dead
+    # cable, and telling the operator otherwise sends them to the wrong place.
+    #
+    # The quality string stays 'too_few_edges' though the constraint is now
+    # revolutions: the test is still on the edge count, the string is written
+    # into every stored HDF5 tach group, and renaming it would strand files.
+    if edges.size < min_edges_for(s.pulses_per_rev) or fs <= 0:
         return _result(None, QUALITY_TOO_FEW_EDGES)
 
     med, spread, drift = _interval_stats(np.diff(edges) / fs)
@@ -605,7 +687,7 @@ def estimate_rpm(edge_idx: np.ndarray,
     # revolution, whenever there is more than one per turn.
     # The `else` is unreachable by construction and is defence only: a rising
     # edge requires a decided-low state before it, so between any two rising
-    # edges there is necessarily a closing edge -- with MIN_EDGES rises there
+    # edges there is necessarily a closing edge -- past the gate above there
     # are at least two complete pulses. Do not write a test for it; write one
     # for widths.size >= n_edges - 1 instead, which is the real invariant.
     duty = float(np.mean(widths) / med) if widths.size else 0.0

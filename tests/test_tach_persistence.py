@@ -137,6 +137,23 @@ def test_rpm_recomputes_when_pulses_per_rev_changes_after_load(tmp_path):
     assert dc2.current_rpm() == pytest.approx(before / 2.0, rel=1e-6)
 
 
+def test_reinterpreting_at_a_ppr_the_block_cannot_support_withholds_the_rate(tmp_path):
+    """The other half of "RPM is a view": a view the data cannot support must
+    be refused, not rendered.
+
+    These frames were captured at 1 ppr and hold ~59 edges in a 2 s block.
+    Reinterpreted as a 60-line encoder those same edges are 0.97 of a
+    revolution -- under MIN_REVS -- and the old fixed three-edge gate would
+    have divided them anyway and reported ~29 RPM for a 1762 RPM shaft.
+    """
+    _, path = _saved(tmp_path)
+    dc2 = vc.DataCollector(config=vc.AcquisitionSettings())
+    dc2.load_data(path)
+    assert dc2.current_rpm() is not None
+    dc2.set_tach_settings(1, tach.TachSettings(pulses_per_rev=60))
+    assert dc2.current_rpm() is None
+
+
 def test_reloaded_tach_trend_is_restored(tmp_path):
     _, path = _saved(tmp_path, frames=3)
     dc2 = vc.DataCollector(config=vc.AcquisitionSettings())

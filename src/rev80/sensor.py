@@ -49,7 +49,10 @@ class VibeSensor:
         self.callback = callback   # app callback — DataCollector.receive_data
 
         if self.is_simulation:
-            return rev80.SimulatedSensor(config, sensor=self, callback=self._callback)
+            stream = rev80.SimulatedSensor(config, sensor=self,
+                                           callback=self._callback)
+            _simulate_tach_sources(stream, config)
+            return stream
 
         from rev80.picoscope import PicoScopeStream
         return PicoScopeStream(config, callback=callback,
@@ -114,3 +117,34 @@ class VibeSensor:
         if self.callback:
             self.callback(sample)
     
+
+
+def _simulate_tach_sources(stream, config) -> None:
+    """Give a simulated tachometer channel an actual pulse train.
+
+    `SimulatedSensor` tiles one generator across every enabled channel
+    unless `channel_sources` says otherwise, so without this a tach-role
+    channel receives the same accelerometer waveform as the vibration
+    input -- which is not a tachometer signal and reads as `no_signal`.
+    Nothing in the package set `channel_sources`; only tests did, which
+    meant neither front end could be dry-run against a tach offline.
+
+    `machine_with_tach_sources` is used rather than two separate
+    generators because the coherence is the point: a pulse train that is
+    not locked to the vibration channel's own shaft rate simulates a
+    tachometer reading a different machine, and would validate nothing.
+    Vibration channels it does not name keep the default source.
+    """
+    tach_channels = config.tach_channels
+    if not tach_channels:
+        return
+    from rev80.simulation import (DEFAULT_RUNNING_RATE_HZ, GenerateTachPulse,
+                                  machine_with_tach_sources)
+    vib = config.vibration_channels
+    if vib:
+        stream.channel_sources = machine_with_tach_sources(
+            vib_channel=vib[0], tach_channel=tach_channels[0])
+    else:
+        stream.channel_sources = {
+            tach_channels[0]: (GenerateTachPulse,
+                               DEFAULT_RUNNING_RATE_HZ * 60.0)}

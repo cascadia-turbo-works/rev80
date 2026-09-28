@@ -21,7 +21,7 @@ _FILE_VERSION: int = 6
 # The previous local copy had drifted and wrote no overflow/degraded attrs,
 # so monitor sessions stored clipped captures indistinguishable from clean
 # ones. Importing it is what keeps the two write paths honest.
-from rev80.collector import _write_channel_group  # noqa: E402
+from rev80.collector import _write_channel_group, role_of_sample  # noqa: E402
 
 
 def _frame_speed(results: list) -> tuple[float, bool]:
@@ -285,10 +285,17 @@ class MonitorWriterThread:
             gate_grp.attrs['speed_ok'] = speed_ok
 
             for ch, sample in sorted(ch_samples.items()):
+                # role= is not optional here. It defaults to 'vibration', and
+                # omitting it stored a tachometer channel's full waveform in
+                # every monitor session -- ~1400x the size of its edge times,
+                # on the one code path that runs unattended for hours, and
+                # without the per-frame rpm/quality that makes the speed a
+                # view on stored data (decision D-2).
                 _write_channel_group(
                     gate_grp, ch, sample,
                     compression=session.compression,
                     compression_opts=session.compression_level,
+                    role=role_of_sample(sample),
                 )
 
         self._monitor_count += 1
@@ -360,6 +367,7 @@ class MonitorWriterThread:
                         fi_grp, ch, sample,
                         compression=session.compression,
                         compression_opts=session.compression_level,
+                        role=role_of_sample(sample),
                     )
 
             # Update /burst.attrs['burst_list']
