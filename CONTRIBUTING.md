@@ -31,8 +31,7 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 # Install in editable mode with dev tools
 pip install -e ".[dev]"
 
-# Enable the repo's git hooks (once per clone) — keeps doc/*.pdf in sync
-# with README.md, CONTRIBUTING.md, doc/PROGRESS.md, doc/CHANGELOG.md on commit
+# Enable the repo's git hooks (once per clone) — runs the same ruff check as CI
 git config core.hooksPath .githooks
 
 # Run the test suite (no hardware required — uses SimulatedSensor)
@@ -80,26 +79,33 @@ Nothing *inside* the repo hardcodes an absolute path, and the user-level state
 
 ## Rendering docs to PDF
 
-`doc/README.pdf`, `doc/CONTRIBUTING.pdf`, `doc/PROGRESS.pdf`, and `doc/CHANGELOG.pdf` are
-committed alongside their Markdown sources. The same `pre-commit` hook that runs `ruff`
-(`.githooks/pre-commit`, enabled by the `git config core.hooksPath .githooks` step above)
-also re-renders and stages the PDF for any of those four files that are part of a commit,
-via `scripts/render_md.sh`:
+PDFs of `README.md`, `CONTRIBUTING.md`, `doc/PROGRESS.md` and `doc/CHANGELOG.md` are
+**build artifacts, not source**. They are gitignored, and every tagged release gets a
+freshly rendered set attached to its GitHub Release by the `docs` job in
+`.github/workflows/release.yml` — so a PDF handed to a client is pinned to a version,
+rather than being whatever the last commit happened to render.
+
+**You do not need the toolchain to develop or commit.** Install it only when you want a
+PDF in hand:
 
 ```bash
-# Render one file manually, e.g. after editing without committing
-./scripts/render_md.sh README.md          # → doc/README.pdf
-./scripts/render_md.sh doc/CHANGELOG.md   # → doc/CHANGELOG.pdf
+./scripts/render_docs.sh                  # all four → doc/*.pdf
+./scripts/render_md.sh doc/CHANGELOG.md   # just one → doc/CHANGELOG.pdf
 ```
 
-Requires `pandoc` and `weasyprint` on PATH. If either is missing, the hook prints a warning
-and skips rendering rather than blocking the commit — install them to keep the PDFs current:
+Requires `pandoc` and `weasyprint` on PATH. WeasyPrint is a pip package, but it needs
+Pango natively; pandoc is a system binary:
 
 ```bash
 # Debian/Ubuntu
-sudo apt-get install pandoc
-pip install weasyprint
+sudo apt-get install pandoc libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0
+pip install "weasyprint==69.0"     # the version the release workflow pins
 ```
+
+These PDFs used to be re-rendered by the pre-commit hook and committed. That put ~300 KB
+of binary that cannot delta into every doc-touching commit — 10.3 MB across 34 commits,
+against 13.4 MB for every version of every source file — and made the toolchain a
+prerequisite for making a commit at all.
 
 ---
 
@@ -139,13 +145,12 @@ scripts/
   build.sh                Full build pipeline (run from Git Bash)
   make_icons.sh           Regenerates rev80.ico + the hicolor PNG set via Inkscape + ImageMagick
   fetch_font.sh           Downloads the CommitMono Nerd Font into src/rev80/assets/fonts/
-  render_md.sh            Renders a Markdown file to PDF (pandoc + weasyprint) — see doc/
+  render_md.sh            Renders one Markdown file to PDF (pandoc + weasyprint)
+  render_docs.sh          Renders all four published docs to doc/*.pdf — what the release runs
 .githooks/
-  pre-commit              ruff check (blocking; scope matches CI), and re-renders doc/*.pdf
-                           for any of README.md, CONTRIBUTING.md, doc/PROGRESS.md,
-                           doc/CHANGELOG.md staged in the commit
+  pre-commit              ruff check (blocking; scope matches CI)
 doc/
-  README.pdf, CONTRIBUTING.pdf, PROGRESS.pdf, CHANGELOG.pdf   Rendered by the pre-commit hook
+  *.pdf                   Gitignored build artifacts — see "Rendering docs to PDF"
   PROGRESS.md              Delivery history — client requirements mapped to commits
   CHANGELOG.md             Keep-a-Changelog-format change log
 ```
@@ -274,14 +279,14 @@ is the only target that runs off Windows.
 ## Automated releases
 
 Pushing a `vX.Y.Z` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml),
-which builds the installer and the wheel and attaches both to a **draft** GitHub
-Release. Review it, then publish by hand — the exe is unsigned, so a release is
+which builds the installer, the wheel and PDFs of the four published docs, and
+attaches them all to a **draft** GitHub Release. Review it, then publish by hand — the exe is unsigned, so a release is
 worth a look before it goes out.
 
 ```bash
 git tag v0.2.0
 git push origin v0.2.0
-# -> test gate -> wheel (ubuntu) + installer (windows) -> draft release
+# -> test gate -> wheel (ubuntu) + installer (windows) + docs (ubuntu) -> draft release
 ```
 
 Four things about it are worth knowing before you rely on it:

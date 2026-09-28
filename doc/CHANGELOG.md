@@ -9,6 +9,51 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### build/ci — rendered docs are release artifacts, not commits (2026-09-28)
+
+`doc/*.pdf` were re-rendered by the pre-commit hook and committed alongside their
+Markdown. Measured before changing it: **10.3 MB of PDF blobs across 34 commits,
+against 13.4 MB for every version of every source file** — ~300 KB per doc-touching
+commit, and PDF is already compressed, so none of it deltas. Rendered copies of files
+already in the repo were approaching half its storage and were its dominant growth
+term. It also made pandoc and WeasyPrint (with WeasyPrint's native Pango stack) a
+prerequisite for *making a commit*. And nothing consumed them: not the installer, not
+the wheel, not CI.
+
+#### Changed
+- **`doc/*.pdf` are gitignored build artifacts.** Untracked, and rendered instead by
+  a new `docs` job in `release.yml` — the only place the toolchain is installed —
+  whose output the draft-release job attaches alongside the installer and wheel. A
+  PDF handed to a client is now pinned to a release, rather than being whatever the
+  last commit happened to render.
+- **The pre-commit hook is ruff only.** The blocking lint gate, which matches CI's
+  invocation exactly, stays.
+- **WeasyPrint is pinned (`==69.0`) in the workflow**, the version these documents
+  were last checked against, so a WeasyPrint release cannot silently change the
+  layout of a client document between two tags.
+
+#### Added
+- **`scripts/render_docs.sh`** — renders all four published docs. The document list
+  used to live inside the hook; it lives here now, and the workflow runs this script
+  rather than repeating the list.
+
+#### Fixed
+- **Every PDF rendered since the August rebrand said "vibechecker"** in the top-right
+  page header — hardcoded in `render_md.sh`'s CSS. Now "Rev80".
+
+#### Notes for the next person
+- **Moving rendering into `build.sh` was considered and rejected.** `build.sh` runs
+  under Git Bash on Windows for the installer targets, and WeasyPrint on Windows needs
+  GTK; that would have put the heaviest form of the dependency on the platform where
+  the build already has the most moving parts, and the output would still have been
+  committed.
+- **History was not rewritten** to reclaim the 10.3 MB. The GitHub remote is live;
+  a force-push to save ten megabytes is a bad trade. `git gc` repacks the loose
+  objects for most of the practical win.
+- **The `docs` job is not tag-guarded** — only the release job is — so a
+  `workflow_dispatch` run exercises the render before a real tag depends on it.
+
+
 ### feature/tachometer — one session factory, and two bugs it was hiding (2026-09-21)
 
 Follow-on from R44: an inventory of what still differed between `gui.py` and

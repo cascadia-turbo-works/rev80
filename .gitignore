@@ -44,3 +44,7 @@ vendor/pico/
 # ── Claude Code: share agents, keep machine-local settings out ───────────────
 .claude/settings.local.json
 .claude/worktrees/
+
+# Rendered docs are build artifacts: produced by scripts/render_docs.sh and
+# attached to each GitHub Release, never committed (see CONTRIBUTING.md).
+doc/*.pdf

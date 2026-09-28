@@ -1,0 +1,2 @@
+# don't carry pdf docs. Render at release ci build.
+*.pdf

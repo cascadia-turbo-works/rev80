@@ -17,8 +17,8 @@ INPUT="$1"
 BASENAME="$(basename "$INPUT")"
 OUTPUT="${2:-doc/${BASENAME%.*}.pdf}"
 
-CSS_FILE="$(mktemp /tmp/vibechecker_XXXXXX.css)"
-HTML_FILE="$(mktemp /tmp/vibechecker_XXXXXX.html)"
+CSS_FILE="$(mktemp /tmp/rev80_XXXXXX.css)"
+HTML_FILE="$(mktemp /tmp/rev80_XXXXXX.html)"
 trap 'rm -f "$CSS_FILE" "$HTML_FILE"' EXIT
 
 command -v pandoc    >/dev/null || { echo "ERROR: pandoc not found";    exit 1; }
@@ -30,7 +30,7 @@ cat > "$CSS_FILE" << 'EOF'
 @page {
   margin: 20mm 18mm;
   size: A4;
-  @top-right   { content: "vibechecker"; font-size: 8pt; color: #999; }
+  @top-right   { content: "Rev80"; font-size: 8pt; color: #999; }
   @bottom-center { content: counter(page) " / " counter(pages); font-size: 8pt; color: #999; }
 }
 
