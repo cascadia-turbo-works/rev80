@@ -9,6 +9,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### fix/collector — each file type has its own version limit (2026-09-29)
+
+#### Fixed
+- **A current monitor session does not give a false version warning.**
+  Measurement files are version 5 (`DataCollector._FILE_VERSION`). Monitor
+  sessions are version 6 (`monitor/writer.py`). The session loaders
+  (`load_monitor_session`, `load_monitor_capture`, `load_monitor_burst`) used
+  `_restore_metadata`, which compared all files with 5. Thus each load of a
+  current session logged "File version 6 is newer than this build supports (5)".
+  Now `_restore_metadata` takes the limit for the file type. The session
+  loaders give the limit of the session writer. The limit comes from the writer
+  constant, not from a literal.
+
+#### Notes for the next person
+- **The warning continues to operate for a file that is really newer.** A
+  version 7 session and a version 6 measurement file both give the warning.
+  `tests/test_file_version_check.py` makes sure of the two cases and of the
+  case without a warning.
+- `collector.py` imports the writer constant inside a function. A module-level
+  import is circular, because `monitor/writer.py` imports `collector.py`.
+
 ### fix/paths — logs go to the user directory in every install (2026-09-29)
 
 #### Fixed

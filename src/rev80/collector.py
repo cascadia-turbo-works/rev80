@@ -183,6 +183,16 @@ def _write_channel_group(h5_grp, ch: int, sample: 'rev80.VibeSample',
     cg.attrs['degraded']   = bool(sample.degraded)
 
 
+def _session_file_version() -> int:
+    """The newest monitor-session file version this build writes.
+
+    Imported at call time: monitor.writer imports this module, so a
+    module-level import here would be circular.
+    """
+    from rev80.monitor.writer import _FILE_VERSION
+    return _FILE_VERSION
+
+
 class DataCollector:
     """Collect, filter, cache, and persist multi-channel vibration data.
 
@@ -1673,8 +1683,15 @@ class DataCollector:
         self._post_load()
         log.info(f"Loaded {len(self.data['frame_cache'])} frames from {target.name}")
 
-    def _restore_metadata(self, f: 'h5py.File') -> int:
+    def _restore_metadata(self, f: 'h5py.File',
+                          max_version: int | None = None) -> int:
         """Restore AcquisitionSettings and sensor config from /metadata in an open HDF5 file.
+
+        ``max_version`` is the newest version this build writes for this file
+        type: ``None`` means a measurement file (``_FILE_VERSION``); the
+        monitor-session loaders pass the session writer's own version, which
+        is higher. Comparing a session with the measurement limit warned on
+        every load of a current session.
 
         Returns the file version integer.  Side-effects:
           self.config, self.notes, self._loaded_scope_sensors,
@@ -1685,14 +1702,16 @@ class DataCollector:
 
         version  = int(f["metadata"].attrs.get("version",
                        f["metadata"].attrs.get("file_version", 3)))
-        if version > self._FILE_VERSION:
+        if max_version is None:
+            max_version = self._FILE_VERSION
+        if version > max_version:
             # Worth having independently of the tachometer: an older build
             # reading a newer file takes its most permissive branch and
             # restores channels it does not understand as ordinary vibration
             # -- computing a bogus overall on whatever they actually contain.
             log.warning(
                 "File version %d is newer than this build supports (%d); "
-                "some channels may be misinterpreted.", version, self._FILE_VERSION)
+                "some channels may be misinterpreted.", version, max_version)
         meta_grp = f["metadata"]
         self.notes = decode(meta_grp.attrs.get("notes", ""))
 
@@ -1903,7 +1922,7 @@ class DataCollector:
         trend_overalls:  dict[int, list] = {}
 
         with h5py.File(session_h5, "r") as f:
-            version  = self._restore_metadata(f)
+            version  = self._restore_metadata(f, _session_file_version())
             ch_units = self._loaded_channel_units(f)
 
             mon_grp = f.get("monitor")
@@ -1988,7 +2007,7 @@ class DataCollector:
         self._loaded_scope_sensors = {}
 
         with h5py.File(session_h5, "r") as f:
-            version  = self._restore_metadata(f)
+            version  = self._restore_metadata(f, _session_file_version())
             ch_units = self._loaded_channel_units(f)
 
             mon_grp = f.get("monitor")
@@ -2030,7 +2049,7 @@ class DataCollector:
         trend_overalls:  dict[int, list] = {}
 
         with h5py.File(session_h5, "r") as f:
-            version  = self._restore_metadata(f)
+            version  = self._restore_metadata(f, _session_file_version())
             ch_units = self._loaded_channel_units(f)
 
             burst_grp = f.get("burst")
