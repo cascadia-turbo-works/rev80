@@ -9,6 +9,41 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### fix/monitor — burst alignment and live-only recording (2026-09-29)
+
+#### Fixed
+- **A manual burst writes each overall beside its own waveform**
+  ([S-06](audit-202608.md#s-06)). The manual trigger put the trigger frame in
+  the frame list, but not its results in the results list. The results list
+  was one entry short. Thus each later overall was written beside the
+  previous frame, and the last frame had no overall. Now the trigger frame
+  gets the results of the last `on_results` call, as in the anomaly path.
+  The trigger frame is the frame that those results belong to. A frame that
+  arrives after it has no results yet, so it is not included. The two lists
+  have equal length in all cases, also with an empty frame cache.
+- **A monitor recording contains only live frames**
+  ([S-03](audit-202608.md#s-03)). Before this change, the GUI sent each
+  displayed frame to the monitor while a recording ran. A file load, or a
+  browse through the cache, thus wrote frames that were not live into the
+  live `session.h5`. Now the monitor gets a frame only when the collector
+  streams.
+- **A recording locks file access.** While a recording runs, these controls
+  are disabled: File Load, Load Session and Clear Cache. The Ctrl+O shortcut
+  does not use the button state, so the load handler also refuses and logs
+  an info message. The session browser and clear-cache handlers refuse in
+  the same way. Thus the session browser cannot open the session file while
+  the writer appends to it.
+
+#### Notes for the next person
+- `tests/test_manual_burst_alignment.py` makes sure that frame *k* and
+  results *k* are the same frame, at the trigger and after each new frame.
+  Without the fix, two of its four tests fail.
+- `tests/test_monitor_live_only.py` tests the GUI decisions without a DPG
+  viewport. Without the fix, 12 of its 14 tests fail. This includes the test
+  that sends a browsed frame through `_display_frame_inner`.
+- Ctrl+K can still stop the stream during a recording. The recording then
+  continues but gets no frames. This change does not lock Ctrl+K.
+
 ### fix/collector — each file type has its own version limit (2026-09-29)
 
 #### Fixed
