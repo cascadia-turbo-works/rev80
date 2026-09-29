@@ -46,6 +46,8 @@ class MonitorController:
         self._burst_trigger_ts:     str       = ''   # ISO local timestamp at trigger
         self._burst_trigger_rel:    float     = 0.0  # session rel_time at trigger
         self._last_frame_cache:     deque | None = None
+        self._last_frame:           dict | None  = None
+        self._last_results:         list         = []
 
         # Resource trail. An OOM kill is SIGKILL: no traceback, no atexit, no
         # log line — the process simply vanishes, which is exactly the
@@ -90,6 +92,9 @@ class MonitorController:
         self._burst_results      = []
         self._burst_all_results  = []
         self._burst_pre_overalls = []
+        self._last_frame_cache   = None
+        self._last_frame         = None
+        self._last_results       = []
         self._recording     = True
         self._cooldown_until_mono = 0.0
 
@@ -136,24 +141,41 @@ class MonitorController:
         self._burst_trigger_ts    = now_local.isoformat()
         self._burst_trigger_rel   = now - self._start_mono
         self._burst_results       = []
-        # Snapshot pre-trigger frames from last seen frame cache.
-        # frame_cache[-1] is the current (trigger) frame; it becomes burst_frames[n_pretrigger]
-        # so that load_monitor_burst can use it as the t=0 reference.
+        # The trigger frame is the last frame that on_results processed. It
+        # goes at index n_pretrigger, which load_monitor_burst uses as t=0.
+        # Frames that arrived after it have no results yet, so they are not
+        # included.
         n = self._session.pre_buffer_frames
-        if self._last_frame_cache:
-            pre = list(self._last_frame_cache)[-n:]
-            self._burst_frames     = [dict(f) for f in pre]
-            self._burst_pretrigger = max(0, len(self._burst_frames) - 1)
-        else:
-            self._burst_frames     = []
-            self._burst_pretrigger = 0
+        pre = self._frames_up_to_last_seen()[-n:]
+        self._burst_frames     = [dict(f) for f in pre]
+        self._burst_pretrigger = max(0, len(self._burst_frames) - 1)
         self._burst_pre_overalls = self._compute_pretrigger_overalls(
             self._burst_frames[:self._burst_pretrigger]
         )
-        self._burst_all_results = [[]] * self._burst_pretrigger
+        # One results entry per frame: _flush_burst and the burst cap use
+        # the two lists in parallel.
+        if self._burst_frames:
+            self._burst_all_results = (
+                [[]] * self._burst_pretrigger + [list(self._last_results)])
+        else:
+            self._burst_all_results = []
         self._gate.enter_burst(self._session.burst_duration_s, now, self._session.max_burst_s)
         self._start_cooldown(now)
         log.info('Monitor burst triggered manually')
+
+    def _frames_up_to_last_seen(self) -> list[dict]:
+        """Cached frames, oldest first, that end at the last processed frame.
+
+        Returns an empty list when on_results has not seen a frame, or when
+        that frame is no longer in the cache.
+        """
+        if not self._last_frame_cache or self._last_frame is None:
+            return []
+        frames = list(self._last_frame_cache)
+        for i in range(len(frames) - 1, -1, -1):
+            if frames[i] is self._last_frame:
+                return frames[:i + 1]
+        return []
 
     # ------------------------------------------------------------------
     # Main callback
@@ -247,7 +269,11 @@ class MonitorController:
         if not self._recording or not results:
             return
 
-        self._last_frame_cache = frame_cache  # for trigger_burst() pre-trigger snapshot
+        # For trigger_burst(): the cache, the frame these results belong to,
+        # and the results themselves.
+        self._last_frame_cache = frame_cache
+        self._last_frame       = frame_cache[-1] if frame_cache else None
+        self._last_results     = list(results)
         now      = time.monotonic()
         rel_time = now - self._start_mono
 
