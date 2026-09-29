@@ -11,8 +11,9 @@ User-writable data (saved snapshots, monitor sessions): always
     ~/Documents/Rev80/data, whether running from source or frozen. The
     project-relative ./DEVDATA directory is test scratch space only (see
     tests/), not touched by this module.
-Logs: project-relative ./log in development, ~/Documents/Rev80/logs when
-    frozen.
+Logs: always ~/Documents/Rev80/logs, in every install — frozen, pip install
+    and editable checkout. Never relative to the cwd: a desktop launcher runs
+    with cwd $HOME and a systemd unit with cwd /, where mkdir('log') fails.
 """
 
 import sys
@@ -71,10 +72,11 @@ def data_dir() -> Path:
 
 
 def log_dir() -> Path:
-    """Return the directory used for log files."""
-    if _is_frozen():
-        d = _user_dir() / 'logs'
-    else:
-        d = Path('log')
+    """Return the directory used for log files.
+
+    Always ~/Documents/Rev80/logs, like data_dir(). It must not depend on the
+    current working directory (see the module docstring).
+    """
+    d = _user_dir() / 'logs'
     d.mkdir(parents=True, exist_ok=True)
     return d

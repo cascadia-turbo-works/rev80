@@ -32,7 +32,8 @@ def setup_logging(debug: bool = False) -> None:
     for handler in config.get("handlers", {}).values():
         fname = handler.get("filename")
         if fname:
-            # Replace bare relative filename (e.g. "log/main.log") with absolute path
+            # Keep only the basename of the YAML filename (e.g. "log/main.log")
+            # and place it in the absolute log directory
             handler["filename"] = str(_log_dir / os.path.basename(fname))
 
     if debug:
@@ -73,7 +74,7 @@ def thread_exception_handler(args) -> None:
     monitor writer, the autoconnect and reprocess workers -- so their deaths
     went to the default threading.excepthook, which writes to stderr. Launched
     from a desktop entry or with the terminal closed, stderr goes nowhere, and
-    a dead acquisition thread left no trace in log/ whatsoever.
+    a dead acquisition thread left no trace in the log whatsoever.
 
     That is worse than a crash: the thread dies, `_running` may stay set, and
     is_streaming keeps reporting a healthy stream that will never produce

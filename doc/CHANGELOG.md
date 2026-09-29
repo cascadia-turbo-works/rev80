@@ -9,6 +9,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### fix/paths — logs go to the user directory in every install (2026-09-29)
+
+#### Fixed
+- **The log directory does not change with the working directory.** Before this
+  change, `_paths.log_dir()` used `~/Documents/Rev80/logs/` only in a frozen build.
+  All other installs used the relative directory `log/` in the current working
+  directory:
+  - A desktop launcher after `pip install --user .` starts with the working
+    directory `$HOME`. The logs went to `~/log/`.
+  - `rev80-headless` under systemd without `WorkingDirectory=` starts with the
+    working directory `/`. `mkdir('/log')` raised `PermissionError`, and the
+    program stopped before logging started.
+
+  Now every install writes its logs to `~/Documents/Rev80/logs/`: the frozen
+  build, a `pip install`, and an editable checkout. This is the same as
+  `data_dir()`. `faulthandler.log` uses the same directory.
+
+#### Notes for the next person
+- **An editable checkout does not write to `./log/` now.** Look in
+  `~/Documents/Rev80/logs/`. The `log/` entry in `.gitignore` stays, because old
+  checkouts can still have that directory.
+- `tests/test_paths.py` makes sure that `log_dir()` is absolute and does not
+  change when the working directory changes.
+
 ### build/ci — rendered docs are release artifacts, not commits (2026-09-28)
 
 `doc/*.pdf` were re-rendered by the pre-commit hook and committed alongside their
