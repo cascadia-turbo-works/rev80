@@ -1315,7 +1315,7 @@ class GUI:
                 height=_CARD_BASE_H + n_overflow * _CARD_LINE_H,
             )
 
-        if self._monitor is not None and self._monitor.is_recording:
+        if self._monitor_accepts_frames():
             self._monitor.on_results(results, self.collector.data["frame_cache"])
 
         self._update_trend_plot()
@@ -1325,6 +1325,47 @@ class GUI:
         if self._autoscale_pending:
             self._autoscale_plots()
             self._autoscale_pending = False
+
+    def _monitor_accepts_frames(self) -> bool:
+        """True when a recording runs and the frame comes from the live stream.
+
+        A frame from a loaded file, or a frame shown while browsing the
+        cache, is not a live measurement. It must not go into the session.
+        """
+        return bool(
+            self._monitor is not None and self._monitor.is_recording
+            and self.collector.is_streaming
+        )
+
+    def _file_access_locked(self) -> bool:
+        """True while a recording runs.
+
+        Then file load, session browse and clear-cache are not permitted.
+        A load stops the stream, and the session browser can open the
+        session file that the writer uses.
+        """
+        return bool(self._monitor is not None and self._monitor.is_recording)
+
+    def _refuse_while_recording(self, action: str) -> bool:
+        """Log and return True if a recording prevents this action."""
+        if not self._file_access_locked():
+            return False
+        log.info("%s is not available while a monitor recording runs. "
+                 "Stop the recording first.", action)
+        return True
+
+    #: Controls that are disabled while a monitor recording runs.
+    _RECORDING_LOCKED_CONTROLS = (
+        ui.BTN_DEVICE_SETUP, ui.BTN_CHANNELS_SETUP, ui.BTN_SPECTRUM_SETUP,
+        ui.BTN_SENSOR_SETUP, ui.BTN_MONITOR_SETUP,
+        ui.FILE_LOAD, ui.BTN_MONITOR_BROWSE, ui.ACQ_CLEAR_CACHE,
+    )
+
+    def _set_recording_lock(self, locked: bool) -> None:
+        """Disable (or enable again) the controls that a recording locks."""
+        for tag in self._RECORDING_LOCKED_CONTROLS:
+            if dpg.does_item_exist(tag):
+                dpg.configure_item(tag, enabled=not locked)
 
     def _ensure_legends(self):
         """Re-create any plot legend that has been lost (DPG can drop them on
@@ -1778,6 +1819,8 @@ class GUI:
 
     def _clear_cache(self, sender=None, data=None):
         """Wipe the frame cache and trend data, refresh the browse label."""
+        if self._refuse_while_recording("Clear cache"):
+            return
         self.collector.reset_data_store()
         self._update_browse_label()
         # Push flat (0,0) traces to every series so the plots visually clear
@@ -1815,6 +1858,9 @@ class GUI:
         self.collector.save_data(p)
 
     def _on_load_click(self, sender=None, data=None):
+        # The Ctrl+O shortcut also comes here, so this check applies to both.
+        if self._refuse_while_recording("File load"):
+            return
         path_str = self._native_file_dialog(save=False)
         if not path_str:
             return
@@ -2283,6 +2329,8 @@ class GUI:
 
     def _open_session_browser(self, sender=None, data=None) -> None:
         """Open (or refresh) the Monitor Session browser modal."""
+        if self._refuse_while_recording("Session browse"):
+            return
         if dpg.does_item_exist(ui.DLG_SESSION_BROWSER):
             self._refresh_session_browser()
             dpg.configure_item(
@@ -3205,11 +3253,7 @@ class GUI:
         self._monitor.start(session, anomaly_hook=anomaly_hook)
 
         self._update_monitor_card()
-        # Disable config setup buttons while recording
-        for btn in (ui.BTN_DEVICE_SETUP, ui.BTN_CHANNELS_SETUP,
-                    ui.BTN_SPECTRUM_SETUP, ui.BTN_SENSOR_SETUP, ui.BTN_MONITOR_SETUP):
-            if dpg.does_item_exist(btn):
-                dpg.configure_item(btn, enabled=False)
+        self._set_recording_lock(True)
 
     def _stop_recording(self):
         """Stop the monitor session; leave streaming running."""
@@ -3217,10 +3261,7 @@ class GUI:
             self._monitor.stop()
         self.collector.resize_frame_cache(self.collector.config.cache_frames)
         self._update_monitor_card()
-        for btn in (ui.BTN_DEVICE_SETUP, ui.BTN_CHANNELS_SETUP,
-                    ui.BTN_SPECTRUM_SETUP, ui.BTN_SENSOR_SETUP, ui.BTN_MONITOR_SETUP):
-            if dpg.does_item_exist(btn):
-                dpg.configure_item(btn, enabled=True)
+        self._set_recording_lock(False)
 
     def _on_anom_config_change(self, sender=None, data=None) -> None:
         """Show/hide RMS/Spectral settings groups; refresh computed-alpha labels."""
