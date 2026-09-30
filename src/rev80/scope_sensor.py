@@ -1,21 +1,14 @@
-"""ScopeSensor — describes an IEPE sensor connected to a PicoScope channel.
+"""ScopeSensor: an IEPE sensor connected to a PicoScope channel.
 
-sensitivity is stored as millivolts per engineering-unit (mV/eu),
-matching the industry-standard datasheet convention.
-To convert raw mV data to engineering units: eu_data = mv_data / sensor.sensitivity
+`sensitivity` is in mV per engineering unit, as on the datasheet (PCB 352C33:
+10.2 mV/g -> 10.2). eu_data = mv_data / sensor.sensitivity.
 
-Example: PCB 352C33 datasheet says 10.2 mV/g → sensitivity = 10.2
+`engineering_units` also gives the quantity: 'g', 'mm/s2', 'in/s2', 'mil/s2'
+(acceleration); 'mm/s', 'in/s', 'mil/s' (velocity); 'mm', 'in', 'mil'
+(displacement); 'mV' (no conversion).
 
-engineering_units encodes the physical modality via the unit string:
-  acceleration: 'g', 'mm/s2', 'in/s2', 'mil/s2'
-  velocity:     'mm/s', 'in/s', 'mil/s'
-  displacement: 'mm', 'in', 'mil'
-  raw / no conversion: 'mV'
-
-The display/integration target unit is a per-channel setting
-(AcquisitionSettings.channel_target_units), not part of the sensor
-definition — a sensor may be wired to different channels with different
-targets.
+The target unit and the amplitude mode are per-channel settings in
+AcquisitionSettings, not sensor fields.
 """
 
 from dataclasses import dataclass, field
@@ -74,26 +67,19 @@ class ScopeSensor:
     def from_dict(cls, d: dict) -> 'ScopeSensor':
         """Build a ScopeSensor from a plain dict, coercing and validating fields.
 
-        Every value is coerced to its declared type and non-scalars are
-        rejected. Sensor definitions arrive from YAML written by other
-        installs and from HDF5 attributes in measurement files shared between
-        machines, so the values are not trustworthy. An uncoerced dict/list
-        reaching a field used to survive all the way to the YAML writer, which
-        then emitted a `!!python/object/apply:` tag that no reader could parse
-        — corrupting the whole sensor library.
+        Coerces each value to its declared type and rejects non-scalars. The
+        input comes from other installs' YAML and from HDF5 attributes, so do
+        not trust it: a dict or list in a field makes the YAML writer emit a
+        tag that no reader can parse, and the sensor library is lost.
         """
         if not isinstance(d, dict):
             raise TypeError(f'sensor entry must be a mapping, got {type(d).__name__}')
         return cls(
-            # Coercion retained from the X-01 hardening: sensor definitions
-            # arrive from other installs' YAML and from HDF5 attributes in
-            # shared measurement files, so the values are not trustworthy.
             name=_scalar_str(d, 'name', required=True),
             engineering_units=_scalar_str(d, 'engineering_units', required=True),
             sensitivity=_scalar_float(d, 'sensitivity'),
             id=_scalar_str(d, 'id') or str(uuid.uuid4()),
             notes=_scalar_str(d, 'notes'),
-            # 'modality' and 'target_unit' keys in old YAML files are silently
-            # ignored. target_unit moved to AcquisitionSettings.channel_target_units,
-            # since one sensor may be wired to channels wanting different targets.
+            # 'modality' and 'target_unit' keys in a YAML file are ignored:
+            # the target unit is AcquisitionSettings.channel_target_units.
         )

@@ -1,46 +1,13 @@
-"""Stage timing for the acquisition → processing → display pipeline.
+"""Stage timing for the acquisition -> processing -> display pipeline.
 
-Why this exists
----------------
-The GUI stuttered on every processing call, worse with every enabled channel,
-and the symptom could not distinguish between the three things that turned out
-to be causing it: a 512821-tap FIR redesigned per channel per frame on the main
-thread, a per-sample Python loop in the vendor ADC conversion holding the GIL
-on the hardware thread, and ~164 dearpygui widget create/destroy calls per
-channel per frame. All three are linear in channel count, so no amount of
-staring at the frame rate separates them. Only per-stage timing does.
+Usage: ``with _profile.timed(_profile.PROC_TOTAL): ...``, then ``enable()``
+and ``report()``. `rev80 --profile` or REV80_PROFILE=1 enables it.
 
-Two design constraints, both learned the hard way in this codebase:
-
-* **Near-zero cost when off.** Every call site here sits inside the render loop
-  or a driver callback. `timed()` checks one module-level flag and returns a
-  shared no-op before it touches a clock. Measured on this machine, net of the
-  empty-loop baseline (56.3 ns):
-
-      timed() disabled   442 ns/call
-      timed() enabled   3015 ns/call
-
-  At the busiest call site -- `usb.adc2mv`, ~77 driver callbacks/s x 8 channels
-  = 616 calls/s -- that is **0.27 ms per wall-second disabled** and 1.9 ms/s
-  enabled. Both are far below the resolution of anything being measured, so
-  these stay in the shipped code permanently rather than being compiled out.
-* **Bounded by construction.** Audit S-02 was an unbounded buffer that became
-  an OOM kill: SIGKILL, no traceback, nothing in the log. A diagnostic that
-  crashes the app it is diagnosing is worse than no diagnostic, so every stage
-  keeps a fixed-length deque and nothing here ever grows without limit.
-
-Usage::
-
-    from rev80 import _profile
-
-    with _profile.timed(_profile.PROC_TOTAL):
-        ...
-
-    _profile.enable()
-    print(_profile.report())
-
-The stage names are constants rather than free strings so the stream, the
-collector and the GUI cannot drift into naming the same stage two ways.
+Two rules. When off, `timed()` returns a shared no-op before it reads a clock
+(442 ns per call, so it stays in the shipped code). When on, each stage keeps
+a fixed-length ring, so memory cannot grow. Evidence: CONTRIBUTING.md,
+"E18. Profiler overhead". Stage names are constants, so that two modules
+cannot name one stage in two ways.
 """
 
 import threading
@@ -85,20 +52,16 @@ STAGES = (
     GUI_DISPLAY, GUI_PEAKS_TBL, GUI_ENVELOPE, GUI_RENDER, GUI_FRAME,
 )
 
-#: Samples retained per stage for the percentile estimate. 2048 at the default
-#: 2 frames/s is ~17 minutes of frame-rate stages and a few seconds of the
-#: ~77 Hz driver-callback stages — long enough for a p95 to mean something,
-#: short enough that the whole table is well under a megabyte.
+#: Samples kept per stage for the p95. 2048 is about 17 min of frame-rate
+#: stages at 2 frames/s, and about 27 s of a 77 Hz driver-callback stage.
 RING = 2048
 
 
 class _Stage:
     """Running statistics for one pipeline stage.
 
-    Keeps both a bounded ring (for percentiles) and unbounded scalar
-    accumulators (for the true count/sum/max, which the ring would otherwise
-    lose as it rolls). The scalars are three floats, so "unbounded" here costs
-    nothing.
+    A bounded ring for percentiles, and scalar accumulators for the full
+    count, sum and maximum (which the ring loses as it rolls).
     """
 
     __slots__ = ('samples', 'n', 'total', 'peak', 'first_t', 'last_t')
@@ -218,9 +181,9 @@ def _timing(stage: str):
 def timed(stage: str):
     """Context manager timing the enclosed block against `stage`.
 
-    Returns a shared no-op object when profiling is off — no generator is
-    created and no clock is read, which is what makes it safe to leave in the
-    render loop and the driver callback permanently.
+    Returns a shared no-op object when profiling is off: no generator, no
+    clock read. That is why it can stay in the render loop and the driver
+    callback.
     """
     if not ENABLED:
         return _NULL
@@ -249,9 +212,8 @@ def report(title: str = 'pipeline profile') -> str:
             f'{"max ms":>9} {"calls/s":>8} {"ms/s":>8}')
     lines = [title, head, '-' * len(head)]
     for stage, st in snap.items():
-        # ms/s -- the stage's share of a wall-clock second. This is the column
-        # that ranks causes: a 74 ms stage at 2/s and a 1 ms stage at 77/s are
-        # both real, and mean alone hides the second one entirely.
+        # ms/s: the stage's share of a wall-clock second. This column ranks
+        # causes: a 1 ms stage at 77/s costs more than its mean shows.
         load = st['mean_ms'] * st['per_s']
         lines.append(f'{stage:<16} {st["n"]:>7d} {st["mean_ms"]:>9.3f} '
                      f'{st["p95_ms"]:>9.3f} {st["max_ms"]:>9.3f} '
