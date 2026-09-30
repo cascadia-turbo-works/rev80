@@ -539,8 +539,9 @@ Each subsection gives one decision: the value, the measured table, a
 `SimulatedSensor`), and the rejected alternatives. Code comments point here
 by section ID and title.
 
-Each measurement names its PicoScope model. Two serial numbers are
-recorded: 4424A s/n 12462/0067 and 4824A s/n 12481/0116. A 4224A was also
+Each measurement names its PicoScope model. One serial number is
+recorded: 4424A s/n 12462/0067. The project used two 4824A units, and the
+records do not show which unit made a 4824A measurement. A 4224A was also
 used in the project; no table in this section names it.
 
 Many tables were measured before the raw rate became 25600 Hz nominal. A
@@ -706,7 +707,7 @@ rate, which makes the resample FIR very long unless E7 bounds it.
 floors a request to the grid, so the correct value 13021 ns lands at
 13012 ns, one grid point high.
 
-**Measured on:** PicoScope 4824A, s/n 12481/0116, 2026-09-11. Requested
+**Measured on:** PicoScope 4824A (serial not recorded), 2026-09-11. Requested
 intervals, and the interval that the driver wrote back:
 
 | requested ns | returned ns | rate per channel (Hz) | / osr (Hz) | ppm against 25600 Hz |
