@@ -9,6 +9,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### fix/collector — reprocess a session with a tachometer channel (2026-09-29)
+
+#### Fixed
+- **"Reprocess session" accepts a session with a tachometer channel.** The
+  monitor writer stores edge times for a tachometer channel, not a waveform.
+  `DataCollector.reprocess_session_trend` read a `data` dataset from each
+  channel group and stopped with `KeyError`. Now it skips each channel group
+  that has no waveform, in the interval captures and in the burst frames. The
+  new `overall_json` holds the vibration channels only.
+  `tests/test_reprocess_session_tach.py` keeps this.
+
 ### fix/monitor — burst alignment and live-only recording (2026-09-29)
 
 #### Fixed
