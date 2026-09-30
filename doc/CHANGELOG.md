@@ -9,6 +9,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### fix/gui — monitor config and four GUI defects (2026-09-30)
+
+#### Fixed
+- **A config dialog close keeps the monitor block of `acquisition.yaml`.**
+  Before this change, only an open of the Monitor tab loaded the config into
+  the Monitor widgets. Each dialog close saves those widgets. Thus a close on
+  any other tab wrote the widget construction defaults (interval 1 h,
+  pre-trigger 60 s, burst 60 s, anomaly off, RMS threshold 10 %, warm-up 30)
+  over the user's monitor block. A recording started without an open of the
+  Monitor tab also used those defaults. Now `GUI.initialize` loads the config
+  into the widgets at startup. The save keeps the keys that have no widget
+  (`max_burst_s`, `compression_level`, `rms_alpha`, `spec_alpha`), keeps a
+  stored interval that is not a preset, and does not add an EWMA time that
+  the config does not have (headless uses an EWMA time before an alpha). All
+  monitor fallbacks in `gui.py` are now the `config.py` seed values; before,
+  `_start_recording` used 60 s / 60 s, and the dialog 30 s / 120 s.
+  `tests/test_gui_monitor_config.py` keeps this. Without the startup load,
+  5 of its 11 tests fail.
+
 ### fix/collector — reprocess a session with a tachometer channel (2026-09-29)
 
 #### Fixed
