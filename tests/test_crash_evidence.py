@@ -1,21 +1,8 @@
-"""Every way the app can die must leave evidence in the log (audit H-07, S-01, S-02).
+"""Every way the app can die leaves evidence in the log.
 
-The reported symptom is "I return to find the app crashed but I have no
-evidence". There are three distinct mechanisms, and each left a different
-amount of nothing behind:
-
-  * A background thread raises. `sys.excepthook` covers only the MAIN thread,
-    so acquisition, simulation and writer thread deaths went to the default
-    `threading.excepthook` -> stderr. Launched from a desktop entry, stderr
-    goes nowhere. Nothing reaches log/.
-  * The process is SIGKILLed by the OOM killer (S-02). No traceback, no atexit,
-    no log line — the app simply vanishes.
-  * A hard crash in the driver via ctypes (audit X-05). No Python traceback at
-    all, because Python never regains control.
-
-Nothing here can prevent those. What it can do is make sure the first is
-logged, the second is *predictable* from a resource trail written before the
-kill, and the third leaves a native traceback.
+A worker-thread exception reaches the log through threading.excepthook. A
+resource trail predates an OOM kill (SIGKILL). faulthandler writes a native
+traceback for a driver-level crash (SIGSEGV).
 """
 
 import logging
@@ -28,14 +15,14 @@ from rev80 import logger as rev80_logger
 
 
 def test_sys_excepthook_is_installed_by_setup():
-    """Main-thread crashes already reached the log; keep it that way."""
+    """install_excepthooks() routes main-thread crashes to the log."""
     rev80_logger.install_excepthooks()
     import sys
     assert sys.excepthook is rev80_logger.exception_handler
 
 
 def test_threading_excepthook_is_installed():
-    """The gap: without this a dead worker thread leaves no trace at all."""
+    """install_excepthooks() replaces the default threading.excepthook."""
     rev80_logger.install_excepthooks()
     assert threading.excepthook is not threading.__excepthook__
 
@@ -84,11 +71,10 @@ def test_installing_hooks_twice_is_safe():
 
 
 def test_faulthandler_is_enabled_with_a_file():
-    """SIGSEGV is the one crash that leaves no Python traceback.
+    """faulthandler is enabled and its log directory exists.
 
-    A native traceback written to its own file is the only evidence that
-    survives, and it is what distinguishes a driver-level crash (X-05) from
-    an OOM kill, which leaves nothing at all.
+    A SIGSEGV leaves no Python traceback. The native traceback file tells a
+    driver-level crash from an OOM kill, which leaves nothing.
     """
     import faulthandler
     rev80_logger.install_excepthooks()
@@ -112,10 +98,9 @@ def test_resource_snapshot_is_loggable_text():
 
 
 def test_resource_snapshot_never_raises(monkeypatch):
-    """Diagnostics must not become a new crash source.
+    """resource_snapshot() returns 0.0 MB when the platform gives no RSS.
 
-    This runs on Linux, Windows and a Raspberry Pi; if the platform will not
-    give us memory numbers we log less, we do not take the app down.
+    It does not raise, so a diagnostic cannot crash the app.
     """
     monkeypatch.setattr(rev80_logger, '_rss_bytes', lambda: (_ for _ in ()).throw(OSError('nope')))
     snap = rev80_logger.resource_snapshot()
@@ -131,10 +116,10 @@ def test_version_is_reported():
 
 
 def test_version_matches_the_checkout_when_running_from_git():
-    """The stamped _version.py goes stale whenever the git hook is not installed.
+    """In a source checkout, __version__ is the live `git describe` output.
 
-    It was 100 commits behind at one point, which makes a field report
-    untraceable. In a source checkout the live `git describe` wins.
+    setuptools_scm writes _version.py at install time, so it does not follow
+    later commits in an editable checkout.
     """
     import subprocess
     try:

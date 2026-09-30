@@ -1,17 +1,7 @@
-"""Regression tests for pre-trigger overall scaling in MonitorController.
+"""Pre-trigger overalls are in the same unit as post-trigger overalls.
 
-Bug: MonitorController._compute_pretrigger_overalls read the sensor
-sensitivity out of the session snapshot under the key
-'sensitivity_mv_per_eu'. session.sensor_snapshot holds ScopeSensor.to_dict()
-output, which emits 'sensitivity' — the other name appears nowhere in the
-codebase. The `.get(..., 1.0)` default therefore ALWAYS won, the mV->EU
-division never happened, and every burst's pre-trigger trend points came out
-a factor of `sensitivity` too large (~100x for a typical 10.2 mV/g
-accelerometer) against the post-trigger points on the very same plot.
-
-Worse, `engineering_units` on the adjacent line used the correct key, so the
-unit *label* converted while the *magnitude* did not — the plot looked
-plausible and was wrong.
+_compute_pretrigger_overalls divides raw mV by the sensor sensitivity. It reads
+the sensitivity under the 'sensitivity' key that ScopeSensor.to_dict() writes.
 """
 
 import json
@@ -103,16 +93,12 @@ def test_pretrigger_applies_sensitivity(tmp_path):
         f'expected {RAW_MV} mV / {SENSITIVITY_MV_PER_G} mV/g = {EXPECTED_G} g, '
         f'got {value}'
     )
-    # Guard the specific regression: the un-divided value must NOT come back.
+    # The value without the division must not come back.
     assert value != pytest.approx(RAW_MV)
 
 
 def test_pretrigger_matches_posttrigger_for_steady_signal(tmp_path):
-    """A steady signal must produce the same trend value either side of the trigger.
-
-    This is the user-visible symptom: pre-trigger points sat ~100x above
-    post-trigger points on one continuous plot.
-    """
+    """A steady signal gives the same trend value before and after the trigger."""
     ctrl = MonitorController()
     ctrl._session = _session_with_sensor(tmp_path)
 

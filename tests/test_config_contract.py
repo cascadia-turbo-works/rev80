@@ -1,18 +1,7 @@
-"""The config contract between config.py, the GUI and headless must round-trip.
+"""Monitor config values round-trip through config.py, the GUI and headless.
 
-config.py seeds defaults that the GUI then silently rewrote:
-
-  - config.py:83 seeds hook_type: 'rms' (lowercase). The GUI combo items are
-    ["RMS", "Spectral", "Both"] and _build_anomaly_hook / _on_anom_config_change
-    compared against the capitalised forms with no normalisation, while
-    headless.py did .lower(). Opening Config->Monitor once on a fresh install
-    therefore hid BOTH hook groups, built ZERO anomaly hooks, and silently
-    disabled anomaly detection.
-
-  - config.py:74 seeds interval_s: 600, which was not a member of
-    MONITOR_INTERVAL_PRESETS. The widget fell back to the '1 h' label and
-    _save_monitor_config wrote 3600.0 back — silently changing a user's
-    10-minute logging interval to one hour.
+Each seeded default is a value the GUI widget can show. A populate-then-save
+cycle writes back the value it read, including a hook type the GUI cannot show.
 """
 
 from types import SimpleNamespace
@@ -35,10 +24,10 @@ from rev80.util import (
 # ---------------------------------------------------------------------------
 
 def test_seeded_interval_is_a_preset_member():
-    """The shipped interval_s default must be selectable in the GUI combo.
+    """The shipped interval_s default is a member of the GUI interval combo.
 
-    When it was not, the combo silently fell back to '1 h' and saving
-    persisted 3600 over the user's 600.
+    If it were not, the combo would show a fallback label ('1 h') and a save
+    would write 3600 s over the configured 600 s.
     """
     seeded = cfg._BUILTIN_ACQ['monitor']['interval_s']
     assert int(seeded) in MONITOR_INTERVAL_PRESETS, (
@@ -91,12 +80,10 @@ def _save_hook_type(stored_hook_type, widget_value):
 
 
 def test_gui_combo_items_match_labels():
-    """The GUI combo items are exactly the display labels of the offered subset.
+    """Each GUI combo item round-trips through the label helpers.
 
-    The GUI no longer offers every hook type -- 'spectral'/'both' were unwired
-    from the panel (see GUI_ANOMALY_HOOK_TYPES and R39) -- but every item it
-    does show must still round-trip through the label helpers, and every
-    canonical type must still have a label so headless configs stay readable.
+    The GUI offers only GUI_ANOMALY_HOOK_TYPES (the spectral hook is tracked as
+    R39 in doc/PROGRESS.md). Every canonical type keeps a label for headless.
     """
     combo_items = [ANOMALY_HOOK_LABELS[k] for k in GUI_ANOMALY_HOOK_TYPES]
     for item in combo_items:
@@ -107,21 +94,18 @@ def test_gui_combo_items_match_labels():
 
 @pytest.mark.parametrize('stored', sorted(ANOMALY_HOOK_LABELS))
 def test_gui_hook_type_clamps_to_something_the_combo_lists(stored):
-    """Never hand the combo a value outside its own item list.
+    """gui_hook_type() returns only values that the combo lists.
 
-    Setting a DPG combo to an absent item is the S-07 failure mode: it falls
-    back silently and the user never learns the setting was not applied.
+    A DPG combo set to an absent item falls back without a message.
     """
     assert gui_hook_type(stored) in GUI_ANOMALY_HOOK_TYPES
 
 
 @pytest.mark.parametrize('stored', sorted(ANOMALY_HOOK_LABELS))
 def test_opening_the_gui_dialog_does_not_rewrite_a_headless_hook_type(stored):
-    """Populate-then-save must preserve a hook type the GUI cannot display.
+    """Populate-then-save keeps a hook type that the GUI cannot show.
 
-    Headless still offers 'spectral'/'both'. Merely opening the monitor dialog
-    in the GUI -- which clamps them to 'rms' for display -- must not write that
-    stand-in back over the user's configuration.
+    The GUI shows 'spectral'/'both' as 'rms'. It does not write 'rms' back.
     """
     shown_label = hook_type_label(gui_hook_type(stored))
     saved = _save_hook_type(stored_hook_type=stored, widget_value=shown_label)
@@ -129,11 +113,10 @@ def test_opening_the_gui_dialog_does_not_rewrite_a_headless_hook_type(stored):
 
 
 def test_an_explicit_pick_beats_the_preserved_value():
-    """Preservation must only cover the untouched stand-in, not pin the field.
+    """A widget value other than the clamped stand-in is a user selection and wins.
 
-    Constructed so the two rules disagree: 'both' is stored, the widget reads
-    'Spectral'. That is not the value 'both' clamps to, so it can only have
-    come from a deliberate selection and must win.
+    'both' is stored and the widget reads 'Spectral', which 'both' does not
+    clamp to.
     """
     assert _save_hook_type(stored_hook_type='both', widget_value='Spectral') == 'spectral'
     # And a type the GUI does offer is always written straight through.
@@ -161,7 +144,7 @@ def test_nearest_preset_picks_the_closest(seconds, expected):
 
 
 def test_nearest_preset_never_jumps_to_an_hour_for_ten_minutes():
-    """The specific regression: 600 must not become 3600."""
+    """600 s maps to 600 s, not to 3600 s."""
     assert nearest_interval_preset(600) != 3600
 
 
@@ -175,10 +158,10 @@ def test_nearest_preset_handles_garbage(bad):
 # ---------------------------------------------------------------------------
 
 def test_defaults_round_trip_through_gui_widget_values():
-    """Simulate populate-then-save over the monitor config and assert stability.
+    """A populate-then-save cycle keeps the seeded interval_s and hook_type.
 
-    This mirrors what _populate_monitor_config / _save_monitor_config do with
-    the two fields that were being rewritten, without needing a DPG context.
+    The steps copy _populate_monitor_tab and _save_monitor_config for these
+    two fields, without a DPG context.
     """
     monitor = cfg._BUILTIN_ACQ['monitor']
     interval_s = monitor['interval_s']
@@ -208,10 +191,10 @@ def test_defaults_round_trip_through_gui_widget_values():
 
 
 def test_seeded_hook_type_selects_a_hook_group():
-    """A fresh install must show at least one hook group, not zero.
+    """The seeded hook_type selects at least one hook group.
 
-    With no normalisation, the seeded 'rms' matched neither ('RMS','Both') nor
-    ('Spectral','Both'), so both groups were hidden and no hooks were built.
+    If it matched no group, no hook would be built and anomaly detection
+    would be off on a fresh install.
     """
     hook = canonical_hook_type(cfg._BUILTIN_ACQ['monitor']['anomaly']['hook_type'])
     rms_shown = hook in ('rms', 'both')

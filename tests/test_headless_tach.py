@@ -1,15 +1,7 @@
-"""Tachometer support in `rev80-headless` (R44).
+"""rev80-headless runs a tachometer channel.
 
-The tach path was already role-aware end to end -- collector, monitor
-controller, session writer and speed gate all branch on the role -- and
-headless was the only layer that opted out, by refusing tach-role channels
-outright. These tests cover the wiring that replaced the refusal.
-
-The refusal itself was pinned by nothing: `_apply_channel_config`'s docstring
-said it had been extracted from `run()` "so the refusal is testable" and no
-test was ever written. This file was written against the refusal first and
-watched to pass, then inverted, so each assertion here is known to
-discriminate rather than merely to be green.
+Covers the shared role decision, --channels against the roles, the tach summary
+lines, the channel roles in a monitor session, and the simulated tach source.
 """
 
 import pytest
@@ -54,12 +46,9 @@ def _config():
 # --- the shared loader ----------------------------------------------------
 
 def test_role_state_is_shared_by_both_front_ends():
-    """One function decides what a `channels/{ch}` block means.
+    """channel_role_state() decides what a `channels/{ch}` block means.
 
-    The GUI and headless each had their own copy of this decision, and they
-    had already drifted on the default for a missing `enabled` key (the GUI
-    said True, headless said False). That is audit H-01's shape exactly: the
-    same rule written twice, differing, with nothing asserting they agree.
+    Both front ends call it, so they cannot disagree on a default.
     """
     role, settings, enabled = channel_role_state(
         {"role": "tachometer", "enabled": False, "tach": {"pulses_per_rev": 6}})
@@ -74,10 +63,7 @@ def test_role_state_is_shared_by_both_front_ends():
 
 
 def test_an_unknown_role_falls_back_to_vibration_rather_than_raising():
-    """A hand-edited or future role must not take down an unattended run.
-    Erasing the sensor library by raising out of a config loader is audit
-    X-01, and this is the same loader shape.
-    """
+    """An unknown role becomes 'vibration'; the loader does not raise."""
     role, settings, _ = channel_role_state({"role": "flowmeter", "enabled": True})
     assert role == 'vibration'
     assert settings is None
@@ -99,10 +85,8 @@ def test_tach_channel_is_enabled_and_carries_its_calibration():
 
 
 def test_a_tach_role_channel_with_no_calibration_block_says_so(caplog):
-    """`tach: null` on a claimed channel means the GUI never wrote one. The
-    defaults are usable -- adaptive, rising, 1 ppr -- but the operator thinks
-    they configured it, so an unattended run must not take them silently.
-    """
+    """`tach: null` on a claimed channel gives the default TachSettings and a
+    warning that names the missing calibration."""
     with caplog.at_level('WARNING'):
         settings = _apply_channel_config(_config(), _device_cfg(tach=None))
     assert settings[3] == tach.TachSettings(), 'usable defaults, not a refusal'
@@ -110,7 +94,7 @@ def test_a_tach_role_channel_with_no_calibration_block_says_so(caplog):
 
 
 def test_vibration_channels_are_untouched_by_the_tach_path():
-    """The overwhelming majority of headless runs have no tachometer."""
+    """With no tachometer role, the tach path changes nothing."""
     config = _config()
     cfg = {"channels": {0: {"enabled": True, "role": "vibration"},
                         1: {"enabled": False, "role": "vibration"}}}
@@ -122,10 +106,10 @@ def test_vibration_channels_are_untouched_by_the_tach_path():
 # --- --channels must reconcile against the roles --------------------------
 
 def test_channels_override_that_drops_the_tach_says_so(caplog):
-    """The silent failure this guard exists for: `--channels 0,1` against a
-    config whose tach is channel 3 leaves the session recording rpm=NaN on
-    every capture, with the speed gate failing closed so nothing is trended
-    -- and nothing on screen saying why.
+    """`--channels` that leaves out the tach channel logs a warning.
+
+    Without the tach, every capture records rpm=NaN and the speed gate fails
+    closed, so nothing is trended.
     """
     config = _config()
     _apply_channel_config(config, _device_cfg())
@@ -150,8 +134,7 @@ def test_channels_override_keeping_the_tach_is_silent(caplog):
 
 
 def test_channels_override_naming_an_unconfigured_channel_does_not_invent_a_tach():
-    """`--channels 0,3` with no device file must not produce a tach-role
-    channel with default calibration against an unknown sensor."""
+    """`--channels 0,3` with no device file makes no tachometer channel."""
     config = _config()
     _apply_overrides(config, _Args(channels=['0', '3']))
     assert config.enabled_channels == [0, 3]
@@ -161,9 +144,9 @@ def test_channels_override_naming_an_unconfigured_channel_does_not_invent_a_tach
 # --- the ppr limits headless cannot show live -----------------------------
 
 def test_the_speed_floor_is_reported_for_the_configured_ppr():
-    """An unattended run has no Tachometer tab to show the floor on, and the
-    floor is what decides whether the shaft can be read at all. 1 Hz bins is
-    a 1 s block, so 180 RPM at 1 ppr.
+    """The summary gives the slowest measurable shaft speed.
+
+    A 1 Hz bin is a 1 s block, so the floor is 180 RPM at 1 ppr.
     """
     from rev80.headless import _tach_summary_lines
 
@@ -192,9 +175,8 @@ def test_the_reported_floor_tracks_the_block_length(binsize, floor):
 
 # --- what an unattended session actually writes ---------------------------
 #
-# The channel-group layout itself is covered by tests/test_monitor_tach_storage.py,
-# with the writer fix it regresses. What is on trial here is the snapshot:
-# neither front end recorded the channel role in it.
+# tests/test_monitor_tach_storage.py covers the channel-group layout.
+# These tests check that the channel snapshot records the role.
 
 def _tach_session(tmp_path):
     """Record a short monitor session from a coherent vibration+tach pair."""
@@ -245,9 +227,7 @@ def _tach_session(tmp_path):
 
 
 def test_a_monitor_session_records_the_channel_roles(tmp_path):
-    """Without this a loaded session can only infer the role from the absence
-    of a dataset, which is a guess about intent from a storage detail.
-    """
+    """The session metadata records the role of each channel."""
     import h5py
 
     with h5py.File(_tach_session(tmp_path), 'r') as f:
@@ -258,9 +238,7 @@ def test_a_monitor_session_records_the_channel_roles(tmp_path):
 
 
 def test_the_channel_snapshot_builder_is_shared():
-    """The GUI and headless each had their own copy of this dict literal, and
-    neither recorded the role. Third instance of the H-01 shape in this file.
-    """
+    """channel_snapshot_for() records role and tach calibration per channel."""
     from rev80.monitor.session import channel_snapshot_for
 
     cfg = vc.AcquisitionSettings()
@@ -277,12 +255,10 @@ def test_the_channel_snapshot_builder_is_shared():
 
 
 def test_neither_front_end_reimplements_the_role_decision():
-    """The extraction is only real if both callers use it.
+    """gui.py and headless.py both call channel_role_state().
 
-    Source inspection rather than behaviour, because `_restore_channel_assignments`
-    cannot run without a dearpygui context. `tests/test_anomaly_hook_build.py`
-    polices the remaining H-01 copy the same way: by testing the thing that
-    would drift, not the thing that is easy to reach.
+    This reads the source, because `_restore_channel_assignments` cannot run
+    without a dearpygui context.
     """
     import inspect
 
@@ -299,9 +275,7 @@ def test_neither_front_end_reimplements_the_role_decision():
 # --- --channels persistence, which is sticky across restarts --------------
 
 def test_channels_override_is_written_back_to_the_device_config():
-    """`--channels` edits `devices/*.yaml` so the selection survives a restart.
-    Documented behaviour; this pins it before the tach exception below.
-    """
+    """`--channels` edits `devices/*.yaml`, so the selection survives a restart."""
     from rev80.headless import _persist_channel_override
 
     cfg = {"channels": {0: {"enabled": False, "role": "vibration"},
@@ -312,10 +286,9 @@ def test_channels_override_is_written_back_to_the_device_config():
 
 
 def test_persisting_an_override_leaves_a_tach_channels_flag_alone():
-    """A tach channel's `enabled` is owned by the role, not by this flag:
-    `channel_role_state` forces a claimed channel on, so writing False here
-    would persist a flag every loader then ignores. The run-scoped exclusion
-    happens in `_apply_overrides` instead.
+    """`_persist_channel_override` does not write `enabled` for a tach channel.
+
+    The role owns that flag. `_apply_overrides` excludes the tach for one run.
     """
     from rev80.headless import _persist_channel_override
 
@@ -336,9 +309,9 @@ def test_an_override_that_changes_nothing_does_not_rewrite_the_file():
 # --- the accuracy ceiling a non-unity ppr runs into -----------------------
 
 def test_a_high_ppr_summary_states_the_sampling_ceiling():
-    """Headless has no Tachometer tab to show this live, and it is not
-    recoverable from the session file afterwards. At 6 ppr and the fixed raw
-    rate, full accuracy stops well inside the range a machine actually runs.
+    """At 6 ppr, the summary gives the full-accuracy speed limit.
+
+    The limit is raw_samplerate * 60 / (MIN_SAMPLES_PER_PULSE * ppr) RPM.
     """
     from rev80.headless import _tach_summary_lines
 
@@ -354,8 +327,7 @@ def test_a_high_ppr_summary_states_the_sampling_ceiling():
 
 
 def test_one_pulse_per_rev_does_not_mention_a_ceiling_it_never_reaches():
-    """At 1 ppr the limit sits above anything this instrument measures, so
-    printing it would be noise on the overwhelmingly common configuration."""
+    """At 1 ppr, the summary does not give the full-accuracy limit."""
     from rev80.headless import _tach_summary_lines
 
     config = _config()
@@ -366,10 +338,7 @@ def test_one_pulse_per_rev_does_not_mention_a_ceiling_it_never_reaches():
 # --- the simulated tach, without which none of this is testable offline ---
 
 def test_a_simulated_tach_channel_gets_a_pulse_train_not_an_accelerometer():
-    """Nothing in the package set `SimulatedSensor.channel_sources`; only
-    tests did, so a simulated tach channel received the vibration waveform
-    and read `no_signal`. Neither front end could be dry-run against a tach.
-    """
+    """A simulated tach channel gets GenerateTachPulse as its source."""
     from rev80.sensor import _simulate_tach_sources
     from rev80.simulation import GenerateTachPulse
 
@@ -387,10 +356,7 @@ def test_a_simulated_tach_channel_gets_a_pulse_train_not_an_accelerometer():
 
 
 def test_the_simulated_tach_is_coherent_with_the_vibration_channel():
-    """A pulse train not locked to the vibration channel's own shaft rate
-    simulates a tachometer reading a different machine, and would validate
-    nothing -- which is why this goes through machine_with_tach_sources.
-    """
+    """The simulated tach speed (RPM) is 60 x the vibration shaft rate (Hz)."""
     from rev80.sensor import _simulate_tach_sources
 
     cfg = vc.AcquisitionSettings()
@@ -408,8 +374,7 @@ def test_the_simulated_tach_is_coherent_with_the_vibration_channel():
 
 
 def test_no_tach_role_leaves_the_simulator_tiling_as_before():
-    """The overwhelming majority of simulated runs. Historical behaviour is
-    preserved byte-for-byte by leaving channel_sources empty."""
+    """With no tach role, channel_sources stays empty."""
     from rev80.sensor import _simulate_tach_sources
 
     cfg = vc.AcquisitionSettings()

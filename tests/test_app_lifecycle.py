@@ -1,24 +1,8 @@
-"""The app must always shut down cleanly, however it exits (audit S-01).
+"""The app shuts down cleanly, however it exits.
 
-Two defects that compound, and together explain both halves of the reported
-symptom — "I came back and the session was truncated, and then the scope
-wouldn't connect until I replugged it":
-
-  * GUI.cleanup() never called self._monitor.stop(), and the writer is a
-    DAEMON thread. The interpreter kills daemons without unwinding, possibly
-    mid-h5py.File(..., 'a'), with captures still queued and unwritten.
-    MonitorController.stop() already flushes the partial burst and drains the
-    writer correctly — it was simply never reached on app close.
-
-  * GUI.run()'s loop body had no try/except and __main__.main() had no
-    try/finally, so ANY exception in the render path skipped cleanup()
-    entirely and ps4000aCloseUnit never ran. The next launch then gets
-    PICO_NOT_FOUND until the USB is physically replugged.
-
-Render-loop policy: log once per exception TYPE so a persistent fault cannot
-flood the rotating log at frame rate (the S-09 failure mode), keep rendering
-so a single bad frame does not end an overnight run, and after a run of
-consecutive failures shut down cleanly THROUGH cleanup() rather than dying.
+GUI.cleanup() stops the monitor first, then closes the device. The writer is a
+daemon thread and loses queued captures at exit. The render loop logs once for
+each exception type and shuts down through cleanup() after repeated failures.
 """
 
 import logging
@@ -69,7 +53,7 @@ def test_cleanup_stops_a_recording_monitor(monkeypatch):
 
 
 def test_cleanup_stops_the_monitor_before_closing_the_device(monkeypatch):
-    """Order matters: the writer needs the session flushed before teardown."""
+    """The monitor stops before the device closes, so the session is flushed."""
     monkeypatch.setattr('dearpygui.dearpygui.destroy_context', lambda: None)
     order = []
     mon, col = _FakeMonitor(), _FakeCollector()
@@ -88,7 +72,7 @@ def test_cleanup_with_no_monitor_is_fine(monkeypatch):
 
 
 def test_cleanup_still_closes_the_device_if_the_monitor_raises(monkeypatch, caplog):
-    """A failing monitor must not strand the scope — that is the whole point."""
+    """The device closes even when the monitor stop raises."""
     monkeypatch.setattr('dearpygui.dearpygui.destroy_context', lambda: None)
     mon = _FakeMonitor()
     mon.stop = lambda: (_ for _ in ()).throw(RuntimeError('writer wedged'))
@@ -169,8 +153,8 @@ def test_a_good_frame_resets_the_failure_streak():
 
 @pytest.mark.parametrize('exc', [ValueError('v'), KeyError('k'), ZeroDivisionError('z')])
 def test_handler_never_reraises(exc):
-    """X-02: a malformed .h5 gives ZeroDivisionError in the render path. It
-    must become a logged error, not an exit that strands the device."""
+    """An error in the render path (for example ZeroDivisionError from a
+    malformed .h5) is logged and never re-raised."""
     app = _app()
     app._render_errors = {}
     app._consecutive_render_errors = 0

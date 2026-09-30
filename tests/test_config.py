@@ -336,7 +336,7 @@ class TestAcquisitionSettingsSerialisation:
 
 
 # ---------------------------------------------------------------------------
-# Channel roles and speed gate in the config templates (R43)
+# Channel roles and speed gate in the config templates
 # ---------------------------------------------------------------------------
 
 def test_channel_template_carries_role_and_tach_block():
@@ -346,10 +346,8 @@ def test_channel_template_carries_role_and_tach_block():
 
 
 def test_existing_device_config_without_role_upgrades_to_vibration():
-    """Every device YAML on disk predates roles. _merge_device must fill the
-    key rather than leave it missing, or role_for() silently carries the whole
-    upgrade burden.
-    """
+    """_merge_device fills a missing 'role' key with 'vibration' and keeps
+    the existing keys."""
     from rev80.config import _merge_device
     merged = _merge_device({'channels': {0: {'enabled': True, 'voltage_range': 8}}})
     ch0 = merged['channels'][0]
@@ -369,8 +367,7 @@ def test_existing_acquisition_config_without_speed_gate_upgrades():
 
 
 def test_acquisition_template_round_trips_through_settings():
-    """The template is what a fresh install starts from, so it must be
-    loadable by AcquisitionSettings without loss."""
+    """AcquisitionSettings loads the fresh-install template without loss."""
     from rev80 import AcquisitionSettings
     from rev80.config import _BUILTIN_ACQ
     cfg = AcquisitionSettings.from_dict(_BUILTIN_ACQ['acquisition'])

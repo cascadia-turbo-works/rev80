@@ -1,11 +1,8 @@
-"""Claiming a channel for the tachometer role.
+"""Claiming a channel for the tachometer role (gui.apply_tach_claim).
 
-`config.tach_channels` filters by enabled_channels -- deliberately, so a tach
-role left on a switched-off input does not send the collector hunting for a
-pulse train nobody is sampling. The consequence is that claiming a *disabled*
-channel does nothing at all, silently, which is exactly what an operator hits
-when the channel they want for the tach is one they never enabled for
-vibration.
+`config.tach_channels` filters by enabled_channels, so a tach role on a
+switched-off input is not sampled. Therefore a claim enables the channel, and a
+release switches off only a channel that the claim switched on.
 """
 
 
@@ -21,8 +18,10 @@ def _collector(enabled=(0,)):
 
 
 def test_claiming_a_disabled_channel_enables_it():
-    """The bug: picking channel 3 for the tach when only 0 is enabled left
-    tach_channels empty and the rate simply never appeared."""
+    """Claiming disabled channel 3 enables it and makes it the tach channel.
+
+    If it stayed disabled, tach_channels would be empty and no rate would show.
+    """
     dc = _collector(enabled=(0,))
     apply_tach_claim(dc, 3, None, TachSettings())
     assert 3 in dc.config.enabled_channels
@@ -38,8 +37,11 @@ def test_claiming_an_already_enabled_channel_leaves_it_enabled():
 
 
 def test_releasing_switches_off_a_channel_it_switched_on():
-    """Otherwise the operator is handed an enabled vibration channel they never
-    asked for, carrying a pulse train -- overall 1515 mV, kurtosis 15.94."""
+    """Releasing a claim switches off the channel that the claim enabled.
+
+    Otherwise a vibration channel carries a pulse train and reads, for example,
+    overall 1515 mV and kurtosis 15.94.
+    """
     dc = _collector(enabled=(0,))
     implicit = apply_tach_claim(dc, 3, None, TachSettings())
     assert implicit == 3

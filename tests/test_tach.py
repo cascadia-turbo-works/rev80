@@ -1,17 +1,12 @@
 """Edge-detection mechanics for tachometer channels (rev80.tach).
 
-Scope: the detector itself. Amplitude/timing *accuracy* assertions live in
-tests/test_measurement_validity.py, which is off-grid and phase-swept by
-construction; this file covers hysteresis, the min-span gate, polarity and
-pulses-per-rev being applied exactly once, quality classification, and the
-block-boundary cases.
+Covers hysteresis, the min-span gate, polarity, pulses per revolution applied
+exactly once, quality classification, block boundaries and duty cycle.
 
-Every synthetic pulse train here is deliberately generated off-grid (a
-non-integer number of samples per pulse period) and swept across sub-sample
-start phases. An on-grid rate -- e.g. 600 RPM at 1 ppr and 40 kHz, which is
-exactly 4000.0 samples per pulse -- is the tachometer's equivalent of a
-bin-centred tone: the one case where quantisation error vanishes identically
-and a broken detector still passes.
+Each synthetic pulse train is off-grid (a non-integer number of samples per
+pulse) and swept across sub-sample start phases. An on-grid rate is the
+tachometer's version of a bin-centred tone: quantisation error vanishes and a
+broken detector still passes.
 """
 
 import numpy as np
@@ -19,9 +14,9 @@ import pytest
 
 from rev80 import tach
 
-# Real hardware reports 41666.5 Hz, not RAW_SAMPLERATE_HZ (40000). Tests use
-# the hardware value so that any implementation reaching for the constant
-# instead of the sample's own rate reads 4.166 % high and fails here.
+# Two rates that are not RAW_SAMPLERATE_HZ (25600 Hz). An implementation that
+# reads the module constant instead of the sample's own rate gives the wrong
+# RPM here and fails. (41666.5 Hz is the achieved rate of an earlier raw rate.)
 HW_FS = 41666.5
 SIM_FS = 40000.0
 
@@ -69,10 +64,10 @@ def make_ramped_pulses(rpm, fs, duration_s=1.0, ppr=1, duty=0.5,
 # --- min-span gate -------------------------------------------------------
 
 def test_noise_only_block_reports_no_signal_not_zero_rpm():
-    """A disconnected input must read 'I cannot see a tach', not 'stopped'.
+    """A noise-only block reads 'no_signal' with rpm None, not 0 RPM.
 
-    Without the min-span gate an adaptive threshold finds the noise and counts
-    it -- measured at ~9100 edges per block, i.e. 547 752 RPM.
+    Without the min-span gate, an adaptive threshold counts the noise: about
+    9100 edges per block, which is 547752 RPM.
     """
     x = np.random.default_rng(0).normal(0.0, 5.0, int(HW_FS))
     r = tach.tach_result(x, HW_FS, ch=0, rel_time=0.0)
@@ -108,11 +103,11 @@ def test_rising_and_falling_polarity_agree_on_rate(rpm):
 
 
 def test_polarity_selects_which_end_of_the_pulse_is_timed():
-    """Rate alone cannot pin polarity -- a pulse train has the same period
-    whichever end you time. The edge *instants* are what differ: 'rising' marks
-    each pulse's leading edge, 'falling' its trailing edge, one duty cycle
-    later. Without the inversion both settings return the leading edge and the
-    keyphasor's angular reference is silently wrong by the pulse width.
+    """'rising' times the leading edge; 'falling' times the trailing edge.
+
+    The rate is the same for both, so the test compares edge instants: the
+    trailing edge is one duty cycle later. If both gave the leading edge, the
+    keyphasor angle would be wrong by the pulse width.
     """
     rpm, duty = 1800.0, 0.25
     period_s = 60.0 / rpm
@@ -143,23 +138,21 @@ def test_pulses_per_rev_divides_exactly_once(ppr):
     x = make_pulses(shaft_rpm, HW_FS, ppr=ppr, duty=0.5)
     r = tach.tach_result(x, HW_FS, ch=0, rel_time=0.0,
                          settings=tach.TachSettings(pulses_per_rev=ppr))
-    # Tolerance is two samples of slop on one pulse period, because these are
-    # ideal rectangles: both samples straddling a crossing sit at the rails, so
-    # linear interpolation returns a constant fraction and degenerates to
-    # nearest-sample quantisation. Real edges are band-limited by the hardware
-    # anti-alias filter, which is what gives interpolation its purchase -- the
-    # bench measured 0.026 % at 600 RPM against the ~0.05 % allowed here.
-    # Accuracy proper is asserted in tests/test_measurement_validity.py.
+    # Tolerance is two samples on one pulse period. On ideal rectangles both
+    # samples at a crossing sit at the rails, so interpolation becomes
+    # nearest-sample quantisation. Real edges are band-limited by the
+    # anti-alias filter; AWG loopback measured 0.026 % at 600 RPM and 1 ppr,
+    # against about 0.05 % allowed here (CONTRIBUTING.md, "E14.2. Accuracy").
     samples_per_pulse = HW_FS / (shaft_rpm * ppr / 60.0)
     assert r.rpm == pytest.approx(shaft_rpm, rel=2.0 / samples_per_pulse)
     assert r.pulses_per_rev == ppr
 
 
 def test_samplerate_comes_from_the_argument_not_a_module_constant():
-    """The 4.166 % trap: hardware reports 41666.5 Hz, the constant says 40000.
+    """tach_result() uses its samplerate argument, not RAW_SAMPLERATE_HZ.
 
-    An implementation that reaches for RAW_SAMPLERATE_HZ is exactly right in
-    CI and reads 1875 RPM for an 1800 RPM shaft on real hardware.
+    Neither HW_FS nor SIM_FS is the 25600 Hz constant. The achieved hardware
+    rate is not the nominal rate either.
     """
     x = make_pulses(1800.0, HW_FS)
     assert tach.tach_result(x, HW_FS, ch=0, rel_time=0.0).rpm == pytest.approx(
@@ -173,9 +166,11 @@ def test_samplerate_comes_from_the_argument_not_a_module_constant():
 
 @pytest.mark.parametrize('duty', [0.05, 0.30, 0.50, 0.70, 0.85])
 def test_adaptive_threshold_is_invariant_to_duty_and_ac_coupling(duty):
-    """Measured on hardware: fixed thresholds fail above ~55 % duty when the
-    input is AC-coupled, because AC coupling removes the mean and the mean is
-    the duty cycle. Adaptive returned 1801.7 RPM in all ten bench conditions.
+    """The adaptive threshold reads the same rate at any duty, DC or AC coupled.
+
+    AC coupling removes the mean, and on a pulse train the mean is the duty
+    cycle. On the bench, a fixed threshold failed above about 55 % duty; the
+    adaptive threshold read 1801.7 RPM in all ten conditions.
     """
     dc = make_pulses(1800.0, HW_FS, duty=duty)
     ac = dc - dc.mean()                      # what AC coupling does to a pulse train
@@ -185,8 +180,9 @@ def test_adaptive_threshold_is_invariant_to_duty_and_ac_coupling(duty):
 
 
 def test_fixed_threshold_fails_on_ac_coupled_high_duty_signal():
-    """The failure the adaptive default exists to prevent -- kept as a test so
-    the default is never 'simplified' back to a fixed threshold.
+    """A fixed threshold reads no rate on an AC-coupled 85 % duty signal.
+
+    This is the case that makes the adaptive threshold the default.
     """
     dc = make_pulses(1800.0, HW_FS, duty=0.85)
     ac = dc - dc.mean()
@@ -197,12 +193,10 @@ def test_fixed_threshold_fails_on_ac_coupled_high_duty_signal():
 
 
 def test_hysteresis_rejects_noise_riding_on_the_threshold():
-    """Noise at the switching point must not multiply the edge count.
+    """Noise on the edge slope does not add edges.
 
-    The edge has to have a finite rise time for this to bite: on an ideal
-    rectangle no sample ever lands near the threshold, so hysteresis is never
-    exercised and its removal goes unnoticed. Real edges are band-limited by
-    the anti-alias filter upstream, which is what puts samples in the band.
+    The edges have a finite rise, so samples land near the threshold. On an
+    ideal rectangle, hysteresis is never used and its removal is not detected.
     """
     rpm = 1800.0
     kw = dict(duty=0.5, rise_samples=12)
@@ -216,18 +210,20 @@ def test_hysteresis_rejects_noise_riding_on_the_threshold():
 
 
 def test_detect_edges_applies_the_min_span_gate_itself():
-    """detect_edges is public and is called directly (by estimate_rpm's
-    callers and by the GUI's tach waveform view), so it cannot rely on
-    tach_result having already checked the span.
+    """detect_edges() applies the min-span gate itself.
+
+    It is public and callers such as the GUI tach waveform view call it
+    directly, not through tach_result().
     """
     noise = np.random.default_rng(7).normal(0.0, 5.0, int(HW_FS))
     assert tach.detect_edges(noise).size == 0
 
 
 def test_sub_sample_interpolation_beats_nearest_sample_quantisation():
-    """At 60 pulses/rev a period is only ~69 samples, so rounding each edge to
-    the nearest sample costs up to 1.4 %. Interpolating the crossing on a
-    band-limited edge must do materially better than that.
+    """Sub-sample interpolation keeps the error below 0.3 % at 60 ppr.
+
+    At HW_FS and 600 RPM, a pulse period is about 69 samples, so rounding each
+    edge to the nearest sample costs up to 1.4 %.
     """
     rpm, ppr = 600.0, 60
     settings = tach.TachSettings(pulses_per_rev=ppr)
@@ -245,8 +241,9 @@ def test_sub_sample_interpolation_beats_nearest_sample_quantisation():
 # --- block boundaries ----------------------------------------------------
 
 def test_block_starting_mid_pulse_does_not_report_a_phantom_edge():
-    """A naive loop detector reports an edge at sample 1 whenever a block
-    begins already above the threshold. Requiring a real crossing does not.
+    """A block that starts above the threshold has no edge at sample 1.
+
+    An edge needs a real crossing.
     """
     x = make_pulses(1800.0, HW_FS, duty=0.5)
     x = np.roll(x, -int(0.25 * HW_FS / 30.0))   # start part-way through a high
@@ -256,14 +253,12 @@ def test_block_starting_mid_pulse_does_not_report_a_phantom_edge():
 
 
 def test_block_opening_inside_the_hysteresis_band_reports_no_edge_there():
-    """An edge requires a *decided low* state before it, not merely 'not high'.
+    """An edge needs a decided low state before it, not only 'not high'.
 
-    A block can open with its first samples part-way up a slope, inside the
-    hysteresis band, where the detector has no prior state and cannot know
-    whether the signal was rising or falling into it. Accepting that as an edge
-    invents one at an arbitrary position, which corrupts one interval and can
-    trip the 'inconsistent' flag on a perfectly good sensor. Suppressing it
-    costs at most one interval out of thirty and corrupts nothing.
+    A block can open inside the hysteresis band, where the detector cannot tell
+    a rising from a falling signal. An edge there would be at an arbitrary
+    position and could set 'inconsistent' on a good sensor. Suppressing it
+    costs at most one interval in thirty.
     """
     rpm, rise = 1800.0, 60
     rise_s = rise / HW_FS
@@ -282,8 +277,9 @@ def test_block_opening_inside_the_hysteresis_band_reports_no_edge_there():
 
 @pytest.mark.parametrize('phase_frac', np.linspace(0.0, 1.0, 8, endpoint=False))
 def test_rate_is_stable_across_sub_sample_start_phases(phase_frac):
-    """Sweeping the pulse across one sample interval is what stops an on-grid
-    rate from hiding quantisation error.
+    """The rate is stable across sub-sample start phases.
+
+    The phase sweep stops an on-grid rate from hiding quantisation error.
     """
     x = make_pulses(1793.3, HW_FS, phase_s=phase_frac / HW_FS)
     assert tach.tach_result(x, HW_FS, ch=0, rel_time=0.0).rpm == pytest.approx(
@@ -302,8 +298,9 @@ def test_too_few_edges_is_distinct_from_no_signal():
 # --- quality classification ---------------------------------------------
 
 def test_single_miscounted_edge_is_flagged_inconsistent_but_rpm_survives():
-    """Median-of-intervals is chosen precisely so one bad edge costs 0.15 RPM
-    rather than 62 RPM. The flag says the sensor needs looking at.
+    """One missing edge sets 'inconsistent', but the median keeps the rate.
+
+    With the median of intervals, one bad edge costs 0.15 RPM, not 62 RPM.
     """
     x = make_pulses(1800.0, HW_FS, duty=0.05)
     edges = tach.detect_edges(x)
@@ -322,9 +319,10 @@ def test_steady_shaft_is_not_flagged_unsteady():
 
 
 def test_speed_ramp_across_the_block_is_flagged_unsteady():
-    """A spectrum captured while the shaft is accelerating is smeared and must
-    be rejected, not corrected -- 2 %/s costs 17 % of peak height and spreads a
-    bearing tone over 18 bins.
+    """A 4 % speed ramp across the block sets 'unsteady'; rpm is still given.
+
+    A spectrum taken during acceleration is smeared: 2 %/s costs 17 % of peak
+    height and spreads a bearing tone over 18 bins.
     """
     fs, dur = HW_FS, 1.0
     n = int(fs * dur)
@@ -348,8 +346,10 @@ def test_drift_is_reported_signed_so_the_direction_is_recoverable():
 # --- result shape --------------------------------------------------------
 
 def test_result_carries_the_edge_times_that_get_persisted():
-    """Edge times, not the waveform, are what reaches HDF5 -- ~1400x smaller
-    and still enough to re-derive RPM at a different pulses_per_rev.
+    """The result carries the edge times that are written to HDF5.
+
+    A tachometer channel stores edge times, not the waveform. They are enough
+    to re-derive RPM at a different pulses_per_rev.
     """
     x = make_pulses(1800.0, HW_FS)
     r = tach.tach_result(x, HW_FS, ch=3, rel_time=1.25)
@@ -376,8 +376,9 @@ def test_settings_round_trip_through_dict():
 
 
 def test_settings_from_dict_coerces_types_and_fills_defaults():
-    """YAML round-trips give strings; a KeyError here silently erased the whole
-    sensor library once already (audit X-01).
+    """from_dict() coerces YAML strings and fills missing keys with defaults.
+
+    A KeyError from a config loader must not become a lost configuration.
     """
     s = tach.TachSettings.from_dict({'pulses_per_rev': '6', 'threshold_mv': '2500'})
     assert s.pulses_per_rev == 6 and isinstance(s.pulses_per_rev, int)
@@ -386,25 +387,21 @@ def test_settings_from_dict_coerces_types_and_fills_defaults():
     assert tach.TachSettings.from_dict({}) == tach.TachSettings()
 
 
-# --- pulses per rev, and the minimum-revolutions gate (D-6) -----------------
+# --- pulses per rev, and the minimum-revolutions gate ----------------------
 
 def test_default_is_one_pulse_per_rev():
-    """D-6: the preponderance of installs is one reflective tape or one
-    keyway, and 1 ppr is not merely the common case but the accurate one --
-    every interval is then exactly one revolution, so once-per-rev division
-    error and load-zone speed modulation cancel by construction rather than by
-    averaging (measured 0.0013% at 1 ppr vs 0.091% for a 60-line encoder at
-    any window length).
+    """One pulse per revolution is the default and the recommended configuration.
+
+    At 1 ppr every interval is one revolution, so division error and
+    once-per-rev speed modulation cancel: 0.0013 % at 1 ppr against 0.091 % for
+    a 60-line encoder. Evidence: CONTRIBUTING.md, "E14.4. One pulse per
+    revolution and `MIN_REVS`".
     """
     assert tach.TachSettings().pulses_per_rev == 1
 
 
 def test_three_edges_is_two_whole_revolutions_at_one_ppr():
-    """The gate is revolutions, and at 1 ppr it lands exactly where the old
-    fixed MIN_EDGES = 3 did -- three edges, two intervals, two whole turns.
-    This test is the one that pins the generalisation as behaviour-preserving
-    at the only ppr the UI used to produce.
-    """
+    """At 1 ppr, MIN_REVS = 2.0 needs three edges: two intervals, two turns."""
     assert tach.MIN_REVS == 2.0
     assert tach.min_edges_for(1) == 3
     x = make_pulses(1800.0, HW_FS, duration_s=3.2 * 60.0 / 1800.0)
@@ -415,13 +412,10 @@ def test_three_edges_is_two_whole_revolutions_at_one_ppr():
 
 @pytest.mark.parametrize('ppr, edges', [(1, 3), (2, 5), (6, 13), (60, 121)])
 def test_min_edges_scales_with_pulses_per_rev(ppr, edges):
-    """MIN_REVS whole revolutions, whatever the encoder divides them into.
+    """min_edges_for(ppr) spans MIN_REVS whole revolutions at any ppr.
 
-    A fixed edge count is the wrong constraint above 1 ppr: three edges of a
-    60-line encoder is 0.033 of a revolution, where the measured error is
-    0.580% mean / 1.898% worst against 0.091% from one full turn (the table
-    beside MIN_REVS). The number of edges that buys is a consequence of the
-    encoder, not a constant.
+    Three edges of a 60-line encoder are 0.033 of a revolution: 0.580 % mean
+    and 1.898 % worst error, against 0.091 % from one full turn.
     """
     assert tach.min_edges_for(ppr) == edges
 
@@ -429,7 +423,7 @@ def test_min_edges_scales_with_pulses_per_rev(ppr, edges):
 def test_high_ppr_block_holding_min_revs_reads_correctly():
     ppr = 6
     rpm = 1800.0
-    # Comfortably more than MIN_REVS turns, so the gate is not what is on test.
+    # 3 turns, more than MIN_REVS, so the gate is not under test.
     x = make_ramped_pulses(rpm, HW_FS, ppr=ppr, duty=0.3, rise_samples=2,
                            duration_s=3.0 * 60.0 / rpm)
     r = tach.tach_result(x, HW_FS, settings=tach.TachSettings(pulses_per_rev=ppr))
@@ -439,14 +433,12 @@ def test_high_ppr_block_holding_min_revs_reads_correctly():
 
 
 def test_high_ppr_block_under_min_revs_reports_no_reading():
-    """The defect the old fixed gate let through.
+    """A 6 ppr block with fewer than MIN_REVS turns gives no rpm.
 
-    A 6 ppr block holding 1.3 revolutions has 9 edges -- three times the old
-    MIN_EDGES -- and so passed, reporting an rpm drawn from a fraction of a
-    turn, where once-per-rev modulation and division error have not yet
-    cancelled. The reading must be withheld, and it must be withheld as
-    'too few edges' rather than 'no signal': the cable is fine and the pulse
-    train is healthy, the block is simply too short for this shaft.
+    The block holds 9.4 pulse periods, about 1.6 revolutions (10 edges).
+    Once-per-rev modulation and division error do not cancel in part of a turn.
+    The quality is 'too_few_edges', not 'no_signal': the pulse train is good,
+    the block is short.
     """
     ppr = 6
     rpm = 1800.0
@@ -463,9 +455,10 @@ def test_high_ppr_block_under_min_revs_reports_no_reading():
 
 
 def test_slowest_measurable_shaft_matches_the_documented_table():
-    """180/T_block at 1 ppr -- the block must span whole pulse periods, not
-    intervals, because the start phase is arbitrary. The docstring table is
-    derived from this function; if they disagree the table is a lie.
+    """slowest_rpm_for() at 1 ppr is 180 / T_block RPM, as in its docstring table.
+
+    The block must span whole pulse periods, not intervals, because the start
+    phase is arbitrary.
     """
     for t_block, floor in ((4.0, 45.0), (2.0, 90.0), (1.0, 180.0),
                            (0.5, 360.0), (0.2, 900.0), (0.1, 1800.0)):
@@ -473,25 +466,20 @@ def test_slowest_measurable_shaft_matches_the_documented_table():
 
 
 def test_more_pulses_per_rev_barely_lowers_the_speed_floor():
-    """A finer encoder buys 1.5x at the very most, not `ppr`x.
+    """More pulses per revolution lower the speed floor by less than 1.5x, not ppr x.
 
-    The tempting assumption is that 60 pulses per revolution reads a shaft 60
-    times slower. It does not: the gate is MIN_REVS whole *revolutions* either
-    way, so the floor is bounded below by MIN_REVS * 60 / T_block = 120 RPM at
-    a 1 s block however finely the revolution is divided. All that more pulses
-    recover is the one pulse period of phase-safety margin, which is a whole
-    revolution at 1 ppr and 1/60th of one at 60 ppr:
+    The gate is MIN_REVS whole revolutions at any ppr, so the floor is at least
+    MIN_REVS * 60 / T_block = 120 RPM at a 1 s block. More pulses recover only
+    the one-pulse-period phase margin:
 
         ppr      floor @ T=1 s
           1        180 RPM
-          2        150
-          6        130
-         60        121
-          inf      120   (the MIN_REVS bound)
+          2        150 RPM
+          6        130 RPM
+         60        121 RPM
+          inf      120 RPM   (the MIN_REVS bound)
 
-    An operator fitting a 60-line encoder to reach a slower machine has bought
-    a third, and the UI must not imply otherwise. The way to read a slower
-    shaft is a longer block -- a smaller binsize.
+    To read a slower shaft, use a longer block (a smaller binsize).
     """
     bound = tach.MIN_REVS * 60.0 / 1.0
     floors = [tach.slowest_rpm_for(1.0, ppr) for ppr in (1, 2, 6, 60)]
@@ -505,9 +493,10 @@ def test_more_pulses_per_rev_barely_lowers_the_speed_floor():
 
 
 def test_non_unity_ppr_is_honoured_without_warning(caplog):
-    """ppr is a supported setting now (it has a control in the Tachometer
-    tab), so loading one must not log a warning. The accuracy caution belongs
-    where the sample rate is known -- the GUI -- not here.
+    """Loading pulses_per_rev = 6 logs no warning.
+
+    ppr is a supported setting. The accuracy caution is in the front ends,
+    which know the sample rate.
     """
     with caplog.at_level('WARNING'):
         s = tach.TachSettings.from_dict({'pulses_per_rev': 6})
@@ -524,9 +513,9 @@ def test_unity_ppr_does_not_warn(caplog):
 
 @pytest.mark.parametrize('bad', [0, -6, 0.5])
 def test_unusable_ppr_falls_back_to_one_and_says_so(bad, caplog):
-    """Zero or negative pulses per revolution is not a configuration, it is a
-    corrupt file. Falling back to 1 is the only sane reading, but it changes
-    the reported speed, so it is never silent.
+    """A ppr that is zero, negative or fractional falls back to 1 with a warning.
+
+    The fallback changes the reported speed, so it is logged.
     """
     with caplog.at_level('WARNING'):
         s = tach.TachSettings.from_dict({'pulses_per_rev': bad})
@@ -534,13 +523,14 @@ def test_unusable_ppr_falls_back_to_one_and_says_so(bad, caplog):
     assert any('pulses_per_rev' in rec.message for rec in caplog.records)
 
 
-# --- duty cycle (R46 prerequisite) ---------------------------------------
+# --- duty cycle ----------------------------------------------------------
 
 @pytest.mark.parametrize('duty', [0.05, 0.15, 0.30, 0.50, 0.70, 0.85])
 def test_duty_cycle_is_measured(duty):
-    """Duty is what turns a reflector's physical size into a shaft diameter:
-    the reflector subtends `duty` of a revolution, so C = L/duty and the
-    surface velocity is f*L/duty (R46).
+    """duty_cycle is measured to within 0.02 at 5 % to 85 % duty.
+
+    Surface velocity from reflector size (f*L/duty) is tracked as R46 in
+    doc/PROGRESS.md.
     """
     x = make_ramped_pulses(1800.0, HW_FS, duty=duty, rise_samples=2)
     r = tach.tach_result(x, HW_FS, ch=0, rel_time=0.0)
@@ -574,8 +564,10 @@ def test_duty_measures_the_active_state_under_falling_polarity():
 
 
 def test_block_opening_mid_pulse_contributes_no_partial_width():
-    """A pulse whose opening edge fell in the previous block has no measurable
-    width here; counting the truncated remainder would drag duty down."""
+    """A pulse whose opening edge was in the previous block adds no width.
+
+    Its truncated remainder would pull the duty cycle down.
+    """
     duty = 0.5
     x = make_ramped_pulses(1800.0, HW_FS, duty=duty, rise_samples=2)
     rolled = np.roll(x, -int(0.25 * HW_FS / 30.0))

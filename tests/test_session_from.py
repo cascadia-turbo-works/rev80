@@ -1,15 +1,8 @@
-"""One session factory for both front ends (the H-01 shape, third round).
+"""Both front ends build a MonitorSession through one factory, session_from().
 
-`MonitorSession` was constructed field-by-field in `gui._start_recording` and
-in `headless._build_session`, fourteen arguments each. Two of those fields had
-already drifted or died:
-
-- **`pre_buffer_frames` and the frame-cache sizing that must match it.** The
-  GUI sized the cache to `pre_buffer_n + 1`; headless omitted the `+ 1`, so an
-  unattended burst kept one fewer pre-trigger frame than asked for.
-- **`max_burst_s`** was a hardcoded 600.0 literal in both, while the value in
-  `acquisition.yaml` was seeded, printed in the headless summary, and never
-  read by anything.
+The factory sizes the frame cache for the pre-trigger window plus the trigger
+frame, and takes max_burst_s from the caller. Some tests read the source of
+gui.py and headless.py to check that neither builds a session itself.
 """
 
 import pytest
@@ -32,16 +25,13 @@ def _collector(pre_buffer_s=30.0):
     return dc
 
 
-# --- item 2: the pre-trigger frame count and the cache that must hold it ---
+# --- the pre-trigger frame count and the cache that must hold it ---
 
 def test_the_cache_holds_the_pre_trigger_frames_plus_the_trigger_frame():
-    """The `+ 1` headless was missing.
+    """required_cache_frames() is at least pre_buffer_frames + 1.
 
-    `MonitorController` slices `frame_cache[-n:]` for the pre-trigger window
-    and then appends the trigger frame, which becomes `burst_frames[n]`. A
-    cache sized to exactly n therefore yields n-1 true pre-trigger frames:
-    the trigger frame has taken one of the slots. Nothing reports the achieved
-    count, so the loss is silent.
+    The controller slices `frame_cache[-n:]` and then appends the trigger
+    frame. A cache of exactly n frames gives n-1 pre-trigger frames.
     """
     assert required_cache_frames(cache_frames=8, pre_buffer_frames=32) == 33
     assert required_cache_frames(cache_frames=64, pre_buffer_frames=32) == 64, (
@@ -59,7 +49,7 @@ def test_pre_buffer_frames_is_one_formula(pre_s, block_s, expected):
 
 
 def test_both_front_ends_size_the_cache_through_the_same_helper():
-    """Source inspection: the divergence was two call sites, not two values."""
+    """gui.py and headless.py both call required_cache_frames() (source check)."""
     import inspect
 
     from rev80 import gui, headless
@@ -70,7 +60,7 @@ def test_both_front_ends_size_the_cache_through_the_same_helper():
             f'{mod.__name__} must size the frame cache through the shared rule')
 
 
-# --- item 3: max_burst_s is a real setting -------------------------------
+# --- max_burst_s is a real setting -------------------------------------
 
 def test_max_burst_s_comes_from_the_caller_not_a_literal():
     dc = _collector()
@@ -82,9 +72,10 @@ def test_max_burst_s_comes_from_the_caller_not_a_literal():
 
 
 def test_neither_front_end_hardcodes_the_burst_cap():
-    """It bounds the one path that runs unattended. S-02 measured burst
-    retention at ~2.26 MB/s (~8.1 GB/h on 4 channels); uncapped that is an
-    OOM kill with no traceback. A cap nobody can change is not a cap.
+    """Neither front end passes a literal 600.0 as max_burst_s (source check).
+
+    Burst retention grows at about 2.26 MB/s on 4 channels, so the cap must
+    come from the configuration.
     """
     import inspect
 
@@ -97,8 +88,7 @@ def test_neither_front_end_hardcodes_the_burst_cap():
 
 
 def test_the_gui_config_save_preserves_a_hand_edited_burst_cap():
-    """The GUI wrote `'max_burst_s': 600.0` back on every save, so editing the
-    YAML was undone by the next time anyone touched the monitor dialog."""
+    """The GUI config save keeps a hand-edited max_burst_s (source check)."""
     import inspect
 
     from rev80 import gui
@@ -133,8 +123,7 @@ def test_session_from_honours_an_explicit_output_dir(tmp_path):
 
 
 def test_sensor_snapshot_deduplicates_by_id():
-    """One entry per unique sensor, however many channels share it -- the
-    loop both front ends had their own copy of."""
+    """sensor_snapshot_for() gives one entry for each unique sensor ID."""
     from rev80.scope_sensor import ScopeSensor
 
     dc = _collector()

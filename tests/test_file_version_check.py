@@ -1,10 +1,8 @@
 """Each file type is checked against its own version limit.
 
-Measurement files are DataCollector._FILE_VERSION (5); monitor sessions are
-monitor.writer._FILE_VERSION (6). The session loaders used to call
-_restore_metadata, which compared every file with 5 only, so every load of a
-current session logged "File version 6 is newer than this build supports (5)".
-The warning must still fire for a file that really is newer than its type.
+Measurement files use DataCollector._FILE_VERSION (5). Monitor sessions use
+monitor.writer._FILE_VERSION (6). A current file loads with no "newer than this
+build supports" warning; a file newer than its own type still warns.
 """
 
 import logging
