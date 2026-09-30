@@ -11,42 +11,12 @@ from rev80.peaks import DEFAULT_THRESHOLD_DB as PEAK_THRESHOLD_DB_DEFAULT
 
 log = rev80.get_logger(__name__)
 
-#: Fixed acquisition/storage sample rate (Hz), independent of the displayed
-#: F_max. Bearing housing resonances (envelope/demodulation analysis) live
-#: at 2-20 kHz -- well above where a display-driven F_max (often 1-2 kHz
-#: per ISO route-monitoring convention) would give any Nyquist headroom.
-#: Acquiring at a fixed rate high enough to always contain a resonance
-#: means envelope analysis works regardless of what F_max the user has
-#: picked for the Spectrum tab.
-#:
-#: The value is 2.56 x the top F_max preset (10 kHz), which is what makes
-#: the analyzer internally consistent: the display rate is exactly
-#: 2.56 * maxfreq, so at the top preset display rate == acquisition rate and
-#: no preset can ever ask to display more than acquisition contains. Every
-#: preset then decimates from this rate by an exact integer factor
-#: (50/20/10/5/2/1), which is the cheapest and cleanest polyphase path.
-#:
-#: Hardware provenance, measured on a PicoScope 4424A
-#: (scripts/validate-streaming-capacity, and picoscope.py's
-#: STREAMING_CEILING_HZ comment), sustained 45 s at 3 and 4 channels:
-#:
-#:   raw rate    osr   ADC rate/ch   overflow   degraded transitions
-#:   25600 Hz     3      76.9 kHz       0         0, at 3 and 4 channels
-#:   40000 Hz     2     ~83.3 kHz       0         0, every run
-#:   50000 Hz     2     100.0 kHz       0         0 to 2, run-to-run
-#:
-#: 25600 Hz validated 2026-09-09 on s/n 12462/0067: effective_osr=3, actual
-#: raw ADC rate 76923 Hz/channel against 76800 requested (+0.16%, the driver's
-#: discrete timebase), 0 overflow and 0 rate-degradation transitions on both
-#: the 3- and 4-channel runs. The app-rate block arrives at 25641 Hz against
-#: 25600 (+0.16%, same quantisation); tests/test_picoscope_hw.py pins that
-#: within 5%. It asks less of the ADC than the 40000 Hz row, as expected.
-#:
-#: History: briefly set to 10_000 (dropping the 2.56 factor) to relieve GUI
-#: lag while streaming 4 channels. That silently clamped maxfreq to 3906 Hz
-#: -- the 5 kHz and 10 kHz presets could not be reached at all -- and halved
-#: envelope bandwidth. GUI cost is being addressed separately; it is not a
-#: reason to lower the acquisition rate below what the presets require.
+#: Raw rate in Hz: the fixed acquisition and storage rate, independent of
+#: maxfreq. It is 2.56 x the top F_max preset (10 kHz), so every preset
+#: decimates from it by an integer factor (50/20/10/5/2/1), and envelope
+#: analysis always has bandwidth to 10 kHz. A 4824A achieves about 25591.8 Hz
+#: (12.5 ns clock grid, see picoscope._TIMEBASE_NS).
+#: Evidence: CONTRIBUTING.md, "E1. Streaming ceiling and the raw rate".
 RAW_SAMPLERATE_HZ: int = 25_600
 
 
@@ -68,13 +38,11 @@ class AcquisitionSettings:
       independent of maxfreq. This is what PicoScopeStream actually
       acquires, what VibeSample.data/HDF5/frame_cache hold, and what
       envelope analysis operates on directly.
-    - `samplerate` / `blocksize` — unchanged from before this split:
-      still maxfreq/binsize-derived, still what the Acquisition dialog's
-      "Sample Rate" field shows and what the Spectrum tab's Welch PSD is
-      computed at. DataCollector digitally decimates the raw block down
-      to this rate (see collector.decimate_to_rate) before computing the
-      displayed spectrum -- maxfreq no longer drives acquisition, only
-      what's displayed/analysed from it.
+    - `samplerate` / `blocksize` — the display rate and block, derived from
+      maxfreq and binsize. The Acquisition dialog's "Sample Rate" field shows
+      this rate, and the Spectrum tab's Welch PSD runs at it.
+      DataCollector decimates the raw block to it (collector.decimate_to_rate).
+      maxfreq sets only what is displayed and analysed, not the acquisition.
 
     Arithmetic flow:
         maxfreq  → samplerate = 2.56 * maxfreq   (display)
@@ -93,15 +61,9 @@ class AcquisitionSettings:
     channel_target_units: dict = field(default_factory=dict)   # {ch: str}  '' = use sensor EU
     channel_amplitude_modes: dict = field(default_factory=dict) # {ch: str}  'RMS'|'0-P'|'P-P'
     channel_roles: dict = field(default_factory=dict)           # {ch: str}  'vibration'|'tachometer'
-    # Speed gate. A shaft-speed window outside which a frame is still measured
-    # and displayed, but is excluded from trending, baseline adaptation and
-    # alarm evaluation -- the amplitude is right, it is simply not comparable.
-    # For a rigid rotor below its first critical the 1x velocity goes as
-    # omega^3, so a 3.2% speed change alone moves the overall 10%, which is the
-    # shipped RmsThresholdHook default: without this gate, on a VFD or
-    # load-following machine the anomaly detector measures load rather than
-    # condition. Off by default -- with no tachometer fitted there is no
-    # reference to gate against.
+    # Speed gate: a frame outside the shaft-speed window is measured, shown and
+    # stored, but not trended, used for baselines or alarmed on. Off by
+    # default (it needs a tachometer). Evidence: CONTRIBUTING.md, "E20. Speed gate".
     speed_gate_enabled: bool = False
     speed_gate_rpm: float | None = None   # None = latch from the first valid frame
     speed_gate_tolerance_pct: float = 3.0
@@ -113,48 +75,22 @@ class AcquisitionSettings:
     # FFT / Welch
     fft_window: str = 'hann'
     welch_overlap: float = 0.5     # 0.0–0.95 fraction of nperseg
-    # Spectral averaging. Welch's method IS linear power averaging, but since
-    # nperseg == blocksize it runs exactly one segment per frame, so each bin is
-    # chi-squared(2) with a standard deviation equal to its own mean. Averaging
-    # N frames cuts that scatter as 1/sqrt(N) -- which is what makes a small
-    # line distinguishable from floor roughness. It does NOT lower the floor's
-    # expected level, only the uncertainty of the estimate.
-    #
-    # Off by default: it changes what the displayed number means, and assumes
-    # the machine is steady over the window. If speed drifts, lines smear
-    # across bins and averaging blurs them rather than sharpening them.
+    # Spectral averaging of N frames in the power domain. Off by default: it
+    # changes what the displayed number means, and it needs a steady machine.
     averaging_enabled: bool = False
     n_averages: int = 8
-    # Peak selection — how far above its own local noise floor a spectral line
-    # must rise before it is reported. This replaced a fixed "report the top N
-    # by amplitude" rule, which ranked by how loud a line's neighbourhood was
-    # rather than by how far it stood out of it. See rev80.peaks.
+    # Peak selection: dB above the line's own local noise floor. See rev80.peaks.
     peak_threshold_db: float = PEAK_THRESHOLD_DB_DEFAULT
-    # Butterworth filters (applied per-channel in DataCollector.receive_data)
+    # High-pass: applied with state in DataCollector.receive_data; stateless on replay.
     highpass_enabled: bool = True
-    # Lower edge of the declared measurement band, and the frequency at which
-    # the high-pass is required to still be within passband tolerance -- NOT
-    # the filter's -3 dB knee, which sits below it. See
-    # DataCollector.highpass_knee_hz().
+    # Lower band edge: the response is inside tolerance here. Not the -3 dB
+    # knee, which is lower. See DataCollector.highpass_knee_hz().
     highpass_fc: float = 10.0      # Hz
-    # Declared measurement band for the overall amplitude. None means "derive":
-    # highpass_fc (or 0 with the high-pass off) up to maxfreq.
-    #
-    # Before this existed the overall was the RMS of the whole filtered block,
-    # so its band was highpass_fc ... fs/2 -- and fs/2 is 1.28x-2.56x maxfreq
-    # depending on where the power-of-two rounding in `samplerate` lands
-    # (2.048x at the 500/1000/2000 Hz presets). Content the user had explicitly
-    # excluded via F_max still reached the trend: 2 g RMS at 1500 Hz outside a
-    # 1000 Hz F_max inflated reported overall velocity by +25%, enough to move
-    # a machine from ISO 20816 zone B to zone C on a reading that should never
-    # have included it. Overalls were also not comparable across sessions taken
-    # at different F_max, which silently invalidates long-horizon trending.
+    # Declared band for the overall, in Hz. None = derive: highpass_fc (0 with
+    # the high-pass off) up to maxfreq.
     band_fmin: float | None = None
     band_fmax: float | None = None
-    # Envelope/demodulation analysis is bearing-specific: not every job is a
-    # bearing job, and the tab is dead weight (and a source of "what does
-    # this mean?" confusion) on ones that aren't. Off by default -- opt in
-    # per job rather than opt out.
+    # Envelope tab. Off by default: it is for bearing jobs only.
     envelope_enabled: bool = False
     # Frame cache
     cache_frames: int = DEFAULT_CACHE_FRAMES  # depth of the ring cache in DataCollector
@@ -213,24 +149,18 @@ class AcquisitionSettings:
 
     @classmethod
     def copy(cls, settings: 'AcquisitionSettings') -> 'AcquisitionSettings':
-        """Duplicate a settings object.
+        """Return an independent copy of `settings`.
 
-        This used to copy only maxfreq and binsize, silently dropping every
-        other field including all five per-channel dicts (audit H-08). Now it
-        round-trips through to_dict/from_dict for the scalars -- so a field
-        added there is carried here automatically, and cannot be forgotten --
-        and deep-copies the per-channel dicts so the copy is independent.
+        Scalars go through to_dict/from_dict, so a field added there is copied
+        automatically. The per-channel dicts are copied one by one (below).
         """
         c = cls.from_dict(settings.to_dict())
         c.coupling         = settings.coupling
         c.enabled_channels = list(settings.enabled_channels)
-        # Every per-channel dict must be listed here. They live in the
-        # 'channels' config section rather than 'acquisition', so unlike the
-        # scalars above they are outside the to_dict/from_dict round trip and
-        # cannot carry themselves. Adding a dict field without adding it here
-        # is H-08 again -- and for channel_roles the silent result is a copy in
-        # which every tachometer has reverted to vibration, so the pipeline
-        # high-passes a pulse train and reports kurtosis ~16 on it.
+        # List every per-channel dict here. They are outside the
+        # to_dict/from_dict round trip. A dict that is not in this tuple is lost
+        # silently: without channel_roles, every tachometer in the copy becomes
+        # a vibration channel.
         for name in ('channel_voltage_ranges', 'channel_couplings', 'channel_names',
                      'channel_target_units', 'channel_amplitude_modes',
                      'channel_roles'):
@@ -240,8 +170,8 @@ class AcquisitionSettings:
     def to_dict(self) -> dict:
         """Serialise acquisition parameters to the 'acquisition' section of a device config.
 
-        Per-channel fields (names, target_units, amplitude_modes, couplings, voltage_ranges)
-        are stored in the 'channels' config section, not here.
+        Per-channel fields (names, target units, amplitude modes, couplings,
+        voltage ranges, roles) are stored in the 'channels' section, not here.
         """
         return {
             'maxfreq':          self._fm,
@@ -300,65 +230,35 @@ class AcquisitionSettings:
 
     @property
     def samplerate(self) -> int:
-        """Display rate: exactly 2.56x maxfreq, the standard analyzer ratio.
+        """Display rate in Hz: exactly 2.56 x maxfreq, rounded to an integer.
 
-        2.56 (rather than the bare 2x Nyquist minimum) puts Nyquist at
-        1.28 * maxfreq, a 28% guard band for the mandatory anti-alias filter
-        applied upstream (see PicoScopeStream). It is the ratio real FFT
-        vibration analyzers use, and it is what the Acquisition dialog
-        advertises.
-
-        This used to be nextpow2(2.56 * maxfreq), which rounded *up* to a
-        power of two and so overstated the rate by up to 2x. That was
-        harmless only while raw_samplerate was large enough to absorb it.
-        Once RAW_SAMPLERATE_HZ came down to 2.56 x the top preset, the top
-        preset rounded to 32768 Hz against 25600 Hz of real data:
-        decimate_to_rate's `target_rate >= raw_rate` guard returned the block
-        undecimated at 25600 Hz while the dialog advertised 32.8 kS/s, and
-        n_fft_bins/binsize_actual were computed from the rate that did not
-        exist. Exact 2.56x cannot overshoot: maxfreq's own setter clamps to
-        raw_samplerate/2/1.28, which is precisely the condition
-        2.56 * maxfreq <= raw_samplerate.
-
-        The FFT length is `blocksize`, not this -- a power-of-two *rate* buys
-        nothing. Every preset rate here is 5-smooth (512, 1280, 2560, 5120,
-        12800, 25600) and divides RAW_SAMPLERATE_HZ exactly, so raw -> display
-        decimation is an exact integer factor at every setting.
+        Nyquist is 1.28 x maxfreq, a 28 % guard band for the anti-alias filter.
+        The maxfreq clamp keeps this rate at or below raw_samplerate. Evidence:
+        CONTRIBUTING.md, "E11. Display rate, block size and line count".
         """
         return int(round(2.56 * self._fm))
 
     @property
     def blocksize(self) -> int:
-        """Shortest block achieving the requested binsize: ceil(fs / binsize).
+        """Display block length: ceil(samplerate / binsize) samples.
 
-        Was nextpow2(samplerate / binsize). With a power-of-two samplerate
-        that divided exactly and a frame was exactly 1/binsize seconds; with
-        an exact-2.56x samplerate it would round up to as much as 2x that,
-        making frames up to twice as long as the dialog's "1/binsize seconds"
-        claim. ceil() restores the invariant and additionally makes
-        binsize_actual land on the requested binsize exactly at every preset
-        (both grids divide evenly), while still never delivering a coarser
-        bin than asked for -- which is what binsize_actual documents.
-
-        Not a power of two any more. It does not need to be: this is a
-        Welch segment length handed to scipy's pocketfft, which is efficient
-        for any 5-smooth length, and every preset combination here is one.
+        This is the shortest block whose bin is not coarser than binsize. It
+        is not a power of two. Evidence: CONTRIBUTING.md, "E11. Display rate,
+        block size and line count".
         """
         return max(1, math.ceil(self.samplerate / self._df))
 
     @property
     def raw_samplerate(self) -> int:
-        """Fixed acquisition/storage rate -- see RAW_SAMPLERATE_HZ. Not maxfreq-derived."""
+        """Nominal raw rate, RAW_SAMPLERATE_HZ. Does not depend on maxfreq."""
         return RAW_SAMPLERATE_HZ
 
     @property
     def raw_blocksize(self) -> int:
-        """Raw-rate block length spanning the same duration as `blocksize` (display).
+        """Raw-rate block length: the same acquisition_period as `blocksize`.
 
-        One frame is one time window at two sample counts -- this and
-        `blocksize` cover the same acquisition_period. Not necessarily a
-        power of two: unlike `blocksize` this isn't a Welch segment length,
-        just how many samples PicoScopeStream accumulates per callback.
+        This is the number of samples per channel in each block that
+        PicoScopeStream and SimulatedSensor deliver.
         """
         return max(1, round(self.raw_samplerate * self.acquisition_period))
 
@@ -369,11 +269,8 @@ class AcquisitionSettings:
     @maxfreq.setter
     def maxfreq(self, fm: float):
         fm = float(fm)
-        # samplerate/blocksize (display) are no longer what acquisition runs
-        # at, but maxfreq still can't ask to display more than
-        # raw_samplerate/2 actually contains -- the anti-alias filter has
-        # already discarded anything above that before this data exists.
-        # 1.28x mirrors the same margin `samplerate`'s own docstring uses.
+        # Clamp so that 2.56 x maxfreq <= raw_samplerate: the display cannot
+        # show more than the raw data contains (same 1.28 x Nyquist margin).
         max_displayable = RAW_SAMPLERATE_HZ / 2.0 / 1.28
         if fm > max_displayable:
             log.warning(
@@ -393,14 +290,10 @@ class AcquisitionSettings:
 
     @property
     def n_averages_effective(self) -> int:
-        """Averages actually achievable: the request, clamped to the ring cache.
+        """Averages that the ring cache can hold: n_averages clamped to cache_frames.
 
-        You cannot average more frames than are retained, and quietly averaging
-        fewer than the dialog states is the F-8 failure mode -- stated has to
-        match delivered. Clamping here keeps the advertised value honest at the
-        one place the limit is knowable; the count actually used in any given
-        frame is reported separately on the result, since early frames and
-        excluded (overflow/degraded) frames lower it further.
+        The dialog must state what is delivered. The count used for one frame
+        is in ChannelResult.n_averages; early and excluded frames lower it.
         """
         return max(1, min(int(self.n_averages), int(self.cache_frames)))
 
@@ -419,11 +312,9 @@ class AcquisitionSettings:
     def band_fmax_resolved(self) -> float:
         """Upper edge of the declared band, in Hz.
 
-        Defaults to maxfreq, and is clamped to it: the span between maxfreq and
-        fs/2 is the anti-alias filter's transition band, measured at -21.8 dB
-        at the folding frequency and effectively 0 dB at fs/2 itself. Content
-        there is not a measurement, which is why F-9 stopped displaying it --
-        and it must not reach the overall by another route.
+        Defaults to maxfreq, and is clamped to it. Between maxfreq and fs/2
+        is the anti-alias transition band, which does not reject aliases.
+        The spectrum is not shown there, and the overall must not include it.
         """
         if self.band_fmax is not None:
             return min(float(self.band_fmax), float(self._fm))
@@ -456,21 +347,10 @@ class AcquisitionSettings:
 
     @property
     def nperseg(self) -> int:
-        """Welch segment length — the whole block.
+        """Welch segment length: the whole block, so one segment per frame.
 
-        Previously the Welch call used nfft = int(samplerate / binsize) while
-        blocksize was nextpow2(samplerate / binsize) >= nfft, so the spectrum
-        had a different number of lines and a different bin width from the ones
-        the UI advertised. Across the preset grid 40 of 72 combinations were
-        wrong: F_max=200 / df=20 claimed 17 lines against an actual 13, at a
-        real resolution of 20.48 Hz rather than 20 (+2.4%); F_max=2000 / df=5
-        claimed 1025 lines against an actual 820.
-
-        Using the whole block makes n_fft_bins, binsize_actual and
-        acquisition_period consistent by construction. Since
-        blocksize = ceil(samplerate / binsize), the delivered resolution is
-        always at least as fine as the one requested (and exactly equal to it
-        on the preset grid).
+        This keeps n_fft_bins, binsize_actual and acquisition_period consistent.
+        Evidence: CONTRIBUTING.md, "E11. Display rate, block size and line count".
         """
         return self.blocksize
 
@@ -481,19 +361,12 @@ class AcquisitionSettings:
 
     @property
     def n_fft_bins(self) -> int:
-        """Number of spectrum lines actually displayed: DC up to maxfreq.
+        """Number of displayed spectrum lines, DC up to maxfreq.
 
-        Not nperseg // 2 + 1. That counts the full one-sided transform out to
-        fs/2, but the band between maxfreq and fs/2 is a guard band and is no
-        longer displayed (see DataCollector.process_sample step 6), so quoting
-        it as a line count overstated what the user can actually see by the
-        full 2.56/2 ratio.
-
-        Nominal: derived from config.samplerate. The live spectrum is built on
-        the rate the hardware actually achieved, so the realised line count can
-        differ by a line or two. That gap used to be as much as ~1.7%; snapping
-        the streaming interval to the device clock grid brought it to -320 ppm
-        on the 4824A (see PicoScopeStream._start_streaming).
+        Not nperseg // 2 + 1: the guard band above maxfreq is not displayed.
+        Nominal, from `samplerate`. The live spectrum uses the achieved rate
+        (-320 ppm on a 4824A), so the live count can be larger by up to
+        320 ppm: 40013 lines against 40001 at 10 kHz and 0.25 Hz.
         """
         df = self.binsize_actual
         n_below = int(self._fm / df + 1e-9) + 1      # bins at 0, df, 2df … <= fm
@@ -501,13 +374,10 @@ class AcquisitionSettings:
 
     @property
     def memory_bytes(self) -> int:
-        """Approximate memory per channel per block (float64).
+        """Approximate bytes per channel per block: raw_blocksize x 8 (float64).
 
-        Against raw_blocksize, not blocksize: frame_cache/HDF5 hold the raw
-        (acquisition-rate) data, not the maxfreq-decimated display view, so
-        this is what actually drives cache/storage cost. Consequently it no
-        longer varies with F_max -- only with binsize (via acquisition_period)
-        and cache_frames.
+        frame_cache and HDF5 hold raw-rate data, so the value changes with
+        binsize (through acquisition_period) but not with maxfreq.
         """
         return self.raw_blocksize * 8
 
@@ -515,14 +385,10 @@ class AcquisitionSettings:
 class VibeSample:
     status: str
     _timestamp: datetime
-    # The rate the hardware actually achieved, post-decimation. Generally not
-    # an integer: the driver quantises the streaming interval to its own clock
-    # grid (12.5 ns on the 4824A, i.e. an 80 MHz timebase) and reports back
-    # what it used. See PicoScopeStream._start_streaming for the measured grid
-    # and _report_samplerate for why the achieved rate, not the requested one,
-    # is what propagates. Anything persisting this must store it as a FLOAT --
-    # truncating 25591.81 to 25591 makes it coprime with every display rate,
-    # which is audit-grade slow (see collector.decimate_to_rate).
+    # Achieved raw rate in Hz (after oversampling decimation). Generally not an
+    # integer (12.5 ns clock grid on a 4824A). Store it as a float: 25591 in
+    # place of 25591.81 moves every frequency by 32 ppm.
+    # Evidence: CONTRIBUTING.md, "E5. Report the achieved rate".
     samplerate: float
     unit: str
     overflow: bool
@@ -540,28 +406,20 @@ class VibeSample:
     freq_hz: np.ndarray | None    = field(default=None, repr=False)
     _psd_config_key: tuple | None = field(default=None, repr=False)
 
-    # Highpass-filtered mV data, cached by DataCollector. Populated once per
-    # frame at ingestion (receive_data) so the filter's state can be carried
-    # across consecutive blocks of one continuous stream; recomputed
-    # statelessly, from a steady-state initial condition, when a stored frame
-    # is replayed or the filter config changed after capture.
+    # High-pass-filtered mV. Set at ingestion (receive_data, filter state
+    # carried across blocks); recomputed statelessly on replay or after a
+    # filter-config change.
     filtered_mv: np.ndarray | None      = field(default=None, repr=False)
     _filter_config_key: tuple | None    = field(default=None, repr=False)
 
-    # filtered_mv digitally decimated from samplerate (raw acquisition rate)
-    # down to the maxfreq-driven display rate, for Spectrum-tab Welch input.
-    # Cached the same way as psd_mv -- decimation is real compute
-    # (FIR filter + polyphase resample) and process_sample can be called
-    # many times on one frame (browsing, unit changes).
+    # filtered_mv decimated to the display rate, for the Spectrum-tab Welch
+    # input. Cached: process_sample runs many times on one frame (browse).
     decimated_mv: np.ndarray | None        = field(default=None, repr=False)
     decimated_samplerate: float | None     = field(default=None, repr=False)
     _decimation_config_key: tuple | None   = field(default=None, repr=False)
 
-    # Tachometer reading, on a tachometer-role channel only. Computed once at
-    # ingestion (receive_data), where the block arrives exactly once and in
-    # stream order, and cached here keyed on the settings that produced it so
-    # that changing pulses_per_rev after a file is loaded recomputes rather
-    # than returning a stale number. None on every vibration channel.
+    # TachResult on a tachometer channel; None on a vibration channel. Set at
+    # ingestion, keyed on its settings, so a changed pulses_per_rev recomputes.
     tach: 'object | None'             = field(default=None, repr=False)
     _tach_config_key: tuple | None    = field(default=None, repr=False)
 
@@ -615,37 +473,19 @@ class ChannelResult:
     timestamp:  datetime
     rel_time:   float
     status:     str
-    # The declared band `overall` was measured over, in Hz. Carried on the
-    # result so a stored number can be compared with another one: an overall
-    # taken over a different band is a different measurement, and before this
-    # existed there was nothing recording which band that was.
-    #
-    # None means "not declared" and appears only on results not built by
-    # process_sample -- synthetic test fixtures, and anything reconstructed
-    # from a file written before the band was stored. It is deliberately not
-    # defaulted to a plausible-looking band, because a wrong band declaration
-    # is worse than an absent one.
+    # Declared band of `overall`, in Hz. None = not declared (test fixtures,
+    # files without a stored band). Do not default it to a plausible band.
     band_fmin:  float | None = None
     band_fmax:  float | None = None
-    # Impulsiveness scalars, computed on `time_data` -- the band-limited trace
-    # the analyst is actually looking at. Dimensionless, so they are unaffected
-    # by sensor sensitivity, display unit or amplitude mode. A broadband
-    # overall averages impulsiveness away completely; these are what see it.
+    # Dimensionless impulsiveness scalars of `time_data`. Never averaged.
     crest_factor: float = 0.0
     kurtosis:     float = 3.0
-    # Number of frames actually averaged into `spectrum` and `overall`. 1 means
-    # no averaging. Reported rather than assumed from config: early frames and
-    # frames excluded for overflow/degraded both lower it.
+    # Frames averaged into `spectrum` and `overall`; 1 = no averaging.
     n_averages:   int = 1
-    # Shaft speed at this frame's capture instant, and whether it fell inside
-    # the declared speed window. None means no tachometer reading -- never 0.0.
-    #
-    # `speed_ok` defaults True so that every existing construction site, test
-    # fixture and result reconstructed from a file behaves exactly as before.
-    # An out-of-window frame is still measured, still displayed and still
-    # stored; it is excluded only from trending, baseline adaptation and alarm
-    # evaluation, because its amplitude is correct but not *comparable*.
+    # Shaft speed in RPM; None = no tachometer reading, never 0.0.
     rpm:        float | None = None
+    # False when the frame is outside the speed window: shown and stored, but
+    # not trended, used for baselines or alarmed on. True when no gate applies.
     speed_ok:   bool = True
 
     @property
@@ -655,18 +495,12 @@ class ChannelResult:
 
     @property
     def one_x_amplitude(self) -> 'float | None':
-        """Spectrum level at 1x -- the larger of the two bins straddling it.
+        """Spectrum level at 1x: the larger of the two bins on each side of it.
 
-        1x rarely lands on a bin centre, and a strictly-nearest-bin reading
-        loses amplitude to the offset. Taking the larger of the bracketing pair
-        recovers most of that without interpolating, which keeps this
-        consistent with how peaks are already reported: max-bin amplitude, no
-        energy summation, no frequency interpolation.
-
-        None when there is no reading, or when 1x falls outside the displayed
-        band -- F_max can sit below the shaft rate on a fast machine, and
-        reporting the edge bin would be a wrong number rather than a missing
-        one.
+        This is consistent with the peak report: max-bin amplitude, no energy
+        summation, no frequency interpolation. None when there is no reading,
+        or when 1x is outside the displayed spectrum (F_max can be below the
+        shaft rate). The edge bin would be a wrong number, not a missing one.
         """
         f = self.one_x_hz
         if f is None or len(self.freq) == 0 or len(self.spectrum) == 0:
