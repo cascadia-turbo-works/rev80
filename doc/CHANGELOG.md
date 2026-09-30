@@ -9,6 +9,52 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### fix/monitor — burst cap, compression and session times (2026-09-30)
+
+#### Fixed
+- **An anomaly burst keeps its pre-trigger frames**
+  ([S-02](audit-202608.md#s-02)). `MonitorSession` had no frame period. Thus
+  the burst frame cap was `MIN_BURST_FRAMES` (4), and an anomaly burst kept
+  only its last 4 frames. Now `session_from()` records `acquisition_period`
+  (`raw_blocksize / raw_samplerate`). The cap is `max_burst_s / period + 1`
+  frames after the trigger, plus the pre-trigger frames. If a session has no
+  frame period, the controller logs a warning.
+- **A manual burst uses the same limits as an anomaly burst**
+  ([S-02](audit-202608.md#s-02)). The manual trigger did not clamp its end to
+  `max_burst_s` and did not set a frame cap. Now both paths use
+  `capped_burst_end()` and the same frame cap.
+- **A session without compression records.** `--no-compress`,
+  `monitor.compression: none` and the GUI compression box give compression
+  `'none'`. h5py has no filter of that name, so the first write failed and the
+  session stopped. Now the writer writes uncompressed data for `'none'`.
+- **The resource trail logs the capture count.** It always logged
+  `captures -1`.
+- **Headless reads `monitor.compression_level`.** Before, headless sessions
+  always used gzip level 4. The GUI still uses level 4.
+- **The headless session id uses local time** ([S-10](audit-202608.md#s-10)).
+  Before, headless made the id from UTC. The GUI and `start_time` use local
+  time.
+- **The headless shutdown message is correct.** It said "after current
+  interval". The loop stops within about 1 s.
+- **The headless tachometer full-accuracy limit uses the achieved rate.** The
+  summary prints before the stream starts, so it uses the nominal rate and
+  says so. After the first frame, headless logs the limit again at the
+  achieved rate.
+- **An anomaly burst's trigger time describes its t = 0 frame.** The frame at
+  `n_pretrigger` is the frame that confirms the anomaly. Before, the burst
+  recorded the onset from the hook as its trigger time, and the onset
+  `rel_time` was on the collector clock. Now `trigger_timestamp` and
+  `trigger_rel_time` describe the stored t = 0 frame, on the session clock.
+  The onset is in the new `onset_timestamp` attribute (anomaly bursts only).
+
+#### Notes for the next person
+- Tests: `tests/test_monitor_burst_cap.py`,
+  `tests/test_monitor_writer_compression.py`,
+  `tests/test_monitor_resource_trail.py`, `tests/test_headless_session.py`
+  and `tests/test_monitor_burst_onset.py`. Each fails without its fix.
+- The GUI does not read `monitor.compression_level` yet. That change is in
+  `gui.py`.
+
 ### fix/collector — reprocess a session with a tachometer channel (2026-09-29)
 
 #### Fixed
