@@ -329,8 +329,12 @@ class MonitorWriterThread:
 
             bid_grp = burst_root.create_group(burst_id)
             bid_grp.attrs['trigger_type']        = trigger
-            bid_grp.attrs['trigger_timestamp']   = timestamp_str   # trigger time, local, ISO 8601, no offset
-            bid_grp.attrs['trigger_rel_time']    = rel_time        # session-relative trigger time
+            # Trigger time: the frame at n_pretrigger (t = 0). Local, ISO 8601, no offset.
+            bid_grp.attrs['trigger_timestamp']   = timestamp_str
+            bid_grp.attrs['trigger_rel_time']    = rel_time        # session-relative, as /monitor
+            if item.get('onset_timestamp'):
+                # Anomaly onset from the hook: can be before the trigger frame.
+                bid_grp.attrs['onset_timestamp'] = item['onset_timestamp']
             bid_grp.attrs['burst_duration_s']    = duration_s
             bid_grp.attrs['max_overall_json']    = overall_json
             bid_grp.attrs['band_json']           = band_json

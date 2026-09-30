@@ -45,6 +45,7 @@ class MonitorController:
         self._burst_pretrigger:     int       = 0
         self._burst_trigger_ts:     str       = ''   # ISO local timestamp at trigger
         self._burst_trigger_rel:    float     = 0.0  # session rel_time at trigger
+        self._burst_onset_ts:       str       = ''   # ISO local anomaly onset; '' if none
         self._last_frame_cache:     deque | None = None
         self._last_frame:           dict | None  = None
         self._last_results:         list         = []
@@ -138,6 +139,7 @@ class MonitorController:
         self._burst_id            = now_local.strftime('%Y-%m-%d-%H%M%S')
         self._burst_trigger_ts    = now_local.isoformat()
         self._burst_trigger_rel   = now - self._start_mono
+        self._burst_onset_ts      = ''
         self._burst_results       = []
         # The trigger frame is the last frame that on_results processed. It
         # goes at index n_pretrigger, which load_monitor_burst uses as t=0.
@@ -392,11 +394,15 @@ class MonitorController:
         max_burst_s = self._session.max_burst_s if self._session else 0.0
         self._burst_end_mono      = self.capped_burst_end(
             now, event.burst_duration_s, max_burst_s, burst_start=now)
-        self._burst_id            = event.trigger_time.strftime('%Y-%m-%d-%H%M%S')
-        # Trigger metadata reflects the t=0 frame (anomaly onset), which may
-        # precede `now` by however long the hook's confirmation window took.
-        self._burst_trigger_ts    = event.trigger_time.isoformat()
-        self._burst_trigger_rel   = event.trigger_rel_time
+        # t = 0 is the stored frame at n_pretrigger: frame_cache[-1], the
+        # frame that confirms the anomaly. The trigger time describes that
+        # frame, on the same clock as the interval captures. The onset that
+        # the hook reports can be earlier; it is stored as onset_timestamp.
+        now_local = datetime.now()
+        self._burst_id            = now_local.strftime('%Y-%m-%d-%H%M%S')
+        self._burst_trigger_ts    = now_local.isoformat()
+        self._burst_trigger_rel   = rel_time
+        self._burst_onset_ts      = event.trigger_time.isoformat()
         self._burst_results       = list(results)
 
         # Snapshot pre-trigger frames.  frame_cache[-1] is the trigger frame;
@@ -489,6 +495,7 @@ class MonitorController:
                 timestamp          = self._burst_trigger_ts,    # trigger timestamp
                 burst_id           = self._burst_id,
                 n_pretrigger       = self._burst_pretrigger,
+                onset_timestamp    = self._burst_onset_ts,
             )
             self._burst_count += 1
         self._burst_frames       = []
@@ -499,6 +506,7 @@ class MonitorController:
         self._burst_pretrigger   = 0
         self._burst_trigger_ts   = ''
         self._burst_trigger_rel  = 0.0
+        self._burst_onset_ts     = ''
         if self._gate and self._session:
             self._gate.exit_burst(time.monotonic())
 
@@ -506,7 +514,8 @@ class MonitorController:
                  rel_time: float, timestamp: str,
                  burst_id: str = '', n_pretrigger: int = 0,
                  all_results: list | None = None,
-                 pre_overalls: list | None = None) -> None:
+                 pre_overalls: list | None = None,
+                 onset_timestamp: str = '') -> None:
         item: dict = {
             'frames':       frames,
             'results':      results,
@@ -519,6 +528,8 @@ class MonitorController:
         if trigger != 'interval':
             item['burst_id']           = burst_id
             item['n_pretrigger_frames'] = n_pretrigger
+            if onset_timestamp:
+                item['onset_timestamp'] = onset_timestamp
 
         if self._writer and self._writer.enqueue(item):
             if trigger == 'interval':
