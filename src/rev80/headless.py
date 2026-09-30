@@ -95,6 +95,7 @@ def _build_session(collector, args, session_id, anom_cfg=None, mon_cfg=None):
         max_burst_s       = float(mon_cfg.get("max_burst_s", 600.0)),
         output_dir        = args.output,
         compression       = "none" if args.no_compress else "gzip",
+        compression_level = int(mon_cfg.get("compression_level", 4)),
         cooldown_enabled  = bool(anom_cfg.get("cooldown_enabled", False)),
         cooldown_s        = float(anom_cfg.get("cooldown_s", 0.0)),
     )
