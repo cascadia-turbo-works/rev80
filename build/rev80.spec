@@ -1,11 +1,13 @@
-# rev80.spec  —  PyInstaller build spec
+# rev80.spec  —  PyInstaller spec for the one-directory Windows bundle.
 #
-# Build (from project root on Windows):
-#   pyinstaller build/rev80.spec
+# Normally run by ./scripts/build.sh (CONTRIBUTING.md, section 10). By hand,
+# from the repository root on Windows:
+#   python -m PyInstaller build/rev80.spec --noconfirm
 #
-# Prerequisites:
-#   pip install pyinstaller
-#   python build/collect_pico_dlls.py   (copies DLLs to drivers/)
+# Prerequisites (build.sh does all three):
+#   pip install -e . --no-deps          (setuptools_scm writes _version.py)
+#   ./scripts/fetch_font.sh             (copies the font into src/rev80/assets/fonts/)
+#   python build/collect_pico_dlls.py   (copies the DLLs into drivers/; skipped by nodlls)
 
 import re
 import sys
@@ -25,7 +27,8 @@ ICON_FILE = ROOT / 'assets' / 'icons' / 'rev80.ico'
 _ver_text = (ROOT / 'src' / 'rev80' / '_version.py').read_text()
 APP_VERSION = re.search(r'__version__ = "([^"]+)"', _ver_text).group(1)
 
-# Write installer/version.iss so iscc picks it up without extra arguments
+# installer/rev80.iss includes version.iss (gitignored). Thus run this spec
+# before iscc.
 (ROOT / 'installer' / 'version.iss').write_text(f'#define AppVersion "{APP_VERSION}"\n')
 
 print(f'Building version {APP_VERSION}')
@@ -64,9 +67,8 @@ datas = [
     (str(ROOT / 'assets'), 'assets'),                              # → sys._MEIPASS/assets/ (icons, etc.)
 ]
 
-# Font now lives under src/rev80/assets/ (package data for pip installs too;
-# see resource_path() in _paths.py) but still lands at the same
-# sys._MEIPASS/assets/fonts/ the frozen build has always used.
+# The font goes to sys._MEIPASS/assets/fonts/, where _paths.resource_path()
+# looks for it in a frozen app.
 if FONT_DIR.is_dir():
     datas += [(str(FONT_DIR), 'assets/fonts')]                    # → sys._MEIPASS/assets/fonts/
 else:
@@ -75,7 +77,8 @@ else:
         'Run "./scripts/fetch_font.sh" first.'
     )
 
-# Bundle PicoScope DLLs under drivers/ sub-directory
+# Bundle drivers/ also when it holds no DLL (a nodlls build).
+# _pico_loader registers sys._MEIPASS/drivers as a DLL directory.
 if DRIVERS_DIR.is_dir():
     datas += [(str(DRIVERS_DIR), 'drivers')]
 else:
@@ -139,8 +142,8 @@ exe = EXE(
 )
 
 # ── One-dir bundle ───────────────────────────────────────────────────────────
-# UPX disabled: compressing python3XX.dll causes "LoadLibrary failed" on
-# launch; PyInstaller already compresses .pyc into PYZ so UPX saves little.
+# Keep UPX off (here and in EXE). UPX compression of python3XX.dll makes the
+# exe fail at start with "LoadLibrary failed".
 
 coll = COLLECT(
     exe,
