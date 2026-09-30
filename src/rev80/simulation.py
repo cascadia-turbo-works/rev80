@@ -12,17 +12,12 @@ N_CHANNELS = 2
 
 
 class _RawRateView:
-    """Presents `config` at its raw acquisition rate to signal generators.
+    """Presents `config` at its raw rate to signal generators.
 
-    Every generator below reads config.samplerate/blocksize/sampleperiod/
-    time_vec to build one block. SimulatedSensor must generate (and report)
-    blocks at raw_samplerate/raw_blocksize -- the same rate PicoScopeStream
-    delivers and DataCollector.receive_data tags each frame with -- not the
-    maxfreq-driven display rate those attributes normally give; otherwise
-    the simulated path silently defeats raw-stream retention (envelope
-    analysis, HDF5 storage) by handing it already-decimated data. Proxying
-    keeps every generator, and the tests that call them directly against a
-    real AcquisitionSettings, unchanged.
+    The generators read `samplerate`, `blocksize`, `sampleperiod` and
+    `time_vec`. This view returns the raw-rate values, so SimulatedSensor
+    delivers blocks at `raw_samplerate`, as PicoScopeStream does. All other
+    attributes pass through to `config`.
     """
 
     def __init__(self, config: AcquisitionSettings):
@@ -62,19 +57,7 @@ def GenerateNoise(config:AcquisitionSettings, ampl:float = 1):
 
 def bearing_harmonic_count(config: AcquisitionSettings, running_rate: float,
                            bearing_multiple: float) -> int:
-    """How many defect harmonics fit below Nyquist.
-
-    Exists because the inline expression got this wrong:
-
-        int(freqs[-1] // bearing_multiple*running_rate)
-
-    `//` and `*` have equal precedence and bind left to right, so that is
-    (freqs[-1] // bearing_multiple) * running_rate -- roughly 5000x too many
-    iterations at the default rates. Every harmonic beyond Nyquist then
-    collapsed onto the last bin via argmin, piling severity/(k+1) writes onto
-    freqs[-1]. Compare the running-speed loop, which had the parenthesisation
-    right; a named function makes the two impossible to write differently.
-    """
+    """How many harmonics of `running_rate * bearing_multiple` fit below Nyquist."""
     defect_rate = float(running_rate) * float(bearing_multiple)
     if defect_rate <= 0:
         return 0
@@ -133,66 +116,22 @@ def GenerateBearingVibration_TemporalMethod(config:AcquisitionSettings):
     for k in range(1,11):
         signal += GenerateTone(config, bearing_severity/(0.4*k), runningrate*bearing_multiple*k, bearing_phase)
 
-    # Pacing used to live here, as a time.sleep inside a signal generator. It
-    # is now in SimulatedSensor._stream, so every generator is paced the same
-    # way and calling one directly (as the tests do) is cheap.
     return signal
 
 
-# ── Physically realistic bearing-defect model ──────────────────────────────
-#
-# The two generators above are ten pure cosines plus Gaussian white noise. Their
-# kurtosis is ~3 -- Gaussian -- with no impulsiveness, no resonance carrier, no
-# modulation sidebands and no slip. That makes them useless as an oracle for
-# every diagnostic worth having: crest factor, kurtosis and envelope
-# demodulation all key on exactly the properties the signal does not have, so a
-# completely broken envelope analyser and a correct one both return "nothing
-# here". They are kept for regression coverage of the older paths.
-#
-# What a real rolling-element defect actually produces:
-#
-#   1. An impulse each time a rolling element strikes the defect, at the defect
-#      rate (BPFO/BPFI = running_rate x a non-integer bearing geometry factor).
-#   2. Each impulse rings a STRUCTURAL RESONANCE of the housing, typically
-#      2-20 kHz -- far above the running speed. This is why the defect is
-#      invisible under the 1x in the raw spectrum but obvious in the envelope
-#      of that resonance band, and therefore why envelope analysis exists.
-#   3. The impulses are AMPLITUDE-MODULATED at the shaft rate as the defect
-#      passes through the load zone, which is what puts +/-1x sidebands around
-#      the defect line in the envelope spectrum.
-#   4. Rolling elements SLIP by 1-2%, so the impulse train is not exactly
-#      periodic. This is why a real defect line is slightly broadened and never
-#      resolves to a single bin however fine the resolution.
-#
-# Defaults are a mid-size induction motor: 3600 rpm (60 Hz), an outer-race
-# defect at 5.43x, a 4 kHz housing resonance.
+# ── Bearing-defect model: the four properties GenerateBearingVibration has ──
+#   1. An impulse at the defect rate (running rate x a non-integer factor).
+#   2. Each impulse rings a housing resonance (default 4 kHz).
+#   3. Load-zone amplitude modulation at the shaft rate (+/-1x sidebands).
+#   4. Cumulative slip (default 1.5 %), so the defect line is not one bin.
+# Defaults: 3600 RPM (60 Hz) shaft, outer-race defect at 5.43x.
 
 DEFAULT_RUNNING_RATE_HZ:  float = 60.0
 DEFAULT_BEARING_MULTIPLE: float = 5.43     # non-integer: real bearing geometry
 DEFAULT_RESONANCE_HZ:     float = 4000.0
-# Ring-down sharpness. What actually governs impulsiveness is the ratio of the
-# ring-down time constant to the impulse interval: tau = Q / (pi * f_res), and
-# once tau approaches one impulse period the ring-downs merge into a continuous
-# tone and the signal stops being impulsive at all. Measured at the defaults
-# (fs 32768, 0.5 s block, defect rate 325.8 Hz, period 3.07 ms, 4 kHz
-# resonance), mean of 4 seeds:
-#
-#      Q   tau_ms  tau/period   kurtosis healthy   kurtosis severity=1
-#      3     0.24      0.08              3.09              10.41
-#      5     0.40      0.13              3.09               7.21
-#      8     0.64      0.21              3.09               5.28
-#     10     0.80      0.26              3.09               4.63
-#     15     1.19      0.39              3.09               3.81
-#     25     1.99      0.65              3.09               3.27
-#     40     3.18      1.04              3.09               3.08
-#
-# Q=40 -- the textbook figure for a lightly damped housing resonance in
-# isolation -- makes the fault undetectable by kurtosis, because at this defect
-# rate its ring-down is longer than the gap between impulses. Real bearing
-# signals damp faster than the bare resonance would, through the load path.
-# Q=8 sits at tau/period = 0.21, inside the 10-30% range bearing-simulation
-# practice uses, and separates 5.28 from 3.09 clearly enough to drive a
-# threshold test.
+# Q = 8, not the textbook 40: at Q = 40 the severity=1 kurtosis reads 3.08
+# against a healthy 3.09. Evidence: CONTRIBUTING.md, "E15. Simulation model
+# constants".
 DEFAULT_RESONANCE_Q:      float = 8.0
 DEFAULT_SLIP:             float = 0.015    # 1.5%
 DEFAULT_LOAD_ZONE_DEPTH:  float = 0.6      # AM depth at the shaft rate
@@ -212,13 +151,10 @@ def GenerateBearingVibration(config: AcquisitionSettings,
                              shaft_phase: float | None = None) -> np.ndarray:
     """One block of accelerometer signal from a machine with a bearing defect.
 
-    `severity=0.0` is the healthy negative control: running-speed harmonics and
-    noise, no impulses at all, kurtosis ~3. Without a credible healthy case
-    "the detector fired" proves nothing, so the same function has to produce
-    both. `severity=1.0` is a clearly developed fault.
-
-    `seed` makes a block reproducible so a failing diagnostic test can be
-    re-run on the identical waveform.
+    `severity=0.0` is the healthy negative control: shaft harmonics and noise,
+    no impulses, kurtosis 3 or less. `severity=1.0` is a developed fault. `seed`
+    makes the block reproducible. `shaft_phase` fixes the angular reference
+    (see GenerateMachineWithTach).
     """
     rng = np.random.default_rng(seed)
     fs = float(config.samplerate)
@@ -226,18 +162,12 @@ def GenerateBearingVibration(config: AcquisitionSettings,
     t = np.arange(n) / fs
 
     # ── Shaft: 1x and harmonics, present healthy or not ───────────────────
-    # Independent phase per harmonic. A single shared phase is both
-    # unphysical -- the harmonics of a real machine come from different
-    # mechanisms and are not phase-locked to one value -- and unstable as a
-    # negative control: it made healthy kurtosis swing 2.03-4.00 across seeds
-    # purely on how the five cosines happened to line up, which overlaps the
-    # faulted range and would make any threshold test flaky. With independent
-    # phases healthy sits at 2.68-3.16 over 40 seeds.
+    # One independent phase for each harmonic. A shared phase makes the healthy
+    # kurtosis unstable. Evidence: CONTRIBUTING.md, "E15. Simulation model
+    # constants".
     sig = np.zeros(n, dtype=np.float64)
-    # An explicit shaft_phase pins the angular reference so a tachometer pulse
-    # can be generated at a known point in the same revolution (see
-    # GenerateMachineWithTach). Drawn from the same rng when not given, so the
-    # default behaviour and its random draw order are unchanged.
+    # When not given, shaft_phase is the first draw from rng. Moving this draw
+    # changes the block that each seed produces.
     if shaft_phase is None:
         shaft_phase = rng.uniform(0, 2 * np.pi)
     for k in range(1, 6):
@@ -252,11 +182,8 @@ def GenerateBearingVibration(config: AcquisitionSettings,
         return sig
 
     # ── Defect impulse train, with slip ───────────────────────────────────
-    # Impulse k lands at k/defect_rate perturbed by a random walk of `slip`,
-    # not at an exactly periodic instant. Independent per-impulse jitter would
-    # broaden the line too, but slip is a cumulative phase error, and a random
-    # walk is what reproduces the characteristic smearing that worsens with
-    # harmonic order.
+    # Impulse k lands at k/defect_rate plus a random walk of `slip`. Slip is a
+    # cumulative phase error, so the smearing increases with harmonic order.
     defect_rate = running_rate * bearing_multiple
     if defect_rate <= 0 or defect_rate >= fs / 2:
         return sig
@@ -307,17 +234,14 @@ def GenerateBearingVibration(config: AcquisitionSettings,
 # Tachometer
 # ---------------------------------------------------------------------------
 
-#: Default rise/fall time of a generated tach edge, in samples. Measured on a
-#: 4424A: a real TTL edge arrives at the collector with about one intermediate
-#: sample, because the mandatory anti-alias decimation band-limits it after the
-#: ADC. An ideal zero-rise rectangle is a *degenerate* stimulus -- no sample
-#: lands in the detector's hysteresis band and sub-sample interpolation has
-#: nothing to interpolate -- so generating one would have CI exercise a regime
-#: the instrument never sees. See rev80.tach's module docstring.
+#: Default rise/fall time of a generated tach edge, in samples. On a 4424A a
+#: real TTL edge has about one intermediate sample. Do not use a zero-rise
+#: rectangle: sub-sample interpolation then has nothing to interpolate.
+#: Evidence: CONTRIBUTING.md, "E14.3. Interpolation".
 TACH_RISE_SAMPLES: float = 1.5
 
 DEFAULT_TACH_AMPLITUDE_MV: float = 5000.0   # 0-5 V TTL / laser tach output
-DEFAULT_TACH_WIDTH_S: float = 200e-6        # comfortably above the ~50 us floor
+DEFAULT_TACH_WIDTH_S: float = 200e-6        # about 5 samples at 25600 Hz
 
 
 def GenerateTachPulse(config: AcquisitionSettings,
@@ -333,16 +257,11 @@ def GenerateTachPulse(config: AcquisitionSettings,
                       seed: int | None = None) -> np.ndarray:
     """One block of tachometer signal, in **millivolts**.
 
-    Returns a pulse train idling low (or high, for `polarity='falling'`) with a
-    finite rise, matching what a keyphasor or laser tach delivers to
-    DataCollector after the acquisition chain's anti-alias filter.
-
-    `pulses_per_rev` defaults to 1 per decision D-6 -- one reflective tape or
-    one keyway, which is both the common installation and the accurate one.
-
-    `jitter_pct` perturbs each pulse instant by a fraction of the nominal
-    period, modelling real torsional/cyclic shaft variation. It should show up
-    in `TachResult.interval_spread`, not as a rate error.
+    A pulse train that idles low (high for `polarity='falling'`), with a rise
+    of `rise_samples`. `pulses_per_rev` defaults to 1: one pulse per revolution
+    is the default and the recommended configuration. `jitter_pct` moves each
+    pulse by a random fraction of the period (not cumulative); it must show in
+    `TachResult.interval_spread`, not as a rate error.
     """
     rng = np.random.default_rng(seed)
     fs = float(config.samplerate)
@@ -388,19 +307,10 @@ def GenerateMachineWithTach(config: AcquisitionSettings,
                             **vib_kwargs) -> dict:
     """A vibration channel and a tachometer channel from the *same* shaft.
 
-    Returns ``{vib_channel: accel, tach_channel: tach_mv}``.
-
-    The coherence is the point. A tach pulse train that is not locked to the
-    vibration's own shaft rate cannot validate anything -- a broken tachometer
-    and a correct one both return a plausible number against an unrelated
-    signal. This is the same argument this module already makes about pure
-    cosines being unable to validate envelope analysis.
-
-    Both channels share `running_rate` and an explicit shaft phase, so the
-    tach's rising edge marks a fixed angular position: the instant the load
-    zone is at its maximum. That makes the rate check (tach RPM vs the 1x peak
-    in the vibration's own spectrum) possible now, and an angular check
-    possible later without regenerating anything.
+    Returns ``{vib_channel: accel, tach_channel: tach_mv}``. Both channels
+    share `running_rate` and one shaft phase, so a test can compare the tach
+    speed with the 1x line. The tach rising edge is at the load-zone maximum.
+    A tach that is not locked to the vibration shaft validates nothing.
     """
     rng = np.random.default_rng(seed)
     shaft_phase = float(rng.uniform(0, 2 * np.pi))
@@ -430,9 +340,7 @@ def machine_with_tach_sources(running_rate: float = DEFAULT_RUNNING_RATE_HZ,
     """`channel_sources` entries for a coherent vibration + tachometer pair.
 
     The streaming counterpart to GenerateMachineWithTach: assign the result to
-    `SimulatedSensor.channel_sources`. Exists so that the two rates cannot be
-    set independently and drift apart, which is the obvious way to get a
-    simulated tach that reads a shaft the vibration channel is not on.
+    `SimulatedSensor.channel_sources`. Both entries get the same shaft rate.
     """
     return {
         vib_channel:  (GenerateBearingVibration, severity, running_rate),
@@ -449,16 +357,12 @@ class SimulatedSensor:
         self.config = config
         self.channels = max(1, len(config.enabled_channels))
         self.callback = callback
-        # The physically realistic model is the default: the pure-tone
-        # generators cannot exercise crest factor, kurtosis or envelope
-        # analysis, so an offline run against them would validate nothing.
-        # They remain importable, and are still covered by their own tests.
+        # The bearing model is the default. The pure-tone generators cannot
+        # exercise crest factor, kurtosis or envelope analysis.
         self.source: tuple = (GenerateBearingVibration,)
-        # Optional per-channel overrides: {ch: (fn, *args)}. Empty means every
-        # enabled channel carries one tiled copy of `source`, which is the
-        # historical behaviour and is preserved byte-for-byte. A tachometer
-        # channel is impossible without this: tiling would give the tach input
-        # the same accelerometer waveform as the vibration input.
+        # Optional per-channel overrides: {ch: (fn, *args)}. When empty, every
+        # enabled channel gets the same copy of one `source` block. A
+        # tachometer channel needs an override.
         self.channel_sources: dict[int, tuple] = {}
         self.stream: threading.Thread
 
@@ -472,26 +376,18 @@ class SimulatedSensor:
         self.stream = threading.Thread(target=self._stream, daemon=True)
 
     def _sample(self):
-        # HACK: to acomplish FFT units testing
-        # Raw rate, not display rate -- see _RawRateView.
+        # `source` is (fn, *args). Generate at the raw rate (see _RawRateView).
         args = self.source[1:] if len(self.source)>1 else []
         signal = self.source[0].__call__(_RawRateView(self.config), *args) # type: ignore
 
-        # One column per enabled channel. This used to be
-        # max(len(enabled_channels), N_CHANNELS), which forced a minimum of two
-        # columns -- a workaround for VibeSensor.simulated()'s fixed 2-element
-        # `scale`. That scale is now fitted to the data (audit S-12), so the
-        # floor is unnecessary, and it was actively wrong: a single-channel
-        # configuration got a phantom second channel.
+        # One column for each enabled channel, and at least one.
         n_ch = max(1, len(self.config.enabled_channels))
         if not self.channel_sources:
             return np.tile(signal, (n_ch, 1)).T
 
-        # Per-channel mode: each enabled channel gets its own generated block,
-        # from its override if it has one and from `source` otherwise. Note
-        # that channels falling back to `source` are generated independently
-        # rather than sharing one draw -- which is both more realistic and
-        # unavoidable, since each call advances its own rng.
+        # Per-channel mode: each enabled channel gets its own block, from its
+        # override or from `source`. Channels that use `source` get independent
+        # draws, not one shared block.
         raw = _RawRateView(self.config)
         cols = []
         for ch in sorted(self.config.enabled_channels):
@@ -500,14 +396,10 @@ class SimulatedSensor:
         return np.column_stack(cols)
 
     def _stream(self):
-        """Acquisition loop.
+        """Acquisition loop, paced at `acquisition_period`.
 
-        Guarded: an unhandled exception here used to kill the thread while
-        `_running` stayed True, so `active` -- and through it
-        DataCollector.is_streaming -- reported a healthy stream that would
-        never produce another frame (audit S-12). A stream that has stopped
-        must say so; silently pretending to run is worse than crashing, because
-        nothing downstream can tell the difference from a very quiet machine.
+        On any exception it logs the traceback and sets `_running` to False, so
+        `active` (and DataCollector.is_streaming) reports the stop.
         """
         self._running = True
         try:
