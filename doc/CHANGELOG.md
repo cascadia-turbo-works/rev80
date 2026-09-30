@@ -55,6 +55,52 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - The GUI does not read `monitor.compression_level` yet. That change is in
   `gui.py`.
 
+### fix/gui — monitor config and four GUI defects (2026-09-30)
+
+#### Fixed
+- **A config dialog close keeps the monitor block of `acquisition.yaml`.**
+  Before this change, only an open of the Monitor tab loaded the config into
+  the Monitor widgets. Each dialog close saves those widgets. Thus a close on
+  any other tab wrote the widget construction defaults (interval 1 h,
+  pre-trigger 60 s, burst 60 s, anomaly off, RMS threshold 10 %, warm-up 30)
+  over the user's monitor block. A recording started without an open of the
+  Monitor tab also used those defaults. Now `GUI.initialize` loads the config
+  into the widgets at startup. The save keeps the keys that have no widget
+  (`max_burst_s`, `compression_level`, `rms_alpha`, `spec_alpha`), keeps a
+  stored interval that is not a preset, and does not add an EWMA time that
+  the config does not have (headless uses an EWMA time before an alpha). All
+  monitor fallbacks in `gui.py` are now the `config.py` seed values; before,
+  `_start_recording` used 60 s / 60 s, and the dialog 30 s / 120 s.
+  `tests/test_gui_monitor_config.py` keeps this. Without the startup load,
+  5 of its 11 tests fail.
+- **The automatic envelope band stays in the protected band.** The GUI
+  searched for a demodulation band up to the raw Nyquist frequency (12.8 kHz
+  at 25600 Hz). Above 10 kHz, the anti-alias filter attenuates the signal.
+  Now the search ends at the raw rate / 2.56 (10 kHz), as the
+  `envelope.suggest_band` contract requires.
+- **The degraded-rate warning compares two raw rates.** It compared the
+  measured raw rate with the display rate, for example "25000/5120 Hz". Now
+  it compares with the nominal raw rate, for example "25000/25600 Hz".
+- **The monitor storage estimate has correct units.** It divided by 10^9 and
+  10^6, but showed "GiB" and "MiB". Now it shows "GB", "MB" and "kB". It
+  also counted a tachometer channel as a full waveform; a session stores
+  only its edge times, so now the estimate does not count it. The estimate
+  still assumes that gzip halves the data; its new tooltip says that this
+  is an assumption. `tests/test_gui_small_defects.py` keeps these three
+  fixes. Without them, 5 of its 8 tests fail.
+- **A recording refuses a stream stop.** Ctrl+K, the Acquisition button and
+  the Tachometer tab button could stop the stream while a recording ran. The
+  recording then continued, but got no frames. Now the stop is refused with
+  an info message: stop the recording first.
+  `tests/test_gui_stream_stop_lock.py` keeps this. Without the fix, 3 of its
+  6 tests fail.
+- **The Welch Overlap tooltip is correct.** It said that a higher overlap
+  smooths the spectrum. Welch uses one segment per frame
+  (`nperseg == blocksize`), so the overlap has no effect. Now the tooltip
+  says this and refers to Average spectrum. `tests/test_welch_overlap_tip.py`
+  shows that the spectrum is bit-identical at 0 % and 90 % overlap, at six
+  F_max and bin-size presets.
+
 ### fix/collector — reprocess a session with a tachometer channel (2026-09-29)
 
 #### Fixed

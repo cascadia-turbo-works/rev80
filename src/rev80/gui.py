@@ -140,6 +140,118 @@ def derive_acquisition_preview(maxfreq: float, binsize: float) -> dict:
         'mem_bytes':  cfg.memory_bytes,
         'binsize_actual': cfg.binsize_actual,
     }
+
+
+# Seed values of the acquisition.yaml monitor block. The monitor fallbacks in
+# this module use them, so that the GUI, the config file and headless agree.
+_MON_SEED = _cfg._BUILTIN_ACQ['monitor']
+_ANOM_SEED = _MON_SEED['anomaly']
+# The seed has no EWMA times. These are the widget values when the config
+# has none.
+_EWMA_TIME_DEFAULTS = {'rms_ewma_time': 60.0, 'spec_ewma_time': 300.0}
+
+
+def interval_from_label(label, fallback_s: float) -> float:
+    """Interval in seconds for a MONITOR_INTERVAL_PRESETS label.
+
+    Returns fallback_s when the label is not a preset label.
+    """
+    return float(next(
+        (k for k, v in rev80.MONITOR_INTERVAL_PRESETS.items() if v == label),
+        fallback_s,
+    ))
+
+
+def interval_to_save(label, stored_s) -> float:
+    """Interval in seconds to write to acquisition.yaml.
+
+    The combo shows only presets. A stored interval that is not a preset
+    shows as the nearest preset. If the combo still shows that preset, keep
+    the stored value, so that a dialog close does not change it.
+    """
+    try:
+        stored = float(stored_s)
+    except (TypeError, ValueError):
+        stored = float(_MON_SEED['interval_s'])
+    shown = rev80.MONITOR_INTERVAL_PRESETS.get(nearest_interval_preset(stored))
+    if label == shown:
+        return stored
+    return interval_from_label(label, stored)
+
+
+# Welch runs one segment per frame (nperseg == blocksize), so the overlap has
+# no segments to act on.
+_WELCH_OVERLAP_TIP = (
+    "Welch Overlap: at present this setting has no effect on the spectrum. "
+    "Welch uses one segment per frame: the segment is the full block, so "
+    "there are no adjacent segments to overlap. The value is kept in the "
+    "settings and in each saved file. To make the spectrum smoother, use "
+    "Average spectrum."
+)
+
+
+# Ratio of a sample rate to the top of its anti-alias-protected band. The
+# same 2.56 as AcquisitionSettings.samplerate = 2.56 x maxfreq: at 25600 Hz
+# raw, the protected band ends at 10 kHz.
+_PROTECTED_BAND_RATIO = 2.56
+
+
+def envelope_search_fmax(samplerate: float) -> float:
+    """Top of the protected band, as the fmax for envelope.suggest_band.
+
+    Above it, the anti-alias filter attenuates the signal. A demodulation
+    band there shows filter roll-off, not machine content.
+    """
+    return samplerate / _PROTECTED_BAND_RATIO
+
+
+def degraded_rate_text(effective_hz: float | None, cfg) -> str:
+    """Text of the degraded-rate warning.
+
+    The stream measures its raw acquisition rate, so compare it with the
+    nominal raw rate, not with the display rate.
+    """
+    if effective_hz is None:
+        return "⚠ rate degraded"
+    return f"⚠ rate degraded: {effective_hz:.0f}/{cfg.raw_samplerate:.0f} Hz"
+
+
+# Assumed gzip ratio for the storage estimate. It is not measured: the ratio
+# changes with the signal.
+_ASSUMED_GZIP_RATIO = 0.5
+
+
+def monitor_storage_estimate(cfg, interval_s: float, burst_s: float,
+                             pre_s: float) -> tuple[str, float]:
+    """Estimated session storage, as (text, bytes per year of interval captures).
+
+    Units are decimal (1 GB = 1e9 bytes). A session stores the raw-rate
+    waveform of each vibration channel. A tachometer channel stores only
+    edge times, a few float64 values per second, so it is not counted.
+    """
+    raw_fs = cfg.raw_samplerate
+    block_s = cfg.raw_blocksize / raw_fs if raw_fs else 1.0
+    block_bytes = cfg.raw_blocksize * len(cfg.vibration_channels) * 8  # float64
+    compressed = block_bytes * _ASSUMED_GZIP_RATIO
+
+    # Interval logger: one capture per interval
+    per_year = (365 * 24 * 3600 / interval_s) * compressed
+    if per_year >= 1e9:
+        interval_est = f"~{per_year / 1e9:.1f} GB/year"
+    else:
+        interval_est = f"~{per_year / 1e6:.0f} MB/year"
+    if per_year > 50e9:
+        interval_est += "  (exceeds 50 GB)"
+
+    # Per burst: pre-buffer frames + post-trigger frames
+    burst_frames = max(1, int((burst_s + pre_s) / block_s)) if block_s > 0 else 1
+    burst_bytes = burst_frames * compressed
+    if burst_bytes >= 1e6:
+        burst_est = f"~{burst_bytes / 1e6:.1f} MB/burst"
+    else:
+        burst_est = f"~{burst_bytes / 1e3:.0f} kB/burst"
+
+    return f"Interval: {interval_est}\nBurst: {burst_est}", per_year
 _BINSIZE_LABELS = [f"{b} Hz/bin" for b in rev80.BINSIZE_PRESETS]
 
 # Welch FFT window options (scipy.signal.welch 'window' argument strings)
@@ -520,7 +632,8 @@ class GUI:
         if key in self._env_auto_band:
             return self._env_auto_band[key]
         try:
-            band = rev80_env.suggest_band(signal, samplerate, fmax=samplerate / 2.0)
+            band = rev80_env.suggest_band(
+                signal, samplerate, fmax=envelope_search_fmax(samplerate))
         except (ValueError, IndexError):
             return None
         self._env_auto_band[key] = band
@@ -1497,12 +1610,7 @@ class GUI:
             if degraded:
                 stream = self.collector.stream
                 eff = getattr(stream, 'effective_samplerate', None)
-                nominal = cfg.samplerate
-                if eff is not None:
-                    warn_text = f"⚠ rate degraded: {eff:.0f}/{nominal:.0f} Hz"
-                else:
-                    warn_text = "⚠ rate degraded"
-                dpg.set_value(ui.SPECTRUM_DEGRADED_WARNING, warn_text)
+                dpg.set_value(ui.SPECTRUM_DEGRADED_WARNING, degraded_rate_text(eff, cfg))
             dpg.configure_item(ui.SPECTRUM_DEGRADED_WARNING, show=degraded)
 
     def _update_acq_derived(self):
@@ -1580,6 +1688,11 @@ class GUI:
 
     def _toggle_acquisition(self, sender=None, data=None):
         if self.collector.is_streaming:
+            # A recording continues without a stream, but gets no frames.
+            # The Acquisition button, the Tachometer button and Ctrl+K come
+            # here.
+            if self._refuse_while_recording("Stream stop"):
+                return
             self._stop_stream()
         else:
             self._start_stream()
@@ -2899,15 +3012,21 @@ class GUI:
     # ------------------------------------------------------------------
 
     def _populate_monitor_tab(self):
-        """Sync Monitor config tab widgets from acquisition.yaml."""
+        """Sync Monitor config tab widgets from acquisition.yaml.
+
+        initialize() calls it after the widgets exist, and the dialog calls
+        it again when it opens on the Monitor tab. Thus the widgets always
+        hold the config values: _save_monitor_config (on each dialog close),
+        _start_recording and _build_anomaly_hook read the widgets.
+        """
         if not dpg.does_item_exist(ui.MON_DLG_INTERVAL):
             return
         mon = _cfg.load_acquisition_config().get("monitor", {})
-        interval_s = float(mon.get("interval_s", 600))
-        pre_buf_s = float(mon.get("pre_burst_s", 30))
-        burst_dur_s = float(mon.get("burst_duration_s", 120))
+        interval_s = float(mon.get("interval_s", _MON_SEED["interval_s"]))
+        pre_buf_s = float(mon.get("pre_burst_s", _MON_SEED["pre_burst_s"]))
+        burst_dur_s = float(mon.get("burst_duration_s", _MON_SEED["burst_duration_s"]))
         out_dir = mon.get("output_dir") or ""
-        compress = mon.get("compression", "gzip") == "gzip"
+        compress = mon.get("compression", _MON_SEED["compression"]) == "gzip"
 
         # An interval that is not a preset shows the nearest preset. A fixed
         # fallback label would write a different interval back on save.
@@ -2924,25 +3043,31 @@ class GUI:
 
         # Restore anomaly settings
         anom = mon.get("anomaly", {})
+        # Headless uses an EWMA time before an alpha. Do not write an EWMA
+        # time that the config does not have, unless the user changes it.
+        self._ewma_time_not_stored = {
+            key: default for key, default in _EWMA_TIME_DEFAULTS.items()
+            if key not in anom
+        }
         def _sv(tag, val):
             if dpg.does_item_exist(tag):
                 dpg.set_value(tag, val)
-        _sv(ui.MON_ANOM_ENABLED,   bool(anom.get("enabled",    False)))
+        _sv(ui.MON_ANOM_ENABLED,   bool(anom.get("enabled",    _ANOM_SEED["enabled"])))
         # Stored canonically in lowercase; the combo shows the display label.
         # gui_hook_type() clamps a stored 'spectral'/'both' — written by the
         # headless front end, which still offers them — to something this combo
         # actually lists. The stored value itself is preserved on save.
         self._stored_hook_type = canonical_hook_type(anom.get("hook_type", "rms"))
         _sv(ui.MON_ANOM_HOOK,      hook_type_label(gui_hook_type(self._stored_hook_type)))
-        _sv(ui.MON_ANOM_RMS_PCT,      float(anom.get("rms_pct",       50.0)))
-        _sv(ui.MON_ANOM_RMS_S,        float(anom.get("rms_s",         3.0)))
-        _sv(ui.MON_ANOM_RMS_EWMA_TIME, float(anom.get("rms_ewma_time", 60.0)))
-        _sv(ui.MON_ANOM_RMS_WARMUP,   int(anom.get("warmup",          10)))
-        _sv(ui.MON_ANOM_SPEC_PCT,     float(anom.get("spec_pct",      50.0)))
-        _sv(ui.MON_ANOM_SPEC_N,       int(anom.get("spec_n",          10)))
+        _sv(ui.MON_ANOM_RMS_PCT,      float(anom.get("rms_pct",       _ANOM_SEED["rms_pct"])))
+        _sv(ui.MON_ANOM_RMS_S,        float(anom.get("rms_s",         _ANOM_SEED["rms_s"])))
+        _sv(ui.MON_ANOM_RMS_EWMA_TIME, float(anom.get("rms_ewma_time", _EWMA_TIME_DEFAULTS["rms_ewma_time"])))
+        _sv(ui.MON_ANOM_RMS_WARMUP,   int(anom.get("warmup",          _ANOM_SEED["warmup"])))
+        _sv(ui.MON_ANOM_SPEC_PCT,     float(anom.get("spec_pct",      _ANOM_SEED["spec_pct"])))
+        _sv(ui.MON_ANOM_SPEC_N,       int(anom.get("spec_n",          _ANOM_SEED["spec_n"])))
         _sv(ui.MON_ANOM_SPEC_FMIN,    float(anom.get("spec_fmin") or  0.0))
         _sv(ui.MON_ANOM_SPEC_FMAX,    float(anom.get("spec_fmax") or  0.0))
-        _sv(ui.MON_ANOM_SPEC_EWMA_TIME, float(anom.get("spec_ewma_time", 300.0)))
+        _sv(ui.MON_ANOM_SPEC_EWMA_TIME, float(anom.get("spec_ewma_time", _EWMA_TIME_DEFAULTS["spec_ewma_time"])))
 
         _sv(ui.MON_ANOM_FIXED_UPPER_ENABLED, bool(anom.get("fixed_upper_enabled", False)))
         _sv(ui.MON_ANOM_FIXED_UPPER_VALUE,   float(anom.get("fixed_upper_value",  1.0)))
@@ -2972,49 +3097,58 @@ class GUI:
         return shown
 
     def _save_monitor_config(self) -> None:
-        """Persist monitor + anomaly config to acquisition.yaml."""
+        """Persist monitor + anomaly config to acquisition.yaml.
+
+        Updates the stored monitor block in place. Keys that have no widget
+        (max_burst_s, compression_level, rms_alpha, spec_alpha) keep their
+        stored values, so that a dialog close does not undo a hand edit.
+        """
         def _get(tag, default):
             return dpg.get_value(tag) if dpg.does_item_exist(tag) else default
 
-        interval_label = _get(ui.MON_DLG_INTERVAL, "1 h")
-        interval_s = next(
-            (k for k, v in rev80.MONITOR_INTERVAL_PRESETS.items() if v == interval_label),
-            3600,
-        )
         acq_cfg = _cfg.load_acquisition_config()
-        acq_cfg['monitor'] = {
-            'interval_s':        float(interval_s),
-            'pre_burst_s':       float(_get(ui.MON_DLG_PRE_BUFFER,  30.0)),
-            'burst_duration_s':  float(_get(ui.MON_DLG_BURST_DUR,   120.0)),
-            # Keep the value from the YAML: there is no widget for it, and a
-            # fixed value here would undo a hand edit.
-            'max_burst_s':       float(
-                acq_cfg.get('monitor', {}).get('max_burst_s', 600.0)),
+        stored = dict(acq_cfg.get('monitor', {}))
+        anomaly = dict(stored.get('anomaly', {}))
+        interval_s = interval_to_save(
+            _get(ui.MON_DLG_INTERVAL, None),
+            stored.get('interval_s', _MON_SEED['interval_s']),
+        )
+        stored.update({
+            'interval_s':        interval_s,
+            'pre_burst_s':       float(_get(ui.MON_DLG_PRE_BUFFER, _MON_SEED['pre_burst_s'])),
+            'burst_duration_s':  float(_get(ui.MON_DLG_BURST_DUR,  _MON_SEED['burst_duration_s'])),
+            'max_burst_s':       float(stored.get('max_burst_s', _MON_SEED['max_burst_s'])),
             'output_dir':        str(_get(ui.MON_DLG_OUTPUT_DIR, '')).strip() or None,
             'compression':       'gzip' if _get(ui.MON_DLG_COMPRESS, True) else 'none',
-            'compression_level': 4,
-            'anomaly': {
-                'enabled':       bool(_get(ui.MON_ANOM_ENABLED,    False)),
-                'hook_type':     self._hook_type_to_save(_get(ui.MON_ANOM_HOOK, 'RMS')),
-                'rms_pct':       float(_get(ui.MON_ANOM_RMS_PCT,        50.0)),
-                'rms_s':         float(_get(ui.MON_ANOM_RMS_S,          3.0)),
-                'rms_ewma_time': float(_get(ui.MON_ANOM_RMS_EWMA_TIME,  60.0)),
-                'warmup':        int(_get(ui.MON_ANOM_RMS_WARMUP,        10)),
-                'spec_pct':      float(_get(ui.MON_ANOM_SPEC_PCT,        50.0)),
-                'spec_n':        int(_get(ui.MON_ANOM_SPEC_N,            10)),
-                'spec_fmin':     _get(ui.MON_ANOM_SPEC_FMIN, None) or None,
-                'spec_fmax':     _get(ui.MON_ANOM_SPEC_FMAX, None) or None,
-                'spec_ewma_time': float(_get(ui.MON_ANOM_SPEC_EWMA_TIME, 300.0)),
-                'cooldown_enabled':    bool(_get(ui.MON_ANOM_COOLDOWN_ENABLED, False)),
-                'cooldown_s':          float(_get(ui.MON_ANOM_COOLDOWN_S,      300.0)),
-                'fixed_upper_enabled': bool(_get(ui.MON_ANOM_FIXED_UPPER_ENABLED, False)),
-                'fixed_upper_value':   float(_get(ui.MON_ANOM_FIXED_UPPER_VALUE,  1.0)),
-                'fixed_upper_unit':    str(_get(ui.MON_ANOM_FIXED_UPPER_UNIT,     'in/s')),
-                'fixed_lower_enabled': bool(_get(ui.MON_ANOM_FIXED_LOWER_ENABLED, False)),
-                'fixed_lower_value':   float(_get(ui.MON_ANOM_FIXED_LOWER_VALUE,  0.05)),
-                'fixed_lower_unit':    str(_get(ui.MON_ANOM_FIXED_LOWER_UNIT,     'in/s')),
-            },
-        }
+        })
+        anomaly.update({
+            'enabled':       bool(_get(ui.MON_ANOM_ENABLED,    _ANOM_SEED['enabled'])),
+            'hook_type':     self._hook_type_to_save(_get(ui.MON_ANOM_HOOK, 'RMS')),
+            'rms_pct':       float(_get(ui.MON_ANOM_RMS_PCT,        _ANOM_SEED['rms_pct'])),
+            'rms_s':         float(_get(ui.MON_ANOM_RMS_S,          _ANOM_SEED['rms_s'])),
+            'warmup':        int(_get(ui.MON_ANOM_RMS_WARMUP,        _ANOM_SEED['warmup'])),
+            'spec_pct':      float(_get(ui.MON_ANOM_SPEC_PCT,        _ANOM_SEED['spec_pct'])),
+            'spec_n':        int(_get(ui.MON_ANOM_SPEC_N,            _ANOM_SEED['spec_n'])),
+            'spec_fmin':     _get(ui.MON_ANOM_SPEC_FMIN, None) or None,
+            'spec_fmax':     _get(ui.MON_ANOM_SPEC_FMAX, None) or None,
+            'cooldown_enabled':    bool(_get(ui.MON_ANOM_COOLDOWN_ENABLED, False)),
+            'cooldown_s':          float(_get(ui.MON_ANOM_COOLDOWN_S,      300.0)),
+            'fixed_upper_enabled': bool(_get(ui.MON_ANOM_FIXED_UPPER_ENABLED, False)),
+            'fixed_upper_value':   float(_get(ui.MON_ANOM_FIXED_UPPER_VALUE,  1.0)),
+            'fixed_upper_unit':    str(_get(ui.MON_ANOM_FIXED_UPPER_UNIT,     'in/s')),
+            'fixed_lower_enabled': bool(_get(ui.MON_ANOM_FIXED_LOWER_ENABLED, False)),
+            'fixed_lower_value':   float(_get(ui.MON_ANOM_FIXED_LOWER_VALUE,  0.05)),
+            'fixed_lower_unit':    str(_get(ui.MON_ANOM_FIXED_LOWER_UNIT,     'in/s')),
+        })
+        not_stored = getattr(self, '_ewma_time_not_stored', {})
+        for key, tag in (('rms_ewma_time', ui.MON_ANOM_RMS_EWMA_TIME),
+                         ('spec_ewma_time', ui.MON_ANOM_SPEC_EWMA_TIME)):
+            value = float(_get(tag, _EWMA_TIME_DEFAULTS[key]))
+            if key in not_stored and value == not_stored[key]:
+                continue
+            anomaly[key] = value
+        stored['anomaly'] = anomaly
+        acq_cfg['monitor'] = stored
         _cfg.save_acquisition_config(acq_cfg)
         log.debug("Monitor config saved to acquisition.yaml")
 
@@ -3022,39 +3156,15 @@ class GUI:
         """Update the storage estimate label when Monitor config widgets change."""
         if not dpg.does_item_exist(ui.MON_DLG_ESTIMATE):
             return
-        interval_label = dpg.get_value(ui.MON_DLG_INTERVAL) if dpg.does_item_exist(ui.MON_DLG_INTERVAL) else "1 h"
-        interval_s = next(
-            (k for k, v in rev80.MONITOR_INTERVAL_PRESETS.items() if v == interval_label),
-            3600,
-        )
-        burst_dur_s = float(dpg.get_value(ui.MON_DLG_BURST_DUR)) if dpg.does_item_exist(ui.MON_DLG_BURST_DUR) else 60.0
-        pre_buf_s   = float(dpg.get_value(ui.MON_DLG_PRE_BUFFER)) if dpg.does_item_exist(ui.MON_DLG_PRE_BUFFER) else 0.0
+        def _get(tag, default):
+            return dpg.get_value(tag) if dpg.does_item_exist(tag) else default
 
-        cfg = self.collector.config
-        # raw_blocksize/raw_samplerate, not blocksize/samplerate: session.h5
-        # stores the raw-rate data, not the display-rate data.
-        block_s = cfg.raw_blocksize / cfg.raw_samplerate if cfg.raw_samplerate else 1.0
-        block_bytes = cfg.raw_blocksize * len(cfg.enabled_channels) * 8  # float64
-        compressed = block_bytes * 0.5  # gzip ~50% compression
-
-        # Interval logger: one capture per interval
-        per_year = (365 * 24 * 3600 / interval_s) * compressed
-        if per_year >= 1e9:
-            interval_est = f"~{per_year / 1e9:.1f} GiB/year"
-        else:
-            interval_est = f"~{per_year / 1e6:.0f} MiB/year"
-        if per_year > 50e9:
-            interval_est += "  (exceeds 50 GiB)"
-
-        # Per burst: pre-buffer frames + post-trigger frames
-        burst_frames = max(1, int((burst_dur_s + pre_buf_s) / block_s)) if block_s > 0 else 1
-        burst_bytes = burst_frames * compressed
-        if burst_bytes >= 1e6:
-            burst_est = f"~{burst_bytes / 1e6:.1f} MiB/burst"
-        else:
-            burst_est = f"~{burst_bytes / 1e3:.0f} KiB/burst"
-
-        estimate = f"Interval: {interval_est}\nBurst: {burst_est}"
+        interval_s = interval_from_label(
+            _get(ui.MON_DLG_INTERVAL, None), _MON_SEED['interval_s'])
+        burst_dur_s = float(_get(ui.MON_DLG_BURST_DUR, _MON_SEED['burst_duration_s']))
+        pre_buf_s = float(_get(ui.MON_DLG_PRE_BUFFER, _MON_SEED['pre_burst_s']))
+        estimate, per_year = monitor_storage_estimate(
+            self.collector.config, interval_s, burst_dur_s, pre_buf_s)
         # Flag more than 10 GB/year: a long run with a daily or weekly
         # interval stores less, so the interval is possibly set too short.
         over_10gb = per_year > 10e9
@@ -3073,6 +3183,36 @@ class GUI:
         else:
             self._start_recording()
 
+    def _monitor_session_params(self) -> dict:
+        """Session parameters from the Monitor widgets, as session_from keywords.
+
+        The widgets hold the acquisition.yaml values from startup. A missing
+        widget gives the config seed value.
+        """
+        def _get(tag, default):
+            return dpg.get_value(tag) if dpg.does_item_exist(tag) else default
+
+        mon_saved = _cfg.load_acquisition_config().get('monitor', {})
+        out_dir = str(_get(ui.MON_DLG_OUTPUT_DIR, '')).strip()
+        return {
+            # A stored interval that is not a preset stays as stored.
+            'interval_s': interval_to_save(
+                _get(ui.MON_DLG_INTERVAL, None),
+                mon_saved.get('interval_s', _MON_SEED['interval_s'])),
+            'pre_buffer_s': float(_get(ui.MON_DLG_PRE_BUFFER, _MON_SEED['pre_burst_s'])),
+            'burst_duration_s': float(
+                _get(ui.MON_DLG_BURST_DUR, _MON_SEED['burst_duration_s'])),
+            'output_dir': out_dir or None,
+            'compression': 'gzip' if _get(ui.MON_DLG_COMPRESS, True) else 'none',
+            'cooldown_enabled': bool(
+                _get(ui.MON_ANOM_COOLDOWN_ENABLED, _ANOM_SEED['cooldown_enabled'])),
+            'cooldown_s': float(_get(ui.MON_ANOM_COOLDOWN_S, _ANOM_SEED['cooldown_s'])),
+            # max_burst_s has no widget: read it from acquisition.yaml. It
+            # limits the memory that an unattended burst can use. Do not
+            # replace it with a fixed value.
+            'max_burst_s': float(mon_saved.get('max_burst_s', _MON_SEED['max_burst_s'])),
+        }
+
     def _start_recording(self):
         """Start streaming (if not running) and start monitor session."""
         from datetime import datetime
@@ -3088,42 +3228,19 @@ class GUI:
                 dpg.set_value(ui.MONITOR_STATUS_TEXT, "No device connected")
             return
 
-        # Read dialog config (fall back to defaults when dialog hasn't been opened)
-        interval_label = dpg.get_value(ui.MON_DLG_INTERVAL) if dpg.does_item_exist(ui.MON_DLG_INTERVAL) else "1 h"
-        interval_s = next(
-            (k for k, v in rev80.MONITOR_INTERVAL_PRESETS.items() if v == interval_label),
-            3600,
-        )
-        pre_buf_s = float(dpg.get_value(ui.MON_DLG_PRE_BUFFER)) if dpg.does_item_exist(ui.MON_DLG_PRE_BUFFER) else 60.0
-        burst_dur = float(dpg.get_value(ui.MON_DLG_BURST_DUR)) if dpg.does_item_exist(ui.MON_DLG_BURST_DUR) else 60.0
-        out_dir_s = dpg.get_value(ui.MON_DLG_OUTPUT_DIR).strip() if dpg.does_item_exist(ui.MON_DLG_OUTPUT_DIR) else ""
-        compress = dpg.get_value(ui.MON_DLG_COMPRESS) if dpg.does_item_exist(ui.MON_DLG_COMPRESS) else True
-
-        cooldown_enabled = bool(dpg.get_value(ui.MON_ANOM_COOLDOWN_ENABLED)) if dpg.does_item_exist(ui.MON_ANOM_COOLDOWN_ENABLED) else False
-        cooldown_s       = float(dpg.get_value(ui.MON_ANOM_COOLDOWN_S)) if dpg.does_item_exist(ui.MON_ANOM_COOLDOWN_S) else 0.0
+        params = self._monitor_session_params()
+        pre_buf_s = params['pre_buffer_s']
 
         from rev80.monitor.session import required_cache_frames, session_from
 
         now_local  = datetime.now()
         session_id = now_local.strftime('%Y-%m-%d-%H%M%S')
 
-        # max_burst_s has no widget: read it from acquisition.yaml. It limits
-        # the memory that an unattended burst can use. Do not replace it with
-        # a fixed value.
-        mon_saved = _cfg.load_acquisition_config().get('monitor', {})
-
         session = session_from(
             collector=self.collector,
             session_id=session_id,
             start_time=now_local,
-            interval_s=float(interval_s),
-            pre_buffer_s=pre_buf_s,
-            burst_duration_s=burst_dur,
-            max_burst_s=float(mon_saved.get('max_burst_s', 600.0)),
-            output_dir=out_dir_s or None,
-            compression="gzip" if compress else "none",
-            cooldown_enabled=cooldown_enabled,
-            cooldown_s=cooldown_s,
+            **params,
         )
 
         # The frame cache must hold the pre-trigger window plus the trigger
@@ -3173,10 +3290,9 @@ class GUI:
         """Read anomaly config widgets and return a configured hook.
 
         Built once at session start; the hook is active for the whole session.
-        Reads the Monitor tab widgets. They hold the acquisition.yaml values
-        only after the Monitor tab was opened in this run; before that they
-        hold their construction defaults. The `_get` fallbacks apply only when
-        a widget does not exist.
+        Reads the Monitor tab widgets, which hold the acquisition.yaml values
+        from startup. The `_get` fallbacks are the config seed values; they
+        apply only when a widget does not exist.
         """
         from rev80.monitor.anomaly import (
             RmsThresholdHook, SpectralThresholdHook, FixedThresholdHook,
@@ -3185,24 +3301,24 @@ class GUI:
         def _get(tag, default):
             return dpg.get_value(tag) if dpg.does_item_exist(tag) else default
 
-        burst_dur = float(_get(ui.MON_DLG_BURST_DUR, 60.0))
+        burst_dur = float(_get(ui.MON_DLG_BURST_DUR, _MON_SEED['burst_duration_s']))
         if pre_buffer_s is None:
-            pre_buffer_s = float(_get(ui.MON_DLG_PRE_BUFFER, 60.0))
+            pre_buffer_s = float(_get(ui.MON_DLG_PRE_BUFFER, _MON_SEED['pre_burst_s']))
 
         hooks = []
 
         # ── EWMA-based hooks (RMS / Spectral) — gated by the main Enable switch
-        if _get(ui.MON_ANOM_ENABLED, False):
+        if _get(ui.MON_ANOM_ENABLED, _ANOM_SEED['enabled']):
             hook_type = canonical_hook_type(_get(ui.MON_ANOM_HOOK, 'RMS'))
-            # Fallback 10, the same as config.py's seeded `warmup` and headless
+            # The seed value, the same as headless
             # (tests/test_anomaly_hook_build.py compares the two copies).
-            warmup    = int(_get(ui.MON_ANOM_RMS_WARMUP, 10))
+            warmup    = int(_get(ui.MON_ANOM_RMS_WARMUP, _ANOM_SEED['warmup']))
             # Bound before the hook_type branches: the spectral branch reads
             # `period` too.
             period    = self.collector.config.acquisition_period
 
             if hook_type in ('rms', 'both'):
-                rms_s  = float(_get(ui.MON_ANOM_RMS_S, 3.0))
+                rms_s  = float(_get(ui.MON_ANOM_RMS_S, _ANOM_SEED['rms_s']))
                 consecutive_n = max(1, round(rms_s / period) + 1) if period > 0 else 1
                 if rms_s > 0.25 * pre_buffer_s:
                     log.warning(
@@ -3215,7 +3331,7 @@ class GUI:
                 rms_alpha  = (ewma_alpha_from_time(rms_ewma_t, period)
                               if period > 0 else DEFAULT_RMS_ALPHA)
                 hooks.append(RmsThresholdHook(
-                    rms_threshold_pct    = float(_get(ui.MON_ANOM_RMS_PCT, 50.0)),
+                    rms_threshold_pct    = float(_get(ui.MON_ANOM_RMS_PCT, _ANOM_SEED['rms_pct'])),
                     consecutive_n        = consecutive_n,
                     baseline_alpha       = rms_alpha,
                     min_baseline_samples = warmup,
@@ -3233,10 +3349,8 @@ class GUI:
                 spec_alpha  = (ewma_alpha_from_time(spec_ewma_t, period)
                                if period > 0 else DEFAULT_SPEC_ALPHA)
                 hooks.append(SpectralThresholdHook(
-                    spectral_threshold_pct = float(_get(ui.MON_ANOM_SPEC_PCT, 50.0)),
-                    # Fallback 10, the same as config.py's seeded `spec_n`
-                    # and headless.
-                    consecutive_n          = int(_get(ui.MON_ANOM_SPEC_N,     10)),
+                    spectral_threshold_pct = float(_get(ui.MON_ANOM_SPEC_PCT, _ANOM_SEED['spec_pct'])),
+                    consecutive_n          = int(_get(ui.MON_ANOM_SPEC_N, _ANOM_SEED['spec_n'])),
                     baseline_alpha         = spec_alpha,
                     min_baseline_samples   = warmup,
                     fmin                   = fmin_v if fmin_v > 0 else None,
@@ -4066,9 +4180,7 @@ class GUI:
                             dpg.add_separator()
                             _fft_hdr = dpg.add_text("FFT Conditioning  (?)")
                             _tip(_fft_hdr,
-                                 "Welch Overlap: fraction of data shared between adjacent FFT "
-                                 "segments. 50% is typical — higher overlap smooths the spectrum "
-                                 "at the cost of correlated estimates.\n\n"
+                                 f"{_WELCH_OVERLAP_TIP}\n\n"
                                  "Window: shape applied to each segment before FFT. Hann is a "
                                  "good general-purpose choice. Flat-top improves amplitude "
                                  "accuracy for calibration; Blackman-Harris reduces sidelobes "
@@ -4082,6 +4194,7 @@ class GUI:
                                 max_value=95.0,
                                 width=_w,
                             )
+                            _tip(_welch_w, _WELCH_OVERLAP_TIP)
                             # Control: FFT Window
                             dpg.add_combo(
                                 label="FFT Window",
@@ -4193,6 +4306,14 @@ class GUI:
                             dpg.add_spacer(height=6)
                             dpg.add_separator()
                             dpg.add_text("", tag=ui.MON_DLG_ESTIMATE, color=_c("ON_SURFACE"))
+                            _tip(ui.MON_DLG_ESTIMATE,
+                                 "Estimated disk use in decimal units (1 GB = 10^9 bytes). "
+                                 "It counts the raw-rate waveform of each vibration channel. "
+                                 "A tachometer channel stores only edge times and is not "
+                                 "counted. It assumes that gzip halves the data. This is an "
+                                 "assumption, not a measurement: the ratio changes with the "
+                                 "signal, and on simulated data gzip kept 96 % of the raw "
+                                 "size. Plan for the raw size, two times the estimate.")
 
                             # ── Anomaly Detection ───────────────────────
                             dpg.add_spacer(height=8)
@@ -4886,6 +5007,13 @@ class GUI:
     def initialize(self):
         _cfg.ensure_config_dir()
         self._create_gui()
+        # Fill the Monitor widgets from acquisition.yaml now. Each dialog
+        # close saves them, and a recording reads them, also when the user
+        # did not open the Monitor tab.
+        try:
+            self._populate_monitor_tab()
+        except (TypeError, ValueError) as exc:
+            log.warning("Monitor config in acquisition.yaml is not valid: %s", exc)
         self._setup_keyboard_handlers()
         self._update_spectrum_info()
         self._update_connection_summary()
