@@ -232,9 +232,7 @@ class MonitorController:
                     resource_snapshot(),
                     burst_frames=len(self._burst_frames),
                     queue=getattr(writer, 'queue_depth', -1),
-                    # Open defect: the controller has no _monitor_count
-                    # (it is _capture_count), so this always logs -1.
-                    captures=self._monitor_count if hasattr(self, '_monitor_count') else -1,
+                    captures=self._capture_count,
                 ),
             )
         except Exception:                                    # noqa: BLE001
