@@ -23,11 +23,20 @@ def ewma_alpha_from_time(ewma_time_s: float, dt: float) -> float:
 
 @dataclass(frozen=True)
 class AnomalyEvent:
-    trigger_time: datetime    # local datetime of the t=0 frame (anomaly onset, not detection time)
+    """An anomaly that a hook reports.
+
+    `trigger_time` is the local time of the onset: the first frame of the
+    streak, which can be earlier than the frame that confirms the anomaly.
+    The controller stores it as `onset_timestamp`. The burst t = 0 is the
+    confirming frame, stored at `n_pretrigger`; the controller sets its time.
+    `trigger_rel_time` is the onset on the collector clock. The controller
+    does not use it.
+    """
+    trigger_time: datetime
     channel: int
     reason: str
     burst_duration_s: float
-    trigger_rel_time: float = 0.0   # session rel_time of the t=0 frame
+    trigger_rel_time: float = 0.0
 
 
 def valid_results(results: list) -> list:
