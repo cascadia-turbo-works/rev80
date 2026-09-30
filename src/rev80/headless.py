@@ -281,12 +281,27 @@ def _apply_overrides(config, args) -> None:
 
 # ── Session summary ────────────────────────────────────────────────────────────
 
-def _tach_summary_lines(config, tach_settings: dict) -> list:
+def _achieved_raw_rate(collector) -> float | None:
+    """The raw rate that the latest frame reports, in Hz; None before a frame.
+
+    On hardware this is the achieved clock, not the nominal raw_samplerate.
+    """
+    cache = collector.data.get("frame_cache") or ()
+    if not cache:
+        return None
+    sample = next((v for k, v in cache[-1].items() if isinstance(k, int)), None)
+    rate = getattr(sample, "samplerate", None)
+    return float(rate) if rate else None
+
+
+def _tach_summary_lines(config, tach_settings: dict,
+                        samplerate: float | None = None) -> list:
     """The tachometer block of the session summary, or [] when none is fitted.
 
     Shows the calibration and both shaft-speed limits: the slowest shaft for
-    the block length, and (above 1 pulse/rev) the full-accuracy limit
-    computed from the raw rate. Headless has no Tachometer tab.
+    the block length, and (above 1 pulse/rev) the full-accuracy limit.
+    `samplerate` is the achieved raw rate; None uses the nominal
+    raw_samplerate, and the line says so. Headless has no Tachometer tab.
     """
     from rev80 import tach as _tach
 
@@ -312,12 +327,13 @@ def _tach_summary_lines(config, tach_settings: dict) -> list:
         if ppr > 1:
             # Below MIN_SAMPLES_PER_PULSE the edge interpolation does not
             # find the sub-sample position, and the error rises to ~0.8%.
-            ceiling = (config.raw_samplerate * 60.0
-                       / (_tach.MIN_SAMPLES_PER_PULSE * ppr))
+            rate = samplerate if samplerate else config.raw_samplerate
+            ceiling = rate * 60.0 / (_tach.MIN_SAMPLES_PER_PULSE * ppr)
+            rate_note = "" if samplerate else ", nominal rate"
             lines.append(
                 f"      Full accuracy  to {ceiling:,.0f} RPM  "
-                f"({_tach.MIN_SAMPLES_PER_PULSE} samples/pulse at {ppr}/rev); "
-                f"above it, ~0.8%"
+                f"({_tach.MIN_SAMPLES_PER_PULSE} samples/pulse at {ppr}/rev"
+                f"{rate_note}); above it, ~0.8%"
             )
     return lines
 
@@ -550,6 +566,7 @@ def run(args: argparse.Namespace) -> int:
     prev_captures  = 0
     prev_bursts    = 0
     _status_lines  = 0  # tracks how many lines to erase on next redraw
+    ceiling_logged = False
 
     def _print_status(results: list) -> None:
         nonlocal _status_lines
@@ -611,6 +628,16 @@ def run(args: argparse.Namespace) -> int:
         if results:
             monitor.on_results(results, collector.data["frame_cache"])
             _print_status(results)
+
+        if not ceiling_logged:
+            # The summary used the nominal rate: the stream had not started.
+            # Log the full-accuracy limit again at the achieved rate.
+            achieved = _achieved_raw_rate(collector)
+            if achieved:
+                ceiling_logged = True
+                for line in _tach_summary_lines(config, tach_settings, achieved):
+                    if "Full accuracy" in line:
+                        log.info("Tachometer at %.1f Hz: %s", achieved, line.strip())
 
         snap = monitor.status_snapshot()
 

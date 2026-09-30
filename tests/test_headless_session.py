@@ -50,3 +50,39 @@ def test_session_id_is_local_time_like_start_time(tmp_path, monkeypatch):
         monkeypatch.delenv('TZ')
         time.tzset()
 
+
+def test_full_accuracy_ceiling_uses_the_achieved_rate():
+    from rev80 import tach
+    from rev80.tach import TachSettings
+
+    cfg = vc.AcquisitionSettings()
+    cfg.enabled_channels = [3]
+    cfg.channel_roles = {3: 'tachometer'}
+    settings = {3: TachSettings(pulses_per_rev=6)}
+    achieved = 25591.8
+
+    text = "\n".join(headless._tach_summary_lines(cfg, settings, samplerate=achieved))
+    expected = achieved * 60.0 / (tach.MIN_SAMPLES_PER_PULSE * 6)
+    assert f'{expected:,.0f}' in text
+    assert 'nominal' not in text
+
+    text = "\n".join(headless._tach_summary_lines(cfg, settings))
+    nominal = cfg.raw_samplerate * 60.0 / (tach.MIN_SAMPLES_PER_PULSE * 6)
+    assert f'{nominal:,.0f}' in text
+    assert 'nominal' in text
+
+
+def test_achieved_raw_rate_comes_from_the_latest_frame():
+    from collections import deque
+    from datetime import datetime, timezone
+
+    import numpy as np
+
+    from rev80.sample import VibeSample
+
+    dc = _dc()
+    assert headless._achieved_raw_rate(dc) is None
+    dc.data['frame_cache'] = deque([{0: VibeSample(
+        status='OKAY', _timestamp=datetime.now(timezone.utc),
+        samplerate=25591.8, unit='mV', overflow=False, data=np.zeros(8))}])
+    assert headless._achieved_raw_rate(dc) == 25591.8
