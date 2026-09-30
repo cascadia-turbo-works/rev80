@@ -1425,6 +1425,21 @@ For the LOG packages (CHANGELOG):
 
 For W1-PR (PROGRESS): R50 and up, in this order, from the audit file: S-08, S-10 (part), S-11, X-02 (part), X-03, X-04 (part), X-05, X-07, H-01 (part), H-02, H-05 (part), H-07 (part), H-08 (part). Then add: Ctrl+K can stop the stream during a recording; `trigger_burst` does not set `_max_burst_frames`; `_dsp.band_rms` has no caller. R34 text: cite ISO 20816-3 without the speed limit.
 
+### 14.3 Coordinator notes, part 2 (2026-09-30)
+
+Owner answers:
+- Tach tables E14.1, E14.4, E14.6, E14.7: "Measured on: 4424A AWG loopback, 41666.5 Hz, September 2026".
+- New code defects are fixed now in two packages:
+  - FIX-M (monitor): M1 anomaly burst keeps 4 frames (no `acquisition_period` on `MonitorSession`); M2 `compression='none'` stops a session; M3 resource log `captures -1`; M4 manual burst does not use the shared cap.
+  - FIX-G (gui): G1 each config-dialog close saves monitor widget defaults to `acquisition.yaml` (the Monitor tab is filled only when opened); G2 `suggest_band(fmax=samplerate/2)` (replaces FIX-E); G3 degraded-rate warning mixes raw and display rates; G4 storage estimate divides by 1e9 but prints "GiB", and counts a tach channel as a waveform.
+- Audit record: S-02 is "Fixed" only after FIX-M merges. W5-FIN checks the S-02 row.
+
+For W1-PR, add to R50+ after the audit items: `monitor.compression_level` not read (unless FIX-M fixes it); `session_id` UTC in headless and local in the GUI; `tach.is_usable` never called; anomaly-burst t = 0 is the confirming frame, not the onset frame; headless SIGINT log text; headless summary uses the nominal rate; Welch Overlap tooltip describes no effect at one segment. Remove Ctrl+K/manual-cap items that FIX-S/FIX-M close; keep Ctrl+K (not fixed).
+
+For W2-CL (CLAUDE.md), more stale claims: logger row (`log/`); gui row dialog list (tabs are Device, Channels, Tachometer, Sensors, Acquisition, Signal Generator, Monitor); architecture diagram shows `VibeSample.process()` and "mV -> EU" in `receive_data` (both wrong); "both burst paths go through `capped_burst_end()`" (true only after FIX-M); the `required_cache_frames` "+1" does not change the pre-trigger count (a burst keeps `pre_buffer_frames - 1` pre-trigger frames); "Nine edges of a 6 ppr encoder is 1.5 turns" (it is 1.33); `writer.py` row history ("fixed Sep 2026").
+
+W2-A: E2 title must be exactly "E2. Anti-alias kernel" (used in the writer prompt). CONTRIBUTING must have a "Documentation rules" section (named in the writer prompt).
+
 ---
 
 ## 15. Not verifiable here
