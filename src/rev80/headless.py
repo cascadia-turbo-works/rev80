@@ -1,23 +1,11 @@
-"""
-rev80 headless mode — interval datalogger with no GUI.
+"""Headless front end: runs Monitor Mode with no GUI.
 
-Discovers a PicoScope (or uses the simulated sensor), loads the saved device
-config, and runs Monitor Mode indefinitely.  All captured data is written to
-~/Documents/Rev80/data/monitor/{session_id}/session.h5 (override with
---output) in the same v5 format as the GUI. Sessions can be browsed and
-loaded in the GUI session browser afterwards.
-
-Usage
------
-    python -m rev80.headless [options]
-    rev80-headless [options]       # if installed via pip
-    rev80 headless [options]       # equivalent, via the unified `rev80` CLI
-
-Quick info commands (return immediately, no hardware required — also
-available on the top-level `rev80` command, without the GUI launching):
-    rev80-headless --list-devices
-    rev80-headless --list-sensors
-    rev80-headless --edit-config
+Finds a PicoScope (or uses the simulated sensor with --device sim), loads the
+saved configuration and records until SIGINT or SIGTERM. Each session goes to
+~/Documents/Rev80/data/monitor/{session_id}/session.h5 (v6, the same format
+as the GUI), unless --output or monitor.output_dir sets another parent
+directory. Entry points: `rev80-headless`, `rev80 headless`,
+`python -m rev80.headless`.
 """
 
 from __future__ import annotations
@@ -102,11 +90,8 @@ def _build_session(collector, args, session_id, anom_cfg=None, mon_cfg=None):
         interval_s        = float(args.interval),
         pre_buffer_s      = float(args.pre_buffer),
         burst_duration_s  = float(args.burst_duration),
-        # From acquisition.yaml, not a literal. This is the bound that stops
-        # an unattended burst growing until the OOM killer takes the process
-        # (audit S-02), and it was hardcoded here while the session summary
-        # printed the configured value -- so setting it did nothing and said
-        # it had.
+        # From acquisition.yaml, not a literal: this limit stops an unattended
+        # burst from growing without limit, and the summary prints it.
         max_burst_s       = float(mon_cfg.get("max_burst_s", 600.0)),
         output_dir        = args.output,
         compression       = "none" if args.no_compress else "gzip",
@@ -133,11 +118,8 @@ def _build_anomaly_hook(anom_cfg: dict, config, pre_buffer_s: float = 0.0):
 
     if anom_cfg.get("enabled", False):
         hook_type = canonical_hook_type(anom_cfg.get("hook_type", "rms"))
-        # Hoisted above the hook_type chain: the spectral branch reads
-        # `period` unconditionally, so a Spectral-only config raised
-        # UnboundLocalError when it was bound inside the RMS branch. In
-        # headless this fired AFTER collector.start_stream(), killing the
-        # process with the PicoScope still streaming and never closed.
+        # Keep this above the hook_type branches: the RMS and the spectral
+        # branch both read `period`.
         period = config.acquisition_period
 
         if hook_type in ("rms", "both"):
@@ -195,16 +177,11 @@ def _build_anomaly_hook(anom_cfg: dict, config, pre_buffer_s: float = 0.0):
 def _persist_channel_override(device_cfg: dict, channels) -> bool:
     """Write a --channels override into the device config. True if it changed.
 
-    `--channels` is sticky: it edits `devices/*.yaml` so the next run without
-    the flag keeps the same selection.
-
-    **Tachometer-role channels are skipped.** Their stored `enabled` flag is
-    owned by the role -- `channel_role_state` forces a claimed channel on,
-    because `config.tach_channels` filters by `enabled_channels` and a
-    claimed-but-disabled tach is one that silently does not run. Persisting
-    `enabled: False` on one would write a flag that every loader then ignores.
-    A `--channels` list that omits the tach still drops it **for this run**,
-    in `_apply_overrides`, which is where the run-scoped decision belongs.
+    The override stays: it edits `devices/*.yaml`, so the next run without the
+    flag keeps the same selection. Tachometer channels are skipped, because
+    the loaders always enable a tachometer channel and would ignore the flag.
+    A `--channels` list without the tachometer channel removes it for this run
+    only (`_apply_overrides`).
     """
     from rev80.config import channel_role_state
 
@@ -224,28 +201,11 @@ def _persist_channel_override(device_cfg: dict, channels) -> bool:
 def _apply_channel_config(config, device_cfg: dict) -> dict:
     """Load per-channel fields from a device config into `config`.
 
-    Derives `enabled_channels` from each channel's role and 'enabled' flag, and
-    returns `{ch: TachSettings}` for the tachometer channels.
-
-    **Returns the calibration rather than applying it** because
-    `set_tach_settings` lives on `DataCollector` and this runs before the
-    collector exists. Keeping the function pure is also what makes it testable,
-    which is the point: headless used to *refuse* tach-role channels here and
-    that refusal was pinned by no test at all.
-
-    R44: headless now runs a tachometer. Everything below `receive_data` was
-    already role-aware -- the collector edge-detects instead of high-passing,
-    `process_samples` iterates `vibration_channels` so a tach yields no
-    `ChannelResult`, the session writer records `rpm`/`speed_ok` on every
-    capture and burst, and `valid_results()` applies the speed gate -- so this
-    was the only layer opting out. What the refusal was protecting against is
-    real and is now prevented by the role rather than by exclusion: a pulse
-    train through the vibration path measures overall 1514.9 mV, crest 5.00,
-    kurtosis 15.94 and 63 spectral peaks on a 5% duty 1800 RPM square, which
-    reads as a bearing failing badly.
-
-    The role decision itself is `config.channel_role_state`, shared with the
-    GUI. Do not re-implement it here (audit H-01).
+    Sets `enabled_channels` from each channel's role and `enabled` flag, and
+    returns {ch: TachSettings} for the tachometer channels. It returns the
+    calibration and does not apply it, because the collector does not exist
+    yet. A tachometer channel gets no target unit and no amplitude mode. The
+    role decision is the shared one in `rev80.config`; do not copy it here.
     """
     from rev80.config import channel_role_state
 
@@ -258,10 +218,8 @@ def _apply_channel_config(config, device_cfg: dict) -> dict:
             config.channel_roles[ch] = role
             tach_settings[ch] = settings
             if not info.get("tach"):
-                # Usable defaults -- adaptive threshold, rising, 1 ppr -- but
-                # the operator configured a tach channel and believes it
-                # carries their calibration. An unattended run must not take
-                # the defaults without saying so.
+                # The defaults work, but the operator expects a saved
+                # calibration. Do not use the defaults without a warning.
                 log.warning(
                     "Channel %d is a tachometer with no saved calibration; "
                     "using defaults (adaptive threshold, rising, 1 pulse/rev). "
@@ -277,8 +235,7 @@ def _apply_channel_config(config, device_cfg: dict) -> dict:
         if info.get("channel_name"):
             config.channel_names[ch] = info["channel_name"]
         if role != 'tachometer':
-            # A tachometer has no sensor, no engineering unit and no amplitude
-            # mode. Letting these through would put a unit on a shaft speed.
+            # A tachometer has no sensor, engineering unit or amplitude mode.
             if info.get("target_unit"):
                 config.channel_target_units[ch] = info["target_unit"]
             if info.get("amplitude_mode"):
@@ -296,13 +253,9 @@ def _apply_overrides(config, args) -> None:
     if args.channels:
         before_tach = set(config.tach_channels)
         config.enabled_channels = sorted(set(int(c) for c in args.channels))
-        # --channels overwrites the enabled set wholesale, and a tach channel
-        # dropped that way fails silently in the worst way: `config.tach_channels`
-        # filters by enabled_channels, so the session records rpm=NaN on every
-        # capture and `speed_ok()` fails closed, which excludes every frame from
-        # trending, baselines and alarms. Nothing else would say why. The
-        # override is still honoured -- it is an explicit instruction -- but it
-        # is never silent.
+        # Obey the override, but warn when it removes a tachometer channel:
+        # rpm is then NaN on every capture, and an enabled speed gate fails
+        # closed, so no frame is trended or alarmed on.
         dropped = sorted(before_tach - set(config.enabled_channels))
         if dropped:
             log.warning(
@@ -317,11 +270,9 @@ def _apply_overrides(config, args) -> None:
 def _tach_summary_lines(config, tach_settings: dict) -> list:
     """The tachometer block of the session summary, or [] when none is fitted.
 
-    A headless run is unattended: the summary printed at start is the only
-    place the operator sees what the tach was actually configured as, and
-    there is no Tachometer tab to show the live floor on. Both limits that
-    a configured `pulses_per_rev` runs into are therefore stated up front,
-    because neither can be discovered later from the session file.
+    Shows the calibration and both shaft-speed limits: the slowest shaft for
+    the block length, and (above 1 pulse/rev) the full-accuracy limit
+    computed from the raw rate. Headless has no Tachometer tab.
     """
     from rev80 import tach as _tach
 
@@ -345,9 +296,8 @@ def _tach_summary_lines(config, tach_settings: dict) -> list:
             f"({_tach.MIN_REVS:g} rev in a {t_block:.2f} s block)"
         )
         if ppr > 1:
-            # The other limit, and the one a higher ppr is actually bought
-            # with: below MIN_SAMPLES_PER_PULSE the edge interpolation stops
-            # recovering sub-sample position and accuracy falls to ~0.8%.
+            # Below MIN_SAMPLES_PER_PULSE the edge interpolation does not
+            # find the sub-sample position, and the error rises to ~0.8%.
             ceiling = (config.raw_samplerate * 60.0
                        / (_tach.MIN_SAMPLES_PER_PULSE * ppr))
             lines.append(
@@ -596,12 +546,9 @@ def run(args: argparse.Namespace) -> int:
         burst_tag = f"  \033[33m[BURST {snap['burst_remaining_s']:.0f}s]\033[0m" \
                     if snap["is_in_burst"] else ""
 
-        # Shaft speed rides on the header line rather than getting a row of
-        # its own: a tachometer channel produces no ChannelResult, so there is
-        # nothing to put in the per-channel block, and one speed applies to
-        # every channel anyway. `--` and never `0` when there is no reading --
-        # "I cannot see a tach signal" and "the shaft is stopped" send an
-        # analyst to different places (R45).
+        # Shaft speed goes on the header line: a tachometer channel has no
+        # ChannelResult. Show `--`, never `0`, when there is no reading:
+        # "no signal" is not "stopped".
         rpm = next((r.rpm for r in results if getattr(r, 'rpm', None) is not None),
                    None)
         if config.tach_channels:
@@ -695,7 +642,8 @@ def build_option_parser() -> argparse.ArgumentParser:
     # Info commands — handled before any heavy import
     info = parser.add_argument_group("info commands")
     info.add_argument("--init-config",  action="store_true",
-                      help="Seed ~/.config/rev80/ with default config files and exit")
+                      help="Write the default config files that do not exist "
+                           "(~/.config/rev80/ on Linux) and exit")
     info.add_argument("--list-devices", action="store_true",
                       help="List connected PicoScope devices and exit")
     info.add_argument("--list-sensors", action="store_true",
@@ -706,30 +654,37 @@ def build_option_parser() -> argparse.ArgumentParser:
     # Session options
     sess = parser.add_argument_group("session options")
     sess.add_argument("--interval",       type=float, default=None, metavar="SECS",
-                      help="Capture interval (default: from device config or 3600)")
+                      help="Seconds between captures (default: monitor.interval_s "
+                           "in acquisition.yaml; built-in 600)")
     sess.add_argument("--pre-buffer",     type=float, default=None, metavar="SECS",
-                      help="Pre-trigger buffer duration (default: from config or 60)")
+                      help="Pre-trigger time kept in each burst (default: "
+                           "monitor.pre_burst_s in acquisition.yaml; built-in 30)")
     sess.add_argument("--burst-duration", type=float, default=None, metavar="SECS",
-                      help="Burst capture duration (default: from config or 60)")
+                      help="Burst length after the trigger (default: "
+                           "monitor.burst_duration_s in acquisition.yaml; built-in 120)")
     sess.add_argument("--output",         type=str,   default=None, metavar="DIR",
-                      help="Override output root directory")
+                      help="Parent directory for session folders (default: "
+                           "monitor.output_dir, else ~/Documents/Rev80/data/monitor)")
     sess.add_argument("--no-compress",    action="store_true",
-                      help="Disable gzip compression")
+                      help="Disable gzip compression. Known defect: the first "
+                           "write fails and the session stops")
     sess.add_argument("--start-now",      action="store_true",
                       help="Skip the pre-start confirmation prompt")
 
     # Device / acquisition options
     acq = parser.add_argument_group("acquisition options")
     acq.add_argument("--device",   type=str,   default=None, metavar="SERIAL",
-                     help="PicoScope serial number, or 'sim' for simulation")
+                     help="PicoScope serial number (or part of it), or 'sim' "
+                          "for the simulated sensor (default: first device found)")
     acq.add_argument("--channels", type=int,   nargs="+",   metavar="N",
-                     help="Channel indices to enable (e.g. --channels 0 1)")
+                     help="Channel indices to enable, 0 = A (e.g. --channels 0 1). "
+                          "Saved to the device config for later runs")
     acq.add_argument("--maxfreq",  type=float, default=None, metavar="HZ",
-                     help="Max analysis frequency override (Hz)")
+                     help="F_max override in Hz (maximum 10000)")
     acq.add_argument("--binsize",  type=float, default=None, metavar="HZ",
-                     help="Frequency resolution override (Hz)")
+                     help="Frequency resolution override in Hz")
     acq.add_argument("--debug",    action="store_true",
-                     help="Verbose logging to stderr")
+                     help="Debug-level logging on the console (stdout)")
 
     return parser
 
@@ -752,10 +707,8 @@ def run_headless(args: argparse.Namespace) -> int:
     import rev80.config as _cfg_boot
     _cfg_boot.ensure_config_dir()
     rev80.setup_logging(debug=args.debug)
-    # Installs sys.excepthook AND threading.excepthook AND faulthandler.
-    # The thread hook is the one that was missing: everything interesting
-    # in this app runs off the main thread, and those deaths went to
-    # stderr, which is nowhere when launched from a desktop entry.
+    # sys.excepthook, threading.excepthook and faulthandler: an exception in
+    # any thread, and a hard crash, reach the log.
     rev80.install_excepthooks()
     rev80.get_logger().info("rev80 headless started")
 
@@ -771,7 +724,7 @@ def main() -> None:
             "Quick info commands (return immediately, no hardware required):\n"
             "  --list-devices    enumerate connected PicoScopes\n"
             "  --list-sensors    show IEPE sensor library\n"
-            "  --edit-config     open default.yaml in $EDITOR"
+            "  --edit-config     open acquisition.yaml in $EDITOR"
         ),
         parents=[build_option_parser()],
     )

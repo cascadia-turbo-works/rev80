@@ -28,6 +28,8 @@ log = rev80.get_logger(__name__)
 # Built-in defaults
 # ---------------------------------------------------------------------------
 
+# Default of AcquisitionSettings.cache_frames. A seeded acquisition.yaml holds
+# 15 (_BUILTIN_ACQ below), and both front ends load that value.
 DEFAULT_CACHE_FRAMES: int = 32
 
 # Template for a single channel — used by picoscope-defaults.yaml and new-device init.
@@ -40,9 +42,8 @@ _BUILTIN_CHANNEL_TEMPLATE: dict[str, Any] = {
     'channel_name':   None,
     'target_unit':    None,
     'amplitude_mode': '0-P',
-    # What this input carries: 'vibration' (default) or 'tachometer'. Every
-    # device file written before R43 lacks the key, and _merge_device fills it
-    # from here -- so an existing install keeps behaving exactly as it did.
+    # 'vibration' (default) or 'tachometer'. A device file without the key
+    # gets 'vibration' from here through _merge_device.
     'role':           'vibration',
     # TachSettings.to_dict() when role == 'tachometer', else None. A nested
     # block rather than flattened prefixes, so the whole calibration can be
@@ -100,7 +101,7 @@ _BUILTIN_ACQ: dict[str, Any] = {
         'max_burst_s':       600,
         'output_dir':        None,
         'compression':       'gzip',
-        'compression_level': 4,
+        'compression_level': 4,   # not read: sessions always use level 4
         'anomaly': {
             'enabled':    True,
             'hook_type':  'rms',
@@ -180,12 +181,9 @@ def _atomic_yaml_write(path: Path, data: Any) -> None:
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix='.yaml.tmp')
     try:
         with os.fdopen(fd, 'w') as f:
-            # safe_dump, not dump: the default Dumper serialises arbitrary
-            # Python objects as `!!python/object/apply:` tags, which every
-            # reader here (yaml.safe_load) then refuses to parse. That turned
-            # one unusual value into a config file that could never be read
-            # back. safe_dump fails loudly at write time instead, leaving the
-            # existing file untouched.
+            # safe_dump, not dump: dump writes `!!python/object` tags that
+            # yaml.safe_load cannot read back. safe_dump raises at write time
+            # and the existing file stays unchanged.
             yaml.safe_dump(data, f, default_flow_style=False, allow_unicode=True)
         os.replace(tmp, path)
     except Exception:
@@ -354,32 +352,13 @@ def _merge_acquisition(data: dict[str, Any]) -> dict[str, Any]:
 def channel_role_state(info: dict) -> tuple[str, Any, bool]:
     """Resolve one `channels/{ch}` block into (role, tach calibration, enabled).
 
-    **The single place that decides what a device-config channel entry means.**
-    The GUI (`gui._restore_channel_assignments`) and headless
-    (`headless._apply_channel_config`) both read the same `devices/*.yaml` and
-    both used to make this decision in their own copy of the code. They had
-    already drifted -- the GUI defaulted a missing `enabled` to True and
-    headless to False -- which is audit H-01's shape exactly: one rule written
-    twice, differing, with nothing asserting the two agree. Call this from both
-    rather than adding a third copy.
-
-    Three rules, none of them obvious from the YAML alone:
-
-    - **A tachometer-role channel is always enabled.** `config.tach_channels`
-      filters by `enabled_channels`, so a claimed-but-disabled channel is a
-      tach that silently does not run. Claiming a channel is a request to
-      sample it (see `gui.apply_tach_claim`).
-    - **A missing `enabled` is False**, matching `_BUILTIN_CHANNEL_TEMPLATE`.
-      In practice this never fires on a loaded file, because `_merge_device`
-      fills every key from that template before anyone sees the dict; it
-      decides only for a dict built some other way.
-    - **An unrecognised role reads as vibration**, with a warning. A hand-edited
-      or newer-than-this-build role must not take down an unattended run --
-      raising out of a config loader is how the sensor library was once erased
-      (audit X-01).
-
-    Returns the `TachSettings` for a tachometer and None for anything else, so
-    the caller can hand it straight to `DataCollector.set_tach_settings`.
+    The one decision for both front ends; do not copy it. Three rules:
+    - A tachometer channel is always enabled: `tach_channels` filters by
+      `enabled_channels`, so a disabled one would not run.
+    - A missing `enabled` is False, as in `_BUILTIN_CHANNEL_TEMPLATE`.
+    - An unknown role reads as 'vibration', with a warning. A config loader
+      must not raise and stop an unattended run.
+    The calibration is a `TachSettings` for a tachometer, else None.
     """
     from rev80.tach import TachSettings
     from rev80.util import CHANNEL_ROLES, DEFAULT_CHANNEL_ROLE

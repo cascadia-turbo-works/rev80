@@ -5,18 +5,18 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class MonitorSession:
-    session_id: str               # "{YYYY-MM-DD-HHMMSS}_{sanitized_serial}"
+    session_id: str               # "YYYY-MM-DD-HHMMSS": GUI local time, headless UTC
     start_time: datetime          # local time
     interval_s: float             # seconds between captures
-    pre_buffer_frames: int        # number of frames to prepend before burst trigger
-    burst_duration_s: float       # how long burst capture runs after anomaly trigger
-    max_burst_s: float            # maximum burst extension cap
+    pre_buffer_frames: int        # frames taken from the cache at a trigger, trigger frame included
+    burst_duration_s: float       # burst length after the trigger, in s
+    max_burst_s: float            # upper limit on one burst's length, in s
     session_dir: Path             # directory; session.h5 lives at session_dir/session.h5
     compression: str = 'gzip'
     compression_level: int = 4
     cooldown_enabled: bool = False
-    cooldown_s: float = 0.0       # blocks new anomaly-triggered bursts for this long after one fires
-    # Snapshots captured at arm time — embedded in session.h5
+    cooldown_s: float = 0.0       # s without anomaly detection after a burst starts
+    # Snapshots taken when the session starts; stored in session.h5 /metadata
     acq_snapshot: dict = field(default_factory=dict)      # AcquisitionSettings.to_dict()
     channel_snapshot: dict = field(default_factory=dict)  # {ch: {name, unit, ...}}
     sensor_snapshot: dict = field(default_factory=dict)   # {sensor_id: ScopeSensor.to_dict()}
@@ -27,20 +27,11 @@ class MonitorSession:
 
 
 def channel_snapshot_for(config, collector) -> dict:
-    """Build the per-channel snapshot embedded in `session.h5`'s metadata.
+    """Per-channel snapshot for session.h5 /metadata/channels.
 
-    **The single builder**, shared by the GUI's `_start_recording` and by
-    headless. Both had their own copy of this dict literal and neither
-    recorded the channel's role, which is the third instance of audit H-01's
-    shape in the monitor path -- one rule written twice, drifting, with
-    nothing asserting the copies agree.
-
-    The role matters here because a session is read back long after the run:
-    without it, the only way to tell a tachometer channel from a vibration one
-    is that its capture group has no `data` dataset, which is inferring intent
-    from a storage detail. A tach channel also carries its calibration, so the
-    shaft speed stays re-derivable at a different `pulses_per_rev` -- the same
-    reason `DataCollector.save_data` stores it in a measurement file.
+    The one builder for both front ends. It records each channel's role, and
+    for a tachometer channel its calibration as `tach_*` attributes, so that a
+    reader can recompute the shaft speed with another `pulses_per_rev`.
     """
     snapshot: dict = {}
     for ch in config.enabled_channels:
@@ -57,8 +48,8 @@ def channel_snapshot_for(config, collector) -> dict:
             'role':            role,
         }
         if role == 'tachometer':
-            # Flattened with a tach_ prefix rather than nested, because HDF5
-            # attrs are scalars -- the same layout save_data uses.
+            # Flat, with a tach_ prefix: HDF5 attributes are scalars. Same
+            # layout as save_data.
             for k, v in collector.tach_settings_for(ch).to_dict().items():
                 entry[f'tach_{k}'] = v
         snapshot[str(ch)] = entry
@@ -68,8 +59,7 @@ def channel_snapshot_for(config, collector) -> dict:
 def sensor_snapshot_for(collector) -> dict:
     """{sensor_id: ScopeSensor.to_dict()} for every sensor in use, deduplicated.
 
-    One entry per unique sensor however many channels share it. Both front
-    ends had their own copy of this loop.
+    One entry for each sensor, also when more than one channel uses it.
     """
     snapshot: dict = {}
     for sc in collector.scope_sensors.values():
@@ -79,10 +69,10 @@ def sensor_snapshot_for(collector) -> dict:
 
 
 def pre_buffer_frames_for(pre_buffer_s: float, block_s: float) -> int:
-    """How many acquired frames cover `pre_buffer_s` of lead-in.
+    """Number of frames in `pre_buffer_s` seconds (int(pre_buffer_s / block_s)).
 
-    Floors at 1: a burst with no pre-trigger context at all is never what was
-    meant, and 0 would make `frame_cache[-n:]` return the whole cache.
+    Minimum 1: a value of 0 would make `frame_cache[-n:]` return the whole
+    cache.
     """
     if block_s <= 0:
         return 1
@@ -90,17 +80,12 @@ def pre_buffer_frames_for(pre_buffer_s: float, block_s: float) -> int:
 
 
 def required_cache_frames(cache_frames: int, pre_buffer_frames: int) -> int:
-    """Frame-cache depth needed to serve a burst's pre-trigger window.
+    """Frame-cache depth for a burst: max(cache_frames, pre_buffer_frames + 1).
 
-    **The `+ 1` is load-bearing and was missing from headless.**
-    `MonitorController` slices `frame_cache[-n:]` for the pre-trigger window
-    and the trigger frame then becomes `burst_frames[n]`, so a cache of
-    exactly n yields n-1 true pre-trigger frames -- the trigger frame has
-    taken one of the slots. Nothing reports the achieved count, so the
-    shortfall is silent, which is why this is a function and not a line
-    written out twice.
-
-    Never shrinks a cache that is already larger.
+    Both front ends size the cache with this function. `MonitorController`
+    takes the last `pre_buffer_frames` frames, trigger frame included, so a
+    burst keeps `pre_buffer_frames - 1` pre-trigger frames with any cache
+    depth of at least `pre_buffer_frames`. Never shrinks a larger cache.
     """
     return max(int(cache_frames), int(pre_buffer_frames) + 1)
 
@@ -112,21 +97,13 @@ def session_from(*, collector, session_id: str, interval_s: float,
                  compression_level: int = 4,
                  cooldown_enabled: bool = False,
                  cooldown_s: float = 0.0) -> MonitorSession:
-    """Build a `MonitorSession` from a collector and the session parameters.
+    """Build the `MonitorSession` for a run: the one constructor for both front ends.
 
-    **The single constructor**, used by `gui._start_recording` and
-    `headless._build_session`. They previously listed all fourteen fields
-    each, and two had drifted: `max_burst_s` was a hardcoded 600.0 literal in
-    both -- making the `acquisition.yaml` setting of the same name dead while
-    the headless summary still printed it -- and the frame-cache sizing that
-    has to match `pre_buffer_frames` differed by one (see
-    `required_cache_frames`).
-
-    `output_dir` is the *parent* directory; the session gets its own
-    `session_id` subdirectory under it. None means the default data dir.
-
-    Keyword-only on purpose: fourteen positional fields is how the two copies
-    drifted without anyone noticing.
+    Computes `pre_buffer_frames` from `pre_buffer_s` and the frame period, and
+    takes the acquisition, channel and sensor snapshots from `collector`.
+    `output_dir` is the parent directory; the session gets a `session_id`
+    subdirectory in it. None means `data_dir()/monitor`. Callers read
+    `max_burst_s` from acquisition.yaml. Keyword-only arguments.
     """
     from datetime import datetime
 
