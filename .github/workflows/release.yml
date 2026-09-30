@@ -108,16 +108,21 @@ jobs:
       # archive: false uploads the file itself, not a zip, so the artifact
       # downloads as the file. It takes one file, and the file name is the
       # artifact name (`name:` is ignored). Thus one step for each file.
+      # retention-days: 7 -- the repository is public, so any signed-in
+      # user can download a dev build while it exists. A tag keeps its
+      # files on the release instead.
       - uses: actions/upload-artifact@v7
         with:
           path: dist/*.whl
           archive: false
+          retention-days: 7
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v7
         with:
           path: dist/*.tar.gz
           archive: false
+          retention-days: 7
           if-no-files-found: error
 
   installer:
@@ -254,6 +259,7 @@ jobs:
         with:
           path: installer/Output/Rev80Setup-*.exe
           archive: false
+          retention-days: 7
           if-no-files-found: error
 
   docs:
@@ -295,24 +301,28 @@ jobs:
         with:
           path: doc/README.pdf
           archive: false
+          retention-days: 7
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v7
         with:
           path: doc/CONTRIBUTING.pdf
           archive: false
+          retention-days: 7
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v7
         with:
           path: doc/PROGRESS.pdf
           archive: false
+          retention-days: 7
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v7
         with:
           path: doc/CHANGELOG.pdf
           archive: false
+          retention-days: 7
           if-no-files-found: error
 
   release:
