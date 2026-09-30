@@ -74,7 +74,19 @@ def _edit_config() -> int:
 
 # ── Helpers used only during a live session ────────────────────────────────────
 
-def _build_session(collector, args, session_id, anom_cfg=None, mon_cfg=None):
+def _new_session_id():
+    """Return (session_id, start_time) from one local-time reading.
+
+    Local time, the same as the GUI and as MonitorSession.start_time.
+    """
+    from datetime import datetime
+
+    start_time = datetime.now()
+    return start_time.strftime("%Y-%m-%d-%H%M%S"), start_time
+
+
+def _build_session(collector, args, session_id, anom_cfg=None, mon_cfg=None,
+                   start_time=None):
     """Assemble this run's MonitorSession from the CLI args and config.
 
     The construction itself is `monitor.session.session_from`, shared with the
@@ -87,6 +99,7 @@ def _build_session(collector, args, session_id, anom_cfg=None, mon_cfg=None):
     return session_from(
         collector         = collector,
         session_id        = session_id,
+        start_time        = start_time,
         interval_s        = float(args.interval),
         pre_buffer_s      = float(args.pre_buffer),
         burst_duration_s  = float(args.burst_duration),
@@ -95,6 +108,7 @@ def _build_session(collector, args, session_id, anom_cfg=None, mon_cfg=None):
         max_burst_s       = float(mon_cfg.get("max_burst_s", 600.0)),
         output_dir        = args.output,
         compression       = "none" if args.no_compress else "gzip",
+        compression_level = int(mon_cfg.get("compression_level", 4)),
         cooldown_enabled  = bool(anom_cfg.get("cooldown_enabled", False)),
         cooldown_s        = float(anom_cfg.get("cooldown_s", 0.0)),
     )
@@ -267,12 +281,27 @@ def _apply_overrides(config, args) -> None:
 
 # ── Session summary ────────────────────────────────────────────────────────────
 
-def _tach_summary_lines(config, tach_settings: dict) -> list:
+def _achieved_raw_rate(collector) -> float | None:
+    """The raw rate that the latest frame reports, in Hz; None before a frame.
+
+    On hardware this is the achieved clock, not the nominal raw_samplerate.
+    """
+    cache = collector.data.get("frame_cache") or ()
+    if not cache:
+        return None
+    sample = next((v for k, v in cache[-1].items() if isinstance(k, int)), None)
+    rate = getattr(sample, "samplerate", None)
+    return float(rate) if rate else None
+
+
+def _tach_summary_lines(config, tach_settings: dict,
+                        samplerate: float | None = None) -> list:
     """The tachometer block of the session summary, or [] when none is fitted.
 
     Shows the calibration and both shaft-speed limits: the slowest shaft for
-    the block length, and (above 1 pulse/rev) the full-accuracy limit
-    computed from the raw rate. Headless has no Tachometer tab.
+    the block length, and (above 1 pulse/rev) the full-accuracy limit.
+    `samplerate` is the achieved raw rate; None uses the nominal
+    raw_samplerate, and the line says so. Headless has no Tachometer tab.
     """
     from rev80 import tach as _tach
 
@@ -298,12 +327,13 @@ def _tach_summary_lines(config, tach_settings: dict) -> list:
         if ppr > 1:
             # Below MIN_SAMPLES_PER_PULSE the edge interpolation does not
             # find the sub-sample position, and the error rises to ~0.8%.
-            ceiling = (config.raw_samplerate * 60.0
-                       / (_tach.MIN_SAMPLES_PER_PULSE * ppr))
+            rate = samplerate if samplerate else config.raw_samplerate
+            ceiling = rate * 60.0 / (_tach.MIN_SAMPLES_PER_PULSE * ppr)
+            rate_note = "" if samplerate else ", nominal rate"
             lines.append(
                 f"      Full accuracy  to {ceiling:,.0f} RPM  "
-                f"({_tach.MIN_SAMPLES_PER_PULSE} samples/pulse at {ppr}/rev); "
-                f"above it, ~0.8%"
+                f"({_tach.MIN_SAMPLES_PER_PULSE} samples/pulse at {ppr}/rev"
+                f"{rate_note}); above it, ~0.8%"
             )
     return lines
 
@@ -392,7 +422,6 @@ def _print_session_summary(sensor, config, args, mon_cfg, anom_cfg, device_path,
 def run(args: argparse.Namespace) -> int:
     import signal
     import threading
-    from datetime import datetime, timezone
 
     import rev80
     import rev80.config as _cfg
@@ -405,7 +434,7 @@ def run(args: argparse.Namespace) -> int:
 
     def _handle_signal(signum, frame):
         rev80.get_logger('rev80-cli').info(
-            f"Signal {signum} received — shutting down after current interval…"
+            f"Signal {signum} received — stopping within about 1 s…"
         )
         shutdown.set()
 
@@ -501,8 +530,9 @@ def run(args: argparse.Namespace) -> int:
              f"channels {config.enabled_channels}")
 
     # ── Build session ─────────────────────────────────────────────────────────
-    session_id = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H%M%S")
-    session    = _build_session(collector, args, session_id, anom_cfg, mon_cfg)
+    session_id, start_time = _new_session_id()
+    session    = _build_session(collector, args, session_id, anom_cfg, mon_cfg,
+                                start_time=start_time)
     monitor    = MonitorController()
 
     anomaly_hook = _build_anomaly_hook(anom_cfg, config, pre_buffer_s=float(args.pre_buffer))
@@ -536,6 +566,7 @@ def run(args: argparse.Namespace) -> int:
     prev_captures  = 0
     prev_bursts    = 0
     _status_lines  = 0  # tracks how many lines to erase on next redraw
+    ceiling_logged = False
 
     def _print_status(results: list) -> None:
         nonlocal _status_lines
@@ -597,6 +628,16 @@ def run(args: argparse.Namespace) -> int:
         if results:
             monitor.on_results(results, collector.data["frame_cache"])
             _print_status(results)
+
+        if not ceiling_logged:
+            # The summary used the nominal rate: the stream had not started.
+            # Log the full-accuracy limit again at the achieved rate.
+            achieved = _achieved_raw_rate(collector)
+            if achieved:
+                ceiling_logged = True
+                for line in _tach_summary_lines(config, tach_settings, achieved):
+                    if "Full accuracy" in line:
+                        log.info("Tachometer at %.1f Hz: %s", achieved, line.strip())
 
         snap = monitor.status_snapshot()
 
@@ -666,8 +707,7 @@ def build_option_parser() -> argparse.ArgumentParser:
                       help="Parent directory for session folders (default: "
                            "monitor.output_dir, else ~/Documents/Rev80/data/monitor)")
     sess.add_argument("--no-compress",    action="store_true",
-                      help="Disable gzip compression. Known defect: the first "
-                           "write fails and the session stops")
+                      help="Disable gzip compression")
     sess.add_argument("--start-now",      action="store_true",
                       help="Skip the pre-start confirmation prompt")
 

@@ -5,7 +5,7 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class MonitorSession:
-    session_id: str               # "YYYY-MM-DD-HHMMSS": GUI local time, headless UTC
+    session_id: str               # "YYYY-MM-DD-HHMMSS", local time (the same clock as start_time)
     start_time: datetime          # local time
     interval_s: float             # seconds between captures
     pre_buffer_frames: int        # frames taken from the cache at a trigger, trigger frame included
@@ -16,6 +16,7 @@ class MonitorSession:
     compression_level: int = 4
     cooldown_enabled: bool = False
     cooldown_s: float = 0.0       # s without anomaly detection after a burst starts
+    acquisition_period: float = 0.0  # s per frame; 0.0 means unknown
     # Snapshots taken when the session starts; stored in session.h5 /metadata
     acq_snapshot: dict = field(default_factory=dict)      # AcquisitionSettings.to_dict()
     channel_snapshot: dict = field(default_factory=dict)  # {ch: {name, unit, ...}}
@@ -111,6 +112,8 @@ def session_from(*, collector, session_id: str, interval_s: float,
 
     cfg = collector.config
     block_s = cfg.blocksize / cfg.samplerate if cfg.samplerate else 0.0
+    # The period of the frames in the frame cache. The burst frame cap uses it.
+    frame_s = cfg.raw_blocksize / cfg.raw_samplerate if cfg.raw_samplerate else 0.0
     root = Path(output_dir) if output_dir else rev80.data_dir() / 'monitor'
 
     return MonitorSession(
@@ -125,6 +128,7 @@ def session_from(*, collector, session_id: str, interval_s: float,
         compression_level=compression_level,
         cooldown_enabled=bool(cooldown_enabled),
         cooldown_s=float(cooldown_s),
+        acquisition_period=float(frame_s),
         acq_snapshot=cfg.to_dict(),
         channel_snapshot=channel_snapshot_for(cfg, collector),
         sensor_snapshot=sensor_snapshot_for(collector),
