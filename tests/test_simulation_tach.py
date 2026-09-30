@@ -12,7 +12,6 @@ import rev80 as vc
 from rev80 import simulation as sim
 from rev80 import tach
 
-RAW_FS = 40000.0   # Not read. _RawRateView presents raw_samplerate (25600 Hz).
 
 
 def _cfg(binsize=1.0, channels=(0, 1)):

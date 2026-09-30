@@ -24,7 +24,7 @@ Usage
 THE SIMULATED DEFAULT LIES ABOUT ONE THING, DELIBERATELY CORRECTED HERE.
 SimulatedSensor reports exactly RAW_SAMPLERATE_HZ (25600), which reduces
 against every display rate to a small integer factor. Real hardware does not:
-the driver clock is quantised, so the reported rate is 25599.67 (ns-timed) or
+the driver clock is quantised, so the reported rate is 25591.81 (ns-timed) or
 25641 (a us-timed request), and a rate that does not reduce is precisely
 what made decimate_to_rate 115x more expensive on hardware than in CI. So
 --raw-rate defaults to the ns-timed hardware value rather than the nominal one.
@@ -50,8 +50,9 @@ from rev80.sample import RAW_SAMPLERATE_HZ  # noqa: E402
 from rev80.scope_sensor import ScopeSensor  # noqa: E402
 
 #: What the driver really delivers with the streaming interval requested in
-#: whole NANOSECONDS: round(1e9/76800) = 13021 ns -> 76799.02 Hz, / osr 3.
-HW_RATE_NS = (1e9 / 13021) / 3.0
+#: whole NANOSECONDS: 13025 ns on the 12.5 ns grid -> 76775.43 Hz, / osr 3.
+#: Evidence: CONTRIBUTING.md, "E4. Sample-clock grid".
+HW_RATE_NS = (1e9 / 13025) / 3.0
 
 #: The same with the interval requested in whole MICROSECONDS, which is what
 #: shipped before this branch: int(1e6/76800) = 13 us -> 76923 Hz, / 3. Kept
