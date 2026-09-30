@@ -1440,6 +1440,35 @@ For W2-CL (CLAUDE.md), more stale claims: logger row (`log/`); gui row dialog li
 
 W2-A: E2 title must be exactly "E2. Anti-alias kernel" (used in the writer prompt). CONTRIBUTING must have a "Documentation rules" section (named in the writer prompt).
 
+### 14.4 Owner instructions (2026-09-30)
+
+**No hard length limits.** The line limits in 2.1, 3.5 and the package briefs
+(module 12 lines, function 8 lines, README about 1000 lines, CLAUDE.md 200 lines)
+are guidance, not requirements. Do not remove information, and do not write so
+tersely that the text is hard to understand, only to meet a number. The
+objective is to remove fluffy, repetitive prose and fixed-bug history. The
+README stays at its current length (1322 lines).
+
+**Fix the smaller defects now; do not backlog them.**
+- FIX-M (added): S1 `compression_level` is read; S2 headless `session_id` in local
+  time; S3 SIGINT log text; S4 headless summary uses the achieved rate; S5
+  anomaly-burst t = 0 is the stored confirming frame, onset stored separately.
+- FIX-G (added): S6 Ctrl+K refused while recording; S7 Welch Overlap tooltip.
+- FIX-T (new, after a slot is free; owns `tach.py`, `collector.py`, `_dsp.py`,
+  new tests, one CHANGELOG entry): S8 `tach.is_usable` is never called, so
+  `inconsistent`/`unsteady` readings reach the speed gate and the RPM trend;
+  S9 `_dsp.band_rms` has no caller.
+
+W1-PR: these items are fixed, not R50+. R50+ holds only the open audit items
+in 14.2 that no fix package closes.
+
+Scope models: three scopes were used (4224A, 4424A s/n 12462/0067, 4824A s/n
+12481/0116). The 12.5 ns clock grid and -320 ppm were measured on the 4824A
+(CHANGELOG); the streaming ceiling (E1) on the 4424A. Keep the model with each
+measurement.
+
+`core.hooksPath` is now `.githooks` (relative).
+
 ---
 
 ## 15. Not verifiable here
