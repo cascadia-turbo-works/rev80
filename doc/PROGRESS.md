@@ -340,6 +340,8 @@ before and after for each fix.
   R28).
 - R50 to R62: the audit findings that are still open after the fixes above.
   The tracker gives each one.
+- R63: verify the tachometer speed-drift limit on hardware (found in the
+  documentation revision).
 
 ---
 
@@ -396,6 +398,7 @@ numbers for each change.
 | R60 | Aug 2026 audit | Remove the burst-timing skips from the tests ([H-05](audit-202608.md#h-05)) | 🔲 TODO — `tests/test_monitor_session_load.py` has 10 `pytest.skip()` calls keyed on burst timing. On a slow runner they skip and the tests pass |
 | R61 | Aug 2026 audit | Split `gui.py` ([H-07](audit-202608.md#h-07)) | 🔲 TODO — 5194 lines. `util.__all__` and the thread excepthook are done |
 | R62 | Aug 2026 audit | Unique burst IDs ([H-08](audit-202608.md#h-08), item 4) | 🔲 TODO — the ID has one-second resolution. A second burst in the same second fails `create_group`, and headless stops on the writer error. Not reproduced |
+| R63 | Doc revision | Verify the tachometer speed-drift limit on hardware | 🔲 TODO — the `SPEED_DRIFT_MAX_PCT = 1.0` table (CONTRIBUTING E14.6) has no recorded source; the `tach.py` comment says simulation only. Measure it with a controlled speed drift (AWG sweep or a load step on a real machine) and record the conditions |
 | — | Future | Proximity probe support | ✅ Done — scope sensor with EU in displacement units |
 | — | Future | Web portal for data sharing | ❌ Abandoned |
 | — | Future | MCC DAQ tooling (USB-1608FS-Plus) | ❌ Abandoned — the PicoScope replaces the DAQ for all current use cases |

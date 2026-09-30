@@ -39,7 +39,7 @@ INTERVAL_SPREAD_MAX: float = 0.25
 SPEED_DRIFT_MAX_PCT: float = 1.0
 # Above this speed change inside one block the quality is 'unsteady': the
 # spectrum is rejected, not order-resampled. Set from simulation only (peak
-# height 93.8 % at 1.0 %); confirm with a load step on a real machine.
+# height 93.8 % at 1.0 %); PROGRESS R63 verifies it on hardware.
 # Evidence: CONTRIBUTING.md, "E14.6. Spread and drift limits".
 
 MIN_REVS: float = 2.0

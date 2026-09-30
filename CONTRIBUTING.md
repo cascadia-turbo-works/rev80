@@ -1674,10 +1674,10 @@ At 1.0 % the peak-height error is less than about 6 % and the smear is less
 than about 10 bins. A mains-fed motor at steady load drifts less than
 0.1 %. The limit operates on VFD ramps and load steps.
 
-**Measured on:** PicoScope 4424A, AWG loopback, 41666.5 Hz, September 2026
-(owner answer, 2026-09-30). The comment beside `SPEED_DRIFT_MAX_PCT` in
-`tach.py` says that this constant is set from simulation only. Confirm the
-drift limit with a load step on a real machine.
+**Measured on:** the spread table: PicoScope 4424A, AWG loopback,
+41666.5 Hz, September 2026. The drift table: source not recorded; the comment
+beside `SPEED_DRIFT_MAX_PCT` in `tach.py` says simulation only. PROGRESS R63
+verifies the drift limit on hardware.
 
 #### E14.7. Median estimator
 
