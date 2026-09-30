@@ -1,19 +1,8 @@
-"""Envelope / demodulation analysis (the audit's 'blocks stated purpose' gap).
+"""Envelope (demodulation) analysis: band-pass, Hilbert magnitude, DC removal, spectrum.
 
-For rolling-element bearings this is *the* diagnostic. A defect's impulses
-excite a structural resonance at 2-20 kHz and are amplitude-modulated at the
-defect rate. In the raw spectrum that energy is spread across the resonance and
-buried under the 1x and its harmonics; in the envelope of the resonance band it
-appears as a clean line at the defect rate with +/-1x sidebands, months earlier.
-Every instrument in this class makes it a headline feature (CSI PeakVue,
-SKF gE, B&K envelope).
-
-The chain is: band-pass around the resonance -> Hilbert magnitude -> remove the
-DC term -> spectrum of the envelope, with its own F_max.
-
-Validated against the physically realistic generator, and -- crucially -- with
-a healthy negative control on every positive claim. An envelope analyser that
-returns a line for everything is worse than none.
+A bearing defect shows as a line at the defect rate in the envelope of the
+resonance band. Each positive test against the bearing generator has a healthy
+negative control.
 """
 
 import numpy as np
@@ -57,11 +46,7 @@ def floor_of(freq, spec, lo=20.0, hi=1500.0):
 # ===========================================================================
 
 def test_envelope_of_an_am_tone_recovers_the_modulator():
-    """The textbook case, with an analytic answer.
-
-    A carrier at fc amplitude-modulated at fm must give an envelope spectrum
-    with a line at fm -- and NOT at fc, which is the whole point.
-    """
+    """An AM tone gives an envelope line at the modulation frequency, not at the carrier."""
     fs, n = 10000.0, 8192
     t = np.arange(n) / fs
     fc, fm, depth = 2000.0, 37.0, 0.5
@@ -98,12 +83,7 @@ def test_envelope_dc_is_removed():
 
 
 def test_out_of_band_content_does_not_reach_the_envelope():
-    """The band-pass must actually isolate the resonance.
-
-    A strong low-frequency tone outside the demodulation band must not appear
-    in the envelope spectrum -- otherwise the 1x would dominate it, which is
-    precisely the problem envelope analysis exists to escape.
-    """
+    """A strong 60 Hz tone outside the demodulation band is not in the envelope."""
     fs, n = 10000.0, 8192
     t = np.arange(n) / fs
     x = (np.sin(2 * np.pi * 2000.0 * t + 0.3)
@@ -143,7 +123,7 @@ def test_defect_rate_line_appears_for_a_faulted_bearing():
 
 
 def test_no_defect_line_for_a_healthy_bearing():
-    """The negative control. Without it the test above proves nothing."""
+    """Negative control: a healthy bearing gives no defect-rate line."""
     c = cfg()
     fs = c.samplerate
     for seed in SEEDS:
@@ -155,8 +135,7 @@ def test_no_defect_line_for_a_healthy_bearing():
 
 
 def test_defect_line_is_invisible_in_the_raw_spectrum():
-    """Justifies the whole feature: if the raw spectrum showed it, this would
-    be unnecessary machinery."""
+    """The envelope SNR of the defect line is more than 3x its raw-spectrum SNR."""
     c = cfg()
     fs = c.samplerate
     x = faulted(c, 0)
@@ -203,7 +182,7 @@ def test_envelope_line_grows_with_severity():
 # ===========================================================================
 
 def test_auto_band_finds_the_resonance():
-    """The user should not have to know where the housing resonance is."""
+    """suggest_band finds a band that contains the 4000 Hz resonance."""
     c = cfg()
     for seed in SEEDS:
         lo, hi = env.suggest_band(faulted(c, seed), c.samplerate,
@@ -212,7 +191,7 @@ def test_auto_band_finds_the_resonance():
 
 
 def test_auto_band_is_usable_without_being_told_the_answer():
-    """End to end: suggest a band, then demodulate in it, and still find BPFO."""
+    """Demodulation in the suggested band finds the BPFO line."""
     c = cfg()
     fs = c.samplerate
     df = fs / c.blocksize
@@ -225,7 +204,7 @@ def test_auto_band_is_usable_without_being_told_the_answer():
 
 
 def test_auto_band_stays_inside_the_measured_band():
-    """It must never suggest a band reaching into the anti-alias guard region."""
+    """The suggested band stays inside the declared band, below the guard band."""
     c = cfg(maxfreq=5000.0)
     lo, hi = env.suggest_band(faulted(c, 0), c.samplerate,
                               fmax=c.band_fmax_resolved)

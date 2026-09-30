@@ -1,11 +1,7 @@
-"""Unit tests for rev80.picoscope.
+"""Unit tests for rev80.picoscope, with picosdk mocked (no hardware).
 
-All tests mock picosdk so they run without PicoScope hardware attached.
-Tests cover:
-  - FindPicoScope() — device enumeration, error handling, channel count
-  - _channels_for_model() — model string → channel count
-  - PicoScopeStream._streaming_callback() — accumulator logic, data contract
-  - DataCollector integration — mV passthrough via receive_data
+They cover FindPicoScope(), the _streaming_callback accumulator and payload,
+the rate-degradation watchdog, and the mV passthrough in receive_data.
 """
 
 import ctypes
@@ -28,12 +24,8 @@ from rev80.picoscope import PicoScopeStream, _DRIVER_BUFFER_SAMPLES
 class _FixedRawBlockSettings(vc.AcquisitionSettings):
     """Test-only: force raw_blocksize to an exact value.
 
-    PicoScopeStream acquires at config.raw_blocksize, which is fixed
-    (derived from RAW_SAMPLERATE_HZ + acquisition_period) and no longer
-    reachable via the maxfreq/binsize trick these accumulator/streaming-
-    callback tests used to target a specific blocksize with. They only care
-    about PicoScopeStream's own raw-rate mechanics, so force it directly
-    rather than reverse-engineering maxfreq/binsize to hit it indirectly.
+    raw_blocksize comes from RAW_SAMPLERATE_HZ and acquisition_period, so
+    maxfreq and binsize cannot set it to a small test value.
     """
     _forced_raw_blocksize = 0
 
@@ -85,14 +77,10 @@ class TestFindPicoScope:
 
     @pytest.fixture(autouse=True)
     def _driver_available(self, monkeypatch):
-        """Make these tests independent of whether the PicoSDK driver is installed.
+        """Install a stand-in `ps` and set PICOSDK_AVAILABLE, with or without the driver.
 
-        picoscope.py degrades to `ps = None` / PICOSDK_AVAILABLE = False when
-        libps4000a is absent (CI, offline dev), and FindPicoScope() then
-        short-circuits to []. These are unit tests of FindPicoScope's logic
-        against a mocked driver — as the module docstring claims — so install a
-        stand-in `ps` and force the flag on. Without this they silently require
-        the native driver to be installed.
+        Without the driver, picoscope.py sets `ps = None` and FindPicoScope()
+        returns [] before the logic under test runs.
         """
         monkeypatch.setattr(pico_module, 'PICOSDK_AVAILABLE', True)
         if pico_module.ps is None:
@@ -106,12 +94,7 @@ class TestFindPicoScope:
             ))
 
     def test_missing_driver_returns_empty_list(self, monkeypatch):
-        """No PicoSDK driver → no devices reported, and no exception.
-
-        picosdk.ps4000a raises CannotFindPicoSDKError at *import* time when
-        libps4000a is absent, which used to make `import rev80.picoscope`
-        fatal on CI and offline dev machines.
-        """
+        """With no PicoSDK driver, FindPicoScope() returns [] and does not raise."""
         monkeypatch.setattr(pico_module, 'PICOSDK_AVAILABLE', False)
         assert pico_module.FindPicoScope() == []
 
@@ -236,12 +219,9 @@ class TestStreamingCallbackAccumulator:
         assert len(received) == 1
 
     def test_two_chunks_fire_one_callback(self, monkeypatch):
-        # Forced small raw_blocksize (see other tests in this class): the
-        # default config's real raw_blocksize (RAW_SAMPLERATE_HZ-derived) is
-        # now far bigger than _DRIVER_BUFFER_SAMPLES, so a nonzero startIndex
-        # at half of it would exercise the driver's circular-buffer wraparound
-        # -- a real thing PicoScopeStream handles, but not what this test is
-        # about; it wants two non-wrapping chunks.
+        # Small forced raw_blocksize: the default is larger than
+        # _DRIVER_BUFFER_SAMPLES, and this test needs two chunks that do not
+        # wrap round the driver's circular buffer.
         stream, received = _make_stream(_make_config(blocksize=64), monkeypatch=monkeypatch)
         raw_bs = stream.config.raw_blocksize * stream._effective_osr
         half = raw_bs // 2
@@ -346,7 +326,7 @@ class TestStreamingCallbackAccumulator:
 
 
 # ---------------------------------------------------------------------------
-# PicoScopeStream — streaming-rate degradation watchdog (R32)
+# PicoScopeStream — streaming-rate degradation watchdog
 #
 # _check_rate_degradation() is driven directly (not via the background poll
 # thread) with a fully controlled fake clock, monkeypatching time.monotonic
@@ -413,9 +393,8 @@ class TestRateDegradationWatchdog:
         assert stream.degraded is False
 
     def test_try_recover_never_called_for_rate_degradation(self, monkeypatch):
-        """Explicit design decision: a USB/bus bandwidth ceiling is not a
-        device hang, so the rate watchdog must never trigger _try_recover()
-        (unlike the silence watchdog)."""
+        """The rate watchdog never calls _try_recover(): a USB bandwidth limit is
+        not a device hang. Only the silence watchdog recovers."""
         stream, _ = _make_stream()
         spy = MagicMock()
         monkeypatch.setattr(stream, '_try_recover', spy)
