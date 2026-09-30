@@ -1677,6 +1677,11 @@ class GUI:
 
     def _toggle_acquisition(self, sender=None, data=None):
         if self.collector.is_streaming:
+            # A recording continues without a stream, but gets no frames.
+            # The Acquisition button, the Tachometer button and Ctrl+K come
+            # here.
+            if self._refuse_while_recording("Stream stop"):
+                return
             self._stop_stream()
         else:
             self._start_stream()

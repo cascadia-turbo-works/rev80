@@ -42,6 +42,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   still assumes that gzip halves the data; its new tooltip says that this
   is an assumption. `tests/test_gui_small_defects.py` keeps these three
   fixes. Without them, 5 of its 8 tests fail.
+- **A recording refuses a stream stop.** Ctrl+K, the Acquisition button and
+  the Tachometer tab button could stop the stream while a recording ran. The
+  recording then continued, but got no frames. Now the stop is refused with
+  an info message: stop the recording first.
+  `tests/test_gui_stream_stop_lock.py` keeps this. Without the fix, 3 of its
+  6 tests fail.
 
 ### fix/collector — reprocess a session with a tachometer channel (2026-09-29)
 
