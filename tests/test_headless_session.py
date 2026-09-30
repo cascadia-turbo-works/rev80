@@ -28,3 +28,25 @@ def test_headless_reads_compression_level_from_config(tmp_path):
     default = headless._build_session(dc, args, 'lvl2', mon_cfg={})
     assert default.compression_level == 4
 
+
+def test_session_id_is_local_time_like_start_time(tmp_path, monkeypatch):
+    """The session id and start_time use the same local clock as the GUI."""
+    import time
+    from datetime import datetime
+
+    monkeypatch.setenv('TZ', 'Pacific/Kiritimati')     # UTC+14: never UTC
+    time.tzset()
+    try:
+        session_id, start_time = headless._new_session_id()
+        assert start_time.tzinfo is None
+        assert session_id == start_time.strftime('%Y-%m-%d-%H%M%S')
+        assert abs((datetime.now() - start_time).total_seconds()) < 5
+
+        session = headless._build_session(
+            _dc(), _args(tmp_path), session_id, start_time=start_time)
+        assert session.session_id == session_id
+        assert session.start_time == start_time
+    finally:
+        monkeypatch.delenv('TZ')
+        time.tzset()
+

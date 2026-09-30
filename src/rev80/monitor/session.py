@@ -5,7 +5,7 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class MonitorSession:
-    session_id: str               # "YYYY-MM-DD-HHMMSS": GUI local time, headless UTC
+    session_id: str               # "YYYY-MM-DD-HHMMSS", local time (the same clock as start_time)
     start_time: datetime          # local time
     interval_s: float             # seconds between captures
     pre_buffer_frames: int        # frames taken from the cache at a trigger, trigger frame included

@@ -74,7 +74,19 @@ def _edit_config() -> int:
 
 # ── Helpers used only during a live session ────────────────────────────────────
 
-def _build_session(collector, args, session_id, anom_cfg=None, mon_cfg=None):
+def _new_session_id():
+    """Return (session_id, start_time) from one local-time reading.
+
+    Local time, the same as the GUI and as MonitorSession.start_time.
+    """
+    from datetime import datetime
+
+    start_time = datetime.now()
+    return start_time.strftime("%Y-%m-%d-%H%M%S"), start_time
+
+
+def _build_session(collector, args, session_id, anom_cfg=None, mon_cfg=None,
+                   start_time=None):
     """Assemble this run's MonitorSession from the CLI args and config.
 
     The construction itself is `monitor.session.session_from`, shared with the
@@ -87,6 +99,7 @@ def _build_session(collector, args, session_id, anom_cfg=None, mon_cfg=None):
     return session_from(
         collector         = collector,
         session_id        = session_id,
+        start_time        = start_time,
         interval_s        = float(args.interval),
         pre_buffer_s      = float(args.pre_buffer),
         burst_duration_s  = float(args.burst_duration),
@@ -393,7 +406,6 @@ def _print_session_summary(sensor, config, args, mon_cfg, anom_cfg, device_path,
 def run(args: argparse.Namespace) -> int:
     import signal
     import threading
-    from datetime import datetime, timezone
 
     import rev80
     import rev80.config as _cfg
@@ -502,8 +514,9 @@ def run(args: argparse.Namespace) -> int:
              f"channels {config.enabled_channels}")
 
     # ── Build session ─────────────────────────────────────────────────────────
-    session_id = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H%M%S")
-    session    = _build_session(collector, args, session_id, anom_cfg, mon_cfg)
+    session_id, start_time = _new_session_id()
+    session    = _build_session(collector, args, session_id, anom_cfg, mon_cfg,
+                                start_time=start_time)
     monitor    = MonitorController()
 
     anomaly_hook = _build_anomaly_hook(anom_cfg, config, pre_buffer_s=float(args.pre_buffer))
