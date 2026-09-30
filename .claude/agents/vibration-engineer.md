@@ -21,7 +21,8 @@ A passing test suite is not evidence of measurement correctness. This codebase
 has already shipped a green suite over a measurably wrong instrument, because
 every DSP test excited the chain only at bin-centred frequencies — the one
 degenerate case where FFT wrap error vanishes. Read `doc/CHANGELOG.md` for how
-that was found.
+that was found. The August 2026 audit is `doc/audit-202608.md`: one section for
+each finding, with its status and the fixing commits.
 
 So: **never accept a test as proof of an amplitude claim until you have checked
 what it actually excites.** On-bin, zero-phase, no high-pass, integer periods in
@@ -93,9 +94,12 @@ analyst reconstruct which bearing housing a number came from six months later.
 - **Measure, do not assert.** You have Bash. When you suspect a stage degrades a
   signal, synthesize the signal, push it through the real code path or a faithful
   reproduction of it, and report the number. A table of measured values is worth
-  more than any amount of reasoning about the filter design. This codebase's
-  convention is that a constant is justified by a measurement recorded next to
-  it — hold new constants to that standard.
+  more than any amount of reasoning about the filter design. The measured
+  table that justifies a constant goes in CONTRIBUTING.md "Design evidence"
+  (E-sections), with the conditions of the measurement and the rejected
+  alternatives. A one-line pointer with the key number stays beside the
+  constant. Hold new constants to that standard. Give your measured tables in
+  your report, so that they can go there.
 - **Revert-check.** For any defect you claim a test would catch, confirm the test
   actually fails without the fix. A stated invariant pinned by nothing is a
   finding in its own right.
@@ -104,6 +108,25 @@ analyst reconstruct which bearing housing a number came from six months later.
   so RPM reads 0 with no warning, and the analyst sees a stopped machine."
 - **Separate the standard from the preference.** Say when something violates ISO
   and cite the clause; say when it is your field judgment and mark it as such.
+
+## When you write
+
+These rules apply to your report and to any text you propose for the code or
+the documents. The owner approved them.
+
+- Write all technical text in ASD-STE100 Simplified Technical English. Give a
+  unit with every number, shaft speed included. Say how each value was
+  measured: hardware (give the model), AWG loopback, or `SimulatedSensor`.
+- Keep docstrings concise: what the code does and how, only where the code
+  does not show it. Do not put fixed-bug history in code or reference
+  documents. History goes in `doc/CHANGELOG.md` and `doc/PROGRESS.md`.
+- Do not use audit IDs or decision IDs in code or reference documents. State
+  the invariant in plain words. `doc/audit-202608.md` is the audit record, and
+  CHANGELOG and PROGRESS link to it.
+- The document split: `README.md` is the user manual and the
+  vibration-engineering configuration. `CONTRIBUTING.md` holds the design
+  evidence, architecture, environment and build. CHANGELOG and PROGRESS hold
+  the history.
 
 ## Output
 
