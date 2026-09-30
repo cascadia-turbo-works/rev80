@@ -1028,6 +1028,7 @@ class DataCollector:
             time_vec    = decimated_time_vec[keep]
 
         rpm = self.current_rpm()
+        usable_rpm = self.current_rpm(usable_only=True)
         return rev80.ChannelResult(
             channel=ch, unit=effective_tgt, overflow=sample.overflow,
             degraded=sample.degraded,
@@ -1043,8 +1044,10 @@ class DataCollector:
             timestamp=sample._timestamp, rel_time=sample.rel_time, status=sample.status,
             # Shaft speed for this frame, and whether it is comparable. The
             # gate is evaluated in exactly one place (self.speed_ok) and read
-            # in exactly one other (monitor.anomaly.valid_results).
-            rpm=rpm, speed_ok=self.speed_ok(rpm),
+            # in exactly one other (monitor.anomaly.valid_results). The gate
+            # gets only a usable reading: an 'unsteady' or 'inconsistent'
+            # rpm is shown, but the gate treats it as no reading.
+            rpm=rpm, speed_ok=self.speed_ok(usable_rpm),
         )
 
     def current_frame(self) -> dict:
@@ -1117,11 +1120,13 @@ class DataCollector:
             return False
         return abs(float(rpm) - ref) / ref * 100.0 <= self.config.speed_gate_tolerance_pct
 
-    def current_rpm(self) -> float | None:
+    def current_rpm(self, usable_only: bool = False) -> float | None:
         """Shaft speed for the frame currently being displayed, or None.
 
-        None means no usable reading: no tachometer channel, no signal, or too
-        few edges. Never 0.0, because "no signal" is not "stopped".
+        None means no reading: no tachometer channel, no signal, or too few
+        edges. Never 0.0, because "no signal" is not "stopped". With
+        `usable_only`, a reading that is not `TachResult.is_usable` also gives
+        None; the speed gate uses this.
         """
         tach_channels = self.config.tach_channels
         if not tach_channels:
@@ -1132,7 +1137,7 @@ class DataCollector:
             if sample is None:
                 continue
             res = self.tach_for(ch, sample)
-            if res.rpm is not None:
+            if res.rpm is not None and (res.is_usable or not usable_only):
                 return res.rpm
         return None
 
@@ -1194,7 +1199,8 @@ class DataCollector:
                 if tsample is None:
                     continue
                 tres = self.tach_for(tch, tsample)
-                if tres.rpm is not None:
+                # Trend only a usable reading, as for the speed gate.
+                if tres.rpm is not None and tres.is_usable:
                     self._update_tach_trend(tch, tres.rel_time, tres.rpm)
 
         results: list[rev80.ChannelResult] = []
