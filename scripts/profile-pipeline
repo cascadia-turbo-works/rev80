@@ -25,7 +25,7 @@ THE SIMULATED DEFAULT LIES ABOUT ONE THING, DELIBERATELY CORRECTED HERE.
 SimulatedSensor reports exactly RAW_SAMPLERATE_HZ (25600), which reduces
 against every display rate to a small integer factor. Real hardware does not:
 the driver clock is quantised, so the reported rate is 25599.67 (ns-timed) or
-25641 (the old us-timed request), and a rate that does not reduce is precisely
+25641 (a us-timed request), and a rate that does not reduce is precisely
 what made decimate_to_rate 115x more expensive on hardware than in CI. So
 --raw-rate defaults to the ns-timed hardware value rather than the nominal one.
 Pass `--raw-rate 25600` to see the misleadingly clean numbers CI sees.

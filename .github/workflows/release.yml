@@ -258,11 +258,11 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      # The one place this toolchain is installed. doc/*.pdf used to be
-      # rendered by the pre-commit hook and committed, which made pandoc and
-      # WeasyPrint (plus its native Pango stack) a prerequisite for making a
-      # commit, and put ~300 KB of binary that cannot delta into every
-      # doc-touching commit. They are build artifacts now, built here.
+      # The one place this toolchain is installed. doc/*.pdf are build
+      # artifacts, built here and not committed. Rendering in the pre-commit
+      # hook would make pandoc and WeasyPrint (plus its native Pango stack) a
+      # requirement for every commit, and add about 300 KB of binary that git
+      # cannot delta to each commit that changes a document.
       - name: Install pandoc and WeasyPrint's native dependencies
         run: |
           sudo apt-get update -qq

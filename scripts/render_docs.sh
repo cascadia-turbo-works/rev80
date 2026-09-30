@@ -5,10 +5,10 @@
 # to each GitHub Release by .github/workflows/release.yml, which runs this
 # script. Run it locally only when you want a PDF in hand.
 #
-# They used to be re-rendered by the pre-commit hook and committed. That put
-# ~300 KB of binary that cannot delta into every doc-touching commit -- 10.3 MB
-# across 34 commits, against 13.4 MB for every version of every source file --
-# and made pandoc + WeasyPrint a requirement for anyone making a commit.
+# Do not call this script from the pre-commit hook, and do not commit the PDFs.
+# A render adds about 300 KB of binary that git cannot delta to each commit
+# that changes a document, and the hook would make pandoc and WeasyPrint a
+# requirement for every commit.
 #
 # Requires pandoc and weasyprint on PATH (see CONTRIBUTING.md).
 

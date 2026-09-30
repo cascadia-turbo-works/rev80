@@ -47,7 +47,7 @@ MIN_REVS: float = 2.0
 # 1 pulse/rev, division error and once-per-rev modulation cancel only over a
 # whole revolution. 2.0 gives two intervals at 1 pulse/rev, and one revolution
 # in each half-block for the drift test. Evidence: CONTRIBUTING.md,
-# "E14.4. One pulse per revolution and MIN_REVS".
+# "E14.4. One pulse per revolution and `MIN_REVS`".
 
 
 def min_edges_for(pulses_per_rev: int) -> int:
