@@ -2293,8 +2293,14 @@ git push origin v0.2.0
 ```
 
 `workflow_dispatch` runs the same jobs on any ref without a release. It is
-available only when `release.yml` is on the default branch. The `release`
-job runs only for a tag.
+available only when `release.yml` is on the default branch. On a dispatch,
+the `release` job downloads and counts the files, then stops before
+`gh release create`.
+
+Each product is its own artifact, uploaded with `archive: false`, so it
+downloads as the file and not as a zip: `Rev80Setup-<version>.exe`, the
+wheel (`.whl`), the sdist (`.tar.gz`) and the four PDFs. The artifact name
+is the file name.
 
 Five facts about the workflow:
 
@@ -2352,8 +2358,8 @@ The tag must be a valid PEP 440 version after the `v`. On a commit tagged
 `v0.0.1rcx`, `setuptools_scm` 10.3.4 stops with *Can't parse version from
 tag*.
 
-The `gh release create --draft` step runs only on a tag. A branch run or a
-manual run does not test it.
+The `gh release create --draft` command runs only on a tag. A branch run
+or a manual run does not test it.
 
 ---
 
