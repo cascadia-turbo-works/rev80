@@ -64,7 +64,7 @@ conditions. Read these limits before you act on a number:
 
 ### Windows
 
-1. Install **PicoSDK 11.1.418** (or PicoScope 7 for Windows) from
+1. Install **PicoSDK 11.1.0.481** (or PicoScope 7 for Windows) from
    [picotech.com/downloads](https://www.picotech.com/downloads).
 2. Restart the computer. The restart registers the USB kernel driver.
 3. Download **`Rev80Setup-<version>.exe`** from the

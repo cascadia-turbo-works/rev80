@@ -834,7 +834,7 @@ with Inno Setup. **A full build must run on 64-bit Windows.** Only the
 |---|---|---|
 | Python 3.10+ (64-bit) | [python.org](https://www.python.org/downloads/) | Must be 64-bit. Add it to `PATH` |
 | Git for Windows | [git-scm.com](https://git-scm.com/download/win) | Supplies Git Bash for `scripts/build.sh` |
-| PicoSDK 11.1 (64-bit) | [picotech.com/downloads](https://www.picotech.com/downloads) | The release workflow uses 11.1.0.481. Restart Windows before the first connection to a scope |
+| PicoSDK 11.1.0.481 (64-bit) | [picotech.com/downloads](https://www.picotech.com/downloads) | The release workflow uses the same version. Restart Windows before the first connection to a scope |
 | Inno Setup 6 | [jrsoftware.org](https://jrsoftware.org/isinfo.php) | A per-user install in `%LOCALAPPDATA%` is permitted |
 
 Install the project from Git Bash or `cmd.exe`:
