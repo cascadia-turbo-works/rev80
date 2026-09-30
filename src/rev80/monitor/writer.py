@@ -37,6 +37,17 @@ def _frame_speed(results: list) -> tuple[float, bool]:
     return float('nan'), ok
 
 
+def _h5_compression(session: MonitorSession) -> tuple[str | None, int | None]:
+    """Return (compression, compression_opts) for h5py.
+
+    'none' and None give (None, None): h5py has no filter named 'none'.
+    """
+    compression = session.compression
+    if compression is None or str(compression).lower() == 'none':
+        return None, None
+    return compression, session.compression_level
+
+
 def _compute_overall_peaks(results: list) -> tuple[str, str, str, str]:
     """Return (overall_json, peaks_json, band_json, scalars_json) from ChannelResults.
 
@@ -247,6 +258,7 @@ class MonitorWriterThread:
         rel_time      = float(item['rel_time'])
         timestamp_str = item['timestamp']
         overall_json, peaks_json, band_json, scalars_json = _compute_overall_peaks(results)
+        compression, compression_opts = _h5_compression(session)
 
         n = self._monitor_count
 
@@ -278,13 +290,10 @@ class MonitorWriterThread:
                 # Always pass role=. The default 'vibration' stores a
                 # tachometer channel's whole waveform (25600 samples/s)
                 # instead of its edge times and speed attributes.
-                # Open defect: session.compression 'none' goes to h5py
-                # unchanged. h5py raises ValueError, and the session stops
-                # at its first write (seen with rev80-headless --no-compress).
                 _write_channel_group(
                     gate_grp, ch, sample,
-                    compression=session.compression,
-                    compression_opts=session.compression_level,
+                    compression=compression,
+                    compression_opts=compression_opts,
                     role=role_of_sample(sample),
                 )
 
@@ -304,6 +313,7 @@ class MonitorWriterThread:
         all_results: list   = item.get('all_results', [])
         pre_overalls: list  = item.get('pre_overalls', [])  # overall_json strings for pre-trigger frames
         overall_json, _, band_json, scalars_json = _compute_overall_peaks(results)
+        compression, compression_opts = _h5_compression(session)
         n_frames          = len(frames)
         duration_s        = 0.0
         if n_frames >= 2:
@@ -355,8 +365,8 @@ class MonitorWriterThread:
                 for ch, sample in sorted(ch_samples.items()):
                     _write_channel_group(
                         fi_grp, ch, sample,
-                        compression=session.compression,
-                        compression_opts=session.compression_level,
+                        compression=compression,
+                        compression_opts=compression_opts,
                         role=role_of_sample(sample),
                     )
 

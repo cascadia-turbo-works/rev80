@@ -666,8 +666,7 @@ def build_option_parser() -> argparse.ArgumentParser:
                       help="Parent directory for session folders (default: "
                            "monitor.output_dir, else ~/Documents/Rev80/data/monitor)")
     sess.add_argument("--no-compress",    action="store_true",
-                      help="Disable gzip compression. Known defect: the first "
-                           "write fails and the session stops")
+                      help="Disable gzip compression")
     sess.add_argument("--start-now",      action="store_true",
                       help="Skip the pre-start confirmation prompt")
 
