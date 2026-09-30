@@ -95,23 +95,6 @@ def band_mask(freq: np.ndarray, fmin: float, fmax: float) -> np.ndarray:
     return (freq >= float(fmin)) & (freq <= float(fmax))
 
 
-def band_rms(rfft_vals: np.ndarray, mask: np.ndarray, n: int) -> float:
-    """Exact RMS of the masked band, by Parseval, from an un-tapered rFFT.
-
-    `n` is the time-domain length. A full mask gives ``sqrt(mean(x**2))``.
-    DC and, for even n, the Nyquist bin get weight 1; other bins weight 2.
-    The edge has -13 dB rectangular-window sidelobes, so the overall uses
-    the Hann path instead. Evidence: CONTRIBUTING.md, "E10. Band RMS".
-    """
-    power = np.abs(rfft_vals) ** 2
-    weight = np.full(power.shape, 2.0)
-    weight[0] = 1.0
-    if n % 2 == 0 and power.shape[0] > 1:
-        weight[-1] = 1.0
-    total = float(np.sum(power[mask] * weight[mask]))
-    return float(np.sqrt(total)) / n
-
-
 def crest_factor(x: np.ndarray) -> float:
     """Peak divided by RMS.
 
