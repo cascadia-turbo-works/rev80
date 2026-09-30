@@ -4,7 +4,7 @@ Storage:
   {config_dir}/scope_sensors.yaml  — global sensor library (all devices)
 
 Per-device channel assignments and acquisition settings are managed by
-rev80.config (devices/{serial}.yaml), not by this class.
+rev80.config (devices/picoscope-<model>-<serial>.yaml), not by this class.
 """
 
 from pathlib import Path
@@ -35,18 +35,10 @@ class ScopeSensorRegistry:
     def _load_user(self) -> list[ScopeSensor]:
         """Parse the sensor library, skipping (and logging) unusable entries.
 
-        This used to be `except Exception: return []`. Combined with
-        _save_user(), which writes whatever _load_user() returned straight back
-        over the file, any parse failure erased every calibrated sensor
-        definition the user had — silently, with nothing logged. add() and
-        delete() both follow exactly that load-then-save path.
-
-        Two rules follow, and both matter:
-          - A bad *entry* is skipped and logged; the rest of the library
-            survives.
-          - A bad *file* raises. We cannot know what was in it, so the caller
-            must not be handed a short list that a subsequent save would
-            commit. A read failure must never turn into an overwrite.
+        add(), update() and delete() save what this returns over the file, so:
+          - A bad entry is skipped and logged; the other entries are kept.
+          - A bad file raises. A short list must not reach a save: a read
+            failure must never become an overwrite.
         """
         try:
             with open(self._path) as f:

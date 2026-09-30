@@ -126,12 +126,8 @@ _MAXFREQ_LABELS = [f"{int(f)} Hz" for f in rev80.MAXFREQ_PRESETS]
 def derive_acquisition_preview(maxfreq: float, binsize: float) -> dict:
     """Derived acquisition values for the settings dialog preview.
 
-    Delegates to AcquisitionSettings rather than recomputing. The dialog used
-    to duplicate the derivation and got it wrong — 2 * maxfreq instead of
-    2.56 * maxfreq — so at the default F_max=2000 it
-    advertised 4.1 kS/s, 2049 lines, 1.000 s and half the true memory while
-    the instrument actually ran at 8.2 kS/s, 4097 lines and 0.500 s. Wrong for
-    the 500/1000/2000 Hz presets. Never duplicate the formula.
+    Delegates to AcquisitionSettings, so the preview shows the values that the
+    instrument uses. Never duplicate the formula here.
     """
     cfg = rev80.AcquisitionSettings()
     cfg.maxfreq = maxfreq
@@ -178,20 +174,12 @@ _VOLTAGE_RANGE_LABELS = [
 def apply_tach_claim(collector, channel, implicit_enabled, settings=None):
     """Claim `channel` for the tachometer role, or release it when None.
 
-    Pure of dearpygui so the policy can be tested without a viewport. Returns
-    the new "implicitly enabled" channel, or None.
-
-    Claiming enables the channel. `config.tach_channels` filters by
-    enabled_channels -- deliberately, so a tach role left on a switched-off
-    input does not send the collector hunting for a pulse train nobody is
-    sampling -- which meant claiming a disabled channel previously did nothing
-    at all, and did it silently. Choosing a channel is a statement that it
-    carries the tachometer, so enabling it is what the operator meant.
-
-    A channel enabled *implicitly* this way is switched off again when the role
-    is released. Leaving it on would hand back an enabled vibration channel
-    nobody asked for, carrying a pulse train -- which reads as overall 1515 mV,
-    crest 5.00 and kurtosis 15.94, i.e. a severely failing bearing.
+    Returns the new implicitly enabled channel, or None. Free of dearpygui, so
+    tests can run it without a viewport. Claiming enables the channel, because
+    `config.tach_channels` ignores disabled channels. A release switches off a
+    channel that the claim enabled: as a vibration channel, its pulse train
+    reads as a failing bearing (1515 mV overall, kurtosis 15.94). Evidence:
+    CONTRIBUTING.md, "E14. Tachometer".
     """
     cfg = collector.config
     for old in [c for c, r in cfg.channel_roles.items() if r == 'tachometer']:
@@ -300,18 +288,10 @@ class GUI:
                 dpg.bind_item_theme(ui.ACQ_TOGGLE, theme)
 
     def _schedule_status_timeout(self):
-        """Re-arm the stale-frame watchdog: one float store.
+        """Re-arm the stale-frame watchdog: set a deadline of 2 frame periods.
 
-        This used to cancel a threading.Timer and construct a new one -- an OS
-        thread -- on EVERY displayed frame, and then flip a dearpygui widget
-        from that thread. Both halves were wrong. The thread churn is pure
-        waste at 2 frames/s and worse at higher rates, and _set_stream_status
-        is a DPG call, which has no business running off the render thread at
-        all.
-
-        A deadline checked in _poll_new_frames does the same job: the render
-        loop already runs every tick whether or not a frame arrived, which is
-        exactly when this check needs to happen.
+        _poll_new_frames checks the deadline on the render thread at each tick.
+        Do not use a timer thread: dearpygui calls must stay on the render thread.
         """
         self._status_deadline = (time.monotonic()
                                  + 2.0 * self.collector.config.acquisition_period)
@@ -446,23 +426,10 @@ class GUI:
     def _update_fft_peaks_table(self, columns: list[str], rows: list[tuple], ch: int):
         """Refresh one channel's peaks table in place, reusing its widgets.
 
-        This used to delete every column and row and build them again from
-        scratch, once per vibration channel, every frame -- from BOTH branches
-        of _update_freq_plot, so it ran even with zero peaks. select_peaks
-        reports a corpus median of 40 lines, so at 40 rows that was ~164 widget
-        create/destroy calls per channel per frame (2 columns + 40 rows
-        destroyed, 2 columns + 40 rows + 80 texts created), plus a full
-        dearpygui table layout pass. It scaled strictly with channel count --
-        ~1300 widget operations per frame at 8 channels, roughly 80% of all
-        per-frame DPG traffic -- and was one of the three causes of the mouse
-        stutter this branch was opened to find.
-
-        Every plot *series* in this file was already updated the right way,
-        with set_value on an item created once in _add_channel_series. This is
-        the same idea for a table: columns and rows are created on demand,
-        relabelled or set_value'd thereafter, and surplus rows are hidden
-        rather than deleted. The pool only ever grows to the largest row count
-        a channel has actually needed, so the common case costs nothing extra.
+        Rows are a pool: created on demand, then updated with set_value, and
+        surplus rows are hidden, not deleted. Do not rebuild the table for each
+        frame (about 164 widget operations per channel). Evidence:
+        CONTRIBUTING.md, "E19. GUI render cost".
         """
         with _profile.timed(_profile.GUI_PEAKS_TBL):
             self._update_fft_peaks_table_inner(columns, rows, ch)
@@ -525,10 +492,9 @@ class GUI:
             return
         time = result.time_vec * 1000.0  # convert s → ms (axis label is "Time, ms")
         signal = result.time_data
-        # Integrated/differentiated traces cover only the middle of the block
-        # (overlap-save — see collector.process_sample step 8), so the trace no
-        # longer necessarily starts at t=0. Remember where it does start so the
-        # fixed autoscale window lands on data rather than on empty axis.
+        # Integrated and differentiated traces cover only the middle of the
+        # block (overlap-save, see collector.process_sample), so the trace can
+        # start after t=0. Keep the start, so that autoscale shows data.
         if len(time):
             self._last_time_x0_ms = float(time[0])
         dpg.set_value(ui.plt_time_series(ch), [time.tolist(), signal.tolist()])
@@ -546,16 +512,10 @@ class GUI:
         if lo > 0 and hi > lo:
             return (lo, hi)
 
-        # Cached per channel. suggest_band runs a full rFFT of the raw block
-        # and a direct np.convolve over it, and it ran once per channel per
-        # frame. Caching is not only cheaper, it is what _on_env_auto_band's
-        # docstring already says is wanted -- "the band then stays put across
-        # frames instead of drifting each time". A band that moves every frame
-        # makes the envelope plot's own axis unstable, which is the opposite
-        # of what an analyst comparing frames needs.
-        #
-        # Invalidated by the sample rate changing, and explicitly by
-        # _invalidate_auto_band() when the user acts on the band controls.
+        # Cached per channel, so the auto band stays the same from frame to
+        # frame and the envelope axis is stable. A new sample rate makes a new
+        # key; _invalidate_auto_band() clears the cache when the user edits
+        # the band controls.
         key = (ch, float(samplerate))
         if key in self._env_auto_band:
             return self._env_auto_band[key]
@@ -580,16 +540,11 @@ class GUI:
         self._redraw()
 
     def _update_env_fmax_warning(self, samplerate: float):
-        """Warn when the raw acquisition bandwidth is too narrow for envelope analysis.
+        """Warn when the raw-rate Nyquist is below envelope.MIN_USEFUL_NYQUIST_HZ.
 
-        Envelope analysis reads the raw acquisition signal directly (see
-        DataCollector.eu_scaled_raw) rather than the maxfreq-decimated
-        display data, so under the shipped RAW_SAMPLERATE_HZ this is a rare
-        safety net rather than something F_max choice can trigger day to
-        day. It still matters if RAW_SAMPLERATE_HZ is ever lowered, or for a
-        file captured under an older version at a lower rate: a bearing
-        housing resonance (typically 2-20 kHz) that doesn't fit under
-        Nyquist isn't in the block at all, at any band setting.
+        The envelope reads the raw-rate signal, so F_max does not trigger this.
+        A file recorded at a lower raw rate can: then a housing resonance
+        (typically 2 kHz to 20 kHz) is possibly not in the block at all.
         """
         if not dpg.does_item_exist(ui.ENV_FMAX_WARNING):
             return
@@ -609,25 +564,16 @@ class GUI:
     def _update_envelope_plot(self, sample: 'rev80.VibeSample | None', ch: int):
         """Band-pass, demodulate, and plot the envelope spectrum for one channel.
 
-        Takes the raw VibeSample, not process_sample()'s ChannelResult:
-        ChannelResult.time_data is decimated to the maxfreq-driven display
-        rate, which would throw away exactly the high-frequency headroom
-        this tab exists to use. See DataCollector.eu_scaled_raw.
-
-        Skipped entirely when the tab is disabled -- not every job is a
-        bearing job, and there's no point band-pass filtering and running a
-        Hilbert transform every frame for a plot nobody can see.
+        Takes the raw VibeSample, not the ChannelResult: the ChannelResult is
+        at the display rate and does not hold the high frequencies that this
+        tab uses. See DataCollector.eu_scaled_raw. Does nothing when the
+        Envelope tab is disabled or its plot is not on screen.
         """
         if not self.collector.config.envelope_enabled:
             return
-        # Second gate, and the one the docstring above always claimed: enabled
-        # is not the same as on screen. With the Envelope tab enabled but the
-        # user sitting on Spectrum, this whole chain -- a butter design, a
-        # sosfiltfilt, a Hilbert transform and, when the band is auto, a
-        # suggest_band convolution -- ran for every channel every frame for a
-        # plot nobody could see. Checking the PLOT rather than the tab is
-        # deliberate: an unselected tab still renders its own header button, so
-        # the tab itself reports visible either way.
+        # Enabled is not the same as on screen. The chain costs about 2.8 ms
+        # per channel per frame, so skip it for a hidden plot. Evidence:
+        # CONTRIBUTING.md, "E19. GUI render cost".
         if not self._envelope_on_screen():
             return
         with _profile.timed(_profile.GUI_ENVELOPE):
@@ -635,17 +581,12 @@ class GUI:
 
     @staticmethod
     def _envelope_on_screen() -> bool:
-        """Is the Envelope plot actually being rendered?
+        """True when the Envelope plot is rendered.
 
-        Fails OPEN. Skipping the work costs CPU; skipping it wrongly leaves a
-        blank plot on a bearing job with no indication why, which is the worse
-        failure by a wide margin. So any surprise from the visibility query --
-        a missing item, a dearpygui version that does not track `visible` for
-        this widget type (it raises KeyError for a tab, for instance) -- means
-        "run it", not "skip it".
-
-        Queries the PLOT rather than the tab deliberately: an unselected tab
-        still renders its own header button and reports visible either way.
+        Fails open: any error from the visibility query returns True, because
+        a blank plot with no reason is worse than CPU time. Queries the plot,
+        not the tab: an unselected tab shows its header button, so the tab
+        always reports visible (and raises KeyError in some dearpygui versions).
         """
         try:
             return bool(dpg.is_item_visible(ui.PLT_ENV))
@@ -697,9 +638,8 @@ class GUI:
         if ch is None:
             return
         signal, samplerate, _unit = self.collector.eu_scaled_raw(ch, raw_frame[ch])
-        # Drop the cache first: this button means "pick one from the frame I am
-        # looking at NOW", so returning a band derived from an earlier frame
-        # would make it do nothing visible.
+        # Drop the cache first: this button means "pick a band from the frame
+        # on screen now", not from an earlier frame.
         self._invalidate_auto_band()
         band = self._env_band_for(signal, samplerate, ch)
         if band is None:
@@ -769,9 +709,8 @@ class GUI:
     def _populate_tach_tab(self):
         """Push the collector's tach state into the tab's widgets.
 
-        Called after a device config is applied, so the tab shows what was
-        restored rather than its construction defaults -- which is what made
-        the setup look like it had reverted.
+        Call it after a device config is applied, so the tab shows the restored
+        values, not its construction defaults.
         """
         self._refresh_tach_channel_items()
         tach_channels = self.collector.config.tach_channels
@@ -810,23 +749,7 @@ class GUI:
         dpg.set_value(ui.TACH_CHANNEL, sel)
 
     def _on_tach_channel_change(self):
-        """Claim (or release) a channel for the tachometer role.
-
-        This tab is the only writer of channel_roles, so there is nowhere for a
-        second control to disagree with it.
-
-        Claiming a channel **enables it**. `config.tach_channels` filters by
-        enabled_channels -- deliberately, so a tach role left on a switched-off
-        input does not send the collector hunting for a pulse train nobody is
-        sampling -- which meant claiming a disabled channel previously did
-        nothing at all, silently. Choosing a channel here is a statement that it
-        carries the tachometer, so enabling it is what the operator meant.
-
-        A channel enabled *implicitly* this way is switched off again when the
-        role is released. Leaving it on would hand back an enabled vibration
-        channel nobody asked for, carrying a pulse train -- the overall
-        1515 mV, kurtosis 15.94 reading this feature exists to prevent.
-        """
+        """Claim or release a channel for the tachometer role (see apply_tach_claim)."""
         val = dpg.get_value(ui.TACH_CHANNEL) or "(none)"
         ch = None if val == "(none)" else int(val.split(":", 1)[0])
         before = list(self.collector.config.enabled_channels)
@@ -835,10 +758,9 @@ class GUI:
             self._tach_settings_from_ui() if ch is not None else None)
         changed = before != self.collector.config.enabled_channels
 
-        # The stream is constructed with a fixed channel list, so a channel
-        # enabled underneath a running acquisition is simply not being
-        # sampled. Restart rather than leave the tab showing an empty plot
-        # that looks like a dead sensor.
+        # The stream has a fixed channel list: it does not sample a channel
+        # that is enabled while it runs. Restart it, or the tab shows an empty
+        # plot that looks like a dead sensor.
         if changed and self.collector.is_streaming:
             self._stop_stream()
             self._start_stream()
@@ -875,9 +797,8 @@ class GUI:
     def _update_tach_tab(self):
         """Live waveform, edges and readouts while the tab is open.
 
-        Only runs when the dialog is actually visible -- a modal does not block
-        dearpygui's render loop, so this would otherwise cost a plot update
-        every frame for a screen nobody is looking at.
+        Returns at once when the config dialog is not shown. A modal does not
+        stop the render loop, so without this check the plot updates each frame.
         """
         if not dpg.does_item_exist(ui.TACH_PLOT):
             return
@@ -921,10 +842,9 @@ class GUI:
 
         res = self.collector.tach_for(ch, sample)
 
-        # Two independent cautions, either of which opens the box. The floor
-        # is about the block being too short for this shaft; the sampling one
-        # is about the pulse rate being too fast for the fixed acquisition
-        # rate, which only a ppr above 1 can cause.
+        # Two independent cautions; each one opens the box. The floor caution:
+        # the block is too short for this shaft speed. The sampling caution:
+        # the pulse rate is too high for the raw rate (only with ppr above 1).
         show_floor = res.quality in (rev80_tach.QUALITY_TOO_FEW_EDGES,
                                      rev80_tach.QUALITY_NO_SIGNAL)
         samples_per_pulse = (
@@ -954,10 +874,9 @@ class GUI:
         x = np.asarray(sample.data, dtype=np.float64)
         t_axis = np.arange(x.size) / fs
 
-        # Align the first detected pulse to t=0. A free-running trace jitters
-        # by up to a whole period between frames, which makes it hard to see
-        # whether the threshold sits where you want it; aligned, successive
-        # frames overlay and the adjustment is legible.
+        # Align the first detected pulse to t=0, so that frames overlay and the
+        # threshold position is easy to see. A free trace moves by up to one
+        # period between frames.
         edges = np.asarray(res.edge_times_s, dtype=np.float64)
         t0 = float(edges[0]) if edges.size else 0.0
         t_axis = t_axis - t0
@@ -976,11 +895,9 @@ class GUI:
         dpg.set_value(ui.TACH_PLOT_EDGES,
                       [edges_shifted.tolist(), [level] * edges_shifted.size])
 
-        # A couple of periods of lead-in and run-out, so the pulses sit inside
-        # the frame rather than against its edges. The period here is the
-        # *pulse* period, not the shaft period: at 6 pulses/rev a window of
-        # n_edges shaft revolutions is six times too wide and the trace
-        # collapses to a stripe.
+        # Two periods before and after the pulses. Use the pulse period, not
+        # the shaft period: at 6 pulses/rev the shaft period makes the window
+        # 6 times too wide.
         if res.shaft_hz:
             period = 1.0 / (res.shaft_hz * max(1, res.pulses_per_rev))
             dpg.set_axis_limits(ui.TACH_PLOT_X, -2.0 * period,
@@ -1002,11 +919,8 @@ class GUI:
     def _update_tach_cards(self) -> None:
         """Refresh every tachometer channel's result card.
 
-        Separate from _update_tach_tab, which only runs while the config dialog
-        is on screen. The card is the readout that stays behind once the dialog
-        closes, so it has to update on the main render path -- both read the
-        same TachResult, so the two cannot disagree about what the shaft is
-        doing.
+        Runs on the main render path, also when the config dialog is closed.
+        It reads the same TachResult as _update_tach_tab, so the two agree.
         """
         frame = self.collector.current_frame()
         for ch in self.collector.config.tach_channels:
@@ -1027,9 +941,8 @@ class GUI:
     def _update_one_x(self, result: 'rev80.ChannelResult', ch: int):
         """Show the 1x level and marker, or hide both when there is no tach.
 
-        Hidden rather than zeroed: a channel with no shaft-speed reading has no
-        1x level, and displaying 0.0 would be a measured value rather than a
-        missing one.
+        Hidden, not zeroed: with no shaft-speed reading there is no 1x level,
+        and 0.0 would look like a measured value.
         """
         amp = result.one_x_amplitude
         f_1x = result.one_x_hz
@@ -1053,10 +966,9 @@ class GUI:
     def _update_avg_count_text(self, result: 'rev80.ChannelResult'):
         """Report how many frames were actually averaged, not how many were asked for.
 
-        Early in a capture there are fewer than N; frames rejected for overload
-        or a degraded stream lower it further. Stating the configured N while
-        delivering fewer is the F-8 failure mode -- what is claimed has to be
-        what was computed.
+        Early in a capture there are fewer than N frames, and overflow or
+        degraded frames are not averaged. The label must show the number that
+        was computed, not the configured N.
         """
         if not dpg.does_item_exist(ui.FFT_AVG_COUNT_TEXT):
             return
@@ -1072,10 +984,8 @@ class GUI:
     def _update_peak_count_text(self, n_found: int, cap: int):
         """Say how many lines passed the gate, and whether the cap is hiding any.
 
-        The count is now an output of the significance threshold rather than
-        something the user dialled in, so it has to be visible: without it a
-        capped table looks identical to a spectrum that genuinely had few
-        significant lines.
+        The significance threshold sets the count, so show it: without it, a
+        capped table looks the same as a spectrum with few significant lines.
         """
         if not dpg.does_item_exist(ui.FFT_PEAKS_FOUND_TEXT):
             return
@@ -1270,9 +1180,7 @@ class GUI:
     def _update_envelope_tab_visibility(self):
         """Show/hide the Envelope tab per AcquisitionSettings.envelope_enabled.
 
-        Not every job is a bearing job, and the demodulation controls + plot
-        are dead weight -- and a source of "what does this mean?" confusion
-        -- on ones that aren't.
+        Envelope analysis is for bearing jobs. On other jobs the tab is hidden.
         """
         if dpg.does_item_exist(ui.TAB_ENVELOPE):
             dpg.configure_item(ui.TAB_ENVELOPE, show=self.collector.config.envelope_enabled)
@@ -1413,9 +1321,8 @@ class GUI:
     def _on_peak_threshold_change(self, sender=None, data=None):
         """Push the significance threshold into the config and reprocess.
 
-        Unlike the old peak-count spinner this is not a display-only setting:
-        it changes which lines are selected, so the frame has to go back
-        through process_sample rather than just being re-drawn.
+        This is not a display-only setting: it changes which lines are
+        selected, so the frame goes through process_sample again.
         """
         value = float(dpg.get_value(ui.FFT_PEAK_THRESHOLD_DB))
         self.collector.config.peak_threshold_db = max(0.0, value)
@@ -1567,11 +1474,10 @@ class GUI:
         fs_ks = cfg.samplerate / 1000
         t_col = cfg.acquisition_period
         hp = f"HP {cfg.highpass_fc:.0f} Hz" if cfg.highpass_enabled else "HP off"
-        # Label F_max, not fs/2. Calling fs/2 the "AA" frequency read as a spec
-        # the instrument does not meet: measured alias rejection at the
-        # frequency folding into the top of the displayed band is -21.8 dB, and
-        # effectively 0 dB at fs/2. The band above F_max is a guard band and is
-        # no longer displayed at all (see collector.process_sample step 6).
+        # Label F_max, not fs/2. The band above F_max is a guard band and is
+        # not displayed: alias rejection is -21.8 dB for the frequency that
+        # folds onto F_max, and about 0 dB at fs/2. Evidence: CONTRIBUTING.md,
+        # "E11. Display rate, block size and line count".
         fmax_lbl = f"F_max {cfg.maxfreq:.0f} Hz"
         # Report the resolution actually delivered, not the one requested.
         info = (
@@ -1633,11 +1539,9 @@ class GUI:
         else:
             mem_str = f"{total_mem} B"
 
-        # Averaging window, in seconds. N alone is hard to reason about; what
-        # the analyst actually needs to know is how long the machine has to
-        # stay steady, and how long they will wait for the estimate to fill.
-        # A frame is 1/binsize seconds rounded up to a whole sample (see
-        # AcquisitionSettings.blocksize), so the window is ~N/binsize.
+        # Averaging window, in seconds: how long the machine must stay steady.
+        # A frame is 1/binsize seconds, rounded up to a whole sample (see
+        # AcquisitionSettings.blocksize), so the window is about N/binsize.
         if dpg.does_item_exist(ui.ACQ_DLG_AVG_TIME):
             if dpg.get_value(ui.ACQ_DLG_AVG_ENABLED):
                 n_req = max(1, int(dpg.get_value(ui.ACQ_DLG_AVG_N)))
@@ -1973,18 +1877,14 @@ class GUI:
         threading.Thread(target=self._discover_devices, daemon=True).start()
 
     def _discover_devices(self):
-        """Background: find sensors, then update the device list.
+        """Background thread: find sensors, then update the device list.
 
-        Does NOT auto-disconnect the current sensor — doing so from a background
-        thread races with main-thread GUI operations and can corrupt widget state.
-        If a device is already connected the scan is skipped (PicoScope cannot be
-        opened twice); the existing sensor is kept as the sole list entry.
-
-        _rebuild_device_channel_rows is intentionally NOT called here: it is
-        already invoked on the main thread by _on_device_connect_toggle, and
-        calling it from a background thread concurrently with main-thread
-        widget reads (_apply_channel_assignments_from_widgets) causes DPG
-        state corruption (combo returns stale/default values).
+        Does not disconnect the current sensor: from this thread that races
+        the main thread and corrupts widget state. With a device connected, the
+        scan is skipped (a PicoScope cannot be opened twice). Do not call
+        _rebuild_device_channel_rows here: _on_device_connect_toggle calls it
+        on the main thread, and a second call from this thread makes combos
+        return stale values.
         """
         if self.collector.sensor is not None:
             # Device already connected — cannot re-scan while handle may be open.
@@ -1994,15 +1894,12 @@ class GUI:
         self._repopulate_device_list()
 
     def _autoconnect(self):
-        """Background startup thread: scan for PicoScopes and connect to the first found.
+        """Background startup thread: scan for PicoScopes and connect to the first one.
 
-        Runs once after the viewport is shown. Mirrors the manual connect path in
-        _on_device_connect_toggle so the user lands in a ready state without opening
-        the Device Setup dialog. Does not start the stream — the user controls that.
-
-        Safe to run concurrently with the render loop: the slow operations
-        (VibeSensor.find, connect_sensor, config load) are thread-safe; DPG updates
-        follow the same background-thread pattern as _discover_devices.
+        Runs once after the viewport is shown. Follows the manual connect path
+        of _on_device_connect_toggle. Does not start the stream. The slow steps
+        (VibeSensor.find, connect_sensor, config load) are thread-safe; widget
+        updates follow the same pattern as _discover_devices.
         """
         if rev80.PICOSCOPE_DRIVER_MISSING:
             log.debug("Autoconnect: PicoScope driver not available")
@@ -2134,10 +2031,9 @@ class GUI:
                     dpg.add_theme_color(dpg.mvThemeCol_Text, grey_color, category=dpg.mvThemeCat_Core)
             # Line 1: color swatch + channel name
             with dpg.group(horizontal=True, parent=ui.DEVSETUP_CHANNEL_GROUP):
-                # A tachometer channel's Enable is owned by the Tachometer tab.
-                # Leaving it switchable here would let the operator silently
-                # switch off the tach -- tach_channels filters by enabled, so
-                # the rate would simply stop with no explanation.
+                # The Tachometer tab owns a tachometer channel's Enable. If it
+                # were switchable here, the shaft speed would stop with no
+                # message, because tach_channels ignores disabled channels.
                 _en = dpg.add_checkbox(
                     label="Enable",
                     tag=ui.scope_ch_enabled(ch),
@@ -2647,11 +2543,8 @@ class GUI:
                             sg.attrs[k] = v
             log.info(f"Saved config to {session_h5.name}")
         except (OSError, KeyError) as exc:
-            # Narrow on purpose: this used to be a bare `except Exception`,
-            # which swallowed the NameError from a missing h5py import and
-            # reported it as a disk failure, misdirecting the user toward
-            # permissions. Only genuine I/O (OSError) and missing-group
-            # (KeyError) failures belong here; programming errors must surface.
+            # Catch only I/O (OSError) and missing-group (KeyError) errors.
+            # A programming error must not be logged as a disk failure.
             log.error(f"_on_sb_save_config: failed to patch {session_h5}: {exc}")
             return
         # Reprocess trend with the new config
@@ -3016,10 +2909,8 @@ class GUI:
         out_dir = mon.get("output_dir") or ""
         compress = mon.get("compression", "gzip") == "gzip"
 
-        # Fall back to the NEAREST preset, not a hardcoded 3600. config.py
-        # seeds interval_s: 600, which was not a preset member, so the widget
-        # showed '1 h' and saving wrote 3600 back — silently turning a
-        # 10-minute logging interval into an hourly one.
+        # An interval that is not a preset shows the nearest preset. A fixed
+        # fallback label would write a different interval back on save.
         interval_label = rev80.MONITOR_INTERVAL_PRESETS.get(
             int(interval_s),
             rev80.MONITOR_INTERVAL_PRESETS[nearest_interval_preset(interval_s)],
@@ -3069,11 +2960,9 @@ class GUI:
         """Canonical hook type to persist, without clobbering a headless setting.
 
         The combo cannot show 'spectral'/'both' (see GUI_ANOMALY_HOOK_TYPES), so
-        a config written by the headless front end loads as 'rms' for display.
-        Writing that back would silently rewrite the user's setting the first
-        time they merely opened this dialog — the S-07 failure mode. If the
-        stored value is one the GUI cannot offer, and the widget still shows the
-        clamped stand-in, keep what was stored.
+        a headless config shows as 'rms'. If the stored value is one the GUI
+        cannot offer, and the widget still shows the stand-in, keep the stored
+        value. Otherwise, opening this dialog would change the headless setting.
         """
         shown = canonical_hook_type(widget_value)
         stored = getattr(self, '_stored_hook_type', None)
@@ -3097,8 +2986,8 @@ class GUI:
             'interval_s':        float(interval_s),
             'pre_burst_s':       float(_get(ui.MON_DLG_PRE_BUFFER,  30.0)),
             'burst_duration_s':  float(_get(ui.MON_DLG_BURST_DUR,   120.0)),
-            # Preserved, not rewritten: there is no widget for it, so a
-            # literal here silently undid any hand edit to the YAML.
+            # Keep the value from the YAML: there is no widget for it, and a
+            # fixed value here would undo a hand edit.
             'max_burst_s':       float(
                 acq_cfg.get('monitor', {}).get('max_burst_s', 600.0)),
             'output_dir':        str(_get(ui.MON_DLG_OUTPUT_DIR, '')).strip() or None,
@@ -3142,9 +3031,8 @@ class GUI:
         pre_buf_s   = float(dpg.get_value(ui.MON_DLG_PRE_BUFFER)) if dpg.does_item_exist(ui.MON_DLG_PRE_BUFFER) else 0.0
 
         cfg = self.collector.config
-        # raw_blocksize/raw_samplerate, not blocksize/samplerate: what's
-        # actually written to session.h5 is the raw (acquisition-rate) data,
-        # not the maxfreq-decimated display view -- see RAW_SAMPLERATE_HZ.
+        # raw_blocksize/raw_samplerate, not blocksize/samplerate: session.h5
+        # stores the raw-rate data, not the display-rate data.
         block_s = cfg.raw_blocksize / cfg.raw_samplerate if cfg.raw_samplerate else 1.0
         block_bytes = cfg.raw_blocksize * len(cfg.enabled_channels) * 8  # float64
         compressed = block_bytes * 0.5  # gzip ~50% compression
@@ -3167,11 +3055,8 @@ class GUI:
             burst_est = f"~{burst_bytes / 1e3:.0f} KiB/burst"
 
         estimate = f"Interval: {interval_est}\nBurst: {burst_est}"
-        # >10 GB/year is well past what a daily/weekly-interval long run
-        # costs (the intended use for a run approaching a year) -- flag it
-        # in case the interval was left at something much tighter than
-        # intended, rather than silently letting it grow. MON_DLG_ESTIMATE
-        # is guaranteed to exist here (checked at the top of this method).
+        # Flag more than 10 GB/year: a long run with a daily or weekly
+        # interval stores less, so the interval is possibly set too short.
         over_10gb = per_year > 10e9
         dpg.set_value(
             ui.MON_DLG_ESTIMATE,
@@ -3222,10 +3107,9 @@ class GUI:
         now_local  = datetime.now()
         session_id = now_local.strftime('%Y-%m-%d-%H%M%S')
 
-        # max_burst_s has no widget -- it is an acquisition.yaml-only setting.
-        # Read it rather than pinning it to a literal: it is the bound that
-        # stops an unattended burst growing until the OOM killer takes the
-        # process (audit S-02).
+        # max_burst_s has no widget: read it from acquisition.yaml. It limits
+        # the memory that an unattended burst can use. Do not replace it with
+        # a fixed value.
         mon_saved = _cfg.load_acquisition_config().get('monitor', {})
 
         session = session_from(
@@ -3242,8 +3126,8 @@ class GUI:
             cooldown_s=cooldown_s,
         )
 
-        # The frame cache must hold the pre-trigger window *plus* the trigger
-        # frame; the rule is shared with headless, which had lost the +1.
+        # The frame cache must hold the pre-trigger window plus the trigger
+        # frame. Headless uses the same shared rule.
         self.collector.resize_frame_cache(required_cache_frames(
             self.collector.config.cache_frames, session.pre_buffer_frames))
 
@@ -3288,9 +3172,11 @@ class GUI:
     def _build_anomaly_hook(self, pre_buffer_s: float | None = None):
         """Read anomaly config widgets and return a configured hook.
 
-        Built once at session start from the config dialog (or saved config
-        defaults if the dialog was never opened) — the hook is then active for
-        the whole session; there is no separate arm/disarm step.
+        Built once at session start; the hook is active for the whole session.
+        Reads the Monitor tab widgets. They hold the acquisition.yaml values
+        only after the Monitor tab was opened in this run; before that they
+        hold their construction defaults. The `_get` fallbacks apply only when
+        a widget does not exist.
         """
         from rev80.monitor.anomaly import (
             RmsThresholdHook, SpectralThresholdHook, FixedThresholdHook,
@@ -3308,13 +3194,11 @@ class GUI:
         # ── EWMA-based hooks (RMS / Spectral) — gated by the main Enable switch
         if _get(ui.MON_ANOM_ENABLED, False):
             hook_type = canonical_hook_type(_get(ui.MON_ANOM_HOOK, 'RMS'))
-            # Default 10, matching config.py's seeded `warmup` and headless.
-            # This copy defaulted to 30, so a config missing the key produced
-            # a 3x longer baseline warm-up in the GUI than headless.
+            # Fallback 10, the same as config.py's seeded `warmup` and headless
+            # (tests/test_anomaly_hook_build.py compares the two copies).
             warmup    = int(_get(ui.MON_ANOM_RMS_WARMUP, 10))
-            # Hoisted above the hook_type chain: the spectral branch reads
-            # `period` unconditionally, so a Spectral-only config raised
-            # UnboundLocalError when it was bound inside the RMS branch.
+            # Bound before the hook_type branches: the spectral branch reads
+            # `period` too.
             period    = self.collector.config.acquisition_period
 
             if hook_type in ('rms', 'both'):
@@ -3338,12 +3222,10 @@ class GUI:
                     burst_duration_s     = burst_dur,
                 ))
 
-            # Unreachable from the GUI while GUI_ANOMALY_HOOK_TYPES excludes
-            # 'spectral'/'both': the combo cannot produce them and a stored value
-            # is clamped on load. Kept rather than deleted so this builder stays
-            # shape-compatible with the headless copy, which still offers the
-            # hook, and so tests/test_anomaly_hook_build.py keeps checking both
-            # copies for drift. Delete both together if R39 lands on "remove".
+            # Not reachable from the GUI: GUI_ANOMALY_HOOK_TYPES excludes
+            # 'spectral'/'both'. Kept so this builder has the same shape as the
+            # headless copy, which offers the hook, and so the test can compare
+            # both. Tracked as R39 in doc/PROGRESS.md; change both copies together.
             if hook_type in ('spectral', 'both'):
                 fmin_v      = float(_get(ui.MON_ANOM_SPEC_FMIN, 0.0))
                 fmax_v      = float(_get(ui.MON_ANOM_SPEC_FMAX, 0.0))
@@ -3352,8 +3234,8 @@ class GUI:
                                if period > 0 else DEFAULT_SPEC_ALPHA)
                 hooks.append(SpectralThresholdHook(
                     spectral_threshold_pct = float(_get(ui.MON_ANOM_SPEC_PCT, 50.0)),
-                    # Default 10, matching config.py's seeded `spec_n` and
-                    # headless. This copy defaulted to 3.
+                    # Fallback 10, the same as config.py's seeded `spec_n`
+                    # and headless.
                     consecutive_n          = int(_get(ui.MON_ANOM_SPEC_N,     10)),
                     baseline_alpha         = spec_alpha,
                     min_baseline_samples   = warmup,
@@ -3715,10 +3597,9 @@ class GUI:
             channel_name = info.get("channel_name", "")
             target_unit = info.get("target_unit", "")
             amplitude_mode = info.get("amplitude_mode", "")
-            # The role decision is shared with headless (audit H-01), and it
-            # owns `enabled` too: a tach-role channel is forced on, because
-            # config.tach_channels filters by enabled_channels and a claimed
-            # -but-disabled tach is one that silently does not run.
+            # One role decision for the GUI and headless (in config.py). It
+            # also sets `enabled`: a tachometer channel is always enabled,
+            # because config.tach_channels ignores disabled channels.
             role, tach_settings, enabled = _cfg.channel_role_state(info)
             sensor = self.registry.find_by_id(sensor_id) if sensor_id else None
             self.collector.set_scope_sensor(ch, sensor)
@@ -3759,9 +3640,8 @@ class GUI:
             if ch < self._num_channels:
                 self._add_channel_series(ch)
         self._update_axis_assignment()
-        # After the roles are restored, so the tab shows what was loaded rather
-        # than its construction defaults -- which is what made a saved tach
-        # setup look like it had reverted to a plain vibration channel.
+        # After the roles are restored, so the tab shows the loaded values,
+        # not its construction defaults.
         self._populate_tach_tab()
         self._update_results_section_visibility()
 
@@ -3812,17 +3692,11 @@ class GUI:
                                 dpg.add_text("No device connected.")
 
                     # ── Tachometer tab ─────────────────────────────────────
-                    # This tab OWNS the tachometer role. The Channels tab shows
-                    # a claimed channel read-only: two screens able to set the
-                    # role could disagree, one cannot.
-                    #
-                    # The live plot lives here rather than in the main display
-                    # because tach setup is a commissioning activity done once
-                    # per installation, not a monitoring one. Adjust the
-                    # threshold, watch the edges move, confirm the rate -- all
-                    # on one screen. Closing the dialog leaves only the
-                    # derivatives, which is why there is no visibility toggle
-                    # for the operator to manage.
+                    # This tab owns the tachometer role. The Channels tab shows
+                    # a claimed channel read-only, so two screens cannot
+                    # disagree. The live plot is here, not in the main display:
+                    # tach setup is done once per installation. After the
+                    # dialog closes, the result card shows the shaft speed.
                     with dpg.tab(label="Tachometer", tag=ui.CONFIG_TAB_TACH):
                         with dpg.child_window(autosize_x=True, height=-1):
                             dpg.add_text("Tachometer Channel")
@@ -4144,11 +4018,8 @@ class GUI:
 
                             # Control: declared measurement band for the overall.
                             # Blank/0 means "derive": the highpass edge up to
-                            # F_max. Before this existed the overall spanned
-                            # highpass_fc..fs/2, i.e. up to 2.05x F_max, so it
-                            # included content the user had excluded via F_max
-                            # and was not comparable between two sessions taken
-                            # at different F_max.
+                            # F_max. Two overalls are comparable only when
+                            # their bands are the same.
                             _band_items = ['Full band (HP - F_max)'] + list(rev80.ISO_BAND_PRESETS)
                             _band_cmb = dpg.add_combo(
                                 label="Overall Band", items=_band_items,
@@ -4812,11 +4683,9 @@ class GUI:
                             )
 
                     dpg.add_spacer(height=4)
-                    # Primary peak control. This replaced a plain "show the top
-                    # N by amplitude" spinner, which was the wrong knob: the
-                    # top of that list is monopolised by whichever part of the
-                    # band is loudest, so raising N was the only way to surface
-                    # a sideband family and raising N also pulled in ripple.
+                    # Primary peak control: a significance threshold, not a
+                    # top-N count. A top-N list shows only the loudest part of
+                    # the band. See CONTRIBUTING.md, "E12. Peak selection".
                     _pk_thr = dpg.add_input_float(
                         label="Peak Sig., dB",
                         tag=ui.FFT_PEAK_THRESHOLD_DB,
@@ -4975,15 +4844,14 @@ class GUI:
     # ------------------------------------------------------------------
 
     def _setup_keyboard_handlers(self) -> None:
-        """Register global key bindings via DPG handler registry.
+        """Register global key bindings (Esc closes the open dialog).
 
         Ctrl+A  autoscale plots
         Ctrl+K  start / stop acquisition
         Ctrl+S  save recording
         Ctrl+O  open / load recording
         Ctrl+Q  quit
-        Left    previous frame  (browse mode only)
-        Right   next frame      (browse mode only)
+        Left / Right  previous / next frame (only when not streaming)
         """
         with dpg.handler_registry():
             dpg.add_key_press_handler(callback=self._on_key_press)
@@ -5026,18 +4894,16 @@ class GUI:
         self._set_stream_status("idle")  # apply initial toggle button theme
         log.info("Setup GUI")
         dpg.setup_dearpygui()
-        # TODO: open device connection window automatically at startup so the user
-        #       is prompted to connect a device without needing to find the menu.
-        #       Uncomment the line below once the config dialog open/close lifecycle
-        #       is stable (see _on_config_close TODO above).
+        # TODO: open the Device tab at startup when no device is found, so the
+        #       user does not have to find the menu.
         # self._open_config_dialog(ui.CONFIG_TAB_DEVICE)
 
     def _load_from_path(self, path_str: str) -> None:
-        """Load an h5 file (v4 measurement or v5 monitor session) by path.
+        """Load an h5 file (v5 measurement or v6 monitor session) by path.
 
-        Detects the file type from the HDF5 structure and routes to the
-        appropriate loader.  Called after the first render frame so all
-        DPG plot series exist.
+        A file with a /monitor group, or a directory with a session.h5, loads
+        as a session; any other file as a measurement. Call it after the first
+        render frame, so that all plot series exist.
         """
         p = Path(path_str.strip())
         if not p.exists():
@@ -5090,12 +4956,10 @@ class GUI:
         log.info("Start DPG backend")
         _loaded = not initial_file   # False = load pending after first frame
         while dpg.is_dearpygui_running():
-            # Guarded: an unhandled exception here used to propagate out of
-            # run(), skip cleanup() entirely, and leave ps4000aCloseUnit
-            # uncalled — so the next launch failed with PICO_NOT_FOUND until
-            # the USB was replugged (audit S-01). It also downgrades a
-            # malformed .h5 (X-02, ZeroDivisionError on binsize=0) from a
-            # process-ending crash to a logged error.
+            # Guarded: an exception must not leave run() without cleanup().
+            # Otherwise ps4000aCloseUnit is not called, and the next launch
+            # fails with PICO_NOT_FOUND until the USB is replugged. A bad .h5
+            # file then gives a logged error, not a crash.
             try:
                 if not _loaded:
                     # Defer one frame so all DPG series are fully initialised
@@ -5103,12 +4967,9 @@ class GUI:
                     self._load_from_path(initial_file)
                     _loaded = True
                     continue
-                # gui.frame is the whole loop body (the true frame period);
-                # gui.render is dearpygui alone. The two side by side are what
-                # tell a main-thread cost from a hardware-thread one stealing
-                # the GIL: a long render with a short proc.total means the
-                # acquisition thread is the problem, and the reverse means the
-                # DSP is.
+                # gui.frame is the whole loop body; gui.render is dearpygui only.
+                # A long render with a short proc.total points to the
+                # acquisition thread (GIL); the reverse points to the DSP.
                 with _profile.timed(_profile.GUI_FRAME):
                     self._poll_new_frames()
                     with _profile.timed(_profile.GUI_RENDER):
@@ -5118,20 +4979,16 @@ class GUI:
                 if not self._handle_render_error(exc):
                     break
 
-    #: Consecutive failed render frames before giving up and shutting down.
-    #: A fault that repeats every frame is not transient, and spinning on it
-    #: forever is worse than exiting cleanly — at least an exit closes the
-    #: device. Sized so a brief burst of bad frames is ridden out.
+    #: Consecutive failed render frames before a clean shutdown (which closes
+    #: the device). A short burst of bad frames does not stop the app.
     MAX_CONSECUTIVE_RENDER_ERRORS: int = 30
 
     def _handle_render_error(self, exc: BaseException) -> bool:
         """Record a render-loop failure. Returns True to keep rendering.
 
-        Deduplicated by exception TYPE: a persistent fault would otherwise
-        write a traceback at frame rate and roll every other diagnostic out of
-        the rotating log, which is exactly the S-09 failure mode. The first of
-        each type gets a full traceback; repeats are counted silently and
-        summarised on shutdown.
+        Logs one traceback for each exception type. Repeats are counted and
+        summarised at shutdown, because a traceback for each frame would push
+        all other entries out of the rotating log.
         """
         key = type(exc).__name__
         seen = self._render_errors.get(key, 0)
@@ -5154,17 +5011,12 @@ class GUI:
         self._consecutive_render_errors = 0
 
     def cleanup(self):
-        """Shut down in dependency order, and never skip a step on failure.
+        """Shut down in order: stop the monitor, close the device, destroy the DPG context.
 
-        Order matters: the monitor writer must flush and drain BEFORE the
-        device is closed and the DPG context destroyed. It is a daemon thread,
-        so anything still queued when the interpreter exits is lost — possibly
-        mid-h5py.File(..., 'a'), leaving a truncated session (audit S-01).
-
-        Each step is individually guarded: a wedged writer must not prevent
-        ps4000aCloseUnit from running, because a device left open is what
-        makes the NEXT launch fail with PICO_NOT_FOUND until the USB is
-        physically replugged.
+        Idempotent. The writer is a daemon thread and loses queued captures at
+        exit, so the monitor stops first. Each step has its own guard: a writer
+        that hangs must not prevent ps4000aCloseUnit, because a device left open
+        makes the next launch fail with PICO_NOT_FOUND until the USB is replugged.
         """
         if getattr(self, '_cleaned_up', False):
             return

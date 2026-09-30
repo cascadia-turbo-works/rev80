@@ -12,11 +12,8 @@ try:
 except ImportError:
     _stamped_version = "0.0.0+unknown"
 
-# In a source checkout the working tree is the truth: _version.py is stamped by
-# a pre-commit hook that is not installed automatically, and has been observed
-# 100 commits stale — which makes a field log impossible to tie to a build
-# (audit H-03). In an installed or frozen build there is no git, and the stamp
-# is authoritative.
+# In a source checkout `git describe` gives the version (see resolve_version);
+# in an installed or frozen build the setuptools_scm stamp in _version.py does.
 __version__: str = resolve_version(_stamped_version)
 from rev80.util import *  # noqa: F401, F403
 
