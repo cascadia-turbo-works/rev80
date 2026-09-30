@@ -1,22 +1,8 @@
-"""Nothing may grow without a bound during an unattended run (audit S-02, critical).
+"""No monitor buffer grows without a bound during an unattended run.
 
-Three defects that compound into the most likely way an overnight session
-dies, and the one that leaves the least evidence — an OOM kill is SIGKILL, so
-there is no traceback, no atexit and no log line. The app simply vanishes.
-
-  (a) Burst capture retained every frame AND every ChannelResult with no cap.
-  (b) max_burst_s was enforced only inside IntervalGate.enter_burst(), which
-      the manual path calls and the ANOMALY path never did — it set
-      _burst_end_mono directly, so the cap was inert on the path that actually
-      fires unattended.
-  (c) The writer queue was queue.Queue() with NO maxsize, so its
-      `except queue.Full` branch was unreachable dead code and enqueue()
-      always returned True — and enqueue's return is what increments the
-      capture counter, so the UI reported successes that were never written.
-
-Policy, as chosen: bounded queue, drop on full, count the drops and surface
-them. Acquisition must never stall behind a slow disk, and a loss must be
-visible rather than silent.
+An OOM kill is SIGKILL and leaves no log line. The writer queue is bounded and
+drops (and counts) on full, so acquisition never waits for the disk. Burst
+retention is capped, and max_burst_s applies to the anomaly path too.
 """
 
 import queue
@@ -33,7 +19,7 @@ from rev80.monitor.writer import MonitorWriterThread
 
 
 # ---------------------------------------------------------------------------
-# (c) the writer queue is bounded and honest
+# The writer queue is bounded and reports drops
 # ---------------------------------------------------------------------------
 
 def _writer(maxsize=None):
@@ -48,13 +34,10 @@ def _writer(maxsize=None):
 
 
 def test_the_real_constructor_bounds_the_queue():
-    """Exercise MonitorWriterThread.__init__ itself, not a test-built queue.
+    """MonitorWriterThread.__init__ itself creates a bounded queue.
 
-    An earlier version of this file only ever checked a queue the helper had
-    constructed with an explicit maxsize, so reverting the production code to
-    queue.Queue() still passed every test — the same shape of gap as the
-    power-vs-amplitude one in the averaging work. This drives the real
-    __init__ so the bound cannot quietly disappear.
+    The test uses the real constructor, not the _writer() helper, so a revert
+    to an unbounded queue.Queue() fails here.
     """
     session = SimpleNamespace(session_h5=Path('/nonexistent/session.h5'))
     w = MonitorWriterThread(session)          # constructed, never started
@@ -68,10 +51,10 @@ def test_the_real_constructor_starts_with_no_drops():
 
 
 def test_enqueue_reports_failure_when_full():
-    """enqueue()'s return value gates the capture counter, so it must be true.
+    """enqueue() returns False on a full queue.
 
-    With no maxsize it always returned True and the UI counted captures that
-    were never written.
+    The return value gates the capture counter. A True on a full queue would
+    count a capture that is never written.
     """
     w = _writer(maxsize=2)
     assert w.enqueue({'n': 1}) is True
@@ -91,7 +74,7 @@ def test_dropping_does_not_block(monkeypatch):
     """Acquisition must never stall behind the writer."""
     w = _writer(maxsize=1)
     w.enqueue({'n': 1})
-    # If this used a blocking put it would hang here rather than return.
+    # A blocking put would hang here.
     assert w.enqueue({'n': 2}) is False
 
 
@@ -105,7 +88,7 @@ def test_drop_is_logged(caplog):
 
 
 # ---------------------------------------------------------------------------
-# (a) burst retention is capped
+# Burst retention is capped
 # ---------------------------------------------------------------------------
 
 class _NullHook:
@@ -131,8 +114,11 @@ def _controller(max_burst_s=5.0, interval_s=1.0):
 
 
 def test_burst_frame_retention_is_capped():
-    """Every frame AND every ChannelResult were retained, ~3x the raw block
-    each. At F_max 50 kHz that was ~2 GB before the single flush."""
+    """Burst frames and burst results stay at or below _max_burst_frames.
+
+    Each retained frame costs about 2.76 x the raw block, because it keeps
+    the frame and every ChannelResult until the flush.
+    """
     c = _controller()
     cache = deque([{0: object()}], maxlen=32)
     for _ in range(100):
@@ -142,8 +128,8 @@ def test_burst_frame_retention_is_capped():
 
 
 def test_burst_cap_keeps_frames_and_results_aligned():
-    """S-06 territory: the two lists are indexed together, so they must be
-    trimmed together or every overall lands against the wrong waveform."""
+    """The frame and result lists are trimmed together, because the flush
+    indexes them in parallel."""
     c = _controller()
     cache = deque([{0: object()}], maxlen=32)
     for _ in range(100):
@@ -163,7 +149,7 @@ def test_burst_cap_has_a_floor():
 
 
 # ---------------------------------------------------------------------------
-# (b) max_burst_s applies to the anomaly path too
+# max_burst_s applies to the anomaly path too
 # ---------------------------------------------------------------------------
 
 def test_gate_enforces_max_burst_s():
@@ -174,11 +160,7 @@ def test_gate_enforces_max_burst_s():
 
 
 def test_anomaly_burst_end_is_capped_by_max_burst_s():
-    """The anomaly path set _burst_end_mono directly and skipped the cap.
-
-    That is the path that fires unattended, so the cap was inert exactly where
-    it mattered.
-    """
+    """capped_burst_end() applies max_burst_s to the anomaly burst end."""
     end = MonitorController.capped_burst_end(
         now=100.0, duration_s=600.0, max_burst_s=30.0, burst_start=100.0)
     assert end == pytest.approx(130.0)
@@ -198,19 +180,14 @@ def test_max_burst_s_of_zero_means_no_cap():
 
 
 def test_gate_burst_start_is_initialised():
-    """The retrigger branch reads _burst_start; it was only ever set inside
-    enter_burst(), leaving an AttributeError one refactor away."""
+    """IntervalGate sets _burst_start at construction, because the retrigger
+    branch reads it."""
     g = IntervalGate(interval_s=1.0, start_monotonic=7.0)
     assert g._burst_start == 7.0
 
 
 def test_dropped_count_is_surfaced_in_the_status_snapshot():
-    """The UI must be able to show that captures were lost.
-
-    enqueue() previously always reported success, so the capture counter it
-    gates counted captures that never reached disk. A drop that nobody can see
-    is the same defect in a new place.
-    """
+    """status_snapshot() reports the writer's dropped captures."""
     import time as _time
 
     c = MonitorController.__new__(MonitorController)

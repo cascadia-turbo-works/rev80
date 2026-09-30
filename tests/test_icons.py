@@ -1,16 +1,8 @@
 """Tests for the icon font registry.
 
-`assets/fonts/` is gitignored and populated by scripts/fetch_font.sh (called
-from scripts/build.sh), so a fresh clone — and every CI runner — has no font
-file. icons.load() previously passed the nonexistent path straight to
-dpg.font(), which raised inside the context manager and surfaced as an opaque
-SystemError that took down GUI construction entirely (test_gui_build failed on
-any machine that had not run build.sh).
-
-The missing-font sentinel is `0`, not None: it is falsy, so the caller's
-`if _font: dpg.bind_font(_font)` skips binding, while still being a value
-`font_tag()` can return and `load()` can cache — so a failed lookup is not
-repeated on every call.
+`assets/fonts/` is gitignored and filled by scripts/fetch_font.sh, so a fresh
+clone or CI runner has no font. icons.load() then returns the sentinel `0`: it
+is falsy, so gui.py skips the bind, and it is cached, so the lookup is not repeated.
 """
 
 import dearpygui.dearpygui as dpg

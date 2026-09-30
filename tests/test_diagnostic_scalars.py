@@ -1,13 +1,8 @@
-"""Crest factor and kurtosis on the result (audit capability gap).
+"""Crest factor and kurtosis on the channel result.
 
-Two scalars, computed on data the pipeline already holds, that RMS cannot see.
-A bearing defect raises crest factor early and then lowers it again as the
-defect spalls and the signal becomes more random; kurtosis above ~4 flags the
-impulsiveness that a broadband overall averages away entirely. The audit called
-their absence "disproportionate to their cost".
-
-Validated against the physically realistic generator in test_bearing_oracle.py,
-because ten pure cosines cannot falsify either of them.
+Both show impulsiveness that the overall does not show. The tests use the
+bearing generator of test_bearing_oracle.py, because pure cosines cannot
+falsify either scalar.
 """
 
 import numpy as np
@@ -80,11 +75,10 @@ def test_scalars_are_invariant_to_sensor_sensitivity():
 # ===========================================================================
 
 def test_scalars_separate_a_bearing_defect_the_overall_hides():
-    """The whole point: an overall that barely moves while kurtosis doubles.
+    """Kurtosis and crest factor rise for a bearing defect with severity 1.0.
 
-    Severity is scaled so the defect carries the same RMS as the shaft signal,
-    so the broadband overall changes only modestly -- which is exactly the
-    situation where an RMS-only instrument misses a developing fault.
+    The defect has the same RMS as the shaft signal, so the overall changes
+    less than the scalars do.
     """
     cfg = oracle_cfg()
     for seed in range(6):
@@ -120,14 +114,10 @@ def test_scalars_track_severity_monotonically():
 
 
 def test_scalars_are_computed_on_the_displayed_trace():
-    """They must describe the same data the analyst is looking at.
+    """Crest factor and kurtosis are computed on time_data, the displayed trace.
 
-    time_data is band-limited and, for integrated orders, is the flat middle of
-    the Tukey overlap-save window. Computing the scalars on anything else --
-    the raw block, or the Hann-tapered array the overall uses -- would make
-    them describe a signal that is not on screen. The Hann case matters most:
-    its taper is an amplitude envelope, so a peak-based statistic taken from it
-    is simply wrong.
+    Not on the raw block, and not on the Hann-tapered array of the overall:
+    the taper changes the peak values.
     """
     dc = make_collector(eu='mm/s2', target_unit='mm/s', maxfreq=1000, binsize=2.0)
     r = dc.process_sample(0, make_sample(dc, tone(dc, 217.3, amp=1.0)))
@@ -152,7 +142,7 @@ def test_degenerate_trace_does_not_raise():
 # ===========================================================================
 
 def test_scalars_are_trended():
-    """Watching kurtosis rise over weeks is the point; one reading is not."""
+    """Crest factor and kurtosis are added to the trend for each frame."""
     dc = make_collector(eu='mm/s2', target_unit='mm/s2', maxfreq=10000, binsize=2.0)
     from types import SimpleNamespace
     dc.sensor = SimpleNamespace(name='fake')

@@ -8,14 +8,9 @@ from rev80._paths import data_dir
 # rev80.get_logger here would be circular.
 log = logging.getLogger(__name__)
 
-# rev80/__init__.py does `from rev80.util import *`. Without __all__ that also
-# re-exported `np` and every other imported name into the top-level `rev80`
-# namespace, so `rev80.np` was part of the public surface by accident.
-# Listing names explicitly keeps that surface deliberate.
-#
-# `data_dir` is re-exported ON PURPOSE: it is imported here from rev80._paths
-# and six call sites in gui.py/headless.py reach it as `rev80.data_dir()`.
-# Dropping it from this list breaks them at runtime, not at import.
+# rev80/__init__.py does `from rev80.util import *`; __all__ is the public
+# surface. Keep `data_dir` in it: gui.py and headless.py call
+# `rev80.data_dir()`, and removing it fails at run time, not at import.
 __all__ = [
     'data_dir',
     # Theme / colour
@@ -89,34 +84,13 @@ def hex_to_rgba(hex_color: str, alpha: int = 255) -> tuple:
 
 
 # ── Spectrum preset values (quick-pick selections in the GUI) ────────────────
-# These are convenience presets, NOT hard constraints.  AcquisitionSettings
-# derives samplerate and blocksize arithmetically from maxfreq and binsize.
-# F_max no longer drives the acquisition sample rate (see
-# AcquisitionSettings.raw_samplerate / sample.RAW_SAMPLERATE_HZ) -- it's now
-# purely the displayed/analysed frequency ceiling, clamped in the maxfreq
-# setter to what RAW_SAMPLERATE_HZ can actually back. The 20 kHz and 50 kHz
-# presets remain excluded from history: under the old maxfreq-driven
-# samplerate they ran with NO anti-alias filter at all (50 kHz additionally
-# requested 131072 Hz raw, 31% above the measured safe continuous-streaming
-# ceiling -- see picoscope.STREAMING_CEILING_HZ), and offering them again
-# would just re-clamp against the current, unrelated maxfreq/raw_samplerate
-# ratio limit. See picoscope.PicoScopeStream._choose_osr and
-# AcquisitionSettings.maxfreq's setter.
+# F_max presets, in Hz. F_max sets the display rate only; the maxfreq setter
+# clamps it to what RAW_SAMPLERATE_HZ supports (10 kHz at 25600 Hz).
 MAXFREQ_PRESETS = [2e2, 5e2, 1e3, 2e3, 5e3, 1e4]
 
-# Declared measurement bands for the overall amplitude, as (fmin, fmax) in Hz.
-#
-# ISO 20816-1 evaluates broadband vibration on non-rotating parts over
-# 10-1000 Hz, dropping the lower edge to 2 Hz for machines running below
-# 600 rpm where the 1x itself would otherwise fall outside the band. Quoting a
-# velocity RMS against a zone boundary is only meaningful if it was measured
-# over the band the boundary is defined for -- which is why the band has to be
-# declared and stored with the data rather than being whatever the current
-# F_max preset implies.
-#
-# 'Full band' is the default: the high-pass edge up to F_max. It keeps the
-# bearing-band content above 1 kHz that a condition-monitoring user is
-# generally looking for, which the ISO bands deliberately exclude.
+# Declared-band presets for the overall, (fmin, fmax) in Hz. ISO 20816-3
+# defines both bands; the standard gives the speed range for each. 'Full band' (the
+# default, not in this dict) is the high-pass edge up to F_max.
 ISO_BAND_PRESETS: dict[str, tuple[float, float]] = {
     'ISO 20816 (10-1000 Hz)':        (10.0, 1000.0),
     'ISO 20816 low speed (2-1000 Hz)': (2.0, 1000.0),
@@ -146,8 +120,8 @@ EU_OPTIONS: list = [
 #   P-P  = 0-P * 2
 # TODO: add 'PSD' (eu²/Hz) and 'ASD' (eu/√Hz) density modes.  These require
 #   switching scipy.welch to scaling='density' and adjusting the amplitude
-#   pipeline in VibeSample.process() — do not mix spectrum and density
-#   normalization in the same AMPLITUDE_SCALE lookup.
+#   pipeline in DataCollector.process_sample() — do not mix spectrum and
+#   density normalization in the same AMPLITUDE_SCALE lookup.
 AMPLITUDE_MODES: list = ['RMS', '0-P', 'P-P']
 AMPLITUDE_SCALE: dict = {
     'RMS': 1.0,
@@ -164,28 +138,18 @@ DEFAULT_AMPLITUDE_MODE = '0-P'
 # ---------------------------------------------------------------------------
 # Channel roles
 # ---------------------------------------------------------------------------
-# What a physical input is carrying. Almost everything in the pipeline assumes
-# a channel has a ScopeSensor, an engineering unit, a spectrum and an overall;
-# a tachometer channel has none of those, and feeding a pulse train through the
-# vibration path yields a plausible-looking wrong answer rather than an error
-# (measured: overall 1515 mV, crest 5.00, kurtosis 15.94 and 63 "peaks" on a
-# 5% duty square wave -- which reads as a severely failing bearing).
-#
-# 'vibration' is the default so every config predating roles keeps its meaning.
+# Keep a tachometer channel out of the vibration path: a 5 % duty pulse train
+# reads 1515 mV overall and kurtosis 15.94. Evidence: CONTRIBUTING.md,
+# "E14. Tachometer" (E14.1).
+# 'vibration' is the default, so a config without roles keeps its meaning.
 CHANNEL_ROLES: tuple = ('vibration', 'tachometer')
 DEFAULT_CHANNEL_ROLE: str = 'vibration'
 
 # ---------------------------------------------------------------------------
 # Rotation rate units
 # ---------------------------------------------------------------------------
-# A shaft rate shown without its unit is a number waiting to be misread: 30 is
-# a plausible RPM, a plausible Hz and a plausible rad/s, and they differ by
-# factors of 60 and 6.28. The amplitude side of this app already carries its
-# unit everywhere a value appears; the rate side does too.
-#
-# rad/s IS angular frequency omega -- one option, not two. The label carries
-# both names so it is findable either way.
-#
+# Always show a shaft speed with its unit: 30 is a plausible RPM, Hz and rad/s.
+# rad/s is angular frequency omega; its label carries both names.
 # Scale factors are applied to the shaft rate in **rev/s**:
 ROTATION_UNITS: tuple = ('RPM', 'Hz', 'rad/s', 'deg/s')
 DEFAULT_ROTATION_UNIT: str = 'RPM'
@@ -218,10 +182,8 @@ def rotation_scale(unit) -> float:
 def rotation_from_rpm(rpm, unit) -> 'float | None':
     """Convert an RPM value to `unit`. None stays None.
 
-    Shaft rate is held in RPM everywhere internally and in every stored file;
-    the unit is a display preference only. A number in a file whose meaning
-    depends on a setting is exactly the class of defect this codebase keeps
-    finding.
+    Shaft speed is RPM in memory and in every stored file. The unit is a
+    display setting only.
     """
     if rpm is None:
         return None
@@ -237,15 +199,9 @@ CHANNEL_ROLE_LABELS: dict = {
 def amplitude_scale(mode) -> float:
     """Return the amplitude scale factor for `mode`.
 
-    Single source of truth for the unknown-mode fallback. Five call sites
-    previously used AMPLITUDE_SCALE.get() with two different defaults —
-    np.sqrt(2) in the live processing path (collector.py:231, :550) and 1.0 in
-    the reload/reconstruct path (collector.py:992, :1147,
-    monitor/controller.py:267). An unrecognised mode string therefore
-    reconstructed a loaded trend 1.414x off relative to the live trend it was
-    computed from, on the same plot.
-
-    Unknown modes are logged rather than silently absorbed.
+    An unknown mode logs a warning and returns the DEFAULT_AMPLITUDE_MODE
+    factor. Use this function, not AMPLITUDE_SCALE.get(), so that the live
+    and the reload paths use the same fallback.
     """
     try:
         return AMPLITUDE_SCALE[mode]
@@ -493,7 +449,6 @@ class UI_Elements:
     SIGGEN_FREQ_HZ       = 'SIGGEN_FREQ_HZ'
     SIGGEN_PKTOPK_MV     = 'SIGGEN_PKTOPK_MV'
     SIGGEN_OFFSET_MV     = 'SIGGEN_OFFSET_MV'
-    # DLG_SAVE_FILE / DLG_LOAD_FILE removed — replaced by tkinter dialogs
 
     # Acquisition dialog inputs — controls
     ACQ_DLG_MAXFREQ    = 'ACQ_DLG_MAXFREQ'
@@ -566,8 +521,8 @@ class UI_Elements:
     PLT_TREND_CURSOR     = 'PLT_TREND_CURSOR'    # vertical line at browsed frame time
 
     # Primary peak control: how far a line must stand out of its own local
-    # noise floor to be reported. FFT_PEAKS_DISPLAY_COUNT is now only a
-    # clutter cap on the table and the plot markers, not the selection rule.
+    # noise floor to be reported. FFT_PEAKS_DISPLAY_COUNT only limits how many
+    # rows and plot markers are shown; it does not select peaks.
     FFT_PEAK_THRESHOLD_DB   = 'FFT_PEAK_THRESHOLD_DB'
     FFT_PEAKS_DISPLAY_COUNT = 'FFT_PEAK_DISPLAY_COUNT'
     FFT_PEAKS_TABLE         = 'FFT_PEAKS_TABLE'
@@ -660,10 +615,8 @@ class UI_Elements:
     def ch_peaks_table(ch: int) -> str:
         return f'CH{ch}_PEAKS_TABLE'
 
-    # The peaks table's columns, rows and cells are a persistent widget pool
-    # refreshed in place, not rebuilt each frame -- see
-    # GUI._update_fft_peaks_table for the measurement that forced that. These
-    # tags are what make the pool addressable.
+    # Tags for the peaks-table widget pool, which is updated in place, not
+    # rebuilt each frame. Evidence: CONTRIBUTING.md, "E19. GUI render cost".
     @staticmethod
     def ch_peak_col(ch: int, col: int) -> str:
         return f'CH{ch}_PEAKS_COL{col}'
@@ -707,11 +660,9 @@ class UI_Elements:
         return f'PLT_TREND_CH{ch}'
 
 
-# Monitor Mode capture interval presets (seconds → display label)
-# 600 is present because config.py seeds interval_s: 600 as the shipped
-# default. When it was missing, the GUI combo fell back to the '1 h' label and
-# saving wrote 3600 back — silently changing a user's 10-minute logging
-# interval to one hour.
+# Monitor Mode capture interval presets (seconds → display label).
+# Keep 600: config.py seeds interval_s: 600, and the combo must hold the
+# seeded value, or a save writes a different interval.
 MONITOR_INTERVAL_PRESETS: dict[int, str] = {
     5:      '5 s',
     30:     '30 s',
@@ -729,9 +680,8 @@ MONITOR_INTERVAL_PRESETS: dict[int, str] = {
 def nearest_interval_preset(seconds: float) -> int:
     """Return the MONITOR_INTERVAL_PRESETS key closest to `seconds`.
 
-    Used when a stored interval is not itself a preset. Falling back to the
-    nearest option keeps the user near what they configured; the previous
-    hardcoded 3600 fallback turned any unrecognised value into 1 h.
+    Use it when a stored interval is not a preset. A value that is not a
+    number maps to the preset nearest 3600 s.
     """
     try:
         target = float(seconds)
@@ -743,11 +693,9 @@ def nearest_interval_preset(seconds: float) -> int:
 # ---------------------------------------------------------------------------
 # Anomaly hook type — canonical lowercase, with display labels for the GUI
 # ---------------------------------------------------------------------------
-# config.py seeds hook_type: 'rms' (lowercase) while the GUI combo items are
-# capitalised. The GUI compared raw strings with no normalisation, so a fresh
-# install's 'rms' matched neither 'RMS' nor 'Both': both hook groups were
-# hidden and zero anomaly hooks were built, silently disabling detection.
-# Storage is canonical lowercase; capitalisation exists only as a display label.
+# Store and compare hook types in canonical lowercase ('rms', as config.py
+# seeds). Capitalised labels are for display only; always normalise with
+# canonical_hook_type() before a comparison.
 ANOMALY_HOOK_LABELS: dict[str, str] = {
     'rms':      'RMS',
     'spectral': 'Spectral',
@@ -755,20 +703,10 @@ ANOMALY_HOOK_LABELS: dict[str, str] = {
 }
 DEFAULT_ANOMALY_HOOK_TYPE = 'rms'
 
-# Hook types the GUI currently offers. 'spectral' and 'both' are deliberately
-# absent: SpectralThresholdHook triggers on
-#     np.any(|spec - baseline| / baseline > threshold)
-# across every bin in the band, while Welch runs a single segment in every
-# shipped preset (nperseg == blocksize), so each noise-floor bin is
-# chi-squared(2) with a standard deviation equal to its own mean. P(some bin
-# of ~2000 exceeds 1.5x) is ~1.0 on healthy data, which makes consecutive_n a
-# delay rather than a defence. Bins 0 and 1 are additionally hard-zeroed for
-# integration, so on any velocity/displacement channel they deviate by ~1e12
-# and fire permanently.
-#
-# The hook and the headless path are left fully intact -- this restriction is
-# the GUI surface only, and reviving it is a one-line change here. See R39 in
-# doc/PROGRESS.md for the fix-or-remove decision.
+# Hook types the GUI offers. 'spectral' and 'both' are not offered: the
+# spectral hook fires on healthy frames. Headless still accepts them. Fix or
+# remove is tracked as R39 in doc/PROGRESS.md. Evidence: CONTRIBUTING.md,
+# "E16. Anomaly thresholds" (E16.2).
 GUI_ANOMALY_HOOK_TYPES: tuple[str, ...] = ('rms',)
 
 
@@ -781,11 +719,9 @@ def canonical_hook_type(value) -> str:
 def gui_hook_type(value) -> str:
     """Clamp a hook type to one the GUI can actually offer.
 
-    Setting a combo to a value outside its own item list is the S-07 failure
-    mode -- the widget falls back silently and the user never learns their
-    setting was not applied -- so a stored 'spectral'/'both' is mapped to the
-    default for *display* here. Saving preserves the original; see
-    GUI._save_monitor_config.
+    A combo set to a value outside its item list falls back without a
+    message, so a stored 'spectral' or 'both' shows as the default here.
+    This is for display only: GUI._hook_type_to_save keeps the stored value.
     """
     key = canonical_hook_type(value)
     return key if key in GUI_ANOMALY_HOOK_TYPES else DEFAULT_ANOMALY_HOOK_TYPE

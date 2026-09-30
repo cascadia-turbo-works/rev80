@@ -1,14 +1,13 @@
 class IntervalGate:
+    """Capture schedule on a fixed grid of interval_s, paused during a burst."""
+
     def __init__(self, interval_s: float, start_monotonic: float):
         # First deadline = start_monotonic so the first capture fires immediately on arm
         self._interval = interval_s
         self._next_deadline = start_monotonic
         self._in_burst = False
         self._burst_end = 0.0
-        # Initialised here rather than only in enter_burst(): the retrigger
-        # branch reads it, and while that is currently unreachable without a
-        # prior enter_burst(), it was one refactor away from an AttributeError
-        # inside the monitor's hot path.
+        # Set here as well as in enter_burst(): the retrigger branch reads it.
         self._burst_start = start_monotonic
 
     def should_capture(self, now: float) -> bool:

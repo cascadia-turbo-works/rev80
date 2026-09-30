@@ -130,7 +130,7 @@ def test_save_load_roundtrip():
     first_sample = next(v for k, v in result.items() if isinstance(k, int))
     assert isinstance(first_sample, VibeSample)
 
-    # Save via DataCollector (new multi-channel format)
+    # Save via DataCollector (multi-channel format)
     DATADIR.mkdir(parents=True, exist_ok=True)
     fname = DATADIR / 'pytest_roundtrip.h5'
     fname.unlink(missing_ok=True)
@@ -206,14 +206,9 @@ def test_load_offline_configures_channels():
 def test_load_offline_restores_maxfreq_from_file_metadata():
     """Loading a file restores the maxfreq it was captured with.
 
-    From the file's stored acquisition metadata -- not derived from its raw
-    samplerate, which is now a fixed constant (RAW_SAMPLERATE_HZ) unrelated
-    to what maxfreq was used at capture time. This used to instead clamp
-    maxfreq up to (file samplerate)/2 whenever it exceeded the current
-    config's, back when a file's samplerate WAS the maxfreq-driven display
-    rate; that comparison no longer means anything (every file's samplerate
-    is the same fixed constant), and doing it anyway would silently
-    override the F_max the user has open on every single load.
+    The value comes from the stored acquisition metadata. It is not derived
+    from the file's samplerate, which is the raw rate (RAW_SAMPLERATE_HZ) for
+    every file and says nothing about maxfreq.
     """
     captured_config = AcquisitionSettings()
     captured_config.maxfreq = 5000.0
@@ -261,7 +256,7 @@ def test_channel_name_defaults_and_override():
 # ---------------------------------------------------------------------------
 
 def test_save_data_persists_scope_sensor():
-    """save_data writes scope sensor into the /metadata sensor library (v3 format)."""
+    """save_data writes the scope sensor into the /metadata sensor library."""
     sensor = ScopeSensor(name='Test Sensor', engineering_units='g',
                          sensitivity=10.0)
     collector = DataCollector(sim_sensor, acq_settings)
@@ -292,7 +287,7 @@ def test_save_data_persists_scope_sensor():
 
 
 def test_load_data_restores_scope_sensor_configs():
-    """load_data populates _loaded_channel_sensor_configs and _loaded_scope_sensors (v3)."""
+    """load_data populates _loaded_channel_sensor_configs and _loaded_scope_sensors."""
     sensor = ScopeSensor(name='Load Test', engineering_units='in/s',
                          sensitivity=50.0)
     collector = DataCollector(sim_sensor, acq_settings)

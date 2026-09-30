@@ -1,14 +1,8 @@
 """Simulated tachometer signals, and per-channel simulation sources.
 
-Before this, `SimulatedSensor._sample()` tiled one generated signal across
-every enabled channel, so a simulated tachometer was impossible: the tach
-channel would carry the same accelerometer waveform as the vibration channel.
-
-The coherence tests here are the load-bearing ones. A tach pulse train that is
-not locked to the vibration's own shaft rate cannot validate anything -- a
-broken tach and a correct one both return a plausible number against an
-unrelated signal. This is the same argument simulation.py already makes about
-pure cosines being unable to validate envelope analysis.
+The coherence tests are the important ones. A tach pulse train that is not
+locked to the vibration channel's shaft rate cannot validate the tach: a broken
+detector and a correct one both return a plausible number.
 """
 
 import numpy as np
@@ -18,7 +12,6 @@ import rev80 as vc
 from rev80 import simulation as sim
 from rev80 import tach
 
-RAW_FS = 40000.0   # what _RawRateView presents to a generator
 
 
 def _cfg(binsize=1.0, channels=(0, 1)):
@@ -36,7 +29,7 @@ def _raw(config):
 # --- GenerateTachPulse ---------------------------------------------------
 
 def test_tach_pulse_reads_back_at_the_requested_rpm():
-    """The generator and the detector must agree, or neither can be trusted."""
+    """The detector reads the generator's shaft speed to within 0.2 %."""
     cfg = _cfg()
     x = sim.GenerateTachPulse(_raw(cfg), rpm=1800.0)
     r = tach.tach_result(x, cfg.raw_samplerate, ch=0, rel_time=0.0)
@@ -62,11 +55,10 @@ def test_tach_pulse_is_in_millivolts_and_swings_a_logic_level():
 
 
 def test_tach_pulse_has_a_finite_rise_by_default():
-    """An ideal rectangle is a degenerate stimulus: no sample lands in the
-    hysteresis band and sub-sample interpolation has nothing to interpolate.
-    Real edges arrive with about one intermediate sample (measured on a
-    4424A), and the generator must reproduce that or CI tests a regime the
-    instrument never sees.
+    """Each generated edge has at least one sample inside the transition.
+
+    An ideal rectangle gives sub-sample interpolation nothing to work on. Real
+    edges on a 4424A have about one intermediate sample.
     """
     cfg = _cfg()
     x = sim.GenerateTachPulse(_raw(cfg), rpm=1800.0)
@@ -98,7 +90,7 @@ def test_tach_pulse_jitter_shows_up_as_interval_spread_not_rate_error():
 
 
 def test_tach_pulse_defaults_to_one_pulse_per_rev():
-    """D-6: 1 ppr is the specified configuration."""
+    """One pulse per revolution is the default and the recommended configuration."""
     cfg = _cfg()
     x = sim.GenerateTachPulse(_raw(cfg), rpm=1800.0)
     # 1 s block at 30 rev/s -> ~30 pulses, not a multiple of that.
@@ -108,12 +100,10 @@ def test_tach_pulse_defaults_to_one_pulse_per_rev():
 # --- per-channel sources -------------------------------------------------
 
 def test_empty_channel_sources_keeps_the_tiled_behaviour_identical():
-    """Existing tests and callers must be untouched by this feature.
+    """With no channel_sources, one signal is tiled across every channel.
 
-    The source has to be a *stochastic* one for this to mean anything. A pure
-    tone is deterministic, so two independent generator calls return identical
-    arrays and the assertion holds whether the block was tiled or generated
-    per channel -- it would pass with the tiled path deleted.
+    The source is unseeded, so two separate generator calls differ. A pure
+    tone would pass even with the tiled path deleted.
     """
     cfg = _cfg(channels=(0, 1))
     s = sim.SimulatedSensor(cfg, sensor=None, callback=lambda *a: None)
@@ -149,8 +139,7 @@ def test_channel_without_an_override_falls_back_to_the_default_source():
 
 
 def test_channel_sources_generates_at_the_raw_rate():
-    """Generators must see raw_samplerate, not the maxfreq display rate, or
-    the simulated path silently defeats raw-stream retention."""
+    """Per-channel generators produce raw_blocksize samples at raw_samplerate."""
     cfg = _cfg(channels=(0, 1))
     s = sim.SimulatedSensor(cfg, sensor=None, callback=lambda *a: None)
     s.channel_sources = {1: (sim.GenerateTachPulse, 1800.0)}
@@ -168,12 +157,7 @@ def test_machine_with_tach_returns_both_channels():
 
 
 def test_tach_rpm_matches_the_vibration_channels_own_1x_peak():
-    """The coherence check, and the reason this generator exists.
-
-    A tach that is not locked to the vibration's shaft rate cannot validate
-    anything: a broken tach and a correct one both return a plausible number
-    against an unrelated signal.
-    """
+    """The tach shaft rate equals the vibration channel's 1x peak within 2 %."""
     cfg = _cfg(binsize=0.5)
     running_rate = 29.37                      # off-grid on purpose
     out = sim.GenerateMachineWithTach(_raw(cfg), running_rate=running_rate,
@@ -203,8 +187,7 @@ def test_machine_with_tach_is_reproducible_under_a_seed():
 
 
 def test_healthy_machine_still_has_a_readable_tach():
-    """severity=0 is the negative control; the tach must not depend on the
-    defect being present."""
+    """With severity=0 (the negative control), the tach still reads correctly."""
     cfg = _cfg()
     out = sim.GenerateMachineWithTach(_raw(cfg), running_rate=30.0,
                                       severity=0.0, seed=7)
@@ -214,8 +197,7 @@ def test_healthy_machine_still_has_a_readable_tach():
 
 
 def test_bearing_vibration_accepts_an_explicit_shaft_phase():
-    """Coherence needs the vibration's shaft reference to be settable; without
-    it the load zone sits at a random angle and no angular check is possible."""
+    """shaft_phase sets the load-zone angle, so an angular check is possible."""
     cfg = _cfg()
     a = sim.GenerateBearingVibration(_raw(cfg), seed=2, shaft_phase=0.0)
     b = sim.GenerateBearingVibration(_raw(cfg), seed=2, shaft_phase=0.0)
@@ -225,7 +207,7 @@ def test_bearing_vibration_accepts_an_explicit_shaft_phase():
 
 
 def test_bearing_vibration_unchanged_when_shaft_phase_is_not_given():
-    """The new parameter must not perturb the existing random draw order."""
+    """Without shaft_phase, a seeded block is reproducible."""
     cfg = _cfg()
     a = sim.GenerateBearingVibration(_raw(cfg), seed=42)
     b = sim.GenerateBearingVibration(_raw(cfg), seed=42)

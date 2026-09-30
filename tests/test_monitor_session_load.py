@@ -1,12 +1,8 @@
-"""Integration tests for monitor session write → load → browse workflow.
+"""Monitor session write, load and browse, from end to end.
 
-Exercises the full pipeline:
-  record intervals + trigger burst → session.h5
-  → load_monitor_session() → check trend + frames
-  → load_monitor_burst()  → check rebased rel_times + trend
-  → check collector state is consistent throughout
-
-No hardware required. Uses synthetic VibeSample / ChannelResult.
+Records intervals and a burst into session.h5, then checks the trend, frames
+and rebased burst rel_times after load_monitor_session() and
+load_monitor_burst(). Uses synthetic VibeSample and ChannelResult objects.
 """
 
 import json

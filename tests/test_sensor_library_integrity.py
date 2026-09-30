@@ -1,28 +1,8 @@
-"""The sensor library must never be silently destroyed.
+"""The sensor library (scope_sensors.yaml) is never destroyed without a message.
 
-Root cause (three layers, one outcome):
-
-  ScopeSensorRegistry._load_user swallowed ANY parse failure with
-  `except Exception: return []`, and _save_user writes whatever _load_user
-  returned straight back over the file. add() and delete() both follow exactly
-  that load-then-save path, so a single unreadable entry erased every
-  calibrated sensor definition the user had — with nothing logged.
-
-Two independent triggers reached it:
-
-  1. Documentation told users to hand-write `sensitivity_mv_per_eu:` in
-     scope_sensors.yaml (see test_monitor_pretrigger_scaling.py). from_dict
-     raised KeyError -> empty list -> next add/delete erased the file.
-
-  2. config._atomic_yaml_write used yaml.dump with the UNSAFE default Dumper
-     while every reader uses yaml.safe_load. Loading a colleague's .h5
-     auto-registers its sensors into the global library with no prompt and no
-     type coercion, so a non-scalar HDF5 attribute serialised as a
-     `!!python/object/apply:` tag that safe_load then refused to parse.
-
-No RCE exists today, but a writer that emits object tags means any future
-switch to yaml.load becomes arbitrary code execution from a shared
-measurement file.
+Three layers: the writer emits only safe YAML; from_dict coerces and validates
+each field and a bad entry is skipped; a read failure raises, so add() and
+delete() never write a partial list over the file.
 """
 
 import numpy as np
@@ -150,7 +130,7 @@ class TestRegistryResilience:
         assert any('skipping unusable entry' in r.message for r in caplog.records)
 
     def test_add_after_bad_entry_preserves_good_entries(self, tmp_path):
-        """The historical data-loss path: load-then-save must not drop the survivors."""
+        """add() after a bad entry keeps every valid entry."""
         path = tmp_path / 'scope_sensors.yaml'
         path.write_text(yaml.safe_dump([
             _sensor('Good A', 'a').to_dict(),
@@ -171,7 +151,7 @@ class TestRegistryResilience:
             reg._load_user()
 
     def test_corrupt_file_is_never_overwritten_by_add(self, tmp_path):
-        """THE regression: add() on an unreadable library must not erase it."""
+        """add() on an unreadable library raises and leaves the file unchanged."""
         path = tmp_path / 'scope_sensors.yaml'
         original = '!!python/object/apply:os.system ["echo pwned"]\n'
         path.write_text(original)

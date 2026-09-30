@@ -1,19 +1,8 @@
-"""The simulated bearing signal must be able to falsify a bearing diagnostic (M-14).
+"""The simulated bearing signal can falsify a bearing diagnostic.
 
-The old generator was ten pure cosines plus Gaussian white noise. Its kurtosis
-is ~3 -- i.e. Gaussian -- it has no impulsiveness, no resonance carrier, no
-load-zone modulation and no slip. A real rolling-element defect is an impulse
-train exciting a structural resonance, amplitude-modulated at the shaft rate by
-the load zone, with 1-2% slip jitter.
-
-That difference is not cosmetic. Every diagnostic this project is adding next --
-crest factor, kurtosis, envelope demodulation -- keys on exactly the properties
-the old signal lacks, so it could not validate any of them even in principle:
-a completely broken envelope analyser and a correct one both return "nothing
-here" on ten pure cosines.
-
-These tests pin the properties that make the generator a usable oracle, and the
-negative control that makes it a falsifiable one.
+GenerateBearingVibration gives impulses that ring a resonance, load-zone
+modulation and 1 to 2 % slip. Pure cosines have none of these, so they cannot
+test crest factor, kurtosis or envelope analysis. Severity 0 is the control.
 """
 
 import numpy as np
@@ -52,16 +41,13 @@ def peak_near(freq, spec, f0, tol_hz):
 
 
 # ===========================================================================
-# The precedence bug
+# Spectral generator: harmonic count
 # ===========================================================================
 
 def test_spectral_generator_harmonic_count_is_sane():
-    """`freqs[-1] // bearing_multiple*running_rate` binds left to right.
+    """The bearing harmonic count is freqs[-1] // (multiple * rate), below 100.
 
-    That is (freqs[-1] // multiple) * rate, not freqs[-1] // (multiple * rate) --
-    thousands of iterations instead of a handful, every out-of-range harmonic
-    collapsing onto the last bin via argmin. Compare the correct form used on
-    the running-speed loop immediately above it.
+    Without the parentheses, `//` and `*` bind left to right.
     """
     cfg = settings()
     n = sim.bearing_harmonic_count(cfg, running_rate=60.0, bearing_multiple=9.23)
@@ -71,7 +57,7 @@ def test_spectral_generator_harmonic_count_is_sane():
 
 
 def test_spectral_generator_does_not_pile_energy_on_the_last_bin():
-    """The precedence bug wrote every out-of-range harmonic onto freqs[-1]."""
+    """Out-of-range harmonics do not collect on the last bin."""
     cfg = settings()
     sig = sim.GenerateBearingVibration_SpectralMethod(cfg)
     spec = np.abs(np.fft.rfft(sig))
@@ -88,14 +74,10 @@ SEEDS = (0, 1, 2, 3, 4, 5, 6, 7)
 
 
 def test_healthy_machine_is_not_impulsive():
-    """Severity 0 must not look impulsive.
+    """Severity 0 is not impulsive: kurtosis below 3.5, crest below 3.2.
 
-    Not "kurtosis ~3": a machine whose vibration is dominated by running-speed
-    harmonics is genuinely sub-Gaussian, and this signal measures 1.54-3.04
-    over 40 seeds (mean 2.18). Gaussian is the ceiling here, not the target.
-    What matters for a negative control is that it stays clear of the
-    impulsive range -- without a credible healthy case, "the detector fired"
-    proves nothing.
+    Running-speed harmonics are sub-Gaussian: kurtosis measured 1.54 to 3.04
+    over 40 seeds (mean 2.18).
     """
     for seed in SEEDS:
         x = sim.GenerateBearingVibration(cfg_default(), severity=0.0, seed=seed)
@@ -123,11 +105,9 @@ def test_healthy_machine_still_shows_its_running_speed():
 # ===========================================================================
 
 def test_defect_is_impulsive():
-    """The property the old generator could not produce at any severity.
+    """Severity 1.0 is impulsive: kurtosis above 3.8 for each seed.
 
-    Measured 3.86-6.12 over 40 seeds against a healthy 1.54-3.04, so the two
-    populations are separated with room to spare. Asserted per seed rather
-    than on one draw, so a lucky waveform cannot carry the test.
+    Measured 3.86 to 6.12 over 40 seeds, against 1.54 to 3.04 when healthy.
     """
     for seed in SEEDS:
         x = sim.GenerateBearingVibration(cfg_default(), severity=1.0, seed=seed)
@@ -136,11 +116,7 @@ def test_defect_is_impulsive():
 
 
 def test_defect_is_more_impulsive_than_health_on_the_same_waveform():
-    """Paired comparison: same seed, severity the only difference.
-
-    Removes the seed-to-seed variance entirely, which is what makes this the
-    assertion a diagnostic can actually be built on.
-    """
+    """With the same seed, the faulted kurtosis is more than 1.0 above the healthy one."""
     for seed in SEEDS:
         cfg = cfg_default()
         kh = scipy.stats.kurtosis(
@@ -171,12 +147,7 @@ def test_crest_factor_rises_with_severity():
 
 
 def test_defect_energy_sits_on_a_structural_resonance():
-    """The defect must excite a high-frequency carrier, not appear as bare lines.
-
-    This is what makes envelope analysis necessary in the first place: the
-    impulses are buried under the 1x in the raw spectrum but ring a resonance
-    far above it.
-    """
+    """The defect puts more than 10x the healthy energy into the 3 to 5 kHz resonance band."""
     cfg = settings()
     fs = cfg.samplerate
     healthy = sim.GenerateBearingVibration(cfg, severity=0.0, resonance_hz=4000.0)
@@ -191,7 +162,7 @@ def test_defect_energy_sits_on_a_structural_resonance():
 
 
 def test_defect_appears_in_the_envelope_spectrum_at_the_defect_rate():
-    """The headline property: a clean BPFO line in the envelope of the resonance."""
+    """The envelope of the resonance band has a BPFO line more than 8x the floor."""
     cfg = settings()
     fs = cfg.samplerate
     bpfo = 60.0 * 5.43
@@ -205,7 +176,7 @@ def test_defect_appears_in_the_envelope_spectrum_at_the_defect_rate():
 
 
 def test_healthy_envelope_has_no_defect_line():
-    """The negative control for the test above -- otherwise it proves nothing."""
+    """Negative control: the healthy envelope has no BPFO line."""
     cfg = settings()
     fs = cfg.samplerate
     bpfo = 60.0 * 5.43
@@ -274,16 +245,12 @@ def test_generator_returns_one_block_of_the_configured_length():
 
 
 # ===========================================================================
-# S-12 -- SimulatedSensor died silently above two channels
+# SimulatedSensor with any channel count, and a stream that stops on error
 # ===========================================================================
 
 @pytest.mark.parametrize('n_ch', [1, 2, 3, 4])
 def test_simulated_sensor_handles_any_channel_count(n_ch):
-    """`simulated()` set a 2-element scale while the generator emits one column
-    per enabled channel, so 3+ channels raised a broadcast ValueError inside
-    _stream -- which had no try/except, so the thread died while _running stayed
-    set and is_streaming reported a healthy stream producing nothing, forever.
-    """
+    """SimulatedSensor delivers one data column per enabled channel, 1 to 4 channels."""
     cfg = settings(maxfreq=1000.0, binsize=10.0)
     cfg.enabled_channels = list(range(n_ch))
     sensor = vc.VibeSensor.simulated()
@@ -300,10 +267,10 @@ def test_simulated_sensor_handles_any_channel_count(n_ch):
 
 
 def test_simulated_stream_does_not_report_healthy_after_the_thread_dies():
-    """A generator that raises must stop the stream, not leave it lying.
+    """When the generator raises, the stream stops and `active` becomes False.
 
-    `is_streaming` reporting True on a dead thread is worse than a crash: the
-    UI shows a live acquisition that will never produce another frame.
+    A stream that reports active on a dead thread shows a live acquisition
+    that gives no frames.
     """
     cfg = settings(maxfreq=1000.0, binsize=10.0)
     sensor = vc.VibeSensor.simulated()

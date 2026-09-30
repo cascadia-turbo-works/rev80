@@ -1,8 +1,7 @@
-"""The 1x level on a channel result card.
+"""The 1x frequency and amplitude on a channel result, from the shaft speed.
 
-A line at 162.9 Hz means nothing; the same line at 1x means unbalance. This is
-the first consumer of shaft speed in the display, and deliberately the
-simplest one: no resampling, no interpolation, no new axis type.
+No resampling and no interpolation: the amplitude is the larger of the two
+bins on each side of 1x, or None when 1x is outside the spectrum.
 """
 
 import numpy as np
@@ -34,10 +33,7 @@ def test_1x_frequency_is_the_shaft_rate():
 
 
 def test_amplitude_is_the_larger_of_the_two_straddling_bins():
-    """1x rarely lands on a bin. Taking the larger of the pair that brackets it
-    recovers most of what a strictly-nearest-bin reading would lose to the
-    offset, and needs no interpolation.
-    """
+    """Between two bins, the 1x amplitude is the larger of the two."""
     freq = [0.0, 10.0, 20.0, 30.0, 40.0]
     spec = [0.0, 1.0, 7.0, 2.0, 0.5]
     r = _result(25.0 * 60.0, freq, spec)       # 25 Hz, between bins 20 and 30
@@ -52,8 +48,7 @@ def test_amplitude_when_1x_lands_exactly_on_a_bin():
 
 
 def test_1x_above_the_displayed_band_has_no_amplitude():
-    """F_max can sit below the shaft rate on a fast machine; reporting the top
-    bin would be a wrong number rather than a missing one."""
+    """When 1x is above the displayed band, the amplitude is None, not the top bin."""
     r = _result(6000.0, [0, 10, 20, 30], [0, 1, 2, 3])
     assert r.one_x_hz == pytest.approx(100.0)
     assert r.one_x_amplitude is None

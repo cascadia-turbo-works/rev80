@@ -1,17 +1,8 @@
-"""_build_anomaly_hook must work for every hook_type, in both front ends.
+"""_build_anomaly_hook builds every hook_type, in both front ends.
 
-Bug: headless.py:162 and gui.py:2344 bound `period` only inside the
-`if hook_type in ("rms","both")` branch, but both read it unconditionally in
-the spectral branch (headless.py:182, gui.py:2368). A Spectral-only anomaly
-config therefore raised UnboundLocalError.
-
-In headless this fires AFTER collector.start_stream(), so the process dies
-with the PicoScope still streaming and never closed — the scope is left in a
-bad state that needs a physical replug.
-
-The identical bug existed in both files because _build_anomaly_hook was
-copy-pasted. These tests cover both copies so a fix to one cannot silently
-leave the other broken.
+gui.py and headless.py each hold a copy of _build_anomaly_hook, so these tests
+run both copies and check that their defaults agree. In headless the hook is
+built after the stream starts, so an exception there leaves the scope open.
 """
 
 import pytest
@@ -52,7 +43,7 @@ def _flatten(hook):
 
 @pytest.mark.parametrize('hook_type', HOOK_TYPES)
 def test_headless_builds_without_unbound_local(hook_type):
-    """Every hook_type must build. 'spectral' used to raise UnboundLocalError."""
+    """Every hook_type builds a hook, including 'spectral' alone."""
     hook = headless_build(_anom(hook_type), _cfg(), pre_buffer_s=60.0)
     assert not isinstance(hook, NullAnomalyHook)
 
@@ -77,7 +68,7 @@ def test_headless_accepts_any_casing(hook_type, spelling):
 
 
 def test_headless_spectral_only_uses_period_for_alpha():
-    """The spectral branch genuinely needs `period` — exercise that path."""
+    """The spectral-only branch computes alpha from the frame period."""
     cfg = _cfg()
     hook = headless_build(
         _anom('spectral', spec_ewma_time=300.0), cfg, pre_buffer_s=60.0
@@ -103,12 +94,9 @@ class _FakeCollector:
 
 
 def _gui_build(hook_type, widget_over=None):
-    """Drive GUI._build_anomaly_hook with stubbed widget reads.
+    """Run GUI._build_anomaly_hook with a stub dpg, so no DPG context is needed.
 
-    _build_anomaly_hook reads every value through a local _get(tag, default)
-    helper backed by DPG. Patching dpg lets the real method body run with no
-    DPG context, which is the point: this is the second copy of the logic and
-    it must be exercised, not assumed correct.
+    The stub answers the method's widget reads from ``values``.
     """
     import rev80.gui as gui_module
     from rev80.gui import GUI
@@ -142,7 +130,7 @@ def _gui_build(hook_type, widget_over=None):
 
 @pytest.mark.parametrize('hook_type', HOOK_TYPES)
 def test_gui_builds_without_unbound_local(hook_type):
-    """Every hook_type must build. 'spectral' used to raise UnboundLocalError."""
+    """Every hook_type builds a hook, including 'spectral' alone."""
     hook = _gui_build(hook_type)
     assert not isinstance(hook, NullAnomalyHook)
 
@@ -166,7 +154,7 @@ def test_gui_accepts_gui_combo_labels(hook_type):
 
 
 # ---------------------------------------------------------------------------
-# The two copies must agree — these are the four documented drifts
+# The two copies must agree
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize('hook_type', HOOK_TYPES)
@@ -178,7 +166,7 @@ def test_both_front_ends_build_the_same_hook_types(hook_type):
 
 
 def test_warmup_default_agrees_between_front_ends():
-    """Drift: GUI defaulted warmup to 30, headless to 10 (config.py seeds 10)."""
+    """Both copies default warmup to the value that config.py seeds."""
     import rev80.config as cfg_mod
     seeded = cfg_mod._BUILTIN_ACQ['monitor']['anomaly']['warmup']
 
@@ -190,7 +178,7 @@ def test_warmup_default_agrees_between_front_ends():
 
 
 def test_spec_n_default_agrees_between_front_ends():
-    """Drift: GUI defaulted spec_n to 3, headless to 10 (config.py seeds 10)."""
+    """Both copies default spec_n to the value that config.py seeds."""
     import rev80.config as cfg_mod
     seeded = cfg_mod._BUILTIN_ACQ['monitor']['anomaly']['spec_n']
 
@@ -202,7 +190,7 @@ def test_spec_n_default_agrees_between_front_ends():
 
 
 def test_alpha_fallback_constants_are_shared():
-    """Drift: the EWMA-alpha fallbacks were hardcoded separately in each copy."""
+    """The seeded EWMA alpha values are the shared util constants."""
     import rev80.config as cfg_mod
     anom = cfg_mod._BUILTIN_ACQ['monitor']['anomaly']
     assert anom['rms_alpha'] == DEFAULT_RMS_ALPHA

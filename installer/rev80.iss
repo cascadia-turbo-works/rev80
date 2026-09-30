@@ -7,7 +7,8 @@
 ; Requirements:
 ;   Inno Setup 6.x  https://jrsoftware.org/isinfo.php
 ;
-; Usage (from project root after PyInstaller build):
+; Usage (from the repository root, after the PyInstaller step, which writes
+; installer\version.iss and dist\rev80\):
 ;   iscc installer\rev80.iss
 ;
 ; Output:
@@ -23,7 +24,9 @@
 #define BuildDir     "..\dist\rev80"
 
 [Setup]
-AppId={{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
+; Do not change AppId. Setup uses it to find an earlier install for upgrade
+; and uninstall.
+AppId={{F012F18B-A780-4443-B92F-571814DE1CF7}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
@@ -40,7 +43,8 @@ ArchitecturesAllowed=x64compatible
 ; Require Windows 10 (build 1809+) — needed for modern DearPyGui renderer
 MinVersion=10.0.17763
 WizardStyle=modern
-; Do NOT require admin rights — install to %LOCALAPPDATA% if not admin
+; No admin rights necessary. A per-user install goes to
+; %LOCALAPPDATA%\Programs. The dialog lets the user install for all users.
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 
@@ -55,29 +59,31 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Source: "{#BuildDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\{#AppName}";   Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\rev80.ico"
+; PyInstaller 6 puts data files under _internal\ (its default contents_directory).
+Name: "{group}\{#AppName}";   Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\_internal\assets\icons\rev80.ico"
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
-Name: "{commondesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\rev80.ico"; Tasks: desktopicon
+Name: "{commondesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\_internal\assets\icons\rev80.ico"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(AppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
-; Remove user data directory only if user explicitly opts in (do not auto-delete)
+; Empty on purpose. The uninstaller does not delete the user data
+; (Documents\Rev80\ and %APPDATA%\rev80\).
 
 [Code]
 // ── PicoSDK prerequisite check ──────────────────────────────────────────────
-// Rev80 bundles the user-mode DLLs (ps4000a.dll, picoipp.dll) but the
-// USB kernel driver must be installed separately via PicoSDK.
-// We warn the user rather than hard-blocking, since some sites pre-install
-// PicoSDK via group policy or the device may be connected later.
+// A release (nodlls) installer bundles no PicoSDK DLL. A local build bundles
+// ps4000a.dll and picoipp.dll. The USB kernel driver always comes from
+// PicoSDK. Warn, do not block: a site can install PicoSDK by group policy,
+// or later.
 
 function IsPicoSdkInstalled(): Boolean;
 var
   RegPath: String;
 begin
-  // PicoSDK 11.x does not write a registry key — fall back to checking the
-  // well-known default DLL location.
+  // PicoSDK 11.x writes no registry key. Thus also check the default DLL
+  // location.
   Result := RegQueryStringValue(HKLM, 'SOFTWARE\Pico Technology\SDK', 'InstallPath', RegPath)
          or RegQueryStringValue(HKLM, 'SOFTWARE\WOW6432Node\Pico Technology\SDK', 'InstallPath', RegPath)
          or FileExists(ExpandConstant('{pf}\Pico Technology\SDK\lib\ps4000a.dll'))

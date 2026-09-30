@@ -1,23 +1,11 @@
-"""
-collect_pico_dlls.py  —  Run on a Windows machine with PicoSDK installed.
+"""Copy the 64-bit PicoScope 4000A DLLs into drivers/ for build/rev80.spec.
 
-Locates the 64-bit PicoScope 4000A DLLs and copies them to the
-project's drivers/ directory so they can be bundled by PyInstaller.
-
-Usage (from the project root on Windows):
+Run from the repository root on 64-bit Windows with 64-bit Python 3.10+:
     python build/collect_pico_dlls.py
-
-Output:
-    drivers/ps4000a.dll
-    drivers/picoipp.dll   (runtime dependency of ps4000a.dll)
-
-Requirements:
-    - 64-bit Windows
-    - Python 3.8+ (64-bit)
-    - PicoSDK DLLs available via one of:
-        a) PicoSDK installed (auto-detected via registry / default path)
-        b) PICO_DLL_DIR env var pointing at a directory with the DLLs
-        c) vendor/pico/ in the project root (gitignored staging area)
+Output: drivers/ps4000a.dll and drivers/picoipp.dll (a dependency of ps4000a).
+Search order: registry InstallPath, the default PicoSDK lib directories,
+PICO_DLL_DIR, vendor/pico/ (gitignored). The first match wins.
+Exits non-zero if a DLL is missing or is not 64-bit.
 """
 
 import os
@@ -37,7 +25,8 @@ PICO_SDK_CANDIDATES = [
     r'C:\Program Files (x86)\Pico Technology\SDK\lib',
 ]
 
-# Also probe registry for non-default install locations
+# Registry keys for a non-default install location. PicoSDK 11.x writes no
+# key, so the default paths above find it.
 _REG_KEYS = [
     (r'SOFTWARE\Pico Technology\SDK', 'InstallPath'),
     (r'SOFTWARE\WOW6432Node\Pico Technology\SDK', 'InstallPath'),
@@ -45,8 +34,8 @@ _REG_KEYS = [
 
 DRIVERS_DIR = Path(__file__).parent.parent / 'drivers'
 
-# Fallback: vendor/pico/ in project root (gitignored, pre-staged DLLs).
-# Override with PICO_DLL_DIR env var to point at any directory containing the DLLs.
+# Fallback directories (pre-staged DLLs). They come after an installed PicoSDK:
+# PICO_DLL_DIR does not override an installed SDK.
 VENDOR_DLL_DIR = Path(__file__).parent.parent / 'vendor' / 'pico'
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -60,12 +49,7 @@ def _check_platform() -> None:
 
 
 def _fallback_dirs() -> list[str]:
-    """Return pre-staged DLL directories when PicoSDK is not installed.
-
-    Checks (in order):
-      1. PICO_DLL_DIR env var — set to any directory containing the DLLs
-      2. vendor/pico/ in project root — gitignored, commit-free staging area
-    """
+    """Return the pre-staged DLL directories: PICO_DLL_DIR, then vendor/pico/."""
     dirs: list[str] = []
     env = os.environ.get('PICO_DLL_DIR')
     if env:
@@ -78,8 +62,8 @@ def _fallback_dirs() -> list[str]:
 def _probe_registry() -> tuple[list[str], bool]:
     """Return (sdk_lib_paths, registry_key_found).
 
-    registry_key_found is True when the PicoSDK installer has written its
-    registry entry, even if the lib path doesn't exist yet (pending reboot).
+    registry_key_found is True when the key exists, also when its lib path
+    does not exist yet. main() then asks for a restart of Windows.
     """
     paths: list[str] = []
     found_in_registry = False
@@ -132,7 +116,7 @@ def _is_64bit_dll(dll_path: Path) -> bool:
 def main() -> None:
     _check_platform()
 
-    # Build ordered search path: registry → well-known defaults → pre-staged fallbacks
+    # Search order: registry -> default paths -> pre-staged fallbacks
     reg_paths, sdk_in_registry = _probe_registry()
     search_dirs = reg_paths + PICO_SDK_CANDIDATES + _fallback_dirs()
     print(f'Searching for DLLs in: {search_dirs}')

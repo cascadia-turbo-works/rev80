@@ -1,8 +1,16 @@
 # Rev80 — Project Progress
 
-Maps client meetings, stated requirements, and development phases from
-`VibeGui Project.md` to git commits. Useful for tracking what has been
-delivered and what remains.
+This file maps the client meetings, the requirements and the development
+phases to commits. The source of the meeting notes is
+`doc/VibeGui Project.md`.
+
+- The **Requirements Tracker** near the end of this file gives the current
+  status of each requirement. It is the only source of current status.
+- A status column in a meeting table gives the status on the meeting date.
+  Where the tracker has a later status, the row says "(status on this date;
+  see tracker)".
+- Links such as [S-02](audit-202608.md#s-02) go to a finding of the
+  August 2026 audit, in `doc/audit-202608.md`.
 
 ---
 
@@ -45,13 +53,13 @@ No HDF5, no velocity spectrum, minimal GUI.
 | R1 | Frequency range and bin size selector | ✅ Done — Dec 2025 |
 | R2 | Normalize FFT to IPS or g (velocity preferred over acceleration) | ✅ Done — Dec 2025 |
 | R3 | Display top peaks | ✅ Done — Dec 2025 |
-| R4 | Smoothing | ❌ Not implemented |
-| R5 | Interactive peak inspection | ❌ Not implemented |
+| R4 | Smoothing | ❌ Not implemented (status on this date; see tracker) |
+| R5 | Interactive peak inspection | ❌ Not implemented (status on this date; see tracker) |
 | R6 | Running speed harmonics markers | ❌ Not implemented |
-| R7 | Bearing fault frequency markers | ❌ Not implemented |
-| R8 | Metadata: date, company, machine info, bearing types, running rate | ❌ Not implemented |
+| R7 | Bearing fault frequency markers | ❌ Not implemented (status on this date; see tracker) |
+| R8 | Metadata: date, company, machine info, bearing types, running rate | ❌ Not implemented (status on this date; see tracker) |
 | R9 | Trend: overall vibration over time | ✅ Done — Mar 2026 |
-| R10 | Luxury: startup and coastdown trend | ❌ Future |
+| R10 | Luxury: startup and coastdown trend | ❌ Future (status on this date; see tracker) |
 
 ---
 
@@ -143,7 +151,7 @@ Core pipeline stabilised; units, HDF5 persistence, and modular architecture adde
 |---|-------------|--------|
 | R19 | Confirm overall vibration values are correct (vs. individual peaks) | ✅ Done — validated `e7eddde` |
 | R20 | Fix bin selector behaviour | ✅ Done — Mar 2026 (`a69f14f`, `3fde4bc`) |
-| R21 | UI/UX language aligned with Alta | ❌ Ongoing |
+| R21 | UI/UX language aligned with Alta | ❌ Ongoing (status on this date; see tracker) |
 | R22 | Demo screenshots for website | ❌ Not committed |
 
 ---
@@ -225,9 +233,9 @@ left-panel redesign; siggen config persistence.
 |---|-------------|--------|
 | R23 | Multi-channel: toggle channels on/off | ✅ Done (`09cea74`, `4f8897c`) |
 | R24 | Two-channel phase relationship display | ❌ Not implemented |
-| R25 | Time-domain zoom window (e.g. 5 ms) | ❌ Not implemented |
-| R26 | Track down velocity integration low-frequency noise | 🔄 Partially addressed (`afa5ce0`); warrants further investigation |
-| R27 | Windows packaging (exe) | ❌ Not implemented |
+| R25 | Time-domain zoom window (e.g. 5 ms) | ❌ Not implemented (status on this date; see tracker) |
+| R26 | Track down velocity integration low-frequency noise | 🔄 Partially addressed (`afa5ce0`); warrants further investigation (status on this date; see tracker) |
+| R27 | Windows packaging (exe) | ❌ Not implemented (status on this date; see tracker) |
 
 ---
 
@@ -236,7 +244,7 @@ left-panel redesign; siggen config persistence.
 | # | Requirement | Status |
 |---|-------------|--------|
 | R28 | 0-P, P-P, RMS selectable per sensor | ✅ Done (`5872cab`, `1e040d3`) |
-| R29 | Acquisition settings causing long capture times | ✅ Done — `AcquisitionSettings` derives `samplerate`/`blocksize` from `maxfreq`/`binsize` (`a69f14f`). The power-of-two rounding that shipped then was retired in Sep 2026: `nextpow2` overstated the display rate by up to 2x, so the top preset advertised 32.8 kS/s against 25.6 kS/s of real data. `samplerate` is now exactly `2.56 * maxfreq`, which `maxfreq`'s own clamp guarantees the raw clock can back |
+| R29 | Acquisition settings causing long capture times | ✅ Done — `AcquisitionSettings` derives `samplerate` and `blocksize` from `maxfreq` and `binsize` (`a69f14f`). Since Sep 2026, `samplerate` is exactly 2.56 × `maxfreq`, not rounded up to a power of two (CHANGELOG `hotfix/RAW_SAMPLERATE`) |
 | R30 | Displaying wrong bins in spectrum setup | ✅ Done — Spectrum tab redesigned with live derived fields (`3fde4bc`) |
 
 ---
@@ -265,7 +273,7 @@ v4 with per-channel orders matrix; v3 files loaded in best-effort degraded mode.
 
 | # | Source | Requirement |
 |---|--------|-------------|
-| R28 | May 2026 | Configurable frame cache depth (integer selector in Acquisition config tab) with live recording-window and total-memory derived displays |
+| R49 | May 2026 | Configurable frame cache depth (integer selector in the Acquisition tab), with the recording window and the total memory shown. Numbered R28 until Sep 2026; R28 is the amplitude-mode requirement of 2026-03-25 |
 
 ### Phase 5 — GUI responsiveness profiling (Sep 2026)
 
@@ -293,45 +301,107 @@ measurement.
 |---|--------|-------------|
 | R47 | Sep 2026 | Settling indicator while the measurement chain stabilises |
 
+### Phase 6 — Audit record, documentation revision and defect fixes (Sep 2026)
+
+Branch `doc/revision`. The August 2026 audit report is now
+`doc/audit-202608.md`, with the status of each finding on 2026-09-29. The
+reference documents (README, CONTRIBUTING, CLAUDE.md, docstrings) were
+revised against the code. The defects that the revision found were fixed in
+the same branch. The CHANGELOG `[Unreleased]` section gives the measured
+before and after for each fix.
+
+| Date | Commit | Description |
+|------|--------|-------------|
+| 2026-09-29 | `c67f430` | Logs go to `~/Documents/Rev80/logs/` in every install ([X-08](audit-202608.md#x-08)) |
+| 2026-09-29 | `016e610` | Each file type is checked against its own version limit (measurement file 5, monitor session 6) |
+| 2026-09-29 | `0325acf` | Audit record `doc/audit-202608.md` |
+| 2026-09-29 | `81441a5` | A manual burst writes each overall beside its own waveform ([S-06](audit-202608.md#s-06)) |
+| 2026-09-29 | `910fedc` | A recording gets live frames only; file access is locked while it runs ([S-03](audit-202608.md#s-03)) |
+| 2026-09-29 | `6d5e17e` | "Reprocess session" skips tachometer channels |
+| 2026-09-30 | `b7d7a4d` | Both burst paths use `max_burst_s` and the real frame cap ([S-02](audit-202608.md#s-02)) |
+| 2026-09-30 | `c4c7156` | A session with compression `'none'` records |
+| 2026-09-30 | `3e1b90a` | The resource trail logs the real capture count |
+| 2026-09-30 | `aa7eee3` | Headless reads `monitor.compression_level` |
+| 2026-09-30 | `ff9c986` | The headless session ID uses local time ([S-10](audit-202608.md#s-10), part) |
+| 2026-09-30 | `a8538f0` | The headless shutdown message is correct |
+| 2026-09-30 | `21b8ea4` | Headless gives the tachometer full-accuracy limit at the achieved rate |
+| 2026-09-30 | `3449161` | An anomaly burst's trigger time describes its t = 0 frame; the onset is stored separately |
+| 2026-09-30 | `a94ac6c` | The GUI loads the monitor config into its widgets at startup |
+| 2026-09-30 | `34cab9f` | Envelope band limit, degraded-rate text and storage estimate |
+| 2026-09-30 | `3e30b2e` | The GUI refuses a stream stop while a recording runs |
+| 2026-09-30 | `a9d2757` | The Welch Overlap tooltip says that the overlap has no effect |
+| 2026-09-30 | `a51a26d` | An `inconsistent` or `unsteady` tachometer reading counts as no reading: the speed gate fails closed and the RPM trend does not record it |
+| 2026-09-30 | `186096e` | `_dsp.band_rms` is removed; it had no caller |
+| 2026-09-30 | `59bed55` | GUI sessions use `monitor.compression_level` |
+
+### Requirements added in Phase 6
+
+- R49: the frame-cache requirement of Phase 4, renumbered (it was a second
+  R28).
+- R50 to R62: the audit findings that are still open after the fixes above.
+  The tracker gives each one.
+- R63: verify the tachometer speed-drift limit on hardware (found in the
+  documentation revision).
+
 ---
 
 ## Requirements Tracker
 
+This table gives the current status of each requirement that is not closed
+in a meeting table above. The CHANGELOG gives the story and the measured
+numbers for each change.
+
 | # | Source | Requirement | Status |
 |---|--------|-------------|--------|
 | R4 | Jan 2025 | Spectral smoothing | ❌ Abandoned |
-| R5 | Jan 2025 | Interactive peak inspection (click peak → identify frequency) | ✅ Done — crosshairs on spectrum, time-series, and trend plots (`7f9b6a8`) |
-| R6 | Jan 2025 | Running speed harmonic markers on spectrum — tachometer channel provides live 1xRPM (feature/tachometer); harmonic overlay implementation pending | 🔲 TODO |
-| R7 | Jan 2025 | Bearing fault frequency markers on spectrum | ❌ Abandoned — future capability, deferred for simplicity |
+| R5 | Jan 2025 | Interactive peak inspection (click a peak to identify its frequency) | ✅ Done — crosshairs on the spectrum, time-series and trend plots (`7f9b6a8`) |
+| R6 | Jan 2025 | Running-speed harmonic markers on the spectrum | 🔲 TODO — the tachometer channel (R43) gives the shaft speed and a 1x marker. The harmonic overlay is not implemented |
+| R7 | Jan 2025 | Bearing fault frequency markers on the spectrum | ❌ Abandoned — deferred as a future capability |
 | R8 | Jan 2025 | Measurement metadata (company, machine, bearing types, running rate) | ✅ Done — measurement notes field (`2623d24`) |
-| R10 | Jan 2025 | Startup / coastdown trend (luxury) | ✅ Done — trend plot with browse (`cff702e`, `142dc30`) |
+| R10 | Jan 2025 | Startup and coastdown trend (luxury) | ✅ Done — trend plot with browse (`cff702e`, `142dc30`) |
 | R21 | Jan 2026 | UI/UX language aligned with Alta tooling | ✅ Done — plot labels, dynamic legend, Y-axis units (`7f9b6a8`) |
-| R22 | Jan 2026 | Demo screenshots for website | 🔲 TODO |
-| R24 | Mar 2026 | Multi-channel advanced plots: phase relationship, orbit plot (XY scope), waterfall, polar plot — many enabled by tachometer keyphasor channel | 🔲 TODO |
-| R25 | Mar 2026 | Time-domain zoom window | ✅ Done — time-series autoscaled to 300 ms window (`7f9b6a8`) |
-| R26 | Mar 2026 | Velocity integration low-frequency noise investigation | ✅ Done — FFT integration sign fix + Welch window leakage fix (`afa5ce0`, `3e4bb59`) |
+| R22 | Jan 2026 | Demo screenshots for the website | 🔲 TODO |
+| R24 | Mar 2026 | Multi-channel plots: phase relationship, orbit (XY), waterfall, polar. The tachometer channel (R43) is the phase reference for most of them | 🔲 TODO |
+| R25 | Mar 2026 | Time-domain zoom window | ✅ Done — the time series is autoscaled to a 300 ms window (`7f9b6a8`) |
+| R26 | Mar 2026 | Investigate low-frequency noise in the velocity integration | ✅ Done — integration sign fix (`afa5ce0`) and Welch window leakage fix (`3e4bb59`). The audit later found and fixed the FFT wrap leakage of the integration ([M-01](audit-202608.md#m-01)) |
 | R27 | Mar 2026 | Windows packaging (exe) | ✅ Done — Rev80Setup installer (`694146d`, `rev80.iss`, `build.sh`) |
-| R31 | Aug 2026 | Rebrand vibechecker → Rev80 | ✅ Done (`62dd2c2`) |
-| R32 | Aug 2026 | Anti-aliasing protection — field incident: high-frequency bearing fault aliased at low power, injecting spurious spectral energy. Fixed via mandatory oversample → linear-phase Kaiser FIR anti-alias filter → decimate in `PicoScopeStream` (`antialias_decimate()`, measured −111.7 dB stopband), plus a widened Nyquist margin (`samplerate = 2.56 * maxfreq`, the 2.56x convention real FFT vibration analyzers use — `nextpow2` was applied at the time and retired in Sep 2026, see R29) so the filter has real transition-band room; retired the old user-facing (off-by-default, ineffective) lowpass control. Related fixes from the same hardware investigation: a new streaming-rate watchdog flags sustained USB throughput degradation that the existing silence watchdog couldn't see, and `MAXFREQ_PRESETS`' top three entries (100k/250k/500k Hz) were dropped — they requested sample rates far beyond this hardware's measured continuous-streaming ceiling and were already silently corrupting most captured data. | ✅ Done — `a7cc288`, merged as `01b5832`; documented in `568f712` |
-| R33 | Aug 2026 | Flexible plot layout / dockable panels — users need context-dependent layouts (e.g. spectrum + waveform vs. trend + spectrum). Investigate DPG drag-drop window docking; if not natively supported, evaluate panel-switching or split-view alternatives. | 🔲 TODO |
-| R34 | Aug 2026 | **ISO 20816-3 harmonization** — evaluation of machine vibration measured on non-rotating parts, for industrial machines >15 kW at 120–15000 rpm: the class covering the blowers and motors this tool targets. Needs velocity RMS over a *declared* 10–1000 Hz band (2–1000 Hz below 600 rpm), machine-class selection, and Zone A/B/C/D boundaries with zone-based alarming. Current gaps: the overall is not band-limited — it spans `highpass_fc` … `fs/2`, up to 2.05× F_max, measured at +25% error from content the user explicitly excluded via F_max — and there is no machine classification or zone display, so the app reports a velocity number the user cannot interpret without an external table. | 🔲 TODO |
-| R35 | Aug 2026 | **ISO 2954 instrument conformance** — requirements for instruments measuring vibration severity. Needs ±10% amplitude accuracy over 10–1000 Hz, a measurement band that is declared and stored with the data, frequency response within tolerance *at* the band edges, and overload indication. Current gaps: the band is undeclared and not persisted; the 4th-order highpass at 10 Hz puts −3 dB exactly *on* the lower band edge rather than in the passband (corner should sit at ~2–5 Hz for a 10 Hz edge, or the response be compensated). Overload detection/exclusion is already done. | 🔲 TODO |
-| R36 | Aug 2026 | **ISO 13373-1/-2 conformance** — condition monitoring: measurement procedures (-1) and processing/presentation of vibration data (-2). Substantially met already: the v4/v5 HDF5 stores the full acquisition, channel and sensor snapshot alongside the data. Remaining: a machine / measurement-point hierarchy and route concept (currently only free-text channel names and notes), and preventing or flagging a trend assembled from frames acquired under different F_max or band settings, which is not comparable. | 🔲 TODO |
-| R37 | Aug 2026 | **ISO 5348 mounting guidance** — mechanical mounting of accelerometers. Documentation rather than code: usable frequency range is dominated by the mount (stud ≫ adhesive ≫ magnet ≫ handheld probe), and a handheld probe is unusable much above ~1 kHz. The app will happily display a 10 kHz spectrum the mount cannot physically support, with no indication. Add mounting guidance to the README, and ideally a per-measurement mount-type field driving a usable-bandwidth warning on the spectrum. | 🔲 TODO |
-| R38 | Aug 2026 | **Calibration traceability (ISO 16063)** — `ScopeSensor` carries a sensitivity typed in from the sensor datasheet, with no calibration date, method, or reference standard, so a saved measurement cannot be tied to a traceable calibration. Add calibration metadata to the sensor record and persist it with each measurement. A calibrated shaker check (0.1 in/s @ 191 Hz, 100 mV/g) put the end-to-end chain within ~1.6%, so the accuracy is there — the provenance is not. | 🔲 TODO |
-| R41 | Aug 2026 | **Envelope / demodulation analysis** — for rolling-element bearings this is *the* diagnostic: a defect's impulses ring a housing resonance at 2–20 kHz and are buried under the 1x in the raw spectrum, but appear as a clean line at the defect rate with ±1x load-zone sidebands in the envelope, months earlier. Implemented in `rev80/envelope.py` with an Envelope plot tab and automatic demodulation-band selection. Verified against the simulated oracle at 125x SNR. Remaining: trending and alarming on the envelope line, which needs a defect-rate input (bearing geometry or a tachometer) and so depends on R6/R24; and drawing the demodulation band edges on the spectrum plot. | ✅ Done (band trending pending R6/R24) |
-| R42 | Aug 2026 | **Crest factor and kurtosis** — two impulsiveness scalars a broadband overall averages away entirely. Crest factor rises early in a bearing defect's life and falls once it spalls; kurtosis above ~4 flags repetitive impacts. On the result card, trended and persisted. Remaining: no trend *plot* (the trend plot's two y-axes are unit-based and these are dimensionless — needs a third axis, an R33 layout decision) and no alarming (`FixedThresholdHook` is unit-aware and would need a dimensionless mode — belongs with R39). | ✅ Done (plot/alarm pending R33/R39) |
-| R39 | Aug 2026 | **Spectral anomaly hook — fix or remove.** Unwired from the GUI panel (`GUI_ANOMALY_HOOK_TYPES`); the hook and the headless front end are untouched. It triggers on `np.any(abs(spec - baseline)/baseline > threshold)` across every bin, but Welch runs a single segment in every shipped preset (`nperseg == blocksize`), so each noise-floor bin is chi-squared(2) with a standard deviation equal to its own mean. P(some bin of ~2000 exceeds 1.5x) is ~1.0 on healthy data, which makes `consecutive_n` a delay rather than a defence; observed firing at the earliest frame it arithmetically can. Bins 0 and 1 are additionally hard-zeroed for integration, so on any velocity/displacement channel they deviate by ~1e12 and fire permanently. A real fix is band RMS rather than per-bin, a threshold in sigma rather than fixed %, persistence on the same band across frames, and a default band of `highpass_fc … maxfreq` — i.e. it depends on R34's declared band. Decide then: rework on top of R34, or delete the hook and its GUI/headless/config surface outright. | 🔲 TODO |
-| R40 | Aug 2026 | **Sensor-fault detection.** Disconnect a cable mid-run today and the app trends a near-zero reading as a valid healthy measurement — the machine appears to have improved. The textbook fix, reading the IEPE bias against a nominal 8–14 V window, is **not available on this hardware**: our coupler has a DC blocking capacitor on its output so the bias never reaches the scope on either coupling setting, and the 4000A ranges only to ±20 V, so a 24 V supply would over-range even with a direct pre-cap tap. Software workaround (in progress): dead-channel detection from the AC signal — flag a channel whose band RMS falls below a per-`ScopeSensor` minimum-plausible floor, plus the open-circuit signature of a rail-ward step decaying at the coupler's high-pass time constant. Threshold to be set from measured separation between connected/still, connected/excited, shorted and open, not invented. Hardware route, if ever wanted: a coupler tap ahead of the blocking cap with a divider bringing 24 V inside ±20 V, or a coupler exposing a fault output. | 🔲 TODO |
-| R43 | Aug 2026 | **Tachometer channel support** — shaft speed is the denominator that turns a spectrum into a diagnosis: it names the lines (a 5.43x bearing tone moves 6.1 Hz between no load and full load on a 4-pole motor, 12 bins at 0.5 Hz), separates 2x line frequency from 2x running speed (80 CPM apart, different repairs), and gates trending so a load swing is not read as a condition change. Scope for the first cut: RPM display and trend, order cursors on the spectrum, an Order column in the peaks table, and speed-gated alarming via `valid_results()`. **Deliberately out of scope:** order-normalised resampling (a smeared spectrum is rejected via `SPEED_DRIFT_MAX_PCT`, not corrected — bearing analysis is done at steady state) and balancing phase reference (the shipped high-pass rotates 1x by 21° at 3600 RPM rising to 143° at 600, while amplitude stays correct, so nothing on screen would flag the error). Measured accuracy limit: full accuracy needs >= ~70 samples per pulse (pulse rate <= ~600 Hz) -- 36000 RPM at 1 ppr, 600 RPM at 60 ppr, 35 RPM at 1024 ppr, so a high-line encoder is impractical and the UI must say so. Storage is per-frame **edge times**, not the tach waveform — ~1400x smaller and still enough to re-derive RPM at a different pulses/rev. Enables R6 and R24, and the envelope band trending left pending under R41. | ✅ Done — `rev80/tach.py`, channel roles, coherent simulation, collector wiring, HDF5 v5, speed gate, headless refusal, monitor v6, Tachometer tab with live preview, 1x marker and level. Closed out on a 4424A: 23 hardware tests pass, including an AWG sweep 300–10200 RPM within ±0.2%, the AC-coupling failure reproduced electrically at 70% duty, and a clean 4-channel sustained run. Sep 2026: `pulses_per_rev` re-enabled as a user control, made safe by replacing the fixed `MIN_EDGES = 3` with `MIN_REVS = 2.0` — the gate is whole shaft revolutions, so a block holding 1.5 turns of a 6 ppr encoder now withholds the rate instead of reporting one drawn from a fraction of a turn. Closed out on the 4424A: 27 hardware tests pass, including ppr dividing a 60 Hz AWG square exactly once at 1/2/6 ppr within ±0.2%, and the gate withholding on real edges. Outstanding: shaft speed on the main display outside the dialog, and RPM on the trend plot (blocked on R33 — the trend already has two unit-based y-axes) |
-| R44 | Aug 2026 | **Tachometer support in `rev80-headless`** — deferred, not rejected. Headless currently must *refuse* tach-role channels rather than ignore them: it builds its config from the same `devices/*.yaml` and iterates `enabled_channels`, so a GUI-configured tach channel would be high-passed, given an overall, trended and fed to the anomaly hooks as though it were vibration. Measured on a 5 % duty pulse train at 1800 RPM through the real `process_sample`: overall 1514.9 mV, crest 5.00, **kurtosis 15.94**, 63 spectral peaks — an analyst reviewing that session concludes a bearing is failing badly. It also drifts on nothing: a tach LED ageing from 5.0 V to 4.5 V moves that channel's overall by exactly −10 %, the shipped `RmsThresholdHook` threshold, on three consecutive frames. | ✅ Done — Sep 2026. Headless now runs a tachometer: the device file's role and calibration are loaded, `--channels` reconciles against the roles rather than silently dropping the speed reference, and the session summary carries the pulses/rev limits an unattended run has no tab to show live. Three defects the survey had missed were fixed with it, all of which also affected the GUI: every monitor session stored a tach channel's full waveform because `MonitorWriterThread` never passed `role=` to `_write_channel_group` (~427x the stored size per frame, and D-2 held in measurement files only); the session's channel snapshot recorded no role; and nothing in the package ever set `SimulatedSensor.channel_sources`, so neither front end could be dry-run against a tachometer offline. Two more copy-paste pairs were extracted in passing (`config.channel_role_state`, `monitor.session.channel_snapshot_for`) — `_build_anomaly_hook` is the last H-01 instance. Verified end to end with `--device sim`: 3600 RPM on a 60 Hz simulated shaft, edge times and no waveform for the tach channel, `rpm`/`speed_ok` on every capture. A follow-on inventory of what still differed between the two front ends extracted the whole `MonitorSession` construction (`monitor.session.session_from`) and fixed two more drifted fields: headless kept one fewer pre-trigger frame than configured, and `max_burst_s` was an `acquisition.yaml` setting that nothing read. `_build_anomaly_hook` is the last duplicated pair |
-| R45 | Sep 2026 | **Motor-state judgement from the tachometer** — a stopped shaft and a disconnected cable can produce an identical block: flat and near zero, whenever the reflector happens to sit away from the sensor. Only the parked-reflector case (flat at the high rail) and turning-below-the-floor (real pulses, fewer than MIN_EDGES) are distinguishable today, so `no_signal` is reported as exactly that and nothing is inferred about the machine. Making "motor stopped" trustworthy needs *history* — a channel that read cleanly and then ceased is a stop; one that never read is a setup problem — which is a small state machine belonging with whatever consumes the state rather than in `tach.py`. Until then the GUI must not claim a machine is stopped on the strength of a flat line. | 🔲 TODO |
-| R46 | Sep 2026 | **Surface velocity from reflector size and duty cycle** — with reflector arc length L, measured duty d and shaft rate f, the reflector subtends d of a revolution, so circumference is L/d and surface velocity is v = f·L/d. The tape doubles as a shaft-diameter measurement, giving surface speed without anyone measuring the shaft — directly useful on rollers, belts and web handling. **Duty cycle is now captured** (`TachResult.duty_cycle` / `.pulse_widths_s`, persisted in v5), so the remaining work is the reflector-size input and the `v = f·L/duty` readout. Sensor geometry — an optical tach's spot width, a proximity probe's inductive field — inflates the observed duty; by decision the operator accounts for that when measuring the tape or key, so no correction is applied in software. | 🔲 TODO |
-| R47 | Sep 2026 | **Settling indicator while the measurement chain stabilises.** The first frame of a stream reads conspicuously high — approximately 2x on the overall — and is displayed, trended and alarmed on as though it were a valid measurement. Real analysers show "acquiring"/"settling" and withhold the reading until the chain has stabilised. Three candidates to separate before fixing, and they are not equally likely: the IEPE coupler's own AC-coupling RC transient after `ps4000aRunStreaming` (real electrical signal, which no digital filter can remove, and the most probable of the three); the `resample_poly` anti-alias FIR's block-edge transient; and the first-block high-pass state — noting `filter_block` already seeds `zi` from the block mean via `_seed_zi` rather than from zero, so that one should already be handled and is the least likely. Measure the settling time rather than assuming it, then withhold or flag frames inside it and exclude them from the trend, the baseline and anomaly evaluation exactly the way overflow/degraded frames already are (`valid_results()`). Raised while profiling GUI responsiveness (Sep 2026); deliberately deferred there as out of scope. | 🔲 TODO |
-| R48 | Sep 2026 | **CI and release automation on GitHub Actions** — the move off the self-hosted remote left nothing running the test suite or cutting a build but a person remembering to. Two workflows: `ci.yml` lints (`ruff check src/ tests/`) and runs `pytest` on ubuntu across Python 3.10–3.13 for every branch push and PR, branches only — a bare `push:` also matches tags and would duplicate the release run; and `release.yml`, triggered by a `v*` tag (or `workflow_dispatch`, to exercise the pipeline without spending a version number), which gates on a single-version test run, then builds the wheel + sdist and the Windows installer in parallel and attaches both to a **draft** GitHub Release. Three non-obvious constraints it encodes: PicoSDK must be installed on the Windows runner even though the installer is built driver-less, because `picosdk`'s `setup.py` probes for the native DLLs at *install* time and dies without them; `fetch-depth: 0` is load-bearing, since a shallow checkout has no tags and `setuptools_scm` silently falls back to `0.0.0+unknown` — both build jobs assert against that string; and releases do not cancel each other in flight, unlike CI. | ✅ Done — `4e6da3e` (CI matrix + reproducible ruff), `31f8969` (CI-drivable `build.sh`), `2594f4a` (tag → draft release), `f811dd0` (PicoSDK on the Windows runner), `7411fbe` (`workflow_dispatch`), `e88072f` (Node 24 actions), `e419f5c`. Proven on a real branch run — PicoSDK silent-installs, `find_library('ps4000a')` resolves and the wrapper's probe passes, no reboot. The `gh release create --draft` step is guarded to tags and so has not run yet; the first `v*` tag is its first exercise. Sep 2026: releases also carry PDFs of README, CONTRIBUTING, PROGRESS and CHANGELOG, rendered by a `docs` job — they stopped being committed, having reached 10.3 MB of undeltafiable binary against 13.4 MB for all source history |
+| R28 | Mar 2026 | 0-P, P-P or RMS amplitude mode, selectable for each sensor | ✅ Done (`5872cab`, `1e040d3`). Since `c2622d6` (Apr 2026) the mode is a setting of each channel (`channel_amplitude_modes`), not of each sensor |
+| R31 | Aug 2026 | Rebrand vibechecker to Rev80 | ✅ Done (`62dd2c2`) |
+| R32 | Aug 2026 | Anti-alias protection. In a field incident, a high-frequency bearing fault aliased into the spectrum at low power | ✅ Done — mandatory oversample, anti-alias FIR and decimation in `PicoScopeStream`; a streaming-rate watchdog; no F_max preset above what the USB stream can carry (`198050a`, `8ee940a`, `64004a3`, merge `01b5832`). Later: at least 2x oversampling (`a7cc288`, [M-03](audit-202608.md#m-03)) and a Kaiser kernel with a −111.7 dB stopband ([M-12](audit-202608.md#m-12)). The top F_max preset is 10 kHz |
+| R33 | Aug 2026 | Flexible plot layout or dockable panels (for example spectrum + waveform, or trend + spectrum). Examine dearpygui window docking; if it is not available, examine panel switching or split views | 🔲 TODO |
+| R34 | Aug 2026 | ISO 20816-3: evaluate machine vibration on non-rotating parts by velocity RMS over a declared band, with machine classes and Zone A/B/C/D boundaries. The band that applies depends on the machine; check the standard ([M-06](audit-202608.md#m-06), [standards table](audit-202608.md#standards-conformance)) | 🔄 Partially done — the declared band is done, with the presets 'ISO 20816 (10-1000 Hz)' and 'ISO 20816 low speed (2-1000 Hz)', and is stored with the data (CHANGELOG `round 2`). Machine-class selection, the zone display and zone alarms remain |
+| R35 | Aug 2026 | ISO 2954 instrument conformance: ±10 % amplitude over 10–1000 Hz, a declared band stored with the data, a response in tolerance at the band edges, overload indication ([M-05](audit-202608.md#m-05), [M-06](audit-202608.md#m-06)) | ✅ Done — declared and stored band; high-pass knee at 0.834 × the band edge (8.34 Hz for 10 Hz); overload frames flagged and excluded. Verified offline; a hardware sweep over 10–1000 Hz is not recorded. The one hardware point at the edge, 10 Hz, read −1.05 dB (2026-08-29) |
+| R36 | Aug 2026 | ISO 13373-1/-2 condition-monitoring procedures and data presentation ([standards table](audit-202608.md#standards-conformance)) | 🔲 TODO — the acquisition, channel and sensor configuration is stored with the data (measurement files v5, monitor sessions v6). Remaining: a machine and measurement-point hierarchy with routes, and a flag on a trend that mixes frames of different F_max or band settings |
+| R37 | Aug 2026 | ISO 5348 mounting guidance. The mount sets the usable frequency range (stud, then adhesive, then magnet, then handheld probe; a handheld probe is not usable above about 1 kHz) | 🔲 TODO — add mounting guidance to the README. Optional: a mount-type field for each measurement, with a usable-bandwidth warning on the spectrum |
+| R38 | Aug 2026 | Calibration traceability (ISO 16063). `ScopeSensor` has a datasheet sensitivity with no calibration date, method or reference | 🔲 TODO — add calibration metadata to the sensor record and store it with each measurement. A calibrated shaker check (0.1 in/s at 191 Hz, 100 mV/g sensor) put the whole chain within about 1.6 % |
+| R39 | Aug 2026 | Spectral anomaly hook: fix it or remove it ([S-02](audit-202608.md#s-02), part a) | 🔲 TODO — the GUI does not offer it (`GUI_ANOMALY_HOOK_TYPES`); headless does. It tests each bin against a fixed %, but Welch uses one segment, so each noise-floor bin has a standard deviation equal to its mean, and the hook fires on healthy frames. A fix needs band RMS, a threshold in standard deviations and persistence over the declared band (R34) |
+| R40 | Aug 2026 | Sensor-fault detection. A cable disconnected during a run trends a near-zero reading as a valid, healthy measurement ([capability gaps](audit-202608.md#capability-gaps)) | 🔲 TODO — IEPE bias monitoring (8–14 V) is not possible on this hardware: the coupler has a DC blocking capacitor on its output, and the 4000A ranges to ±20 V against a 24 V supply. Proposed software route, no code yet: flag a band RMS below a floor for each sensor, and the open-circuit step. Set the thresholds from measurements |
+| R41 | Aug 2026 | Envelope (demodulation) analysis for rolling-element bearings ([capability gaps](audit-202608.md#capability-gaps)) | ✅ Done — `envelope.py`, the Envelope tab and automatic band selection; verified against the simulated bearing model at 125x SNR (`SimulatedSensor`). Remaining: trend and alarm on the envelope line (needs a defect rate, R6 and R24), and the band edges on the spectrum plot |
+| R42 | Aug 2026 | Crest factor and kurtosis on the result card, trended and stored ([capability gaps](audit-202608.md#capability-gaps)) | ✅ Done. Remaining: no trend plot (the two trend y-axes have units and these values have none; an R33 decision) and no alarm (`FixedThresholdHook` has units; with R39) |
+| R43 | Aug 2026 | Tachometer channel: shaft speed display and trend, order cursors, an Order column in the peaks table, speed-gated alarms. Out of scope: order-normalised resampling and a balancing phase reference | ✅ Done — CHANGELOG `feature/tachometer (R43)`. A channel stores edge times: about 30 values/s against 25600 samples/s. AWG loopback on a 4424A: 300–10200 RPM within ±0.2 %. Full accuracy needs about 70 samples per pulse: at 25591.8 Hz, about 21900 RPM at 1 ppr, 366 RPM at 60 ppr, 21 RPM at 1024 ppr (computed, not measured). Remaining: RPM on the trend plot (R33) |
+| R44 | Aug 2026 | Tachometer support in `rev80-headless`. Before this work headless had to refuse a tachometer channel: the vibration path gives a 5 % duty pulse train at 1800 RPM an overall of 1514.9 mV, crest 5.00, kurtosis 15.94 and 63 peaks | ✅ Done — Sep 2026 (CHANGELOG `feature/tachometer — headless runs a tachometer (R44)`). Headless loads the role and calibration, `--channels` keeps the tachometer, and the summary gives the pulses/rev limits. Verified with `--device sim` at 3600 RPM |
+| R45 | Sep 2026 | Motor state from the tachometer. A stopped shaft and a disconnected cable can give the same flat block | 🔲 TODO — only a parked reflector (flat at the high rail) and a shaft below the speed floor (pulses, but fewer than `min_edges_for(ppr)`, that is less than `MIN_REVS` = 2 revolutions) are distinguishable. A flat block is `no_signal`, not "stopped". A reliable "stopped" needs history: a channel that read and then ceased is a stop |
+| R46 | Sep 2026 | Surface velocity from reflector size and duty cycle: v = f·L/d, with arc length L, duty d and shaft rate f | 🔲 TODO — duty cycle is captured and stored (`TachResult.duty_cycle`, `.pulse_widths_s`, v5). Remaining: a reflector-size input and the readout. The operator allows for the spot width of the sensor; the software applies no correction |
+| R47 | Sep 2026 | Settling indicator. The first frame of a stream reads about 2x high on the overall, and is shown, trended and alarmed on ([S-13](audit-202608.md#s-13)) | 🔲 TODO — measure the settling time, then flag the frames in it and exclude them from the trend, baseline and alarms, as `valid_results()` does for overflow frames. Candidates: the IEPE coupler AC-coupling transient (most probable), the anti-alias FIR edge transient, the first-block high-pass state (least probable) |
+| R48 | Sep 2026 | CI and release automation on GitHub Actions ([H-05](audit-202608.md#h-05)) | ✅ Done — `ci.yml` (ruff and pytest, Python 3.10–3.13, each branch push and PR) and `release.yml` (a `v*` tag: test gate, wheel, sdist, Windows installer, draft release); `4e6da3e` to `e419f5c`. The tag run for `v0.1.3` (2026-09-18) made the release with the wheel, sdist and installer. The `docs` job (PDFs, added 2026-09-28) has not run for a tag |
+| R49 | May 2026 | Configurable frame cache depth, with the recording window and the total memory shown (Phase 4; numbered R28 until Sep 2026) | ✅ Done (`0a1b38c`) |
+| R50 | Aug 2026 audit | The session reprocess thread races the render loop ([S-08](audit-202608.md#s-08)) | 🔲 TODO — `GUI._on_sb_reprocess` runs a thread that reloads the session into `DataCollector` and calls dearpygui, with no lock. The render-loop guard now logs the error, so the app does not stop. See R59 |
+| R51 | Aug 2026 audit | Session timestamps record no UTC offset ([S-10](audit-202608.md#s-10)) | 🔲 TODO — all stored timestamps are naive local time. When a stored timestamp does not parse, `reprocess_session_trend` uses naive UTC. The session ID uses local time in both front ends since `ff9c986` |
+| R52 | Aug 2026 audit | Headless must close the device on every exit path ([S-11](audit-202608.md#s-11)) | 🔲 TODO — `headless.run()` has no `try/finally` and does not call `disconnect_sensor()`, so `ps4000aCloseUnit` does not run. Ctrl+C and SIGTERM run the normal stop; an exception in the loop skips it. Not verified with a PicoScope |
+| R53 | Aug 2026 audit | Range-check the acquisition parameters read from a file or config ([X-02](audit-202608.md#x-02)) | 🔲 TODO — `AcquisitionSettings.from_dict` and the `binsize` and `maxfreq` setters accept 0. The render loop logs each error and stops through `cleanup()` after 30 (`MAX_CONSECUTIVE_RENDER_ERRORS`) |
+| R54 | Aug 2026 audit | Sanitise the device model name in the config file name ([X-03](audit-202608.md#x-03)) | 🔲 TODO — `config.device_filename()` keeps `/` and `..`. An attack needs hostile USB firmware |
+| R55 | Aug 2026 audit | Pin and verify the build inputs ([X-04](audit-202608.md#x-04)) | 🔄 Partially done — lower bounds on the dependencies; the font comes from the tracked file. Remaining: no lockfile; the font download fallback of `scripts/fetch_font.sh` has no checksum; `drivers/install-picoscope4000a-driver.sh` has no `set -euo pipefail` and no key fingerprint check |
+| R56 | Aug 2026 audit | Do not close the device handle while the poll thread is in the driver ([X-05](audit-202608.md#x-05)) | 🔲 TODO — `PicoScopeStream.stop()` joins with a 3 s timeout, then calls `ps4000aStop` in all cases. `_streaming_callback` has no upper bound check on `noOfSamples` |
+| R57 | Aug 2026 audit | The logging config is in a user-writable directory on a non-admin install ([X-07](audit-202608.md#x-07)) | 🔲 TODO — `logger.py` passes `logging.yaml` to `dictConfig`, which creates any class that the file names. Relevant on shared or managed machines only |
+| R58 | Aug 2026 audit | One anomaly-hook builder for both front ends ([H-01](audit-202608.md#h-01)) | 🔄 Partially done — the session factory, channel snapshot and role decision are shared. `_build_anomaly_hook` is still in `gui.py` and `headless.py`; `tests/test_anomaly_hook_build.py` checks that their defaults agree |
+| R59 | Aug 2026 audit | A thread-safety contract for `DataCollector` ([H-02](audit-202608.md#h-02)) | 🔲 TODO — `collector.py` has no lock. `910fedc` removes one route (file load during a recording); R50 is another |
+| R60 | Aug 2026 audit | Remove the burst-timing skips from the tests ([H-05](audit-202608.md#h-05)) | 🔲 TODO — `tests/test_monitor_session_load.py` has 10 `pytest.skip()` calls keyed on burst timing. On a slow runner they skip and the tests pass |
+| R61 | Aug 2026 audit | Split `gui.py` ([H-07](audit-202608.md#h-07)) | 🔲 TODO — 5194 lines. `util.__all__` and the thread excepthook are done |
+| R62 | Aug 2026 audit | Unique burst IDs ([H-08](audit-202608.md#h-08), item 4) | 🔲 TODO — the ID has one-second resolution. A second burst in the same second fails `create_group`, and headless stops on the writer error. Not reproduced |
+| R63 | Doc revision | Verify the tachometer speed-drift limit on hardware | 🔲 TODO — the `SPEED_DRIFT_MAX_PCT = 1.0` table (CONTRIBUTING E14.6) has no recorded source; the `tach.py` comment says simulation only. Measure it with a controlled speed drift (AWG sweep or a load step on a real machine) and record the conditions |
 | — | Future | Proximity probe support | ✅ Done — scope sensor with EU in displacement units |
 | — | Future | Web portal for data sharing | ❌ Abandoned |
-| — | Future | MCC DAQ tooling (USB-1608FS-Plus) | ❌ Abandoned — PicoScope oscilloscope replaces DAQ for all current use cases |
+| — | Future | MCC DAQ tooling (USB-1608FS-Plus) | ❌ Abandoned — the PicoScope replaces the DAQ for all current use cases |
 
 ---
 

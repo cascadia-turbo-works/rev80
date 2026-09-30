@@ -32,7 +32,8 @@ def setup_logging(debug: bool = False) -> None:
     for handler in config.get("handlers", {}).values():
         fname = handler.get("filename")
         if fname:
-            # Replace bare relative filename (e.g. "log/main.log") with absolute path
+            # Keep only the basename of the YAML filename (e.g. "log/main.log")
+            # and put it in log_dir(), ~/Documents/Rev80/logs/
             handler["filename"] = str(_log_dir / os.path.basename(fname))
 
     if debug:
@@ -66,18 +67,11 @@ def exception_handler(exc_type, exc, tb):
 
 
 def thread_exception_handler(args) -> None:
-    """Capture any unhandled exception escaping a background thread.
+    """Log an unhandled exception from a background thread.
 
-    sys.excepthook covers only the main thread. Everything interesting in this
-    app runs off it -- the PicoScope poll thread, the simulation generator, the
-    monitor writer, the autoconnect and reprocess workers -- so their deaths
-    went to the default threading.excepthook, which writes to stderr. Launched
-    from a desktop entry or with the terminal closed, stderr goes nowhere, and
-    a dead acquisition thread left no trace in log/ whatsoever.
-
-    That is worse than a crash: the thread dies, `_running` may stay set, and
-    is_streaming keeps reporting a healthy stream that will never produce
-    another frame. Audit H-07.
+    The acquisition, simulation, writer and worker threads run off the main
+    thread. The default hook writes to stderr, which a desktop launcher
+    discards; a dead acquisition thread can leave is_streaming True.
     """
     if args.exc_type is SystemExit:
         return
@@ -99,17 +93,12 @@ _fault_file = None
 
 
 def install_excepthooks() -> None:
-    """Route every crash route we can reach into a file. Idempotent.
+    """Send every crash that can be caught to the log directory. Idempotent.
 
-    Three distinct mechanisms, each previously leaving a different amount of
-    nothing behind:
-      * main-thread exception    -> sys.excepthook (already handled)
-      * background-thread death  -> threading.excepthook (the H-07 gap)
-      * SIGSEGV / hard crash     -> faulthandler, the only one that survives,
-                                    and what distinguishes a driver-level
-                                    crash (X-05) from an OOM kill
-    An OOM kill is SIGKILL and cannot be trapped at all; the resource trail
-    below is the only warning available for that one.
+    sys.excepthook (main thread), threading.excepthook (other threads), and
+    faulthandler to faulthandler.log (SIGSEGV, for example in the driver). An
+    OOM kill is SIGKILL and cannot be caught; resource_snapshot() is the only
+    trail for it.
     """
     global _hooks_installed, _fault_file
     if _hooks_installed:
@@ -146,10 +135,8 @@ def _rss_bytes() -> int:
 def resource_snapshot() -> dict:
     """Memory and thread counts for the periodic monitor-mode trail.
 
-    An OOM kill is SIGKILL: no traceback, no atexit, nothing in the log. The
-    only way to attribute one afterwards is a trail written BEFORE it, so this
-    must never itself raise — a diagnostic that crashes the app it is
-    diagnosing is worse than no diagnostic.
+    An OOM kill leaves nothing in the log, so only a trail written before it
+    shows the cause. This function never raises.
     """
     try:
         rss_mb = _rss_bytes() / (1024 * 1024)
@@ -182,12 +169,10 @@ def repo_root_or_none() -> Path | None:
 def resolve_version(stamped: str) -> str:
     """Live `git describe` in a source checkout, else the stamped value.
 
-    _version.py is written by the pre-commit hook, which only runs if
-    `core.hooksPath` has been pointed at .githooks in this clone -- it is not
-    installed automatically. It has been observed 100 commits stale, which
-    makes a field log impossible to tie to a build (audit H-03). In a checkout
-    the working tree is the truth; in an installed or frozen build there is no
-    git, and the stamp is.
+    setuptools_scm writes _version.py at build or install time, so in an
+    editable checkout it does not follow later commits. In a checkout, git is
+    the source; in an installed or frozen build there is no git, and the
+    stamped value is used.
     """
     root = repo_root_or_none()
     if root is None:

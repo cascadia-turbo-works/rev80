@@ -23,72 +23,28 @@ from rev80.util import CHANNEL_ROLES, DEFAULT_CHANNEL_ROLE
 
 log = rev80.get_logger("collector")
 
-#: Denominator caps tried, coarsest first, when reducing the raw->display
-#: resample ratio. The first cap landing within _RESAMPLE_RATE_TOL wins; if
-#: none does, the closest is used. Stops at 256 because the FIR resample_poly
-#: designs is 2*10*max(up,down)+1 taps: 5121 at the cap, ~1 ms on a 12800
-#: sample block, against 512821 taps and 73.6 ms unbounded. See
-#: decimate_to_rate for the measurement.
+#: Denominator caps tried, coarsest first, for the raw-to-display resample
+#: ratio. The first cap within _RESAMPLE_RATE_TOL wins, else the closest.
+#: At the cap of 256 the FIR has 5121 taps (about 1 ms for each 12800-sample
+#: block); an unbounded ratio gave 512821 taps and 73.6 ms.
+#: Evidence: CONTRIBUTING.md, "E7. Resample ratio bound".
 _RESAMPLE_DENOM_LADDER = (4, 8, 16, 32, 64, 128, 256)
 
-#: Relative rate error accepted in exchange for a cheaper ratio. Measured on a
-#: 4824A, the grid-snapped streaming clock lands 3.2e-4 from nominal (-320 ppm,
-#: the closest its 12.5 ns timebase can reach), so 1e-3 clears it with room and
-#: the ladder stops at the exact integer factor at every shipped preset. The
-#: bound is the safety net for an off-preset F_max, not the normal path.
-#:
-#: It is a bound on the RESAMPLE approximation only, and does not add to the
-#: clock error: the rate returned by decimate_to_rate is exact for the ratio
-#: used, and the frequency axis is built from it.
+#: Relative rate error accepted for a cheaper ratio. It is larger than the
+#: -320 ppm clock offset of a 4824A, so every shipped preset gets its exact
+#: integer factor. It does not add to the clock error: the returned rate is
+#: exact for the ratio used, and the frequency axis uses it.
 _RESAMPLE_RATE_TOL = 1e-3
 
 
 def decimate_to_rate(block: np.ndarray, raw_rate: float, target_rate: float) -> 'tuple[np.ndarray, float]':
-    """Anti-alias filter + resample a raw-rate block toward target_rate.
+    """Anti-alias filter and resample a raw-rate block toward `target_rate`.
 
-    Generalises picoscope.antialias_decimate's integer-factor decimation to
-    an arbitrary rational ratio: RAW_SAMPLERATE_HZ (AcquisitionSettings) is
-    fixed, but the maxfreq-driven display rate this feeds isn't a clean
-    divisor of it in general. Does NOT touch antialias_decimate itself --
-    that's the validated hardware acquisition path (always a small integer
-    factor) and stays exactly as it is.
-
-    `window=('kaiser', beta)` lets scipy.signal.resample_poly derive the
-    correct up/down-normalised cutoff internally, rather than hand-deriving
-    it here -- the one thing pinned to match the hardware path is the
-    stopband target (_AA_STOPBAND_DB), via kaiser_beta.
-
-    Returns (resampled, actual_rate), where actual_rate is EXACT
-    (raw_rate * up / down) and target_rate is only ever approached. Every
-    consumer must use the returned rate, not config.samplerate: it is what the
-    frequency axis is correct against.
-
-    Bounding the ratio
-    ------------------
-    resample_poly designs a `2*10*max(up, down)+1` tap FIR on every call, so
-    the ratio's denominator is a direct cost multiplier and has to be bounded.
-    It nominally was, but `limit_denominator` was applied to each rate
-    SEPARATELY before dividing -- and both rates are integers there, so each
-    reduced to denominator 1 and the quotient's denominator was never bounded
-    at all. On real hardware that was invisible right up until it wasn't: the
-    driver ran at 25641 Hz (see PicoScopeStream._start_streaming for why), 5120
-    and 25641 are coprime, and scipy dutifully designed a **512821-tap** filter
-    per channel per frame. Measured, 12800-sample block:
-
-        raw rate      up/down     taps     ms/call    out len
-        25600.00        1/5        101       0.64       2560   <- simulated
-        25641.00     5120/25641  512821     73.62       2556   <- hardware
-
-    At 8 channels that is 589 ms of main-thread work against a 500 ms frame,
-    and it never showed up offline because SimulatedSensor reports exactly
-    25600. The short output was its own defect: 2556 < nperseg silently tripped
-    Welch's fallback, so the delivered bin width was not the one the UI stated.
-
-    The bound is now applied to the ratio, via the smallest denominator cap
-    that gets within _RESAMPLE_RATE_TOL of the requested rate. Every shipped
-    preset lands on its exact integer factor; an off-preset F_max costs a few
-    thousand taps rather than half a million. Measured worst case under the cap
-    is 1.05 ms, against 73.62 ms without it.
+    `resample_poly`, Kaiser window at `_AA_STOPBAND_DB`, ratio bounded by
+    `_RESAMPLE_DENOM_LADDER`. Returns ``(resampled, raw_rate * up / down)``.
+    Consumers must use that achieved rate, not `config.samplerate`. Returns
+    the block unchanged if target >= raw.
+    Evidence: CONTRIBUTING.md, "E7. Resample ratio bound".
     """
     if target_rate >= raw_rate:
         return block, raw_rate
@@ -118,16 +74,22 @@ def decimate_to_rate(block: np.ndarray, raw_rate: float, target_rate: float) -> 
 def role_of_sample(sample) -> str:
     """'tachometer' when this sample carries a tach reading, else 'vibration'.
 
-    For writers that hold frames but no `AcquisitionSettings` -- the monitor
-    writer thread runs off a queue and has only the samples. `receive_data`
-    populates `sample.tach` for tach-role channels and nothing else, so the
-    sample carries its own role; `monitor/controller.py` already relied on
-    exactly this test to keep a tach out of the pre-trigger overall.
-
-    `DataCollector.save_data` uses `config.role_for` instead, which is
-    authoritative there because it has the config in hand.
+    For writers that have samples but no `AcquisitionSettings`, such as the
+    monitor writer thread. `receive_data` sets `sample.tach` only on
+    tachometer channels. `save_data` uses `config.role_for` instead.
     """
     return 'tachometer' if getattr(sample, 'tach', None) is not None else 'vibration'
+
+
+def _stored_waveforms(h5_grp):
+    """Yield (ch, data) for each channel group in h5_grp that has a waveform.
+
+    A tachometer channel group has no 'data' dataset, so this skips it.
+    """
+    for ch_str in [k for k in h5_grp.keys() if k.isdigit()]:
+        if "data" not in h5_grp[ch_str]:
+            continue
+        yield int(ch_str), np.asarray(h5_grp[ch_str]["data"][()], dtype=np.float64)
 
 
 def _write_channel_group(h5_grp, ch: int, sample: 'rev80.VibeSample',
@@ -136,17 +98,10 @@ def _write_channel_group(h5_grp, ch: int, sample: 'rev80.VibeSample',
                          role: str = 'vibration') -> None:
     """Write one channel's data for one frame into an h5py group.
 
-    THE single channel-group writer, used by both DataCollector.save_data()
-    and MonitorWriterThread. These were previously two separate functions that
-    had silently diverged: the monitor copy wrote no validity flags at all, so
-    every monitor session recorded clipped and rate-degraded captures as though
-    they were clean. Keep them unified.
-
-    A **tachometer** channel stores its `edge_times` and a summary, not a
-    `data` waveform (decision D-2): ~30 float64 per second against 41666, and
-    everything that makes RPM a view on stored data is preserved, because
-    pulses_per_rev is a post-hoc divisor on the intervals. Readers must
-    therefore branch on the presence of 'data' rather than assume it.
+    The one channel writer for measurement files and monitor sessions. Do not
+    add a second copy. A tachometer channel stores `edge_times`, `pulse_widths`
+    and a summary, but no `data` dataset, so readers must test for 'data'.
+    Callers must pass `role`: the default is 'vibration'.
     """
     cg = h5_grp.create_group(str(ch))
     kw = {}
@@ -158,10 +113,9 @@ def _write_channel_group(h5_grp, ch: int, sample: 'rev80.VibeSample',
         res = sample.tach
         edges = np.asarray(getattr(res, 'edge_times_s', []), dtype=np.float64)
         cg.create_dataset('edge_times', data=edges, **kw)
-        # Widths of complete pulses, for duty cycle -- which turns a
-        # reflector's physical size into a shaft diameter and hence a surface
-        # velocity (R46). Roughly doubles the tach channel's footprint, which
-        # against the ~1400x saving from not storing the waveform is nothing.
+        # Widths of complete pulses, for the duty cycle. This about doubles
+        # the size of the edge data, which is still small: at 30 edges/s a
+        # 25600 Hz waveform is about 850 times larger.
         cg.create_dataset(
             'pulse_widths',
             data=np.asarray(getattr(res, 'pulse_widths_s', []), dtype=np.float64),
@@ -183,19 +137,23 @@ def _write_channel_group(h5_grp, ch: int, sample: 'rev80.VibeSample',
     cg.attrs['degraded']   = bool(sample.degraded)
 
 
+def _session_file_version() -> int:
+    """The newest monitor-session file version this build writes.
+
+    Imported at call time: monitor.writer imports this module, so a
+    module-level import here would be circular.
+    """
+    from rev80.monitor.writer import _FILE_VERSION
+    return _FILE_VERSION
+
+
 class DataCollector:
-    """Collect, filter, cache, and persist multi-channel vibration data.
+    """Collect, filter, cache, process and save multi-channel vibration data.
 
-    Pipeline
-    --------
-    Hardware callback → receive_data()
-        per channel: mV→EU conversion + Butterworth filter → VibeSample
-        → frame_cache.append(dict[int, VibeSample])
-        → new_frame_event.set()
-
-    The GUI render loop polls new_frame_event each tick and grabs
-    frame_cache[-1] for display.  Programmatic consumers (collect_sample
-    one-shot, test hooks) still use self.callbacks directly.
+    The stream thread calls `receive_data` once for each frame: one mV
+    `VibeSample` per channel, appended to `data["frame_cache"]`, then
+    `new_frame_event` is set. The main thread calls `process_samples`, which
+    converts mV to engineering units. All consumers read `frame_cache`.
     """
 
     def __init__(
@@ -418,14 +376,9 @@ class DataCollector:
                 int(self.config._BUTTER_ORDER), float(samplerate))
 
     def highpass_knee_hz(self, samplerate: float) -> float:
-        """The -3 dB corner the high-pass is actually designed at.
+        """The -3 dB knee of the high-pass, below the band edge `highpass_fc`.
 
-        `config.highpass_fc` is the *declared band edge* -- the frequency at
-        which the response must still be within passband tolerance -- not the
-        knee. Designing the Butterworth at the edge put -3 dB (x0.707) exactly
-        on it, so the instrument read 29% low at the one frequency ISO 2954
-        names as the bottom of its declared band. The knee is therefore placed
-        below the edge; see _dsp.butter_knee_for_edge for the derivation.
+        Evidence: CONTRIBUTING.md, "E8.3. Knee below the band edge".
         """
         return _dsp.butter_knee_for_edge(
             float(self.config.highpass_fc), int(self.config._BUTTER_ORDER)
@@ -451,37 +404,13 @@ class DataCollector:
 
     def filter_block(self, ch: int, data: np.ndarray, samplerate: float,
                      stateful: bool) -> np.ndarray:
-        """Highpass one block of mV data.
+        """High-pass one block of mV data with a causal Butterworth filter.
 
-        Causal (sosfilt), not zero-phase: sosfiltfilt effectively doubles the
-        filter order (forward + backward pass), which resonates badly for a low
-        cutoff relative to a short block (e.g. 10 Hz over a 1 s block — only 10
-        cutoff-cycles of margin). Confirmed on real hardware data: sosfiltfilt
-        overshot the raw signal by 35-45% at the block edges with any padtype.
-
-        But plain `sosfilt(sos, x)` with no initial condition restarts the
-        filter from rest at every block, injecting a startup transient into
-        every frame of a continuous stream. Measured on a 200 Hz tone, block 1
-        of 4, high-pass at 10 Hz:
-
-                                      no zi      steady-state zi + carry
-            waveform peak            +9.41%          -0.00%
-            RMS, 1000 mV DC offset  +14321.74%       -0.00%
-            displacement overall     +19.15%         +0.02%
-            ... with DC offset    +1472786.72%       +0.02%
-
-        Two regimes:
-
-        * ``stateful=True`` — consecutive blocks of one live stream. The final
-          filter state of each block seeds the next, so the boundary is
-          seamless. Only receive_data uses this, exactly once per frame and in
-          order.
-        * ``stateful=False`` — a stored frame replayed from HDF5, or a frame
-          re-filtered because the config changed after capture. These are NOT
-          a continuous stream and are re-processed out of order, so no state
-          may be carried between them or replay stops being deterministic.
-          The filter is instead seeded from the block's DC content — see
-          _seed_zi.
+        ``stateful=True``: one live stream. Each block's final state seeds the
+        next. Only `receive_data` may use it, once for each frame, in order.
+        ``stateful=False``: replay, or a filter-config change after capture.
+        No state is carried, so replay in any order gives the same result.
+        Evidence: CONTRIBUTING.md, "E8.1. Stateful filter".
         """
         sos = self._highpass_sos(samplerate)
         if sos is None:
@@ -504,48 +433,20 @@ class DataCollector:
 
     @staticmethod
     def _seed_zi(sos: np.ndarray, x: np.ndarray) -> np.ndarray:
-        """Initial filter state for a block with no usable history.
+        """Initial filter state for a block with no history: seeded from the mean.
 
-        Seeded from the block MEAN, not from x[0]. scipy's documented idiom is
-        sosfilt_zi(sos) * x[0], which is correct when the first sample
-        represents the signal's baseline — true for a step response, false for
-        anything oscillatory. A vibration block is a waveform swinging about
-        its DC level, so x[0] is an arbitrary point on that swing, and seeding
-        with it tells the high-pass that the signal has been sitting at that
-        value forever. The filter then decays a step that was never there.
-
-        Measured on four consecutive real captures (PicoScope 4424A, 447.3 Hz
-        loopback tone, 1 Vpp, fs=8333.25, 10 Hz high-pass). Block mean was
-        -0.06..-0.21 mV in every block — the true DC — while x[0] ranged over
-        36..305 mV. Error against a fully-settled continuous-filter reference:
-
-            order          zi * x[0]        zi * mean(x)     warm-up pass
-            acceleration     +0.39%           -0.00%           +0.00%
-            velocity        +23.01%           -0.06%           -0.07%
-            displacement  +4297.20%           -2.22%          +61.10%
-            waveform         57.63%            0.51%            6.37%
-
-        (worst block shown per row.) A warm-up pass — filtering the block once
-        and reusing its final state as the initial state — was also tried and
-        is measurably WORSE than the mean, because it imposes a periodic
-        assumption the block does not satisfy.
-
-        Residual displacement error on an isolated block is irreducible: at
-        447 Hz the doubly-integrated result is dominated by near-DC noise whose
-        continuation simply is not present in a single block. It only affects
-        block 0 of a stream and replayed frames; once state is carried, blocks
-        1+ match the settled reference to +-0.000%.
+        Not scipy's ``sosfilt_zi(sos) * x[0]``: on a 4424A capture that gave
+        +4297 % displacement error, against -2.22 % from the mean.
+        Evidence: CONTRIBUTING.md, "E8.2. Seed from the block mean".
         """
         return scipy.signal.sosfilt_zi(sos) * float(np.mean(x))
 
     def filtered_data_for(self, ch: int, sample: 'rev80.VibeSample') -> np.ndarray:
         """Highpassed mV for a sample, using the ingestion-time result if valid.
 
-        receive_data pre-filters live frames with carried state. If that cached
-        result was produced by the filter config now in force, reuse it —
-        re-filtering here would be both wasteful and, for a streaming frame,
-        wrong (the state has already moved on). Otherwise the sample is being
-        replayed or the config changed since capture, so filter it statelessly.
+        Reuses the result of `receive_data` if the filter config is the same.
+        Do not filter a streaming frame again here: its carried state has
+        moved on. Otherwise filters with ``stateful=False``.
         """
         key = self._filter_key(sample.samplerate)
         if sample.filtered_mv is not None and sample._filter_config_key == key:
@@ -565,14 +466,9 @@ class DataCollector:
                      kurtosis: float = np.nan) -> None:
         """Append one timestamped trend point for a channel.
 
-        `orders` is the 5-order overall vector in mV RMS. The two impulsiveness
-        scalars ride alongside rather than inside it because they are
-        dimensionless -- they are not a sixth integration order and must not be
-        unit-converted by get_trend_for_display.
-
-        One reading of kurtosis says little; watching it climb over weeks is
-        the actual diagnostic, which is why they are trended and not merely
-        displayed.
+        `orders` is the 5-order overall vector in mV RMS, orders -2 to +2.
+        Crest factor and kurtosis are dimensionless, so they are stored beside
+        `orders` and `get_trend_for_display` does not convert them.
         """
         if ch not in self.trend:
             self.trend[ch] = self._empty_trend()
@@ -771,10 +667,12 @@ class DataCollector:
     # ------------------------------------------------------------------
 
     def receive_data(self, samp: dict):
-        """Preprocess one hardware block: fan out to per-channel VibeSamples.
+        """Make one `VibeSample` in mV for each channel of one raw-rate frame.
 
-        Applies per-channel mV→EU sensitivity conversion then an optional
-        Butterworth highpass filter before forwarding to _data_callback().
+        Runs on the stream thread, once for each frame, in order. High-passes
+        vibration channels (stateful); detects edges on tachometer channels
+        (no high-pass). Does not convert to engineering units. Then calls
+        `_data_callback`.
         """
         with _profile.timed(_profile.INGEST_RECV):
             self._receive_data(samp)
@@ -791,25 +689,19 @@ class DataCollector:
         degraded: bool = samp.get("degraded", False)
         samples: dict[int, rev80.VibeSample] = {}
 
-        # raw_samplerate, not samplerate: `samp` carries a RAW-rate block, and
-        # tagging it with the display rate would make every VibeSample lie
-        # about its own time base. Unreachable today (both PicoScopeStream and
-        # SimulatedSensor always set the key) but wrong if it were ever hit.
+        # The fallback is the raw rate, not the display rate: `samp` is a
+        # raw-rate block. Both stream classes always set the key.
         samplerate = float(samp.get("samplerate", self.config.raw_samplerate))
         for i, ch in enumerate(channels):
             col  = min(i, data_arr.shape[1] - 1)
             data = np.ascontiguousarray(data_arr[:, col], dtype=np.float64)
-            # Filter here, at ingestion: this runs exactly once per frame and
-            # in stream order, which is what carrying the filter state across
-            # block boundaries requires. process_sample may be called many
-            # times on the same frame (re-render, unit change) and in any
-            # order when browsing, so it must not advance the state.
+            # Filter here: this is the one place that sees each block once,
+            # in stream order. process_sample runs many times on one frame and
+            # in any order when browsing, so it must not advance the state.
             if self.config.role_for(ch) == 'tachometer':
-                # No high-pass. Measured: its overshoot on each falling edge
-                # re-crosses the threshold, turning 31 edges into 108 at 15%
-                # duty -- an 1800 RPM shaft reads 6270. Detect edges here, at
-                # ingestion, for the same reason the filter runs here: this is
-                # the one place a block arrives exactly once, in stream order.
+                # No high-pass: its overshoot re-crosses the threshold, and an
+                # 1800 RPM shaft reads 6270 RPM. Evidence: CONTRIBUTING.md,
+                # "E14.1. No high-pass on a tachometer channel".
                 filtered = None
                 settings = self.tach_settings_for(ch)
                 tach_res = tach_result(data, samplerate, ch=ch,
@@ -897,19 +789,10 @@ class DataCollector:
         freq_td     = np.fft.rfftfreq(N, d=1.0 / samplerate)
         band_fmin, band_fmax = config.band
 
-        # binsize and samplerate BOTH change the transform, so both belong in
-        # the key. Without them, switching 2 Hz -> 0.5 Hz bins returned the
-        # identical cached 2049-point, 2 Hz spectrum: the user believed they had
-        # quadrupled the resolution and nothing had changed (M-09). The band
-        # belongs there for the same reason -- the cached overalls are computed
-        # over it, so a band change with a stale cache silently returns the
-        # previous band's number.
-        #
-        # sample.samplerate (raw) belongs here too, alongside the local
-        # `samplerate` (decimated/display target): the target is constant for
-        # a given config, so keying on it alone can't detect a differently-
-        # rated raw input -- decimate_to_rate's ratio, and therefore its
-        # output, depends on both.
+        # The key holds everything that changes the transform or the cached
+        # overalls: binsize, both rates (the resample ratio depends on the raw
+        # and the display rate) and the declared band. A missing item returns
+        # a stale spectrum or overall with no error.
         psd_key = (config.fft_window, config.welch_overlap,
                    config.highpass_enabled, config.highpass_fc,
                    config.binsize, sample.samplerate, samplerate,
@@ -931,26 +814,14 @@ class DataCollector:
             sample.freq_hz         = freq_hz
             sample._psd_config_key = psd_key
 
-            # 5-order mV RMS overalls via time-domain IFFT. sqrt(mean(x²)) on the
-            # IFFT signal avoids the Welch window normalisation artifact (Hann
-            # leakage inflates sqrt(sum(psd)) by sqrt(3/2) for a pure tone).
-            #
-            # All five orders run the same way: Hann taper, band mask, back to the
-            # time domain, RMS with the window's power gain divided out. Order 0
-            # used to skip the taper, on the grounds that a passthrough performs no
-            # transform-domain multiply and so has no wrap discontinuity to
-            # suppress. Band-limiting removed that premise -- the mask IS such a
-            # multiply, and therefore a circular convolution in time, with exactly
-            # the wrap sensitivity the taper exists to control.
-            #
-            # An un-tapered transform plus Parseval was measured as the
-            # alternative. It is exact for in-band content but its band edge is a
-            # rectangular window's, with -13 dB first sidelobes: a 3x tone at 30 Hz
-            # against a 100 Hz lower edge leaked in at only -22 dB, inflating the
-            # overall by +2.7%. Hann rejects the same tone by -84 dB, and -100 to
-            # -144 dB in the other cases measured, at a cost of 4.9e-4 worst-case
-            # in-band error over the preset grid. Band rejection is what an
-            # instrument needs here; the fifth decimal place is not.
+            # 5-order mV RMS overalls, from the time domain, not from the Welch
+            # PSD (Hann leakage makes sqrt(sum(psd)) sqrt(3/2) high on a tone).
+            # All five orders, order 0 included: Hann taper, band mask, inverse
+            # transform, RMS divided by the window power gain. The mask is a
+            # transform-domain multiply, so order 0 needs the taper too. Not
+            # un-tapered Parseval: it passes a tone 30 Hz below a 100 Hz edge at
+            # -22 dB, against -84 dB here. Evidence: CONTRIBUTING.md,
+            # "E9. Tapers for integration" and "E10. Band RMS".
             hann_w, hann_gain = _dsp.hann_taper(N)
             masked_hann = np.where(_dsp.band_mask(freq_td, band_fmin, band_fmax),
                                    np.fft.rfft(decimated_mv * hann_w), 0.0)
@@ -1009,65 +880,36 @@ class DataCollector:
         # since raw_blocksize spans the same acquisition_period as blocksize).
         decimated_time_vec = np.arange(len(filtered_mv)) / samplerate
 
-        # Frequency-domain integration/differentiation is done on a *tapered*
-        # block. The DFT treats the record as periodic, so an un-windowed block
-        # spanning a non-integer number of cycles carries a step discontinuity
-        # at the wrap point. That step's spectrum is broadband and
-        # low-frequency-weighted, and (j*omega)**n with n < 0 amplifies it by
-        # 1/omega**|n| — exactly where it is worst. Un-windowed, a 501 Hz tone
-        # read +4473.76% high in displacement overall; the on-bin case that the
-        # old test suite exercised exclusively was the one case with zero error.
-        # See rev80._dsp for the full measured table.
+        # Integration and differentiation use a tapered block, because the wrap
+        # step of an off-bin block is amplified by 1/omega**|n|.
+        # Evidence: CONTRIBUTING.md, "E9. Tapers for integration".
         N       = len(filtered_mv)
         freq_td = np.fft.rfftfreq(N, d=1.0 / samplerate)
 
-        # The declared measurement band. Everything the overall and the
-        # displayed waveform are built from is restricted to it.
-        #
-        # Before this, the overall was the RMS of the whole filtered block, so
-        # its band ran to fs/2 -- 1.28x to 2.56x maxfreq depending on where the
-        # power-of-two rounding in AcquisitionSettings.samplerate lands, and
-        # 2.048x at the 500/1000/2000 Hz presets. F-9 had already truncated the
-        # *spectrum* at maxfreq (step 6), so the number on the result card and
-        # the picture beside it described different bands. Content the user had
-        # explicitly excluded via F_max still reached the trend: 2 g RMS at
-        # 1500 Hz outside a 1000 Hz F_max inflated reported overall velocity by
-        # +25%, enough to move a machine across an ISO 20816 zone boundary on a
-        # reading that should never have included it.
+        # The declared band. The overall and the displayed waveform use only
+        # this band, so they agree with the spectrum, which stops at F_max.
         band_fmin, band_fmax = config.band
         band = _dsp.band_mask(freq_td, band_fmin, band_fmax)
 
         # ── 2/3. Welch PSD + 5-order overalls, computed once per frame ──
-        # Extracted so the averaging step below can obtain the same quantities
-        # for earlier cached frames through exactly this code, rather than a
-        # second copy of it. Two divergent copies of one write path was the
-        # direct cause of M-05.
+        # The averaging step below gets earlier frames through this same
+        # function. Do not add a second copy of this computation.
         freq_hz, psd_mv = self._psd_and_overalls_for(ch, sample)
         if psd_mv is None:
             return None
 
         # ── 3b. Linear power averaging over recent frames ────────────
-        # Sits ABOVE the per-frame cache, deliberately: each frame's psd_mv
-        # stays cached exactly as computed, and the average is a cheap sum over
-        # them. So changing N invalidates no per-frame work and does not have
-        # to join psd_key.
-        #
-        # Power domain, not amplitude: averaging magnitudes biases low (a
-        # Rayleigh magnitude has mean sigma*sqrt(pi/2), not the RMS) and
-        # discards the chi-squared statistics that make the 1/sqrt(N) variance
-        # reduction predictable. The overall is combined the same way -- RMS of
-        # the per-frame RMS values -- because it is a power-like quantity too.
+        # Above the per-frame cache: a change of N does not invalidate any
+        # cached psd_mv, so N is not in psd_key.
+        # Average power, not magnitude: a magnitude average of noise is low
+        # (Rayleigh mean sigma*sqrt(pi/2)). The overall is the RMS of the
+        # per-frame RMS values, for the same reason.
         n_avg = 1
         overalls = sample.overall_ampl_by_integration_order
         if config.averaging_enabled:
-            # Newest first. The displayed frame leads the list only if it is
-            # itself valid: a clipped record reads high with harmonic
-            # distortion, and averaging it in would contaminate an estimate the
-            # analyst will read as clean. Analyzer practice is to reject the
-            # overloaded record from the average and light the overload
-            # indicator -- which is exactly what happens here, since the
-            # waveform, the scalars and the overflow flag still come from this
-            # frame. Only the spectral estimate is protected.
+            # Newest first. The displayed frame is in the average only if it
+            # is valid (not overflow, not degraded). A flagged frame still
+            # supplies the waveform, the scalars and the flag.
             candidates = []
             if not (sample.overflow or sample.degraded):
                 candidates.append(sample)
@@ -1115,7 +957,7 @@ class DataCollector:
             pos                = freq_hz > 0
             omega_factor[pos]  = (2 * np.pi * freq_hz[pos]) ** (2 * n_steps)
             if n_steps < 0:
-                omega_factor[1] = 0.0   # also kill the 1x-binsize bin -- see step 3 comment
+                omega_factor[1] = 0.0   # also zero bin 1, as _dsp.integrate_rfft does
             integrated_psd     = psd_mv * omega_factor
         else:
             integrated_psd = psd_mv.copy()
@@ -1130,29 +972,17 @@ class DataCollector:
         spectrum_amp = np.sqrt(np.maximum(calibrated_psd, 0.0)) * amp_factor
 
         # ── 6. Truncate at F_max, then find peaks ─────────────────────
-        # The whole point of the F_max = fs/2.56 convention is that the guard
-        # band between F_max and fs/2 is never displayed: that is where the
-        # anti-alias filter has not yet reached full attenuation. Measured
-        # rejection at the frequency folding into the top of the band is
-        # -21.8 dB, falling to effectively 0 dB at fs/2 — so content shown up
-        # there is not a measurement, and find_peaks was happily reporting it
-        # in the peaks table alongside real lines.
+        # Do not show the guard band between F_max and fs/2. There the
+        # anti-alias filter is not at full attenuation: -21.8 dB at the
+        # frequency that folds to F_max, about 0 dB at fs/2.
         keep_band    = freq_hz <= config.maxfreq
         freq_hz      = freq_hz[keep_band]
         spectrum_amp = spectrum_amp[keep_band]
 
-        # Peak selection is significance-based, not top-N-by-amplitude: a line
-        # is reported when it rises config.peak_threshold_db above its own
-        # local noise floor, and the count is whatever that yields. The old
-        # rule ranked by how loud a line's neighbourhood was — on
-        # 'blower 4 - bearing DE.h5' ch2 it spent 6 of its top 12 on ripple in
-        # the noisy top of the band and pushed the 1034/1088 Hz bearing
-        # sidebands off a 6-row table. See rev80.peaks for the full rationale.
-        #
-        # n_segments feeds the median-to-mean correction on the floor estimate.
-        # It is 1 for every shipped preset (nperseg == blocksize), but it is
-        # derived rather than assumed: that invariant belongs to
-        # AcquisitionSettings, not to the statistics.
+        # Report each line that is config.peak_threshold_db above its own local
+        # noise floor. See CONTRIBUTING.md, "E12.1. Method". n_segments feeds the
+        # median-to-mean floor correction. It is 1 at every shipped preset,
+        # but it is computed here, not assumed.
         seg_len    = min(config.nperseg, len(filtered_mv))
         seg_step   = max(1, seg_len - min(seg_len - 1, int(seg_len * config.welch_overlap)))
         n_segments = 1 + max(0, len(filtered_mv) - seg_len) // seg_step
@@ -1174,22 +1004,11 @@ class DataCollector:
         )
 
         # ── 8. Time-domain signal — inline FFT integration ───────────
-        # The displayed trace cannot use the step-3 Hann taper: the taper would
-        # be plainly visible as an amplitude envelope on the waveform the user
-        # is reading. Instead this is overlap-save — a Tukey window (flat across
-        # the middle, cosine-tapered at the edges) kills the wrap discontinuity,
-        # and only the flat middle is returned. Inside that region the window is
-        # exactly 1.0, so the returned samples are undistorted.
-        #
-        # Cost: for integrated/differentiated displays the trace covers the
-        # middle 50% of the block rather than all of it. time_vec is truncated
-        # to match, so it still carries true capture-relative timestamps.
-        # Un-truncated, a doubly-integrated 61 Hz tone overshot its true 0-peak
-        # amplitude by +1149%; this brings it to +1.47%.
-        # The trace is band-limited to the same band as the overall. Showing a
-        # waveform that still contains content the overall excluded invites the
-        # analyst to reconcile two numbers that were never measuring the same
-        # thing.
+        # Overlap-save with a Tukey window: return only the flat middle (50 %
+        # of the block), where the window is 1.0. A Hann taper would show as an
+        # envelope on the trace. time_vec is cut to match. The trace uses the
+        # same band as the overall.
+        # Evidence: CONTRIBUTING.md, "E9. Tapers for integration".
         eu_scale = src_si / tgt_si / sensitivity_mv
         keep        = _dsp.tukey_keep_slice(N)
         tukey_w     = _dsp.tukey_taper(N)
@@ -1199,51 +1018,44 @@ class DataCollector:
             time_signal = time_signal[keep] * eu_scale
             time_vec    = decimated_time_vec[keep]
         elif band_fmin <= 0.0 and band_fmax >= samplerate / 2.0:
-            # Passthrough over the whole transform: no masking to do, so return
-            # the full record undisturbed rather than paying the Tukey path's
-            # 50% truncation for nothing.
+            # Full-band passthrough: no mask, so return the full record.
             time_signal = filtered_mv * eu_scale
             time_vec    = decimated_time_vec
         else:
-            # Passthrough, but band-limited. Masking is a frequency-domain
-            # multiply, so it carries the same circular-wrap sensitivity the
-            # integrated orders have and needs the same overlap-save treatment.
+            # Band-limited passthrough: the mask is a frequency-domain
+            # multiply, so it needs the same overlap-save treatment.
             time_signal = np.fft.irfft(rfft_tukey, n=N)[keep] * eu_scale
             time_vec    = decimated_time_vec[keep]
 
         rpm = self.current_rpm()
+        usable_rpm = self.current_rpm(usable_only=True)
         return rev80.ChannelResult(
             channel=ch, unit=effective_tgt, overflow=sample.overflow,
             degraded=sample.degraded,
             time_data=time_signal, time_vec=time_vec, samplerate=samplerate,
             freq=freq_hz, spectrum=spectrum_amp, peaks=peaks, overall=overall,
             band_fmin=band_fmin, band_fmax=band_fmax,
-            # Computed on the trace being returned, not on the Hann-tapered
-            # array the overall uses: that taper is an amplitude envelope, so a
-            # peak-based statistic taken from it would be plainly wrong.
-            # Deliberately NOT averaged. Averaging is for steady-state
-            # estimation; these exist to catch the frame that is not steady, so
-            # diluting one impulsive record across N would defeat them.
+            # From the returned trace, not from the Hann-tapered array. Never
+            # averaged: these statistics must catch the one frame that is not
+            # steady.
             crest_factor=_dsp.crest_factor(time_signal),
             kurtosis=_dsp.kurtosis(time_signal),
             n_averages=n_avg,
             timestamp=sample._timestamp, rel_time=sample.rel_time, status=sample.status,
             # Shaft speed for this frame, and whether it is comparable. The
             # gate is evaluated in exactly one place (self.speed_ok) and read
-            # in exactly one other (monitor.anomaly.valid_results).
-            rpm=rpm, speed_ok=self.speed_ok(rpm),
+            # in exactly one other (monitor.anomaly.valid_results). The gate
+            # gets only a usable reading: an 'unsteady' or 'inconsistent'
+            # rpm is shown, but the gate treats it as no reading.
+            rpm=rpm, speed_ok=self.speed_ok(usable_rpm),
         )
 
     def current_frame(self) -> dict:
         """The frame dict {ch: VibeSample} currently displayed/being processed.
 
-        Same latest-frame-or-cursor selection process_samples() uses (kept
-        as its own small copy of that index logic rather than a shared
-        refactor, to avoid touching process_samples()'s already-validated
-        internals). Exists so a consumer that needs the *raw* VibeSample --
-        the Envelope tab, which must not use process_sample()'s
-        maxfreq-decimated ChannelResult.time_data -- can reach the exact
-        same frame without re-deriving the streaming/browsing index itself.
+        Same selection as `process_samples` (latest frame when streaming, the
+        cursor when browsing); the index logic is a copy. For consumers that
+        need the raw-rate `VibeSample`, such as the Envelope tab.
         Returns {} if the cache is empty.
         """
         cache = self.data["frame_cache"]
@@ -1272,11 +1084,9 @@ class DataCollector:
         if sample.tach is not None and sample._tach_config_key == key:
             return sample.tach
         if sample.data.size <= 1 and sample.tach is not None:
-            # Replayed frame: the waveform was never stored, so re-detection is
-            # impossible -- but the edge times are enough to re-derive the
-            # rate, because pulses_per_rev is a post-hoc divisor on the
-            # intervals. Re-thresholding after capture is the one thing D-2
-            # trades away.
+            # Replayed frame: no waveform is stored, so the threshold cannot
+            # change after capture. The stored edge times give the rate for
+            # any pulses_per_rev.
             from rev80.tach import estimate_rpm
             res = estimate_rpm(
                 np.asarray(sample.tach.edge_times_s) * sample.samplerate,
@@ -1292,17 +1102,10 @@ class DataCollector:
     def speed_ok(self, rpm: 'float | None') -> bool:
         """Is this frame's shaft speed inside the declared window?
 
-        The single place the gate is evaluated. It is deliberately not a hook
-        parameter: `_build_anomaly_hook` is copy-pasted between gui.py and
-        headless.py and pinned by tests/test_anomaly_hook_build.py asserting
-        the two copies' defaults match (audit H-01). Adding the gate there
-        would turn one bug into two.
-
-        Fails **closed** on a missing reading. If the tachometer dies
-        mid-session -- cable pulled, tape peeled off, LED aged out -- treating
-        "no speed reading" as "speed is fine" leaves an unattended monitor
-        alarming on load-driven amplitude swings it can no longer see, which is
-        the exact false-alarm mechanism the gate exists to remove.
+        The one place the speed gate is evaluated; `monitor.anomaly.valid_results`
+        is the one place it is applied. Fails closed: `rpm` None gives False,
+        so a failed tachometer cannot let load-driven changes raise alarms.
+        With no fixed reference, the first reading becomes the reference.
         """
         if not self.config.speed_gate_enabled:
             return True
@@ -1317,13 +1120,13 @@ class DataCollector:
             return False
         return abs(float(rpm) - ref) / ref * 100.0 <= self.config.speed_gate_tolerance_pct
 
-    def current_rpm(self) -> float | None:
+    def current_rpm(self, usable_only: bool = False) -> float | None:
         """Shaft speed for the frame currently being displayed, or None.
 
-        None covers every reason there is no usable reading -- no tachometer
-        configured, nothing on the wire, too few edges. It is never 0.0: "I
-        cannot see a tach signal" and "the shaft is stopped" send an analyst
-        to different places.
+        None means no reading: no tachometer channel, no signal, or too few
+        edges. Never 0.0, because "no signal" is not "stopped". With
+        `usable_only`, a reading that is not `TachResult.is_usable` also gives
+        None; the speed gate uses this.
         """
         tach_channels = self.config.tach_channels
         if not tach_channels:
@@ -1334,29 +1137,21 @@ class DataCollector:
             if sample is None:
                 continue
             res = self.tach_for(ch, sample)
-            if res.rpm is not None:
+            if res.rpm is not None and (res.is_usable or not usable_only):
                 return res.rpm
         return None
 
     def eu_scaled_raw(self, ch: int, sample: 'rev80.VibeSample') -> 'tuple[np.ndarray, float, str]':
-        """Highpass-filtered signal in engineering units, at the RAW rate.
+        """High-passed signal in the sensor's own unit, at the raw rate.
 
-        For consumers that need real Nyquist headroom -- currently only the
-        Envelope tab -- and must not go through process_sample()'s
-        maxfreq-driven decimation the way ChannelResult.time_data does.
-        Converts mV -> the sensor's own native EU (mV / sensitivity_mv, the
-        same divide process_sample() step 4 folds into its
-        src_si/tgt_si/sensitivity_mv target-unit scale) but skips the
-        SI/target-unit conversion and any integration order: envelope
-        analysis demodulates the raw sensor signal directly and does not
-        offer a target unit of its own.
-        Returns (signal, samplerate, unit).
+        For the Envelope tab, which needs the raw-rate bandwidth, not the
+        display rate. mV / sensitivity only: no target unit, no integration.
+        Returns (signal, samplerate, unit). Raises ValueError on a
+        tachometer channel.
         """
         if self.config.role_for(ch) == 'tachometer':
-            # Refuse rather than return something plausible. With no
-            # ScopeSensor this would divide by a sensitivity of 1.0 and hand
-            # back raw mV labelled as engineering units -- the classic field
-            # error, and one that looks entirely reasonable on screen.
+            # Refuse: with no ScopeSensor this would return raw mV with an
+            # engineering-unit label.
             raise ValueError(
                 f'channel {ch} is a tachometer: it has no engineering unit, '
                 'and envelope/demodulation analysis does not apply to a pulse '
@@ -1368,10 +1163,10 @@ class DataCollector:
         return filtered_mv / sensitivity_mv, sample.samplerate, sensor_eu
 
     def process_samples(self) -> list['rev80.ChannelResult']:
-        """Process the current frame; return one ChannelResult per enabled channel.
+        """Process the current frame; return one ChannelResult per vibration channel.
 
-        Uses the latest frame when streaming; uses _cache_cursor when browsing.
-        Appends to trend only during streaming.
+        Uses the latest frame when streaming, `_cache_cursor` when browsing.
+        Tachometer channels get no ChannelResult. Trends only when streaming.
         """
         with _profile.timed(_profile.PROC_TOTAL):
             return self._process_samples()
@@ -1386,14 +1181,10 @@ class DataCollector:
         idx   = -1 if self.is_streaming else -1 - self._cache_cursor
         frame = cache[idx]
 
-        # Frames preceding the displayed one, oldest first, for the averaging
-        # accumulator. One rule for both modes: the average is the N most
-        # recent valid frames up to and INCLUDING the frame being displayed.
-        # Live that is the last N received; browsing it is
-        # frames[cursor-N+1 .. cursor]. Because it is one rule, stepping
-        # forward through a loaded file reproduces exactly what the live
-        # display showed at that moment -- the same replay-fidelity property
-        # F-4 established for the high-pass.
+        # Frames before the displayed one, oldest first, for averaging. One
+        # rule for live and browse: the N most recent valid frames up to and
+        # including the displayed frame. So replay shows what the live
+        # display showed.
         history: list = []
         if self.config.averaging_enabled:
             stop = len(cache) + idx              # index of the displayed frame
@@ -1408,21 +1199,20 @@ class DataCollector:
                 if tsample is None:
                     continue
                 tres = self.tach_for(tch, tsample)
-                if tres.rpm is not None:
+                # Trend only a usable reading, as for the speed gate.
+                if tres.rpm is not None and tres.is_usable:
                     self._update_tach_trend(tch, tres.rel_time, tres.rpm)
 
         results: list[rev80.ChannelResult] = []
-        # Vibration channels only. A tachometer has no spectrum, no overall and
-        # no engineering unit; letting one through here is what produces
-        # kurtosis 15.94 on a square wave.
+        # Vibration channels only. A tachometer has no spectrum, overall or
+        # engineering unit; through this path a pulse train gives kurtosis
+        # 15.94.
         for ch in self.config.vibration_channels:
             sample = frame.get(ch)
             if sample is None or sample.blocksize <= 1:
                 continue
-            # A clipped or rate-degraded frame is not a measurement, so it must
-            # not enter an average that will be read as one -- the same reason
-            # F-5 keeps it out of the trend. The displayed frame itself is
-            # always shown, flagged, because it is what the user asked to see.
+            # A clipped or degraded frame is not a measurement: keep it out of
+            # the average. The displayed frame is always shown, flagged.
             ch_history = [
                 f[ch] for f in history
                 if ch in f and f[ch] is not None
@@ -1432,11 +1222,9 @@ class DataCollector:
             if result is None:
                 continue
             if self.is_streaming:
-                # A clipped or rate-degraded frame is not a measurement. Trending
-                # it records a step change that never happened on the machine,
-                # and the anomaly detector then fires a burst on it — the classic
-                # spurious-alarm mechanism. The frame is still returned for
-                # display (flagged), just never trended.
+                # Do not trend a clipped or degraded frame: the trend would show
+                # a step that did not occur on the machine, and an alarm could
+                # follow. The frame is still returned for display, flagged.
                 if result.overflow or result.degraded:
                     log.debug(
                         f'ch={ch} frame at rel_time={result.rel_time:.3f}s excluded '
@@ -1455,39 +1243,17 @@ class DataCollector:
     # Persistence
     # ------------------------------------------------------------------
 
-    # File format version written by save_data.
-    # v1 (legacy): metadata as child datasets, channels under 'channels/' subgroup,
-    #   scope sensor as YAML text dataset.
-    # v2 (intermediate): metadata in frame group .attrs, channel metadata in frame children,
-    #   scope sensor fields as per-frame channel attrs, /acquisition group.
-    # v3 (current): structured /metadata group; sensor library; channel config stored once;
-    #   shared trend rel_times axis.
+    # Measurement-file version written by save_data. v3: structured
+    # /metadata, shared trend time axis, frames in the recorded unit. v4:
+    # frames in mV, per-channel trend with an (M, 5) orders matrix. v5:
+    # channel role; tachometer channels store edge times, no 'data'.
     _FILE_VERSION = 5
 
     def save_data(self, target: Path):
-        """Save frame cache and trend history to an HDF5 file (v4 format).
+        """Save the frame cache and trend history to an HDF5 measurement file.
 
-        Layout::
-
-            /metadata                               group
-            /metadata.attrs                         version, notes
-            /metadata/acquisition                   group
-            /metadata/acquisition.attrs             maxfreq, binsize, fft_window,
-                                                    welch_overlap, highpass_enabled,
-                                                    highpass_fc, trend_max_points
-            /metadata/scope_sensors/{id}            group (one per unique sensor used)
-            /metadata/scope_sensors/{id}.attrs      name, id, sensitivity, engineering_units,
-                                                    target_unit, notes
-            /metadata/channels/{ch}                 group (one per enabled channel)
-            /metadata/channels/{ch}.attrs           name, unit, coupling, voltage_range,
-                                                    scope_sensor_id, target_unit
-            /frames/{i}                             group
-            /frames/{i}.attrs                       timestamp, rel_time, samplerate, status
-            /frames/{i}/{ch}/data                   (N,) float64
-            /trend/rel_times                        (M,) float64  (shared time axis)
-            /trend/{ch}/data                        (M,) float64  (channel overall amplitude)
-            /trend/{ch}/crest_factor                (M,) float64  (dimensionless)
-            /trend/{ch}/kurtosis                    (M,) float64  (dimensionless)
+        Writes version `_FILE_VERSION` (5). Frames are raw-rate and in mV.
+        Only enabled channels are written. Layout: README.md, "Data files".
         """
         frames = list(self.data["frame_cache"])
         log.info(f"Writing {len(frames)} frames to {target}")
@@ -1673,26 +1439,29 @@ class DataCollector:
         self._post_load()
         log.info(f"Loaded {len(self.data['frame_cache'])} frames from {target.name}")
 
-    def _restore_metadata(self, f: 'h5py.File') -> int:
+    def _restore_metadata(self, f: 'h5py.File',
+                          max_version: int | None = None) -> int:
         """Restore AcquisitionSettings and sensor config from /metadata in an open HDF5 file.
 
-        Returns the file version integer.  Side-effects:
-          self.config, self.notes, self._loaded_scope_sensors,
-          self._loaded_channel_sensor_configs updated in-place.
+        ``max_version`` is the newest version this build writes for this file
+        type. ``None`` means a measurement file (``_FILE_VERSION``). Session
+        loaders pass the session writer's version. A newer file logs a warning.
+        Returns the file version. Sets self.config, self.notes,
+        self._loaded_scope_sensors and self._loaded_channel_sensor_configs.
         """
         def decode(x):
             return x.decode() if isinstance(x, bytes) else str(x)
 
         version  = int(f["metadata"].attrs.get("version",
                        f["metadata"].attrs.get("file_version", 3)))
-        if version > self._FILE_VERSION:
-            # Worth having independently of the tachometer: an older build
-            # reading a newer file takes its most permissive branch and
-            # restores channels it does not understand as ordinary vibration
-            # -- computing a bogus overall on whatever they actually contain.
+        if max_version is None:
+            max_version = self._FILE_VERSION
+        if version > max_version:
+            # An older build reads unknown channels as vibration channels and
+            # computes a wrong overall on them.
             log.warning(
                 "File version %d is newer than this build supports (%d); "
-                "some channels may be misinterpreted.", version, self._FILE_VERSION)
+                "some channels may be misinterpreted.", version, max_version)
         meta_grp = f["metadata"]
         self.notes = decode(meta_grp.attrs.get("notes", ""))
 
@@ -1777,10 +1546,9 @@ class DataCollector:
                                 status: str, rel_time: float) -> 'rev80.VibeSample':
         """Rebuild a tachometer VibeSample from stored edge times.
 
-        `data` is deliberately empty: the waveform was never stored (D-2). The
-        TachResult is rebuilt from the edge times rather than re-detected, and
-        `tach_for` re-estimates from those same edges if the calibration is
-        changed after loading -- which is what keeps RPM a view on stored data.
+        `data` is empty, because a tachometer channel stores edge times, not
+        the waveform. The TachResult comes from the edge times; `tach_for`
+        uses the same edges again if the calibration changes after loading.
         """
         def decode(x):
             return x.decode() if isinstance(x, bytes) else str(x)
@@ -1825,19 +1593,16 @@ class DataCollector:
                 continue
             ch   = int(ch_str)
             if "data" not in cg:
-                # Tachometer channel (v5+): edge times, not a waveform. The
-                # frame cache stays homogeneous -- every entry is a VibeSample
-                # -- because dozens of consumers index it; the sample simply
-                # carries an empty waveform and a populated TachResult.
+                # Tachometer channel (v5 and later): edge times, no waveform.
+                # It is still a VibeSample, with empty data and a TachResult,
+                # because every frame-cache consumer expects VibeSamples.
                 if "edge_times" in cg:
                     frame_samples[ch] = self._tach_sample_from_group(
                         cg, ch, timestamp, samplerate, status, rel_time)
                 continue
             data = np.ascontiguousarray(cg["data"][()], dtype=np.float64)
             unit = "mV" if version >= 4 else ch_units.get(ch, "mV")
-            # _write_channel_group has always stored these; they were simply
-            # never read back, so every reloaded file looked clean no matter
-            # what happened during capture. Older files predate the attrs.
+            # Read the validity flags back; files without them read as False.
             overflow = bool(cg.attrs.get("overflow", False))
             degraded = bool(cg.attrs.get("degraded", False))
             frame_samples[ch] = rev80.VibeSample(
@@ -1856,20 +1621,9 @@ class DataCollector:
         if not n:
             return
 
-        # Sync enabled_channels from frame data.
-        #
-        # This used to also clamp maxfreq up to file_samplerate/2 when the
-        # file's stored rate exceeded the current config's -- a safety net
-        # for files with no properly stored acquisition config, back when
-        # a frame's samplerate WAS the maxfreq-driven display rate. Now
-        # every file's samplerate is the fixed raw acquisition rate
-        # (RAW_SAMPLERATE_HZ) regardless of what maxfreq it was captured
-        # at, so that comparison is meaningless -- it would silently
-        # override the display F_max the user has open (or the correctly
-        # restored one from the file's own acquisition metadata, see
-        # _restore_metadata) on every single load. Removed rather than
-        # reworked: _restore_metadata already restores the real maxfreq
-        # from the file when it has one.
+        # Sync enabled_channels from frame data. Do not set maxfreq from the
+        # frame samplerate: that is the raw rate, not the display rate.
+        # _restore_metadata restores maxfreq from the file.
         all_channels: set[int] = set()
         for frame in self.data["frame_cache"]:
             for k in frame:
@@ -1903,7 +1657,7 @@ class DataCollector:
         trend_overalls:  dict[int, list] = {}
 
         with h5py.File(session_h5, "r") as f:
-            version  = self._restore_metadata(f)
+            version  = self._restore_metadata(f, _session_file_version())
             ch_units = self._loaded_channel_units(f)
 
             mon_grp = f.get("monitor")
@@ -1988,7 +1742,7 @@ class DataCollector:
         self._loaded_scope_sensors = {}
 
         with h5py.File(session_h5, "r") as f:
-            version  = self._restore_metadata(f)
+            version  = self._restore_metadata(f, _session_file_version())
             ch_units = self._loaded_channel_units(f)
 
             mon_grp = f.get("monitor")
@@ -2030,7 +1784,7 @@ class DataCollector:
         trend_overalls:  dict[int, list] = {}
 
         with h5py.File(session_h5, "r") as f:
-            version  = self._restore_metadata(f)
+            version  = self._restore_metadata(f, _session_file_version())
             ch_units = self._loaded_channel_units(f)
 
             burst_grp = f.get("burst")
@@ -2145,9 +1899,7 @@ class DataCollector:
             for i, key in enumerate(keys):
                 grp     = mon_grp[key]
                 overall = {}
-                for ch_str in [k for k in grp.keys() if k.isdigit()]:
-                    ch   = int(ch_str)
-                    data = np.asarray(grp[ch_str]["data"][()], dtype=np.float64)
+                for ch, data in _stored_waveforms(grp):
                     ts   = str(grp.attrs.get("timestamp", ""))
                     sr   = float(grp.attrs.get("samplerate", self.config.raw_samplerate))
                     try:
@@ -2183,9 +1935,7 @@ class DataCollector:
                     for fi_str in [k for k in bid_grp.keys() if k.isdigit()]:
                         fi_grp  = bid_grp[fi_str]
                         overall = {}
-                        for ch_str in [k for k in fi_grp.keys() if k.isdigit()]:
-                            ch   = int(ch_str)
-                            data = np.asarray(fi_grp[ch_str]["data"][()], dtype=np.float64)
+                        for ch, data in _stored_waveforms(fi_grp):
                             ts   = str(fi_grp.attrs.get("timestamp", ""))
                             sr   = float(fi_grp.attrs.get("samplerate",
                                                           self.config.raw_samplerate))

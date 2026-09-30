@@ -2,7 +2,8 @@
 #
 # Provides:
 #   FindPicoScope()      — enumerate connected PS4000A devices
-#   PicoScopeStream      — streaming thread that replaces sounddevice.InputStream
+#   PicoScopeStream      — streaming thread that sends raw-rate blocks to
+#                          DataCollector.receive_data
 
 import ctypes
 import functools
@@ -17,14 +18,10 @@ import scipy.signal
 from rev80._pico_loader import ensure_pico_dlls_loadable
 ensure_pico_dlls_loadable()
 
-# The PicoSDK *driver* (libps4000a) is a separate native install from the
-# picosdk Python wrapper. picosdk.ps4000a instantiates Ps4000alib() at import
-# time, which calls find_library('ps4000a') and raises CannotFindPicoSDKError
-# when the driver is absent. Importing this module therefore used to be fatal
-# on any machine without the driver — including CI and offline development,
-# both of which the project explicitly supports via SimulatedSensor. Degrade
-# to PICOSDK_AVAILABLE = False instead; FindPicoScope() reports no devices and
-# the simulated path is unaffected.
+# The PicoSDK driver (libps4000a) is a separate native install, and
+# picosdk.ps4000a raises at import when it is absent. Set PICOSDK_AVAILABLE =
+# False instead: FindPicoScope() then reports no devices, and SimulatedSensor
+# (CI, offline development) works as usual.
 try:
     from picosdk.ps4000a import ps4000a as ps  # noqa: E402
     from picosdk.functions import assert_pico_ok  # noqa: E402
@@ -53,57 +50,21 @@ _MAX_OPEN_ATTEMPTS      = 2     # retries for ps4000aOpenUnit at detection / sta
 _OPEN_RETRY_DELAY_S     = 1.0   # seconds between open attempts
 _NOT_RESPONDING_DELAY_S = 2.0   # longer pause after PICO_NOT_RESPONDING (device resetting)
 
-#: Streaming-clock quantum, nanoseconds. Measured on a 4824A: the reachable
-#: streaming intervals are 12.5 ns apart (an 80 MHz timebase) and the driver
-#: floors a request to the grid rather than rounding it. See
-#: PicoScopeStream._start_streaming for the probe table and why snapping to
-#: this grid ourselves is worth 5x in sample-clock accuracy. Only ever an
-#: optimisation: the interval the driver reports back is what is believed.
+#: Streaming-clock quantum, ns. On a 4824A the streaming intervals are 12.5 ns
+#: apart (80 MHz timebase), and the driver floors a request to this grid.
+#: The interval that the driver writes back is always the one that is used.
+#: Evidence: CONTRIBUTING.md, "E4. Sample-clock grid".
 _TIMEBASE_NS = 12.5
 
 # Streaming watchdog / recovery tuning
 _WATCHDOG_TIMEOUT_S     = 5.0   # seconds of silence → assume device hung
 _MAX_RECONNECT_ATTEMPTS = 3     # recovery attempts before giving up
 
-# Anti-alias oversample/decimate tuning.
-#
-# Measured on a PicoScope 4424A (4 channels) during hardware testing for R32:
-# continuous ps4000aRunStreaming / ps4000aGetStreamingLatestValues silently
-# drops the majority of samples above roughly 100-250 kHz (depending on
-# channel count), with status='OKAY' and no overflow bit set — the driver
-# gives zero indication anything was lost. Requested rates >=300k Hz saw
-# delivery ratios drop as low as 15-23% at 4 channels; even the 1-channel
-# case fell to ~34% once the driver internally clamped near 1 MHz. A flat,
-# channel-count-independent ceiling of 100 kHz keeps clear margin across
-# 1/2/4 channels (the 4-channel case is borderline in the 100-200k range).
-#
-# To get real anti-alias protection without hitting that ceiling, the ADC is
-# run at effective_osr * config.raw_samplerate (oversampled), then filtered and
-# decimated back down to config.raw_samplerate before reaching DataCollector.
-#
-# config.raw_samplerate is now a fixed constant (RAW_SAMPLERATE_HZ in
-# sample.py, currently 25600 Hz = 2.56 x the 10 kHz top F_max preset),
-# independent of the displayed F_max --
-# acquisition always runs at this rate so envelope/demodulation analysis has
-# real bearing-resonance bandwidth (2-20 kHz) regardless of what F_max the
-# Spectrum tab is showing. Re-validated at that value on the same 4424A
-# (scripts/validate-streaming-capacity), sustained 45s at 3 and 4 channels:
-#
-#   samplerate   osr   raw ADC rate/ch      overflow   degraded transitions
-#   40000 Hz      2      ~83.3 kHz             0          0, every run
-#   50000 Hz      2      100 kHz (at ceiling)  0          0 to 2, run-to-run
-#   100000 Hz     1      100 kHz (at ceiling)  0          0  (but osr=1: no
-#                                                             anti-alias margin)
-#
-# 40 kHz is the highest rate that came back clean *consistently*, with real
-# anti-alias margin. 50 kHz sits at the same measured ceiling with zero
-# headroom and was not reliable across repeated runs -- sometimes clean,
-# sometimes not, on identical hardware and settings -- which disqualifies it
-# for a shipped default even more than a rate that failed outright would.
-# Only tested up to 4 channels (this hardware's limit); an 8+ channel device
-# scaling the same way is an inherited assumption from this
-# ceiling being documented as channel-count-independent, not independently
-# re-proven here.
+# Maximum ADC rate per channel for continuous USB streaming. Above about
+# 100 kHz a 4424A drops samples with status 'OKAY' and no overflow bit. The ADC
+# runs at effective_osr x raw_samplerate, at or below this value, and
+# antialias_decimate() filters the result back down to raw_samplerate.
+# Evidence: CONTRIBUTING.md, "E1. Streaming ceiling and the raw rate".
 STREAMING_CEILING_HZ = 100_000
 OSR_TARGET           = 4
 
@@ -303,74 +264,19 @@ def FindPicoScope() -> list:
     return devices
 
 
-# Anti-alias kernel design.
-#
-# `scipy.signal.decimate(ftype='fir')` builds a 20*q+1 tap FIR with a HAMMING
-# window, whose sidelobes sit at about -53 dB. Measured end to end through the
-# real decimation path at q=4: worst-case stopband rejection -60.0 dB, and the
-# passband already 0.29% off at 0.05*fs_out. ISO 2954 and general analyzer
-# practice call for >= 80 dB, so that put a hard ~55-60 dB ceiling on usable
-# dynamic range regardless of the 14/16-bit resolution negotiated elsewhere.
-#
-# A Kaiser-windowed FIR reaches any specified attenuation; the cost is taps,
-# driven by the transition width. Measured at q=4 (fs_raw 32768 -> 8192):
-#
-#     design                       taps   worst stopband   passband @ F_max
-#     hamming 20q+1 (previous)       81         -60.0 dB          +0.27%
-#     kaiser 90 dB,  tw 0.20        231        -105.0 dB          +0.00%
-#     kaiser 100 dB, tw 0.20        259        -111.7 dB          +0.00%
-#     kaiser 100 dB, tw 0.25        207        -112.4 dB          -0.42%
-#
-# 100 dB at a 0.20 transition width is chosen: the wider 0.25 transition saves
-# 52 taps but starts eating the passband at F_max, which is exactly the region
-# the 2.56x oversampling convention exists to keep flat.
-#
-# The longer kernel does NOT cost block-edge accuracy, which was the obvious
-# worry given the filter runs per block. Measured on an in-band tone through a
-# single block, against the analytic RMS, at every shipped blocksize:
-# hamming +0.2416%, kaiser -0.0001%. The overall's Hann taper already
-# de-weights the block edges where the start-up transient lives, and the
-# Kaiser design's flatter passband wins by more than the longer transient
-# costs.
+# Anti-alias kernel: Kaiser-windowed FIR, -111.7 dB worst stopband at q=4.
+# Not scipy's default Hamming kernel (-60 dB measured). Evidence:
+# CONTRIBUTING.md, "E2. Anti-alias kernel".
 _AA_STOPBAND_DB: float = 100.0
 _AA_TRANSITION_FRAC: float = 0.20
 
 
-# ADC counts -> mV.
-#
-# picosdk.functions.adc2mV is NOT used, and must not be reinstated. It is a
-# per-sample Python list comprehension that boxes an np.int64 scalar per
-# element:
-#
-#     bufferV = [(np.int64(x) * vRange) / maxADC.value for x in bufferADC]
-#
-# It runs inside _streaming_callback, i.e. synchronously inside
-# ps4000aGetStreamingLatestValues, holding the GIL the whole time -- so its
-# cost is stolen directly from the GUI thread. Measured on this machine
-# (adc2mV + the np.array() re-box it needs, against the vectorised form
-# below):
-#
-#     samples/ch      adc2mV      vectorised    speedup
-#          4 096     4.22 ms        0.021 ms       201x
-#         19 200    19.86 ms        0.052 ms       382x
-#         38 400    40.28 ms        0.112 ms       361x
-#
-# At ~1.03 us/sample, _DRIVER_BUFFER_SAMPLES=1000 per callback and 76.9 kHz
-# per channel, the vendor helper consumed 0.079 CPU-seconds per wall-second
-# per channel -- 0.634 s/s at 8 channels, which made the GUI unusable and was
-# previously worked around by lowering RAW_SAMPLERATE_HZ (see CHANGELOG,
-# hotfix/RAW_SAMPLERATE).
-#
-# The operation ORDER below is load-bearing and is not a candidate for
-# "simplification" to a single pre-divided scale factor: multiplying by vRange
-# and then dividing by maxADC reproduces adc2mV bit-for-bit (verified over
-# every voltage-range index across the full int16 domain -- see
-# tests/test_adc_conversion.py), whereas x * (vRange / maxADC) rounds
-# differently in the last bit. This is a measurement path; it changes nothing.
-#
-# Copied from picosdk.functions.adc2mV rather than imported: it is a module
-# local there, and vendoring the table keeps the conversion working on the
-# no-SDK path that PICOSDK_AVAILABLE already supports.
+# ADC counts -> mV. Do not use picosdk.functions.adc2mV: it is a per-sample
+# Python loop, 201x to 382x slower, and it runs with the GIL held inside the
+# driver callback. Keep the operation order (x * vRange / maxADC). It is
+# bit-identical to adc2mV, and tests/test_adc_conversion.py checks it. The range
+# table is a copy of the picosdk table, so the conversion works without the SDK.
+# Evidence: CONTRIBUTING.md, "E3. ADC-to-mV conversion".
 _CHANNEL_INPUT_RANGES_MV = (10, 20, 50, 100, 200, 500, 1000, 2000,
                             5000, 10000, 20000, 50000, 100000, 200000)
 
@@ -399,13 +305,10 @@ def _antialias_taps(factor: int) -> np.ndarray:
 def antialias_decimate(raw_block: np.ndarray, factor: int) -> np.ndarray:
     """Anti-alias filter + decimate a (N, channels) raw block by an integer factor.
 
-    Linear-phase polyphase FIR decimation: no group-delay distortion, and no
-    forward/backward pass to double the effective order. factor=1 is a no-op
-    (some maxfreq presets have no streaming headroom for oversampling — see
-    AcquisitionSettings docs).
-
-    See _antialias_taps and the constants above for why this no longer uses
-    scipy.signal.decimate's default Hamming kernel.
+    Linear-phase polyphase FIR (see _antialias_taps): no group-delay
+    distortion, and no forward/backward pass that doubles the effective order.
+    At factor=1 the block is returned unchanged, without an anti-alias filter;
+    PicoScopeStream._choose_osr logs a warning in that case.
     """
     if factor <= 1:
         return raw_block
@@ -415,43 +318,25 @@ def antialias_decimate(raw_block: np.ndarray, factor: int) -> np.ndarray:
 
 
 class PicoScopeStream:
-    """
-    Wraps ps4000a streaming API in a background polling thread.
+    """Stream the enabled channels of one PS4000A on a background poll thread.
 
-    Interface matches sounddevice.InputStream and SimulatedSensor:
-        .active  → bool
-        .start() → open device, configure channel A, begin streaming
-        .stop()  → stop streaming, release driver resources
-        .close() → close device handle (call after stop)
-
-    The app callback receives a dict matching DataCollector.receive_data's
-    expected format on every accumulated blocksize-worth of samples.
-
-    Resilience features
-    -------------------
-    * OpenUnit is retried up to _MAX_OPEN_ATTEMPTS times on transient failures.
-    * A watchdog in the poll loop detects data-silent hangs (e.g. after
-      overvoltage) and triggers an automatic stop/reopen/restart recovery cycle.
-    * ADC overflow (signal clipping) is logged at WARNING level once per
-      channel per stream start; inhibit resets when settings change.
+    Same interface as SimulatedSensor: `active`, `start()`, `stop()`, and
+    `close()` (call it after `stop()`). The callback gets one dict for each
+    `raw_blocksize` samples per channel, in mV, at the achieved raw rate.
+    After 5 s without data the poll thread reopens the device (3 attempts).
+    `degraded` is True while the delivered rate stays below 90 % of the
+    requested rate. ADC overflow is logged once per channel until it stops.
     """
 
     def __init__(self, config, callback, serial: str = '', siggen_config: dict | None = None):
-        """
-        Parameters
-        ----------
-        config   : AcquisitionSettings
-            Provides samplerate, blocksize, voltage_range, coupling.
-        callback : callable
-            DataCollector.receive_data — called with sample dict on each block.
-        serial : str
-            Serial number used to open the correct device when multiple scopes
-            are connected.  Empty string falls back to open-any behaviour.
-        siggen_config : dict | None
-            Optional signal generator parameters applied on every start().
-            Keys: freq_hz (float), pktopk_uv (int), offset_uv (int),
-                  wave_type (str, default 'PS4000A_SINE').
-            Intended for hardware testing (siggen loopback) and calibration.
+        """Prepare the stream. `start()` opens the device.
+
+        config: AcquisitionSettings. Uses raw_samplerate, raw_blocksize,
+          enabled_channels, coupling_for() and voltage_range_for().
+        callback: DataCollector.receive_data; called once for each block.
+        serial: the device to open. '' opens the first device found.
+        siggen_config: optional AWG settings, applied on each start(): freq_hz,
+          pktopk_uv, offset_uv, wave_type (default 'PS4000A_SINE').
         """
         self.config        = config
         self._serial       = serial
@@ -465,12 +350,8 @@ class PicoScopeStream:
         self._stop_event   = threading.Event()
         self._thread: threading.Thread | None = None
 
-        # Oversample ratio: the ADC is driven at effective_osr * config.raw_samplerate
-        # and the result is filtered + decimated back down before reaching the
-        # app callback. Capped at OSR_TARGET and by how much headroom is left
-        # under STREAMING_CEILING_HZ at this target rate (see module docstring
-        # comment above STREAMING_CEILING_HZ for the hardware measurements this
-        # is based on).
+        # The ADC runs at effective_osr x raw_samplerate; the callback path
+        # filters and decimates back to raw_samplerate. See _choose_osr.
         self._effective_osr = self._choose_osr(config.raw_samplerate)
 
         # One rolling driver buffer per enabled channel
@@ -488,13 +369,10 @@ class PicoScopeStream:
         self._acc_ptr       = 0
         self._stream_start  = 0.0
 
-        # Actual sample rate reported by hardware after ps4000aRunStreaming;
-        # initialised from config and updated in _start_streaming. This is the
-        # *target* rate reported downstream (DataCollector, VibeSample, HDF5) —
-        # oversampling is fully transparent to consumers of this attribute.
+        # Achieved raw rate after decimation, reported downstream (DataCollector,
+        # VibeSample, HDF5). Set from the driver readback in _start_streaming.
         self._actual_samplerate = config.raw_samplerate
-        # Actual *raw* (oversampled) rate achieved by hardware, updated in
-        # _start_streaming. Used only internally (decimation, rate watchdog).
+        # Achieved oversampled ADC rate. Internal only (rate watchdog).
         self._actual_raw_samplerate = config.raw_samplerate * self._effective_osr
         # Watchdog: updated by _streaming_callback whenever data arrives
         self._last_data_time    = 0.0
@@ -615,21 +493,13 @@ class PicoScopeStream:
         self._set_max_resolution()
 
     def _set_max_resolution(self):
-        """Attempt to set the highest ADC resolution the hardware supports.
+        """Set the highest ADC resolution for the enabled channel count.
 
-        PS4000A resolution constraints (programmer's guide §3.69):
-          16-bit : ≤ 1 channel enabled
-          14-bit : ≤ 4 channels enabled
-          12-bit : ≤ 8 channels enabled   (or any count on the 4824)
-           8-bit : always available
-
-        The 4824 returns PICO_NOT_SUPPORTED_BY_THIS_DEVICE — it has fixed
-        12-bit hardware and the API is not applicable.  All other failures
-        are logged and we fall back to the next lower resolution.
-
-        Note: picosdk always normalises ADC counts to the signed int16 range
-        (maxADC = 32767) regardless of resolution, so _adc_to_mv() stays correct
-        without refreshing _maxADC here.
+        Programmer's guide §3.69: 16-bit for 1 channel, 14-bit for up to 4,
+        12-bit for up to 8, 8-bit always. On other failures, try the next lower
+        resolution. The 4824 has fixed 12-bit hardware and returns
+        PICO_NOT_SUPPORTED_BY_THIS_DEVICE. maxADC stays 32767 at every
+        resolution, so _adc_to_mv() needs no new _maxADC.
         """
         _PICO_NOT_SUPPORTED = 0x11F   # PICO_NOT_SUPPORTED_BY_THIS_DEVICE
 
@@ -743,64 +613,15 @@ class PicoScopeStream:
                 ps.PS4000A_RATIO_MODE['PS4000A_RATIO_MODE_NONE'],
             ))
 
-        # Drive the ADC at effective_osr * config.raw_samplerate (oversampled) so the
-        # anti-alias filter in _streaming_callback has real signal above the
-        # target Nyquist to filter out before decimating back down. See
-        # STREAMING_CEILING_HZ / OSR_TARGET module comment for why this is
-        # necessary and bounded.
+        # Oversampled ADC rate, so that the anti-alias filter has content
+        # above the raw-rate Nyquist to remove. Bounded by STREAMING_CEILING_HZ.
         raw_samplerate = self.config.raw_samplerate * self._effective_osr
 
-        # NANOSECONDS, not microseconds, and rounded rather than truncated.
-        #
-        # The interval is quantised to whole units of whatever time unit is
-        # named here, so the unit sets the achievable rate grid. In us this is
-        # brutally coarse at streaming rates: 1e6/76800 = 13.0208 truncated to
-        # 13 us, giving 76923 Hz against 76800 requested -- a 1600 ppm error
-        # that scaled every displayed frequency, and the reason
-        # _report_samplerate exists at all.
-        #
-        # Two things got worse downstream from that 41 Hz:
-        #   * every displayed frequency was 0.16% high, which is real error in
-        #     an instrument whose whole job is naming lines;
-        #   * 25641 is coprime with every display rate (5120 at F_max=2000), so
-        #     collector.decimate_to_rate's rational ratio could not reduce and
-        #     scipy designed a 512821-tap FIR on every call -- 73.6 ms per
-        #     channel per frame against 0.64 ms at an integer factor.
-        #
-        # ns is finer but NOT continuous, and the second half of this matters.
-        # Probed directly on the 4824A (s/n 13290/0013), requesting a range of
-        # intervals and reading back what the driver used:
-        #
-        #     requested ns   returned ns   rate/ch Hz   /osr Hz    ppm vs 25600
-        #        13021          13012       76852.14   25617.38        +679
-        #        13020          13012       76852.14   25617.38        +679
-        #        13015          13012       76852.14   25617.38        +679
-        #        13013          13012       76852.14   25617.38        +679
-        #        13012          13000       76923.08   25641.03       +1603
-        #        13000          13000       76923.08   25641.03       +1603
-        #        12995          12987       77071.29   25690.43       +3532
-        #        13025          13025       76775.43   25591.81        -320
-        #        13026          13025       76775.43   25591.81        -320
-        #        12500          12500       80000.00   26666.67      +41667
-        #
-        # Two facts fall out. The reachable points are 12.5 ns apart (12987.5,
-        # 13000, 13012.5, 13025 ...), i.e. an **80 MHz timebase**; and the
-        # driver **floors** to the grid rather than rounding, which is why
-        # asking for the arithmetically-correct 13021 lands a whole grid point
-        # high. So the naive round(1e9/fs) is better than the us request but
-        # still lands on the wrong side.
-        #
-        # Snapping to the grid ourselves, rounding to NEAREST and then ceil-ing
-        # into whole ns so the driver's floor lands where intended, reaches
-        # 13025 ns: -320 ppm, the best this hardware can do (8e7/1041 and
-        # 8e7/1042 straddle 76800 and 1042 is the nearer). Against +1603 ppm
-        # shipped previously, that is 5x better, and every displayed frequency
-        # improves with it -- a 1000 Hz line read 1001.6 Hz before.
-        #
-        # None of this is trusted blind: the driver writes back the interval it
-        # really used and that readback (below) is what everything downstream
-        # believes. A device with a different timebase simply floors to its own
-        # grid and reports it, exactly as before.
+        # Request the interval in ns, snapped to the nearest point of the
+        # _TIMEBASE_NS grid, then rounded up to whole ns. The driver floors a
+        # request to the grid, so a plain round(1e9 / fs) lands one point high.
+        # At osr=3 this requests 13025 ns: 25591.81 Hz after decimation, -320 ppm,
+        # the closest reachable rate. Evidence: CONTRIBUTING.md, "E4. Sample-clock grid".
         target_ns = 1e9 / raw_samplerate
         grid_ns   = round(target_ns / _TIMEBASE_NS) * _TIMEBASE_NS
         sample_interval_ns = ctypes.c_int32(max(1, math.ceil(grid_ns)))
@@ -817,10 +638,9 @@ class PicoScopeStream:
             _DRIVER_BUFFER_SAMPLES,
         ))
 
-        # Read back the actual achieved raw (oversampled) sample rate: the
-        # driver writes into sample_interval_ns whatever it could really use.
-        # Kept as a float -- rounding it to an int here is what would put the
-        # ns-resolution gain straight back in the bin (76799.02 -> 76799).
+        # The driver writes the interval it really used into sample_interval_ns.
+        # Everything downstream uses that value. Keep the rate a float: an int
+        # loses the ns resolution.
         actual_ns = sample_interval_ns.value
         actual_raw_fs = 1e9 / actual_ns if actual_ns > 0 else float(raw_samplerate)
         if abs(actual_raw_fs - raw_samplerate) > 0.5:
@@ -832,33 +652,12 @@ class PicoScopeStream:
 
     @staticmethod
     def _choose_osr(samplerate: float) -> int:
-        """Oversample ratio for a target rate, or 1 if none is achievable.
+        """Return the oversampling ratio for the raw rate `samplerate` (Hz).
 
-        antialias_decimate() is a no-op at factor 1, so an osr of 1 means the
-        stream has NO anti-alias protection whatsoever. The previous
-        expression, max(1, int(min(OSR_TARGET, CEILING / samplerate))),
-        truncated 1.526 to 1 at F_max=20 kHz and 0.763 to 0 (then clamped to
-        1) at F_max=50 kHz, so both of the top presets ran completely
-        unfiltered — and the 50 kHz case additionally requested 131072 Hz raw,
-        31% above the measured STREAMING_CEILING_HZ, the exact condition the
-        module docstring says makes the driver silently drop most samples
-        while still reporting status='OKAY' with no overflow bit.
-
-        That matters because a general-purpose IEPE accelerometer has a
-        mounted resonance at 25-80 kHz with 20-30 dB of gain there. At
-        F_max=20 kHz an unfiltered 50 kHz component folds to 15536 Hz, inside
-        the displayed band and indistinguishable from real signal.
-
-        `samplerate` here is config.raw_samplerate (RAW_SAMPLERATE_HZ,
-        sample.py) -- a fixed constant, not maxfreq-derived, so this no
-        longer varies with what F_max the user picks. Validated at
-        RAW_SAMPLERATE_HZ=40000 (osr=2, real margin) on real hardware -- see
-        the STREAMING_CEILING_HZ comment above. The constant is now 25600,
-        measured on the same 4424A at osr=3 / 76923 Hz per channel, clean at
-        3 and 4 simultaneous channels (see the RAW_SAMPLERATE_HZ comment in
-        sample.py for the full table). This function still degrades
-        gracefully, with a loud warning, if that constant is ever raised past
-        what leaves real anti-alias headroom.
+        The ratio is floor(STREAMING_CEILING_HZ / samplerate), capped at
+        OSR_TARGET: 3 at 25600 Hz. Below 2 it returns 1, which means no
+        anti-alias filter, and logs a warning.
+        Evidence: CONTRIBUTING.md, "E6. Oversampling ratio".
         """
         osr = int(math.floor(STREAMING_CEILING_HZ / float(samplerate)))
         osr = min(OSR_TARGET, osr)
@@ -875,24 +674,11 @@ class PicoScopeStream:
         return osr
 
     def _report_samplerate(self, actual_raw_fs: float) -> float:
-        """The true post-decimation sample rate, for everything downstream.
+        """Return the achieved raw rate after decimation, in Hz (a float).
 
-        Oversampling itself *is* hidden from DataCollector / VibeSample / HDF5
-        — that is what dividing by the (exact, integer) decimation ratio does.
-        What must NOT be hidden is the rate the hardware actually ran at: the
-        driver quantises the streaming interval to its own clock grid (12.5 ns
-        on the 4824A — see _start_streaming) and writes back what it used,
-        which is generally not what was requested.
-
-        Reporting config.raw_samplerate instead scaled every displayed frequency by
-        requested/actual. Measured at F_max=2000: requested 32768 Hz raw, driver
-        rounded 30.5 us down to 30 us -> 33333 Hz raw -> 8333.33 Hz decimated,
-        reported as 8192 Hz. A true 100 Hz tone displayed at 98.3 Hz and a
-        60 Hz line read 59.0 Hz, which breaks harmonic-family identification,
-        sideband spacing, and any BPFO/BPFI comparison against a nameplate.
-
-        Returned as a float: the true rate is generally not an integer, and
-        rounding it would reintroduce a (smaller) version of the same error.
+        This is actual_raw_fs / osr, not config.raw_samplerate. Every frequency
+        axis downstream is built from it. Do not round it.
+        Evidence: CONTRIBUTING.md, "E5. Report the achieved rate".
         """
         return float(actual_raw_fs) / float(self._effective_osr)
 
@@ -915,20 +701,14 @@ class PicoScopeStream:
         # decimated output. Checked periodically in _poll_loop.
         self._rate_window_samples += noOfSamples
 
-        # Latch overflow for the block currently being accumulated. Without
-        # this, clipping reported by a callback that does not happen to
-        # complete a block was silently discarded, and the block it corrupted
-        # was emitted flagged clean.
+        # Latch overflow for the block in accumulation. A callback that does not
+        # complete a block can still report clipping, and that block must be
+        # flagged.
         self._overflow_latch |= int(overflow)
 
-        # Log ADC overflow (signal clipping) once per channel per stream.
-        # overflow is a bitmask: bit n set → channel n clipped.
-        #
-        # Runs unconditionally, NOT under `if overflow:`. The inhibit is
-        # cleared when a channel stops clipping, and that can only be observed
-        # on a callback where the mask has gone back to zero — gating the loop
-        # on `if overflow` meant a channel that stopped clipping never left the
-        # set, so it was never warned about again for the rest of the stream.
+        # Log ADC overflow once per channel. `overflow` is a bitmask: bit n is
+        # channel n. Run this loop on every callback, not only when overflow is
+        # set: the inhibit clears only on a callback where the bit is 0.
         for ch in self._enabled_channels:
             clipping = bool(overflow & (1 << ch))
             if clipping and ch not in self._overflow_warned:
@@ -937,15 +717,9 @@ class PicoScopeStream:
                 )
                 self._overflow_warned.add(ch)
             elif not clipping:
-                # Only clear when the channel is genuinely no longer clipping.
-                # The previous `elif ch in self._overflow_warned` fired exactly
-                # when a channel was STILL clipping — the first branch was
-                # False only because the channel was already warned — so it
-                # removed the inhibit and re-armed the warning for the very
-                # next callback. With a 1 ms poll interval that is hundreds of
-                # identical WARNING lines per second into the rotating file
-                # handler, rolling every other diagnostic out of the log during
-                # exactly the run being diagnosed.
+                # Clear the inhibit only when the channel has stopped clipping.
+                # Otherwise the 1 ms poll writes hundreds of warnings each
+                # second and rolls the rest of the log away.
                 self._overflow_warned.discard(ch)
 
         # Convert ADC counts → mV for each enabled channel.
@@ -992,9 +766,9 @@ class PicoScopeStream:
             self._accumulator[:remainder] = self._accumulator[bs:self._acc_ptr]
             self._acc_ptr = remainder
 
-            # Anti-alias filter + decimate back down to the target blocksize.
-            # DataCollector and everything downstream is unaware oversampling
-            # happened — 'samplerate' below stays the target rate.
+            # Anti-alias filter and decimate to raw_blocksize samples. Downstream
+            # code does not see the oversampling; 'samplerate' below is the
+            # achieved raw rate.
             with _profile.timed(_profile.USB_ANTIALIAS):
                 block = antialias_decimate(raw_block, self._effective_osr)
 
@@ -1012,7 +786,7 @@ class PicoScopeStream:
                 'timestamp':     datetime.now(),
                 'unit':          ['mV'] * N,
                 'channels':      list(self._enabled_channels),
-                'data':          block,           # shape (blocksize, N)
+                'data':          block,           # shape (raw_blocksize, N), mV
                 'samplerate':    self._actual_samplerate,
                 'degraded':      self.degraded,
             }
@@ -1119,14 +893,12 @@ class PicoScopeStream:
         log.debug('PicoScopeStream poll loop exited')
 
     def _check_rate_degradation(self):
-        """Periodically compare delivered vs. requested raw sample rate.
+        """Every 2 s, compare the delivered ADC rate with the requested rate.
 
-        Independent of the silence watchdog in _poll_loop: a device that is
-        streaming at a fraction of the requested rate keeps calling back
-        regularly with status='OKAY' and no overflow bit, so the silence
-        watchdog never trips even though the majority of samples may be
-        silently dropped by the driver (measured on a PicoScope 4424A — see
-        STREAMING_CEILING_HZ comment above).
+        The silence watchdog cannot see this fault: the driver can drop most
+        samples and still call back with status 'OKAY' (see STREAMING_CEILING_HZ).
+        This sets `degraded` but does not call _try_recover(), because a new
+        connection does not add USB bandwidth.
         """
         now = time.monotonic()
         if now - self._rate_last_check < _RATE_CHECK_INTERVAL_S:

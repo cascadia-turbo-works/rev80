@@ -1,25 +1,8 @@
 """Linear power averaging of the spectrum over N frames.
 
-Welch's method IS linear power averaging -- splitting a record into K
-overlapping segments and averaging their periodograms is the same estimator as
-averaging K per-frame spectra. Since the F-8 fix set `nperseg = blocksize`,
-Welch runs exactly ONE segment per frame, so there was no averaging anywhere in
-the chain and `welch_overlap` had nothing to act on.
-
-Each bin of a single-segment estimate is chi-squared(2), with a standard
-deviation equal to its own mean. Averaging N frames cuts that scatter as
-1/sqrt(N), which is what makes a small line distinguishable from floor
-roughness -- it does NOT lower the floor's expected level, only the uncertainty
-of it.
-
-The rule tying live and replay together:
-
-    the average is the N most recent VALID frames up to and including the frame
-    being displayed.
-
-Live that is the last N received; browsing it is frames[cursor-N+1 .. cursor].
-One rule, so stepping forward through a loaded file reproduces what the live
-display showed at that moment.
+Welch runs one segment per frame, so each bin scatters as chi-squared(2);
+averaging cuts the scatter as 1/sqrt(N). The average is the N most recent
+valid frames up to the frame on display, live and in replay.
 """
 
 from datetime import datetime
@@ -77,11 +60,7 @@ def test_averaging_config_round_trips():
 
 
 def test_n_averages_is_clamped_to_the_ring_cache():
-    """You cannot average more frames than are retained.
-
-    Silently averaging fewer than asked is the F-8 failure mode; clamping where
-    the limit is known keeps the stated value honest.
-    """
+    """n_averages_effective is clamped to cache_frames, so the stated count is true."""
     c = vc.AcquisitionSettings()
     c.cache_frames = 8
     c.n_averages = 64
@@ -93,7 +72,7 @@ def test_n_averages_is_clamped_to_the_ring_cache():
 # ===========================================================================
 
 def test_averaging_reduces_noise_floor_scatter():
-    """The point of the feature. Scatter falls ~1/sqrt(N); the level does not."""
+    """Averaging 16 frames reduces the floor scatter (about 1/sqrt(N)), not the level."""
     single = averaging_collector(enabled=False)
     avgd = averaging_collector(n=16, enabled=True)
 
@@ -184,8 +163,9 @@ def test_count_grows_to_the_configured_n_and_stops():
 
 
 def test_invalid_frames_are_excluded_and_lower_the_count():
-    """A clipped frame reads high with harmonic distortion; averaging it in
-    corrupts the estimate exactly as trending it corrupts the trend (F-5)."""
+    """Clipped frames are not averaged, and the reported count excludes them.
+
+    A clipped frame reads high, with harmonic distortion."""
     dc = averaging_collector(n=8)
     for i in range(8):
         feed(dc, noisy(dc, 300.37, 1.0, seed=i), rel_time=i * 1.0,
@@ -195,8 +175,7 @@ def test_invalid_frames_are_excluded_and_lower_the_count():
 
 
 def test_the_displayed_frame_is_included_even_when_invalid():
-    """The current frame is what the user asked to see, flagged. But it must not
-    be averaged into an estimate that claims to be clean."""
+    """An invalid frame on display is shown with its flag, but is not averaged."""
     dc = averaging_collector(n=8)
     for i in range(4):
         feed(dc, noisy(dc, 300.37, 1.0, seed=i), rel_time=i * 1.0)
@@ -243,10 +222,9 @@ def test_browsing_near_the_start_uses_a_partial_average():
 
 
 def test_averaging_survives_the_hdf5_round_trip_and_recomputes(tmp_path):
-    """The headline property: nothing is baked in.
+    """A file saved with averaging off can show an averaged spectrum after load.
 
-    A file captured with averaging off must be able to display an averaged
-    spectrum after loading, because the raw frames are all still there.
+    The file holds the raw frames, so averaging is not fixed at capture time.
     """
     dc = averaging_collector(n=1, enabled=False)
     for i in range(8):
@@ -282,8 +260,7 @@ def test_changing_n_after_load_recomputes_without_reloading():
 # ===========================================================================
 
 def test_overall_is_averaged_with_the_spectrum():
-    """The overall and the spectrum sit side by side and must describe the same
-    data -- describing different amounts of it is the M-06 mistake again."""
+    """The overall is averaged over the same frames as the spectrum."""
     dc = averaging_collector(n=8)
     for i in range(8):
         feed(dc, noisy(dc, 300.37, 1.0, seed=i), rel_time=i * 1.0)
@@ -298,9 +275,9 @@ def test_overall_is_averaged_with_the_spectrum():
 
 
 def test_impulsiveness_scalars_are_not_averaged():
-    """Averaging is for steady-state estimation; crest factor and kurtosis
-    exist to catch the frame that is NOT steady. Diluting one impulsive frame
-    across sixteen would defeat the entire purpose of having them."""
+    """Crest factor and kurtosis are not averaged; they describe the frame on display.
+
+    They exist to catch the frame that is not steady."""
     dc = averaging_collector(n=8)
     rng = np.random.default_rng(0)
     for i in range(7):
@@ -320,18 +297,11 @@ def test_impulsiveness_scalars_are_not_averaged():
 # ===========================================================================
 
 def test_the_average_is_taken_in_the_power_domain():
-    """Average |X|^2 then sqrt -- never the magnitudes directly.
+    """The average is sqrt(mean(|X|^2)), not the mean of the magnitudes.
 
-    This distinction is invisible on a coherent line (a deterministic amplitude
-    averages to itself either way) and shows up only on the noise floor, which
-    is why it is easy to get wrong and stay green. For complex Gaussian noise
-    the power is exponential with mean mu, so the magnitude is Rayleigh with
-    mean sqrt(pi*mu/4) = 0.886*sqrt(mu): averaging magnitudes converges about
-    11% LOW, and drags every noise-floor bin down with it. It also discards the
-    chi-squared statistics that make the 1/sqrt(N) variance reduction
-    predictable in the first place.
-
-    Asserted against both candidate answers so the wrong one cannot pass.
+    The difference shows only on the noise floor: a Rayleigh magnitude has mean
+    0.886 x sqrt(power), so a magnitude average reads about 11 % low. The test
+    asserts against both answers, so the wrong one cannot pass.
     """
     dc = averaging_collector(n=24)
 

@@ -1,13 +1,9 @@
-"""Four small confirmed defects, each independently verified.
+"""Four small properties of the package layout and utilities.
 
-  - _pico_loader._drivers_dir() computed <repo>/src/drivers (one level short),
-    so ensure_pico_dlls_loadable() silently returned False in development.
-  - AMPLITUDE_SCALE.get() was called with two different fallbacks across five
-    sites, so an unrecognised mode reconstructed a loaded trend 1.414x off
-    relative to the live trend.
-  - rev80/__init__.py does `from rev80.util import *` with no __all__ in
-    util.py, re-exporting `np` into the rev80 namespace.
-  - collector.py used the deprecated datetime.utcnow().
+- _pico_loader._drivers_dir() finds <repo>/drivers in a checkout.
+- amplitude_scale() is the one place with the unknown-mode fallback.
+- util.__all__ keeps `np` out of the rev80 namespace.
+- No datetime.utcnow() call is left in src/.
 """
 
 import numpy as np
@@ -54,12 +50,10 @@ class TestDriversDir:
         assert _drivers_dir() == project_path('drivers')
 
     def test_does_not_resolve_through_package_data(self):
-        """resource_path() is for package data and must NOT find drivers/.
+        """resource_path() is for package data and does not find drivers/.
 
-        Narrowing resource_path() to the installed package is correct for
-        logging.yaml and the icon font, but routing drivers/ through it
-        reintroduces audit X-06 in a new shape: it resolves to a directory
-        that never exists and the loader silently degrades to walking %PATH%.
+        resource_path('drivers') is a directory that never exists. The loader
+        would then fall back to %PATH% with no message.
         """
         assert not resource_path('drivers').is_dir()
         assert project_path('drivers') != resource_path('drivers')
@@ -86,7 +80,7 @@ class TestAmplitudeScale:
 
     @pytest.mark.parametrize('bad', ['Peak', '', 'rms', None, 0, object()])
     def test_unknown_modes_share_one_fallback(self, bad):
-        """The whole point: every site must now agree on the same fallback."""
+        """Every unknown mode gets the scale of DEFAULT_AMPLITUDE_MODE."""
         assert amplitude_scale(bad) == AMPLITUDE_SCALE[DEFAULT_AMPLITUDE_MODE]
 
     def test_unknown_mode_is_logged(self, caplog):
@@ -106,7 +100,7 @@ class TestAmplitudeScale:
         offenders = [
             f'{p.name}:{i}'
             for p in root.rglob('*.py')
-            if p.name != 'util.py'          # the definition site documents the old call
+            if p.name != 'util.py'          # the definition site names the call in a docstring
             for i, line in enumerate(p.read_text(errors='replace').splitlines(), 1)
             if 'AMPLITUDE_SCALE.get(' in line and not line.strip().startswith('#')
         ]
@@ -129,7 +123,7 @@ class TestUtilAll:
         assert missing == [], f'__all__ names missing from util: {missing}'
 
     def test_numpy_is_not_re_exported(self):
-        """`from rev80.util import *` used to leak `np` into the rev80 namespace."""
+        """`from rev80.util import *` does not put `np` in the rev80 namespace."""
         assert not hasattr(rev80, 'np')
 
     @pytest.mark.parametrize('name', ['data_dir', 'SAVEDIR', 'amplitude_scale',

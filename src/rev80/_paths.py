@@ -1,18 +1,14 @@
 """
 Runtime-safe path resolution for rev80.
 
-Bundled resources (e.g. logging.yaml, assets/fonts/*.otf): resolved relative
-    to this package's own directory — correct whether the package is an
-    editable checkout, a normal (non-editable) pip install, or bundled into
-    sys._MEIPASS when frozen (PyInstaller). Anything resolved this way must
-    ship as package data (see pyproject.toml's [tool.setuptools.package-data]
-    and build/rev80.spec's `datas`).
-User-writable data (saved snapshots, monitor sessions): always
-    ~/Documents/Rev80/data, whether running from source or frozen. The
-    project-relative ./DEVDATA directory is test scratch space only (see
-    tests/), not touched by this module.
-Logs: project-relative ./log in development, ~/Documents/Rev80/logs when
-    frozen.
+Bundled resources (logging.yaml, assets/fonts/*.otf): relative to this
+    package, or to sys._MEIPASS when frozen. They must ship as package data
+    (pyproject.toml [tool.setuptools.package-data], build/rev80.spec `datas`).
+User data (saved files, monitor sessions): always ~/Documents/Rev80/data.
+    ./DEVDATA is test scratch space only; this module does not use it.
+Logs: always ~/Documents/Rev80/logs, in every install. Never relative to
+    the cwd: a desktop launcher runs with cwd $HOME and a systemd unit with
+    cwd /, where mkdir('log') fails.
 """
 
 import sys
@@ -39,14 +35,10 @@ def resource_path(relative: str) -> Path:
 def project_path(relative: str) -> Path:
     """Absolute path to a repo-root build artifact that is NOT package data.
 
-    Distinct from resource_path(): that resolves inside the installed package,
-    which is correct for files shipped as package-data (logging.yaml, the icon
-    font) and therefore present in a non-editable pip install. Some things are
-    neither — `drivers/` holds PicoSDK DLLs collected at the repo root by
-    build/collect_pico_dlls.py and bundled by build/rev80.spec as a top-level
-    `drivers/` directory in the frozen app. Resolving those through
-    resource_path() looks for src/rev80/drivers, which never exists, and the
-    caller silently degrades (audit X-06).
+    Example: `drivers/`, the PicoSDK DLLs that build/collect_pico_dlls.py
+    puts at the repo root and build/rev80.spec bundles at the top level of
+    the frozen app. Do not use resource_path() for these: it looks in
+    src/rev80/drivers, which does not exist, and the caller fails silently.
     """
     if _is_frozen():
         return Path(sys._MEIPASS) / relative  # type: ignore[attr-defined]
@@ -71,10 +63,11 @@ def data_dir() -> Path:
 
 
 def log_dir() -> Path:
-    """Return the directory used for log files."""
-    if _is_frozen():
-        d = _user_dir() / 'logs'
-    else:
-        d = Path('log')
+    """Return the directory used for log files.
+
+    Always ~/Documents/Rev80/logs, like data_dir(). It must not depend on the
+    current working directory (see the module docstring).
+    """
+    d = _user_dir() / 'logs'
     d.mkdir(parents=True, exist_ok=True)
     return d

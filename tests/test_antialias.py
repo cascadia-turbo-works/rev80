@@ -1,10 +1,7 @@
-"""Unit tests for rev80.picoscope.antialias_decimate — the R32 regression test.
+"""rev80.picoscope.antialias_decimate: filter, then decimate.
 
-These tests exercise the module-level antialias_decimate(raw_block, factor)
-helper directly: pure numpy/scipy, no hardware and no PicoScopeStream
-involved. They encode the field incident this function was written to fix —
-a high-frequency tone aliasing into the low-frequency band when raw ADC data
-is naively downsampled (array[::factor]) instead of filtered-then-decimated.
+No hardware. A tone above the output Nyquist frequency must not fold into the
+passband, as it does with array[::factor].
 """
 
 import numpy as np
@@ -35,19 +32,14 @@ def _expected_decimated_length(n, factor):
 
 
 # ---------------------------------------------------------------------------
-# The core R32 regression case
+# A 1200 Hz tone does not alias to 200 Hz
 # ---------------------------------------------------------------------------
 
 class TestAntialiasRegression:
-    """target_rate=1000, factor=4, raw_rate=4000 → target Nyquist=500 Hz.
+    """Raw rate 4000 Hz, factor 4, output Nyquist frequency 500 Hz.
 
-    A tone at 1200 Hz is well above the target Nyquist (500 Hz) but well
-    within the raw Nyquist (2000 Hz), so it is legitimately represented in
-    the raw block. Naive decimation (picking every 4th raw sample, i.e.
-    resampling to 1000 Hz with no anti-alias filter first) folds 1200 Hz
-    down to 1200 mod 1000 = 200 Hz — landing squarely in the passband where
-    a real low-frequency signal would be expected. antialias_decimate must
-    suppress this before decimating.
+    A 1200 Hz tone is below the raw Nyquist frequency (2000 Hz). Every 4th
+    sample folds it to 200 Hz; antialias_decimate must attenuate it first.
     """
 
     TARGET_RATE = 1000
@@ -104,8 +96,7 @@ class TestFactorOneNoOp:
         assert np.array_equal(out, x)
 
     def test_factor_zero_also_treated_as_noop(self):
-        """Implementation guards with `factor <= 1`, so 0 (degenerate/unused
-        in practice) is a no-op too rather than raising."""
+        """factor 0 returns the input unchanged and does not raise."""
         x = np.random.randn(64)
         out = antialias_decimate(x, 0)
         assert np.array_equal(out, x)
@@ -141,7 +132,7 @@ class TestLegitimateSignalSurvives:
         expected_mag = ampl * len(out) / 2
         mag, _ = _fft_mag_at(out, self.TARGET_RATE, self.LOW_FREQ)
 
-        # Zero-phase FIR filter passband ripple is small; allow 10% tolerance.
+        # The FIR passband ripple is small; the tolerance is 10 %.
         assert mag == pytest.approx(expected_mag, rel=0.10)
 
 

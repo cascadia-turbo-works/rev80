@@ -1,33 +1,14 @@
 """Envelope (demodulation) analysis for rolling-element bearing defects.
 
-Why this exists
----------------
-A bearing defect does not announce itself as a line at the defect rate. Each
-time a rolling element strikes the defect it produces an impulse, and that
-impulse rings a structural resonance of the housing -- typically 2-20 kHz, far
-above anything the machine does mechanically. In the raw spectrum the defect
-energy is therefore smeared across that resonance and sits underneath the 1x and
-its harmonics, which are orders of magnitude larger.
+The chain:
 
-What carries the diagnosis is not where the energy is but how it is *modulated*:
-the impulses repeat at the defect rate, so the resonance's amplitude envelope
-carries a clean line there, with +/-1x sidebands from the load zone. Recovering
-that envelope makes a fault visible months before the broadband overall moves.
+1. Band-pass around the housing resonance. This step removes the 1x. Without
+   it, demodulation recovers the low-frequency content again.
+2. Hilbert magnitude: the instantaneous amplitude.
+3. Remove the mean, so the DC term does not leak across the low end.
+4. Amplitude spectrum of the envelope, up to its own F_max (500 Hz default).
 
-Every instrument in this class ships this under some name -- CSI PeakVue,
-SKF gE, B&K envelope analysis.
-
-The chain
----------
-1. Band-pass around the resonance. This is what discards the 1x, and it is the
-   step that makes the rest work: demodulating the full-band signal just
-   recovers the dominant low-frequency content again.
-2. Hilbert magnitude -- the analytic signal's modulus is the instantaneous
-   amplitude.
-3. Remove the mean. The envelope is strictly positive, so its DC term is large
-   and would otherwise dominate bin 0 and leak across the low end.
-4. Spectrum of the envelope, over its own much lower F_max: the modulation
-   rates of interest are a few hundred Hz at most, however high the carrier is.
+The operator view of the physics is in README.md, "Envelope analysis".
 """
 
 import numpy as np
@@ -48,14 +29,9 @@ DEFAULT_ENVELOPE_FMAX: float = 500.0
 #: band-pass still rejects the 1x.
 SUGGEST_BAND_FRAC: float = 0.25
 
-#: Below this Nyquist frequency, envelope analysis is unlikely to have a real
-#: housing resonance (typically 2-20 kHz) to work with at all -- the mandatory
-#: anti-alias filter upstream has already removed everything above Nyquist
-#: before the data reaches here, so there is nothing a wider demodulation band
-#: could recover. suggest_band() will still return *a* band below this line,
-#: but it can only be centred on ordinary machine content (1x, gear mesh),
-#: which is exactly what demodulation exists to escape -- see the GUI's
-#: F_max warning in the Envelope tab.
+#: Below this Nyquist frequency a housing resonance (typically 2-20 kHz) is
+#: probably not in the record. suggest_band() still returns a band, but it can
+#: only sit on machine content. The GUI Envelope tab shows a warning below it.
 MIN_USEFUL_NYQUIST_HZ: float = 5000.0
 
 
@@ -82,11 +58,8 @@ def envelope_spectrum(x: np.ndarray, fs: float, band: tuple[float, float],
     if x.size < 16:
         raise ValueError(f'record too short to demodulate: {x.size} samples')
 
-    # 1. Band-pass to the resonance. Zero-phase: group delay would shift the
-    #    envelope in time relative to anything else on screen, and unlike the
-    #    acquisition high-pass this filter runs on a whole stored record rather
-    #    than across streaming block boundaries, so there is no state to carry
-    #    and no edge transient to propagate.
+    # 1. Band-pass to the resonance. Zero-phase is correct here: the filter
+    #    runs on one whole record, so there is no state to carry across blocks.
     sos = scipy.signal.butter(BANDPASS_ORDER, (lo, hi), btype='bandpass',
                               fs=fs, output='sos')
     banded = scipy.signal.sosfiltfilt(sos, x)
@@ -117,16 +90,11 @@ def suggest_band(x: np.ndarray, fs: float, fmax: float | None = None,
                  frac: float = SUGGEST_BAND_FRAC) -> tuple[float, float]:
     """Propose a demodulation band centred on the dominant high-frequency energy.
 
-    The user should not have to know where their housing resonance is to get a
-    first look. This searches only the upper part of the usable band -- below
-    that is machine content (1x and harmonics), which is exactly what
-    demodulation is trying to escape, so a band centred there would be worse
-    than useless.
-
-    Returns (low, high) in Hz, always strictly inside the usable band. `fmax`
-    defaults to Nyquist but should normally be the declared measurement band's
-    upper edge, so the suggestion never reaches into the anti-alias guard
-    region where the response is not a measurement.
+    Returns (low, high) in Hz, inside the usable band (0, top]. `top` is `fmax`,
+    or Nyquist when `fmax` is not given, and never above 0.99 x Nyquist. Pass
+    the upper edge of the usable band as `fmax` to keep the band out of the
+    anti-alias transition band. The search covers 0.25 x top to top only.
+    Evidence: CONTRIBUTING.md, "E13. Envelope band search".
     """
     x = np.asarray(x, dtype=np.float64)
     nyq = fs / 2.0

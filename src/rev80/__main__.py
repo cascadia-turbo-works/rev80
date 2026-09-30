@@ -109,23 +109,19 @@ def main():
 
     rev80.setup_logging(debug=args.debug)
     # Before anything constructs a collector or a stream, so no frame is missed.
-    # REV80_PROFILE is honoured too: the flag is unreachable from a desktop
-    # launcher, which is exactly where a reproduction sometimes has to happen.
+    # REV80_PROFILE works too, because a desktop launcher cannot give the flag.
     if args.profile or os.environ.get("REV80_PROFILE"):
         _profile.enable()
         rev80.get_logger().info("Pipeline profiling enabled")
     rev80.log_system_info()
-    # Installs sys.excepthook AND threading.excepthook AND faulthandler.
-    # The thread hook is the one that was missing: everything interesting
-    # in this app runs off the main thread, and those deaths went to
-    # stderr, which is nowhere when launched from a desktop entry.
+    # sys.excepthook, threading.excepthook and faulthandler: a background
+    # thread's stderr goes nowhere when a desktop launcher starts the app.
     rev80.install_excepthooks()
     rev80.get_logger().info('Rev80 Launched')
     app = rev80.GUI()
-    # try/finally, so cleanup() runs however run() exits. Without it any
-    # escaping exception skipped it entirely and ps4000aCloseUnit never ran,
-    # leaving the scope claimed until the USB was replugged (audit S-01).
-    # cleanup() is idempotent, so the loop's own guarded exit is harmless.
+    # try/finally, so cleanup() runs however run() exits and ps4000aCloseUnit
+    # is called. Otherwise the scope stays claimed until the USB is replugged.
+    # cleanup() is idempotent.
     try:
         app.initialize()
         app.run(initial_file=args.from_file, autodetect=args.autodetect)

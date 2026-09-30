@@ -1,11 +1,7 @@
-"""Regression tests for GUI._on_sb_save_config (session browser "Save Config").
+"""GUI._on_sb_save_config (session browser "Save Config") patches the file.
 
-Background: gui.py called h5py.File() in _on_sb_save_config but never imported
-h5py at module scope — the three other users each did a function-local import
-and this one did not. The resulting NameError was swallowed by a broad
-`except Exception` and logged as "failed to patch {session_h5}", so the button
-was silently dead code and the error message misdirected the user toward disk
-permissions. These tests pin both the import and the narrowed except clause.
+gui.py imports h5py at module scope. The method catches OSError and KeyError
+only; other exceptions propagate.
 """
 
 import h5py
@@ -48,7 +44,7 @@ def _make_gui_stub(session_h5, tmp_path):
 
 
 def test_save_config_writes_metadata_groups(tmp_path):
-    """The happy path actually patches the file — it used to be a no-op NameError."""
+    """The method writes channel and sensor metadata groups into the file."""
     session_h5 = tmp_path / 'session.h5'
     with h5py.File(session_h5, 'w') as f:
         f.require_group('metadata')
@@ -69,17 +65,16 @@ def test_save_config_writes_metadata_groups(tmp_path):
 
 
 def test_save_config_reports_io_failure_without_crashing(tmp_path):
-    """A genuine I/O failure is still caught and logged, not raised."""
+    """An I/O failure is caught and logged, not raised."""
     missing = tmp_path / 'nope' / 'session.h5'   # parent dir does not exist
     app = _make_gui_stub(missing, tmp_path)
     app._on_sb_save_config()   # must not raise — OSError is handled
 
 
 def test_save_config_does_not_swallow_programming_errors(tmp_path):
-    """The except clause is narrow: non-IO exceptions propagate.
+    """An exception that is not OSError or KeyError propagates.
 
-    The old bare `except Exception` hid NameError/AttributeError bugs behind a
-    disk-failure message. Anything that is not OSError/KeyError must surface.
+    A broad except would report a programming error as a disk failure.
     """
     session_h5 = tmp_path / 'session.h5'
     with h5py.File(session_h5, 'w') as f:
