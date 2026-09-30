@@ -734,17 +734,22 @@ after the burst.
 Each stored frame is the raw-rate frame: 25600 samples × 8 bytes = 204.8 kB
 for each channel and each second of frame time. F_max has no effect.
 
-The Monitor tab shows an estimate per year and per burst. The estimate
-assumes that gzip halves the size. On `SimulatedSensor` data, gzip level 4
-kept 96 % of the raw size (measured, 204800 bytes to 197069 bytes). Plan for
-the raw size.
+The Monitor tab shows an estimate per year of interval captures and per
+burst. The estimate counts only the vibration channels. A tachometer channel
+stores only edge times, a few values each second, so the estimate does not
+count it. The units are decimal: 1 GB = 10^9 bytes, 1 MB = 10^6 bytes,
+1 kB = 10^3 bytes.
 
-Example: 1 channel, 1 s frames, 10 min interval: 52560 captures a year,
-about 10.8 GB. The estimate shows "~5.4 GiB/year". The value is in units of
-10^9 bytes, although the label says GiB. The estimate turns red with a
-warning icon when it is above 10 × 10^9 bytes a year. This is a warning,
-not a limit. The estimate also counts a tachometer channel as a full
-waveform, so it is high for that channel.
+The estimate assumes that gzip halves the size. This is an assumption, not
+a measurement. On `SimulatedSensor` data, gzip level 4 kept 96 % of the raw
+size (204800 bytes to 197069 bytes). Plan for the raw size, which is two
+times the estimate.
+
+Example: 1 vibration channel, 1 s frames, 10 min interval. This gives 52560
+captures a year and about 10.8 GB of raw data. The estimate shows
+"~5.4 GB/year". The estimate turns red with a warning icon when it is more
+than 10 GB a year, and it adds "(exceeds 50 GB)" when it is more than
+50 GB a year. These are warnings, not limits.
 
 ### Bursts
 

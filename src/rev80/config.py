@@ -101,7 +101,7 @@ _BUILTIN_ACQ: dict[str, Any] = {
         'max_burst_s':       600,
         'output_dir':        None,
         'compression':       'gzip',
-        'compression_level': 4,   # not read: sessions always use level 4
+        'compression_level': 4,   # gzip level 0-9. No widget: set it in acquisition.yaml
         'anomaly': {
             'enabled':    True,
             'hook_type':  'rms',

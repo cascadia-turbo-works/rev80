@@ -3204,6 +3204,9 @@ class GUI:
                 _get(ui.MON_DLG_BURST_DUR, _MON_SEED['burst_duration_s'])),
             'output_dir': out_dir or None,
             'compression': 'gzip' if _get(ui.MON_DLG_COMPRESS, True) else 'none',
+            # No widget: read it from acquisition.yaml, as headless does.
+            'compression_level': int(mon_saved.get(
+                'compression_level', _MON_SEED['compression_level'])),
             'cooldown_enabled': bool(
                 _get(ui.MON_ANOM_COOLDOWN_ENABLED, _ANOM_SEED['cooldown_enabled'])),
             'cooldown_s': float(_get(ui.MON_ANOM_COOLDOWN_S, _ANOM_SEED['cooldown_s'])),

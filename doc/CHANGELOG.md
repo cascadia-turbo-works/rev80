@@ -9,6 +9,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### fix/tach — unusable tach readings, GUI compression level (2026-09-30)
+
+#### Fixed
+- **An unusable tach reading counts as no reading.** A reading with quality
+  `unsteady` or `inconsistent` has an rpm, but `TachResult.is_usable` is
+  False. No code used `is_usable`. Thus such a reading could pass the speed
+  gate, latch the gate reference, and go into the RPM trend. Now
+  `DataCollector.speed_ok()` gets only a usable reading, so the gate fails
+  closed on an unusable one: the frame is not trended, not used for a
+  baseline and cannot raise an alarm. The RPM trend does not record it. The
+  frame is still displayed and stored, and `ChannelResult.rpm` still shows
+  the value. `tests/test_tach_usable.py` keeps this. Without the gate part,
+  3 of its 4 tests fail; without the trend part, 2 fail.
+- **A GUI monitor session uses `monitor.compression_level`.** The GUI used
+  gzip level 4 for each session. Now `_monitor_session_params()` reads the
+  level from `acquisition.yaml`, as headless does.
+  `tests/test_gui_compression_level.py` keeps this. Without the fix, its 2
+  tests fail.
+
+#### Removed
+- **`_dsp.band_rms`.** No code called it. The overall uses the Hann-tapered
+  path; CONTRIBUTING.md, "E10. Band RMS", records why.
+
+#### Changed
+- Comments: the `compression_level` seed in `config.py` and the
+  `AnomalyEvent` fields. `trigger_time` is the onset; the burst t = 0 is the
+  confirming frame. The controller does not use `trigger_rel_time`.
+- README, "Storage": the estimate text agrees with
+  `gui.monitor_storage_estimate` (decimal units, vibration channels only,
+  50 % gzip as an assumption).
+
 ### fix/monitor — burst cap, compression and session times (2026-09-30)
 
 #### Fixed
@@ -30,7 +61,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **The resource trail logs the capture count.** It always logged
   `captures -1`.
 - **Headless reads `monitor.compression_level`.** Before, headless sessions
-  always used gzip level 4. The GUI still uses level 4.
+  always used gzip level 4. The GUI reads it too since fix/tach (2026-09-30).
 - **The headless session id uses local time** ([S-10](audit-202608.md#s-10)).
   Before, headless made the id from UTC. The GUI and `start_time` use local
   time.
@@ -52,8 +83,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `tests/test_monitor_writer_compression.py`,
   `tests/test_monitor_resource_trail.py`, `tests/test_headless_session.py`
   and `tests/test_monitor_burst_onset.py`. Each fails without its fix.
-- The GUI does not read `monitor.compression_level` yet. That change is in
-  `gui.py`.
+- fix/tach (2026-09-30) makes the GUI read `monitor.compression_level`.
 
 ### fix/gui — monitor config and four GUI defects (2026-09-30)
 
@@ -144,8 +174,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `tests/test_monitor_live_only.py` tests the GUI decisions without a DPG
   viewport. Without the fix, 12 of its 14 tests fail. This includes the test
   that sends a browsed frame through `_display_frame_inner`.
-- Ctrl+K can still stop the stream during a recording. The recording then
-  continues but gets no frames. This change does not lock Ctrl+K.
+- This change did not lock Ctrl+K. fix/gui (2026-09-30) does: a stream stop
+  from Ctrl+K, the Acquisition button or the Tachometer tab is refused while
+  a recording runs.
 
 ### fix/collector — each file type has its own version limit (2026-09-29)
 
