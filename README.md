@@ -1,273 +1,939 @@
 # Rev80
 
-A Python desktop application that puts the core vibration analysis toolkit into the hands of plant managers and maintenance technicians, at a far more approachable price than hiring a dedicated engineering firm. It captures, analyzes, and records vibration data from industrial rotating equipment using IEPE accelerometers connected via a PicoScope 4000A USB oscilloscope.
+Rev80 is a desktop application for vibration analysis of industrial rotating
+equipment. It captures, analyzes and records vibration from IEPE
+accelerometers through a PicoScope 4000A USB oscilloscope. It is for plant
+managers and maintenance technicians who need the core analysis toolkit
+without a dedicated engineering firm.
 
-Two ways to use it: on-demand snapshot capture (overall + spectral levels) for route-based motor inspection and installation verification, and **Monitor Mode** for continuous logging over hours or years, with anomaly detection to catch rare events like motor coast-down or vibration spikes.
+You can use Rev80 in two ways:
 
-> **Rev80** by Rev Engineering, LLC — 80% of the benefit of academic vibration analysis from a dedicated engineering firm, for a fraction of the cost.
+- **Route and spot checks.** Capture a frame, read the overall and the
+  spectrum, and save the measurement.
+- **Monitor Mode.** Log frames at an interval for hours or months. Anomaly
+  detection records a burst of frames when the vibration changes.
 
-Looking to build, package, or contribute to Rev80? See **[CONTRIBUTING.md](CONTRIBUTING.md)**.
+> **Rev80** by Rev Engineering, LLC: 80 % of the benefit of academic
+> vibration analysis from a dedicated engineering firm, for a fraction of the
+> cost.
+
+To build, package or change Rev80, read **[CONTRIBUTING.md](CONTRIBUTING.md)**.
+
+### What the numbers are, and where they stop being trustworthy
+
+Rev80 is an instrument. Each number on the screen has a unit, a band and
+conditions. Read these limits before you act on a number:
+
+- The **overall** is measured over the **declared band** only. Two overalls
+  over different bands are different measurements. See
+  [Declared band and the high-pass edge](#declared-band-and-the-high-pass-edge).
+- A frame with ADC **overflow** (clipping) or a **degraded** USB stream is
+  shown with a flag, but it is not trended, averaged or used for alarms. See
+  [Frames that are not used](#frames-that-are-not-used).
+- Nothing above F_max is shown or measured. Below the high-pass band edge,
+  the response falls off. See [F_max, bin size, frame length and lines](#f_max-bin-size-frame-length-and-lines).
+- A missing reading shows as `--`, never as `0`. See
+  [Missing readings](#missing-readings----not-0).
+- Each accuracy figure has a measurement method and conditions. Some were
+  measured at an older raw rate or in simulation only. See
+  [Accuracy and limits](#accuracy-and-limits).
 
 ---
 
-## Table of Contents
+## Contents
 
-- [Features](#features)
-- [CLI Reference](#cli-reference)
-- [Installing on Windows](#installing-on-windows)
-- [Installing from Source (any OS)](#installing-from-source-any-os)
-- [Configuration and Persistence](#configuration-and-persistence)
-- [Monitor Mode](#monitor-mode)
+- [Install](#install)
+- [Quick start](#quick-start)
+- [The GUI](#the-gui)
+- [Measurement settings](#measurement-settings)
+- [Reading the results](#reading-the-results)
 - [Tachometer](#tachometer)
-- [Envelope-Demodulation Analysis (Bearing Diagnostics)](#envelope-demodulation-analysis-bearing-diagnostics)
-- [Signal Generator](#signal-generator)
-- [Simulated Sensor](#simulated-sensor)
-- [Architecture](#architecture)
-- [Module Reference](#module-reference)
-- [Data Pipeline](#data-pipeline)
-- [AcquisitionSettings](#acquisitionsettings)
-- [VibeSample and ChannelResult](#vibesample-and-channelresult)
-- [ScopeSensor](#scopesensor)
-- [Data Storage](#data-storage)
-- [PicoScope Integration](#picoscope-integration)
+- [Envelope analysis](#envelope-analysis)
+- [Monitor Mode](#monitor-mode)
+- [Headless datalogger](#headless-datalogger)
+- [Configuration files](#configuration-files)
+- [Command reference](#command-reference)
+- [Data files](#data-files)
+- [Signal generator](#signal-generator)
+- [Simulated sensor](#simulated-sensor)
+- [Troubleshooting](#troubleshooting)
 
 ---
 
-## Features
+## Install
 
-- Real-time time-domain and frequency-domain plots across multiple simultaneous channels
-- Welch-based power spectral density with configurable window (Hann, Blackman-Harris, Flattop, Hamming, etc.)
-- Velocity and displacement spectra derived from acceleration via frequency-domain integration
-- Single-shot and continuous streaming capture modes
-- Per-channel 4th-order Butterworth highpass filter, causal with state carried across streaming blocks; `highpass_fc` is the declared band edge (response within ±10% there), not the −3 dB knee
-- Mandatory hardware-level anti-aliasing (oversample + linear-phase Kaiser FIR decimate, measured −111.7 dB stopband) on every capture, plus a streaming-rate watchdog that flags degraded USB throughput
-- Sample clock snapped to the device's own timebase grid (12.5 ns on the 4824A), measured rather than assumed — the achieved rate is within −320 ppm of nominal and is what the frequency axis is built from, not what was requested
-- Built-in per-stage pipeline profiling (`rev80 --profile`, `scripts/profile-pipeline`) covering USB delivery, DSP and rendering separately
-- Configurable IEPE sensor library: sensitivity (mV/EU), modality, engineering units
-- PicoScope 4000A built-in signal generator for excitation testing
-- HDF5 file save/load for post-processing and archiving (v5 format)
-- Configurable frame cache depth (default 32 frames) with backward browse
-- **Declared measurement band** — the overall is measured over a configurable band (default: highpass edge to F_max) with ISO 20816 presets, and the band is stored with the data so two readings can be compared
-- **Linear power spectral averaging** over N frames, to pull small lines out of a noisy floor (off by default)
-- **Tachometer channel** — shaft speed from a keyphasor or laser tach, with a live commissioning preview, a 1x marker on the spectrum, selectable rate units (RPM / Hz / rad/s / deg/s), and speed gating that keeps a load-driven amplitude swing from reading as a condition change
-- **Envelope (demodulation) analysis** — band-pass around a structural resonance, Hilbert magnitude, envelope spectrum; the standard early-warning diagnostic for rolling-element bearing defects, with automatic demodulation-band selection
-- **Crest factor and kurtosis** per channel — impulsiveness scalars that a broadband overall averages away
-- Significance-based spectral peak selection: a line is reported when it stands a configurable number of dB above its own local noise floor, rather than by a fixed top-N amplitude ranking
-- Trend plot: overall vibration amplitude over time per channel
-- Simulated sensor for offline development and CI testing — a physically realistic bearing-defect model (impulse train at the defect rate ringing a structural resonance, load-zone amplitude modulation, slip jitter) with a healthy negative control
-- Configurable amplitude modes: RMS, 0-P, P-P
-- Configurable units: acceleration (g, mm/s², in/s²), velocity (mm/s, in/s, mil/s), displacement (mm, in, mil)
-- **Monitor Mode** — interval datalogger: captures frames at a configurable interval (5 s – 2 days) into a single session HDF5; anomaly-triggered burst capture with two independent detection modes (EWMA-RMS broadband and fixed-level upper/lower thresholds; the EWMA-Spectral detector is temporarily unavailable in the GUI pending rework — see R39 — and remains reachable from the headless front end); configurable post-burst cooldown gate; manual "Record Burst" button
-- **Session browser** — load and browse historical monitor sessions; burst events displayed as vertical markers on the vibration trend
+### Windows
 
----
+1. Install **PicoSDK 11.1.418** (or PicoScope 7 for Windows) from
+   [picotech.com/downloads](https://www.picotech.com/downloads).
+2. Restart the computer. The restart registers the USB kernel driver.
+3. Download **`Rev80Setup-<version>.exe`** from the
+   [Releases page](https://github.com/cascadia-turbo-works/rev80/releases).
+4. Run the installer. It needs no administrator rights. It creates a Start
+   Menu shortcut and an uninstaller.
 
-## CLI Reference
+> **Caution:** The installer does not contain the PicoScope drivers. Without
+> PicoSDK, Rev80 starts and runs the simulated sensor, but it does not find a
+> scope. The installer warns you when PicoSDK is missing.
 
-`rev80` is the single entry point for everything — GUI launch, the headless
-datalogger (as a subcommand), and quick info commands that need neither the
-GUI nor hardware. `rev80-headless` remains as a standalone shortcut for
-`rev80 headless` (handy for systemd units / scripts that only need the
-datalogger). Run `rev80 --help` or `rev80 headless --help` for the full,
-always-current option list.
+> **Note:** The installer is not signed. Windows SmartScreen shows a warning.
+> Click *More info*, then *Run anyway*.
 
-```bash
-rev80 --version         # print version and exit
-rev80 --install-desktop-entry    # Linux only — see Desktop integration below
-rev80 --uninstall-desktop-entry
-```
+### Linux and macOS (pip)
 
-### GUI mode
+Rev80 needs Python 3.10 or later.
 
-```bash
-rev80                                                # launch GUI
-rev80 --from-file path/to/file.h5                   # load measurement on startup
-rev80 --from-file path/to/session_dir/              # load monitor session on startup
-rev80 --debug                                        # verbose logging
-```
-
-`--from-file` accepts a v4 single-measurement `.h5` file or a v5 monitor session directory (containing `session.h5`). The GUI opens, displays the data immediately, and the session browser and file browser remain fully functional.
-
-### Info commands
-
-Return immediately — no GUI, no hardware, no heavy imports. Available both
-at the top level of `rev80` and under `rev80 headless` / `rev80-headless`:
-
-```bash
-rev80 --init-config      # seed config files and exit
-rev80 --list-devices     # enumerate connected PicoScopes and exit
-rev80 --list-sensors     # show the IEPE sensor library and exit
-rev80 --edit-config      # open acquisition.yaml in $EDITOR and exit
-```
-
-| Command | Description |
-|---|---|
-| `--init-config` | Create default config files and list them |
-| `--list-devices` | Enumerate connected PicoScope devices |
-| `--list-sensors` | Show the IEPE sensor library |
-| `--edit-config` | Open `acquisition.yaml` in `$EDITOR` |
-
-### Headless mode
-
-```bash
-rev80 headless [options]
-# or equivalently:
-rev80-headless [options]
-```
-
-**Before first use on a new machine, seed the config directory:**
-
-```bash
-rev80 headless --init-config
-```
-
-This writes `acquisition.yaml` and `devices/picoscope-defaults.yaml` to `~/.config/rev80/` so you can edit them before connecting hardware.
-
-The [info commands](#info-commands) above also work under `rev80 headless` / `rev80-headless`, in addition to the following headless-only options.
-
-**Session options:**
-
-| Option | Default | Description |
-|---|---|---|
-| `--interval SECS` | 600 | Capture interval in seconds |
-| `--pre-buffer SECS` | 30 | Pre-burst buffer duration |
-| `--burst-duration SECS` | 120 | Burst capture duration |
-| `--output DIR` | `~/Documents/Rev80/data/monitor/` | Output root directory |
-| `--no-compress` | — | Disable gzip compression |
-| `--start-now` | — | Skip the pre-start confirmation prompt |
-
-**Acquisition options:**
-
-| Option | Default | Description |
-|---|---|---|
-| `--device SERIAL` | auto-detect | PicoScope serial number, or `sim` |
-| `--channels N [N ...]` | from device config | Channel indices to enable (persisted to device config) |
-| `--maxfreq HZ` | from `acquisition.yaml` | Max analysis frequency override |
-| `--binsize HZ` | from `acquisition.yaml` | Frequency resolution override |
-| `--debug` | — | Verbose logging to stderr |
-
-**First-run device config:** On the first run with a new PicoScope, headless generates
-`devices/picoscope-<model>-<SN>.yaml` from the defaults template before the confirmation
-prompt. Edit it to set channel coupling, voltage range, and sensor assignments, then restart.
-
-**Channel persistence:** `--channels 0 1` updates the `enabled` flag in the saved device
-config so the setting is sticky across restarts — you do not need to repeat the flag.
-A **tachometer** channel is the exception: its enabled flag is owned by the role, so
-`--channels` leaves the saved config alone and drops the tach for that run only, with a
-warning (see below).
-
-**Tachometer:** headless runs one. Configure it in the GUI's Tachometer tab, or by hand in
-`devices/picoscope-<model>-<SN>.yaml` — set the channel's `role: tachometer` and fill its
-`tach:` block. On start the session summary names the channel, its threshold mode, polarity
-and pulses/rev, and prints the slowest shaft the current bin size can resolve; during the run
-the shaft speed appears on the status line, as `--` and never `0` when there is no reading.
-Every capture and burst in `session.h5` records the speed, and the tach channel stores its
-edge times rather than a waveform.
-
-If `--channels` excludes the tachometer, headless says so and runs without a speed
-reference — no speed is recorded, and if the speed gate is enabled it fails closed, so
-nothing is trended or alarmed on. The override is honoured, never silently.
-
-**Confirmation gate:** Before connecting, headless prints a session summary (device, channels,
-sample rate, monitor interval, anomaly config, config file paths) and waits for Enter. Use
-`--start-now` to bypass this for unattended use (systemd, cron, scripts).
-
-**Example workflows:**
-
-```bash
-# First time on a new Pi — seed config, connect scope, generate device config
-rev80-headless --init-config
-rev80-headless --list-devices
-rev80-headless                          # generates device config, shows summary
-
-# Edit settings, then start unattended
-nano ~/.config/rev80/acquisition.yaml
-nano ~/.config/rev80/devices/picoscope-4424A-JY123.yaml
-rev80-headless --start-now
-
-# One-liner with explicit overrides (changes persisted to device config)
-rev80-headless --channels 0 1 --interval 300 --start-now
-
-# Simulated sensor — offline testing, no hardware. A tach-role channel in the
-# device config gets a real pulse train, locked to the vibration channel's own
-# shaft rate, so the whole path can be dry-run before it goes in a cabinet.
-rev80-headless --device sim --interval 10 --start-now
-```
-
-Writes a v5 `session.h5` file loadable by the GUI session browser or `--from-file`. Clean shutdown on `Ctrl+C` or `SIGTERM` (suitable for systemd `Restart=on-failure`).
-
----
-
-## Installing on Windows
-
-1. Install **PicoSDK 11.1.418** (or PicoScope 7 for Windows) from [picotech.com/downloads](https://www.picotech.com/downloads). **Restart your computer** after installation so Windows registers the USB kernel driver.
-2. Download **`Rev80Setup-<version>.exe`** from the [Releases page](https://github.com/cascadia-turbo-works/rev80/releases), run it, and follow the installer. It creates a Start Menu shortcut and an uninstaller. No admin rights required.
-
-> **Step 1 is required, not optional.** Released installers do not bundle the
-> PicoScope drivers — they are built on hosted CI machines that cannot install
-> PicoSDK. Rev80 will start without it and run the simulated sensor, but it
-> will not find a scope. The installer warns you if PicoSDK is missing.
-
-> **SmartScreen warning:** the installer is currently unsigned. Click *More info → Run anyway* to proceed.
-
-### Runtime file locations
-
-| Purpose | Location |
-| --- | --- |
-| Measurement data (`.h5`) | `~/Documents/Rev80/data/` |
-| Log files | `~/Documents/Rev80/logs/` |
-| Config / sensor library | `%APPDATA%\rev80\` |
-
----
-
-## Installing from Source (any OS)
-
-Works on Windows, Linux, and macOS. Requires Python 3.10+.
-
-1. Install **PicoSDK** or **PicoScope 7** for your OS from [picotech.com/downloads](https://www.picotech.com/downloads). **Restart your computer** after installation.
-
-2. Get the source and install dependencies:
+1. Install **PicoSDK** or **PicoScope 7** for your operating system from
+   [picotech.com/downloads](https://www.picotech.com/downloads). On Linux you
+   can use `sudo ./drivers/install-picoscope4000a-driver.sh` from the source
+   tree.
+2. Restart the computer.
+3. Get the source. The source is closed; contact Rev Engineering for access.
+4. Install Rev80 from the source directory:
 
    ```bash
-   git clone <repo-url>/rev80.git  # currently closed source. Contact RevEngineering.
-   cd rev80
-
-   # Runtime dependencies only
    pip install .
    ```
 
-3. Run the app:
+   This installs all runtime dependencies, including `picosdk` from a pinned
+   git URL. It installs two commands: `rev80` and `rev80-headless`.
+
+5. Start the GUI:
 
    ```bash
-   # GUI (default)
-   python -m rev80
-
-   # GUI — open directly on a saved measurement or monitor session
-   python -m rev80 --from-file ~/Documents/Rev80/data/my_run.h5
-   python -m rev80 --from-file ~/Documents/Rev80/data/monitor/2026-06-02-130000/
-
-   # Headless interval datalogger (no display required)
-   # `rev80 headless ...` and `rev80-headless ...` are equivalent
-   rev80-headless --init-config              # seed config files first
-   rev80-headless                            # auto-detect scope, show summary
-   rev80-headless --device sim --interval 10 --start-now  # offline test
-
-   # With debug logging to console
-   python -m rev80 --debug
+   rev80
    ```
 
-**Runtime dependencies:** `numpy`, `scipy`, `dearpygui==2.0.0`, `h5py`, `pyyaml`, `plyer`, `picosdk`
+Rev80 starts without the PicoScope driver. The Device tab then shows
+"PicoScope driver not found. Install PicoSDK to connect a device." The
+simulated sensor stays available.
 
-**Headless (no display) usage:**
+macOS support is not verified on hardware.
+
+### Linux desktop entry
+
+Use a user-scheme install for a normal desktop. It needs no virtual
+environment and no root access.
+
+1. Install the PicoScope driver (one time, needs `sudo`):
+
+   ```bash
+   sudo ./drivers/install-picoscope4000a-driver.sh
+   ```
+
+2. Install Rev80 into `~/.local/bin`:
+
+   ```bash
+   pip install --user .
+   ```
+
+3. Add Rev80 to the application menu:
+
+   ```bash
+   rev80 --install-desktop-entry
+   ```
+
+The command writes `~/.local/share/applications/rev80.desktop` and a set of
+PNG icons under `~/.local/share/icons/hicolor/*/apps/rev80.png`. The `Exec=`
+line points at the `rev80` script that ran the command. If `~/.local/bin` is
+not on your `PATH`, the command prints the line to add to `~/.bashrc` or
+`~/.profile`.
+
+To remove the entry:
 
 ```bash
-# Seed config on a fresh install
-rev80-headless --init-config
+rev80 --uninstall-desktop-entry
+```
 
-# Auto-detect PicoScope — shows summary, waits for Enter
-rev80-headless
+On Windows, the installer creates the Start Menu shortcut.
 
-# Fully explicit, skip prompt (suitable for scripts/systemd)
+### Where Rev80 keeps its files
+
+| Purpose | Windows | Linux and macOS |
+|---|---|---|
+| Measurements (`.h5`) | `~/Documents/Rev80/data/` | `~/Documents/Rev80/data/` |
+| Monitor sessions | `~/Documents/Rev80/data/monitor/` | `~/Documents/Rev80/data/monitor/` |
+| Logs: `main.log`, `error.log`, `debug.log`, `faulthandler.log` | `~/Documents/Rev80/logs/` | `~/Documents/Rev80/logs/` |
+| Configuration and sensor library | `%APPDATA%\rev80\` | `$XDG_CONFIG_HOME/rev80/` (default `~/.config/rev80/`) |
+
+These paths are the same for the installer, a pip install and a source
+checkout. `faulthandler.log` records a hard crash (for example a crash in
+the PicoScope driver). It is often the only record of that crash.
+
+---
+
+## Quick start
+
+This procedure uses the simulated sensor, so you can do it without a scope.
+
+1. Start the GUI: `rev80`.
+2. In the **Device** card, click **Setup**. The **Device** tab of the
+   Configuration dialog lists the detected devices.
+3. Click **Connect** beside the device.
+4. Click the **Channels** tab. Expand a channel. Set **Coupling**, **Range**,
+   **Sensor**, **Unit** and **Amplitude**. Select **Enable**.
+5. Click the **Acquisition** tab. Set **Freq. Range** (F_max) and
+   **Freq. Resolution** (bin size). Read the derived **Sample Rate**,
+   **Spectral Lines** and **Acq. Time**.
+6. Click **Close**. Rev80 applies all tabs and saves them.
+7. In the **Acquisition** card, click **Stopped** to start the stream. The
+   button then shows **Running**.
+8. Read the result card for each channel in the right column: **Overall**,
+   **Crest** and **Kurt**, and the peak table.
+9. Click **Running** to stop the stream.
+10. In the **File** card, type a note in **Measurement Notes**. Click
+    **Save**.
+
+If you have no sensor in the library, add one first. Click **Sensor** in the
+**Channels** card, then **Add**. Type the sensitivity in mV per engineering
+unit from the calibration certificate.
+
+---
+
+## The GUI
+
+This section describes the controls. The labels come from the source code
+(`src/rev80/gui.py`).
+
+### Main window
+
+The main window has three columns.
+
+**Left column (controls):**
+
+| Card | Controls |
+|---|---|
+| Device | **Setup** opens the Device tab. A colored square shows **Connected** (green), **File Loaded** (yellow) or **Not Connected** (red). |
+| Channels | **Setup** opens the Channels tab. **Sensor** opens the Sensors tab. One line for each enabled channel: name, sensor, unit. The **Gen** line shows the signal generator state. |
+| Acquisition | **Setup** opens the Acquisition tab. The large button starts and stops the stream: **Stopped** (red), **Waiting** (yellow), **Running** (green). **Single** captures one frame. **Autoscale** fits all plot axes. **Clear Cache** deletes the frame cache and the trend. **Browse Waveforms** steps through the cached frames when the stream is stopped. **Spectrum Setup** shows F_max, bin size, lines, display rate, frame time, window and high-pass. A red "rate degraded" line shows when the USB stream delivers less than the requested rate. |
+| Monitor Mode | **Setup** opens the Monitor tab. **Monitor** starts and stops a recording. **Reset Baseline** restarts the anomaly baseline. **Record Burst** starts a manual burst. The status text shows elapsed time, captures, bursts and the time to the next capture. **Load Session** opens the session browser. |
+| File | **Save** writes the frame cache to an `.h5` file. **Load** opens an `.h5` file. **Measurement Notes** is saved in the file. |
+
+**Center column (plots):**
+
+- **Spectrum** tab: the amplitude spectrum from 0 Hz to F_max, with peak
+  markers and a 1x marker when a tachometer reads.
+- **Envelope** tab: shown only when you enable it in the Acquisition tab. See
+  [Envelope analysis](#envelope-analysis).
+- **Trend** tab: the overall of each channel against time. The axis label
+  shows the unit, the amplitude mode and the declared band. Burst trigger
+  times show as vertical lines when you load a session.
+- **Time Series** plot (below the tabs): the band-limited waveform in the
+  display unit.
+
+When two channels have different units, the plots use a second Y axis. Rev80
+supports two units on screen. A third unit shares the second axis, and the
+log records a warning.
+
+**Right column (results):**
+
+- **Channel Warnings**: shows "Overvoltage Ch X" when a channel clips.
+- **Peak Sig., dB**: how far a line must be above its own local noise floor
+  to be a peak. Default 9.5 dB.
+- **Max Shown**: the maximum number of peaks in the table and on the plot
+  (default 50). It does not change which lines are peaks.
+- The peak count ("N peaks", "N peaks, showing M", "no significant peaks")
+  and the averaging count ("averaging N of M frames").
+- **Frame** card: capture time, block size (samples), sample rate (the
+  achieved raw rate, Hz). It also shows burst and session data when you
+  browse a session.
+- One card for each enabled channel: **Overall**, **Crest** and **Kurt**, the
+  1x level when a tachometer reads, and the peak table. A tachometer channel
+  card shows the shaft speed, the reading quality, the edge count and the
+  duty cycle instead.
+
+### Configuration dialog
+
+The dialog has seven tabs. When you open the dialog, Rev80 stops the stream.
+**Close** (or `Esc`) applies all tabs, saves them, reconnects the device
+once, and starts the stream again if it was running.
+
+| Tab | Controls |
+|---|---|
+| Device | Detected devices, **Connect** / **Disconnect**, refresh. |
+| Channels | For each channel: **Enable**, **Name**, **Coupling** (AC/DC), **Range** (±10 mV to ±20 V), **Sensor**, **Unit**, **Amplitude** (RMS, 0-P, P-P). A tachometer channel shows read-only. |
+| Tachometer | **Channel**, **Polarity**, **Threshold** (adaptive/fixed), **Level (mV)**, **Min ampl. (mV)**, **Rate units**, **Reflector (mm)**, **Pulses/rev**, **Start**/**Stop**, and a live plot of the tach signal. See [Tachometer](#tachometer). |
+| Sensors | **Sensor Library** list, **Add**, **Delete**. For the selected sensor: **Name**, **Source EU**, **Sensitivity (mV/eu)**, **Notes**. |
+| Acquisition | **Freq. Range**, **Freq. Resolution**, **Highpass** and its **Hz**, **Average spectrum**, **Averages**, **Envelope/Demodulation (bearing analysis)**, **Overall Band** with **min** and **max Hz**, **Cache Frames**, **Welch Overlap %**, **FFT Window**. Read-only: **Sample Rate**, **Spectral Lines**, **Acq. Time**, **Avg. Window**, **Rec. Window**, **Memory**. |
+| Generate | Signal generator. See [Signal generator](#signal-generator). |
+| Monitor | Interval, pre-trigger, burst, output and anomaly settings. See [Monitor Mode](#monitor-mode). |
+
+Settings with no widget are in the YAML files only. See
+[Configuration files](#configuration-files).
+
+### Locks during a recording
+
+While a Monitor Mode recording runs, these controls are disabled: all
+**Setup** buttons, **Sensor**, **Load**, **Load Session** and
+**Clear Cache**. `Ctrl+O` is refused, and the log records why. Stop the
+recording to use them again.
+
+### Keyboard shortcuts
+
+| Key | Action |
+|---|---|
+| `Ctrl+K` | Start or stop the stream |
+| `Ctrl+A` | Autoscale all plots |
+| `Ctrl+S` | Save the frame cache |
+| `Ctrl+O` | Load a file (refused during a recording) |
+| `Ctrl+Q` | Quit |
+| `Left` / `Right` | Previous / next frame (stream stopped) |
+| `Esc` | Close the open dialog |
+
+> **Caution:** `Ctrl+K` stops the stream during a recording too. A recording
+> gets no frames while the stream is stopped.
+
+---
+
+## Measurement settings
+
+### F_max, bin size, frame length and lines
+
+Rev80 uses two sample rates:
+
+- The **raw rate** is fixed at 25600 Hz nominal. On a PicoScope 4824A the
+  achieved rate is 25591.81 Hz. Rev80 stores frames at this rate, and the
+  envelope analysis uses it. F_max does not change it.
+- The **display rate** is exactly 2.56 × F_max. Rev80 decimates each frame to
+  this rate for the spectrum.
+
+| F_max | Display rate |
+|---|---|
+| 200 Hz | 512 Hz |
+| 500 Hz | 1280 Hz |
+| 1000 Hz | 2560 Hz |
+| 2000 Hz | 5120 Hz |
+| 5000 Hz | 12800 Hz |
+| 10000 Hz | 25600 Hz |
+
+The bin size presets are 0.25, 0.5, 1, 2, 5, 10, 20, 50 and 100 Hz. The
+frame time is 1 / bin size: 1 s at 1 Hz, 4 s at 0.25 Hz. The number of
+spectral lines is F_max / bin size + 1 (0 Hz to F_max). Example: F_max
+1000 Hz and 1 Hz bins give 1001 lines and 1.000 s frames.
+
+The spectrum stops at F_max. The band from F_max to half the display rate is
+the transition band of the anti-alias filter. There the filter attenuates
+aliases by only 21.8 dB at the frequency that folds to F_max, so Rev80 does
+not show it.
+
+The frequency axis uses the achieved rate, not the nominal rate. The F_max
+control keeps the round value that you selected.
+
+**Cache Frames** sets how many frames Rev80 keeps for browsing, averaging and
+the Monitor Mode pre-trigger buffer. A seeded `acquisition.yaml` sets 15.
+Without a value from `acquisition.yaml`, the default is 32. **Rec. Window**
+and **Memory** in the Acquisition tab show the time and memory that the cache
+holds.
+
+### Units, amplitude modes and integration
+
+Each sensor in the library has a **Source EU** and a **Sensitivity** in mV
+per EU. Each channel has a target **Unit** and an **Amplitude** mode.
+
+| Quantity | Units |
+|---|---|
+| Acceleration | `g`, `mm/s2`, `in/s2`, `mil/s2` |
+| Velocity | `mm/s`, `in/s`, `mil/s` |
+| Displacement | `mm`, `in`, `mil` |
+| Raw | `mV` (no sensor assigned) |
+
+When the target unit is a different quantity from the source EU, Rev80
+integrates or differentiates in the frequency domain. Example: `g` to `in/s`
+is one integration. `g` to `mil` is two.
+
+The amplitude modes are:
+
+- **RMS**.
+- **0-P** = RMS × √2.
+- **P-P** = RMS × 2√2.
+
+0-P and P-P are the sine-equivalent values, not the true peak of the
+waveform. The default mode is 0-P.
+
+### Declared band and the high-pass edge
+
+The overall is the band amplitude from `band_fmin` to `band_fmax`. This is
+the **declared band**. Rev80 stores the band with each measurement.
+
+In the Acquisition tab, **Overall Band** offers:
+
+| Preset | Band |
+|---|---|
+| Full band (HP - F_max) | The high-pass edge to F_max (default) |
+| ISO 20816 (10-1000 Hz) | 10 Hz to 1000 Hz |
+| ISO 20816 low speed (2-1000 Hz) | 2 Hz to 1000 Hz |
+
+The two ISO bands are the broadband bands of ISO 20816-3. The zone limits of
+that standard apply only to a velocity RMS measured over the band that they
+assume. Check ISO 20816-3 for which band applies to your machine. You can
+also type **min** and **max Hz**. The band is always clipped to F_max.
+
+**Highpass** (default on, 10 Hz) removes DC and drift. The value is the
+**band edge**: the lowest frequency where the response is still in
+tolerance. It is not the −3 dB **knee**. Rev80 puts the knee of the
+4th-order Butterworth filter at 0.834 × the edge (8.34 Hz for a 10 Hz edge).
+The design response at the edge is −0.915 dB (about −10 %). ISO 2954 names
+10 Hz as the bottom of the declared band.
+
+> **Caution:** Measured on hardware (CHANGELOG, 2026-08-29), the response at
+> 10 Hz was −1.05 dB, about 11.4 % low. That is outside a ±10 % tolerance.
+> Measure lines near the band edge with care.
+
+### Spectral averaging
+
+**Average spectrum** averages N frames in the power domain (default off,
+N = 8). Averaging reduces the scatter of the noise floor by √N. It does not
+lower the noise floor. Use it to see a small line in a rough floor.
+
+- The average uses the N most recent valid frames up to the frame on the
+  screen. Overflow and degraded frames are skipped.
+- N is limited by **Cache Frames**.
+- **Avg. Window** shows N × frame time: the time for which the machine must
+  be steady.
+- If the speed changes during the window, lines spread across bins.
+
+Crest factor and kurtosis are never averaged.
+
+### Peaks
+
+A line is a peak when it is **Peak Sig., dB** above its own local noise
+floor. Rev80 estimates the floor for each bin. A line in a quiet part of the
+band and a line in a loud part are judged the same way. The peak count is a
+result, not a setting.
+
+- The default is 9.5 dB (2.99 × the local floor in amplitude).
+- A lower value finds more lines, and more of them are noise.
+- A line more than 40 dB below the largest bin in the band is never a peak.
+- The peak value is the amplitude of the maximum bin. Rev80 does not
+  interpolate the frequency and does not sum energy over bins.
+- The table is sorted by amplitude, largest first.
+
+**FFT Window** (default Hann) changes the amplitude of a line between bins.
+Flat-top gives better amplitude for calibration. **Welch Overlap %** has no
+effect at present, because each frame is one Welch segment.
+
+---
+
+## Reading the results
+
+### Overall, crest factor and kurtosis
+
+- **Overall**: the band amplitude over the declared band, in the channel unit
+  and amplitude mode. The label shows the unit, mode and band, for example
+  `Overall, in/s 0-P  10-1000 Hz`.
+- **Crest**: peak / RMS of the displayed waveform. A pure sine gives 1.41.
+  Random noise gives about 3 to 4. Impacts give more.
+- **Kurt**: kurtosis of the displayed waveform. Random noise gives 3.0. A
+  pure sine gives 1.5. Above about 4 means impulsive: repeated impacts that
+  the overall does not show.
+
+Crest factor rises early in the life of a bearing defect. It falls again
+when the defect spalls. Read it together with kurtosis, not instead of it.
+
+For an integrated channel (for example `g` to `in/s`), the displayed waveform
+is the middle 50 % of the frame. Crest and kurtosis are calculated on that
+waveform.
+
+### Frames that are not used
+
+Rev80 shows each frame. It excludes some frames from the trend, the spectral
+average, anomaly detection and the anomaly baseline:
+
+| Condition | Cause | What you see |
+|---|---|---|
+| Overflow | The ADC clipped. The overall reads high and the spectrum has false harmonics. | "Overvoltage Ch X" in **Channel Warnings** |
+| Degraded | The USB stream delivered less than the requested rate for a sustained time. | "rate degraded" in the Acquisition card |
+| Out of speed window | The shaft speed is outside the speed gate. The amplitude is correct but not comparable. | `[off-speed]` in the headless status line |
+
+Rev80 stores the overflow and degraded flags with each frame, and reads them
+back when you load a file.
+
+The speed gate is off by default. Set it in `acquisition.yaml`
+(`speed_gate_enabled`, `speed_gate_rpm`, `speed_gate_tolerance_pct`). It
+needs a tachometer. With `speed_gate_rpm: null`, the first valid reading
+becomes the reference. When the gate is on and there is no speed reading,
+the frame is excluded.
+
+Why a speed gate: for a rigid rotor below its first critical speed, the 1x
+velocity changes as the cube of the speed. A 3.2 % speed change then moves
+the overall by 10 % with no change of condition (calculated, not measured).
+
+### Missing readings: `--`, not `0`
+
+A missing reading is `--`. A `0` is a measured value.
+
+- The shaft speed shows `--` when there is no usable tachometer reading.
+- The 1x level is hidden when there is no speed reading, and shows `--` when
+  1x is outside the displayed band.
+- In a file, a missing shaft speed is stored as `NaN`.
+
+"No signal" and "stopped" are different facts. **No signal** means the tach
+block has no usable pulses. **Stopped** means the shaft does not turn. Rev80
+cannot yet tell them apart from a flat block (tracked as R45 in
+[doc/PROGRESS.md](doc/PROGRESS.md)). Check the machine before you record it
+as stopped.
+
+### Accuracy and limits
+
+| Quantity | Value | How measured | Conditions |
+|---|---|---|---|
+| Shaft speed | ±0.2 % of reading, 300 to 10200 RPM, 1 pulse/rev | AWG loopback, PicoScope 4424A | Raw rate 41666.5 Hz, 2026-09-01. At 25600 Hz the hardware tests passed the same ±0.2 % sweep on 2026-09-18, but the values per point are not recorded. |
+| Slowest shaft speed | 180 RPM at 1 s frames, 1 pulse/rev | Calculated | See [Tachometer](#tachometer) |
+| Fastest shaft speed at full tach accuracy | About 21900 RPM at 1 pulse/rev | Calculated from the 70-samples-per-pulse limit | Not measured at 25.6 kHz |
+| End-to-end amplitude | Within about 1.6 % | Calibrated shaker, 0.1 in/s at 191 Hz, 100 mV/g sensor | Date and scope not recorded. Sensor calibration data is not stored with a measurement (tracked as R38 in [doc/PROGRESS.md](doc/PROGRESS.md)). |
+| Anti-alias stopband | −111.7 dB worst case | Calculated through the filter code, no hardware | 2026-08-29 |
+| Achieved raw rate | 25591.81 Hz, −320 ppm from 25600 Hz | PicoScope 4824A, s/n 13290/0013 | 2026-09-11. The frequency axis uses the achieved rate. |
+| High-pass at the band edge | −1.05 dB at 10 Hz (design −0.915 dB) | Hardware | 2026-08-29 |
+| Tach signal floor | Idle input span up to 42.5 mV; threshold 1000 mV | PicoScope 4424A, ±20 V range | Raw rate 41666.5 Hz, 2026-09-01 |
+
+For the measurement tables and the rejected alternatives, read CONTRIBUTING.md,
+"Design evidence". For the August 2026 audit that caused many of these
+measurements, read [doc/audit-202608.md](doc/audit-202608.md).
+
+---
+
+## Tachometer
+
+A tachometer channel gives the shaft speed. The shaft speed turns a spectrum
+into a diagnosis. A line at 162.9 Hz means nothing alone. The same line at
+5.43 × shaft speed is typical of a bearing outer race.
+
+Uses:
+
+- **Name the lines.** Slip on a 4-pole 60 Hz motor moves the speed from
+  1800 RPM to 1750 RPM between no load and full load. A 5.43 × bearing tone
+  then moves 4.5 Hz: 9 bins at 0.5 Hz resolution.
+- **Separate electrical from mechanical.** On a 2-pole motor, 2 × line
+  frequency is 7200 CPM and 2 × running speed can be 7120 CPM. The repairs
+  are different.
+- **Keep trends comparable.** Use the speed gate. See
+  [Frames that are not used](#frames-that-are-not-used).
+
+### Set up a tachometer
+
+The **Tachometer** tab owns the tachometer channel. The **Channels** tab
+shows that channel read-only, and its **Enable** box is locked.
+
+1. Connect the tach to a spare input.
+2. In the **Channels** tab, set **Coupling** and **Range** for that input.
+   Click **Close**. After you claim the input as the tachometer, the
+   Channels tab shows it read-only, and only the device file can change it.
+3. Open the **Tachometer** tab.
+4. Select the input in **Channel**. Rev80 enables the channel and starts
+   the stream, so the plot shows the live signal. **Start** and **Stop**
+   start and stop the stream.
+6. Set **Polarity** (rising or falling edge).
+7. Keep **Threshold** at `adaptive`, unless you have a specific reason.
+8. Set **Pulses/rev**. Use 1 where you can.
+9. Compare the edges on the plot with the pulses. Read the speed beside
+   **Start**/**Stop**.
+10. Click **Close** to save.
+
+Wiring and range:
+
+- Use **DC coupling**. AC coupling removes the mean of the signal, and the
+  mean of a pulse train is its duty cycle. With AC coupling and a fixed
+  threshold, a pulse train above about 55 % duty never reaches the level.
+  The machine then reads as having no speed. This was measured on the bench
+  at 70 % and 85 % duty. The adaptive threshold avoids this, but DC coupling
+  is still correct.
+- Select a range with headroom above the pulse height, for example ±10 V for
+  a 5 V TTL tach and ±20 V for a 12 V tach or a proximity probe. The
+  anti-alias filter adds overshoot at each edge.
+
+The plot shows the raw signal (mV), the threshold, and each detected edge.
+The first pulse is at t = 0, so successive frames overlay. If there is no
+speed, the plot shows the cause: the pulse is too small, the threshold is in
+the wrong place, or AC coupling removes the DC level.
+
+**Min ampl. (mV)** (default 1000 mV): below this peak-to-peak span, the block
+has no tach signal. **Reflector (mm)** is the arc length of the tape or key
+along the shaft surface (0 = not measured). **Rate units** selects RPM, Hz,
+rad/s or deg/s for every shaft speed readout. Files always store RPM.
+
+### Pulses per revolution
+
+One pulse per revolution is the default and the recommended setting. At 1
+pulse/rev each interval is exactly one revolution. Encoder division error and
+once-per-revolution speed modulation then cancel in each interval. In a model
+of a 60-line encoder, the error was 0.0013 % at 1 pulse/rev and 0.091 % at
+60 pulses/rev, for any window length (simulated; the conditions are in
+CONTRIBUTING.md, "E14.4").
+
+**Pulses/rev** accepts any whole number, for an encoder or keyphasor that is
+already on the machine. Rev80 reports a speed only when the frame holds 2
+whole revolutions. A higher pulse count has two costs:
+
+- **It does not read a much slower shaft.** At 1 s frames the slowest speed
+  is 180 RPM at 1 pulse/rev and 121 RPM at 60 pulses/rev. For a slower
+  shaft, use a smaller bin size.
+- **It reaches the sample-rate limit.** Edge interpolation needs about 70
+  samples for each pulse. Below that, the error increases to about 0.8 %.
+
+| Pulses/rev | Full accuracy up to (at 25591.8 Hz) |
+|---|---|
+| 1 | about 21900 RPM |
+| 6 | about 3660 RPM |
+| 60 | about 366 RPM |
+| 1024 | about 21 RPM |
+
+These values are calculated from the 70-samples-per-pulse limit. They are
+not measured at 25.6 kHz. The raw rate is fixed. The Tachometer tab and the
+headless summary show a caution when this limit applies.
+
+### Slowest measurable shaft
+
+The slowest speed at 1 pulse/rev is 180 / frame time, in RPM:
+
+| Bin size | Frame time | Slowest shaft |
+|---|---|---|
+| 0.25 Hz | 4.00 s | 45 RPM |
+| 0.5 Hz | 2.00 s | 90 RPM |
+| 1 Hz | 1.00 s | 180 RPM |
+| 2 Hz | 0.50 s | 360 RPM |
+| 5 Hz | 0.20 s | 900 RPM |
+| 10 Hz | 0.10 s | 1800 RPM |
+
+Below this speed the reading is `--`. The Tachometer tab shows the value for
+your settings ("Below ... reads as stopped"). This is information, not a
+fault: you can set up the tach on a machine that does not turn.
+
+### Reading quality
+
+| Quality | Meaning | Speed shown |
+|---|---|---|
+| `ok` | Usable reading | Yes |
+| `no_signal` | Span below **Min ampl.** | `--` |
+| `too_few_edges` | Less than 2 revolutions in the frame | `--` |
+| `inconsistent` | Interval spread above 25 %: a missing or extra edge | Yes |
+| `unsteady` | Speed change above 1.0 % inside the frame (limit set from simulation only) | Yes |
+
+> **Caution:** An `inconsistent` or `unsteady` reading still shows a speed.
+> Rev80 also uses it for the speed gate and the shaft-speed trend. Read the
+> quality text before you use the speed.
+
+A tachometer channel has no sensor, no unit, no spectrum and no overall. Its
+data is stored as edge times, not as a waveform: about 30 values each second
+at 1800 RPM and 1 pulse/rev, against 25600 samples. You cannot change the
+threshold after capture. You can change **Pulses/rev** after capture.
+
+A shaft speed always shows its unit. 30 is a plausible RPM, Hz and rad/s.
+
+---
+
+## Envelope analysis
+
+The **Envelope** tab finds rolling-element bearing defects (inner race,
+outer race, ball, cage) early, before they show in the overall. To show the
+tab, select **Envelope/Demodulation (bearing analysis)** in the Acquisition
+tab. It is off by default.
+
+### Why the spectrum does not show the defect
+
+Each time a rolling element passes a defect, it makes a short impact. The
+impact rings a structural resonance of the housing, typically between 2 kHz
+and 20 kHz. In the spectrum, that energy spreads across the resonance, below
+the 1x line and its harmonics. The spectrum of a fresh defect can look
+normal.
+
+The impacts repeat at the defect rate. So the amplitude of the resonance
+rises and falls at the defect rate. The envelope analysis recovers this
+**envelope** and shows it as a line at the defect rate. Sidebands at ±1x
+often come with it, from the load zone. Other names for this technique are
+PeakVue, enveloped acceleration (gE) and shock pulse.
+
+Rev80 does these steps:
+
+1. Band-pass filter around the resonance. This step removes the 1x.
+2. Hilbert magnitude (the instantaneous amplitude).
+3. Remove the mean.
+4. Amplitude spectrum of the envelope, 0 Hz to 500 Hz.
+
+The envelope uses the raw rate (25600 Hz nominal, 12800 Hz Nyquist). F_max
+has no effect on it. The amplitude is in the source EU of the sensor (for
+example `g`), not in the channel unit.
+
+### Reading the envelope spectrum
+
+The x axis is **modulation frequency**, not vibration frequency.
+
+- **A line at a bearing defect frequency is the finding.** Calculate BPFO,
+  BPFI, BSF or FTF from the bearing geometry and the actual shaft speed.
+  A line within 1 % to 2 % of one of them, which a healthy baseline did not
+  have, is the signature. Rev80 does not calculate defect frequencies.
+- **±1x sidebands around a defect line** confirm it. A defect line with no
+  sidebands needs a second look.
+- **More harmonics of the defect rate** and a higher floor between them are
+  a normal progression as the defect grows.
+- **A line at 1x** usually means that the band-pass lets machine vibration
+  through. It is usually not a finding.
+- **A low floor with no lines** is a healthy bearing. Do not read meaning
+  into the texture of the floor.
+
+Trend the defect line over sessions. A line that grows is stronger evidence
+than one reading.
+
+### Choosing the demodulation band
+
+The band is the most important setting. Set it in the **Band** fields (low,
+high, in Hz).
+
+- **Auto:** With both fields at 0, Rev80 selects a band from the first frame
+  and keeps it. **Auto** selects a new band from the current frame and
+  writes it into the fields. The search covers a quarter of the raw Nyquist
+  up to 0.99 × Nyquist (about 3.2 kHz to 12.7 kHz). The band is a quarter of
+  that upper limit wide (about 3.2 kHz). The search uses the band energy, not
+  one tall line.
+- **Type a band** when you know the resonance, for example from a bump test.
+  A housing has more than one resonance. Auto can select a different one.
+- **Width:** too narrow loses the sidebands; too wide lets machine lines in
+  at the edges.
+- The band must be inside 0 Hz to Nyquist and above the highest running-speed
+  harmonic of interest.
+
+The info line below the **Band** fields shows the band in use, "(auto)" when
+Auto selected it, and the top of the envelope spectrum. A yellow warning
+shows when the Nyquist of the data is below 5000 Hz. Then a resonance may
+not be in the record. This does not occur at the fixed raw rate. It can
+occur for a file recorded at a lower rate.
+
+---
+
+## Monitor Mode
+
+Monitor Mode records frames at an interval into one `session.h5`. Anomaly
+detection or the **Record Burst** button records a **burst**: consecutive
+frames, with the frames before the trigger.
+
+### Start a recording (GUI)
+
+> **Caution:** Open **Monitor Mode → Setup** once in each GUI session before
+> you record or close any Configuration tab. Until you do, the Monitor tab
+> holds its built-in values: interval 1 h, pre-trigger 60 s, burst 60 s,
+> anomaly detection off, RMS threshold 10 %, warm-up 30 frames. **Monitor**
+> uses the values on the tab, and **Close** on any tab saves them to
+> `acquisition.yaml`. (Found by reading the code; not verified on screen.)
+
+1. Click **Setup** in the **Monitor Mode** card.
+2. Set the Monitor tab. Click **Close**.
+3. Click **Monitor**. Rev80 starts the stream if it is stopped.
+4. Read the status: `REC hh:mm:ss`, captures, bursts, next capture.
+5. Click **Stop** to end the recording. The stream continues.
+
+### Interval captures
+
+At each interval, Rev80 writes one frame to `/monitor/{N}` in `session.h5`.
+**Capture interval** offers 5 s, 30 s, 1 min, 5 min, 10 min, 15 min, 1 h,
+6 h, 1 day and 2 days. `acquisition.yaml` can hold any value in seconds.
+
+During a burst, Rev80 does not make interval captures. They start again
+after the burst.
+
+### Storage
+
+Each stored frame is the raw-rate frame: 25600 samples × 8 bytes = 204.8 kB
+for each channel and each second of frame time. F_max has no effect.
+
+The Monitor tab shows an estimate per year and per burst. The estimate
+assumes that gzip halves the size. On `SimulatedSensor` data, gzip level 4
+kept 96 % of the raw size (measured, 204800 bytes to 197069 bytes). Plan for
+the raw size.
+
+Example: 1 channel, 1 s frames, 10 min interval: 52560 captures a year,
+about 10.8 GB. The estimate shows "~5.4 GiB/year". The value is in units of
+10^9 bytes, although the label says GiB. The estimate turns red with a
+warning icon when it is above 10 × 10^9 bytes a year. This is a warning,
+not a limit. The estimate also counts a tachometer channel as a full
+waveform, so it is high for that channel.
+
+### Bursts
+
+A burst starts from an anomaly or from **Record Burst**:
+
+1. Rev80 takes the pre-trigger frames from the frame cache. It enlarges the
+   cache to hold them.
+2. It records frames for **Burst duration (s)**, limited by `max_burst_s`
+   (default 600 s, YAML only).
+3. It writes the burst to `/burst/{id}`. For an anomaly, the recorded
+   trigger time is the first frame of the anomaly, not the frame that
+   confirmed it (up to **Sustained (s)** later).
+4. It starts the cooldown, if enabled. The cooldown starts when the burst
+   starts.
+
+During a burst, anomaly detection does not trigger, but the baseline
+continues to adapt. A burst holds its frames in memory until it ends;
+`max_burst_s` limits that memory.
+
+### Anomaly detection
+
+**Enable** turns on the EWMA detectors (RMS; Spectral in headless only). The
+fixed-level trigger has its own switches and works when **Enable** is off.
+
+#### RMS (EWMA)
+
+Rev80 keeps an exponentially weighted moving average (EWMA) of the overall of
+each channel. It triggers when:
+
+```
+|overall − baseline| / baseline  >  rms_pct / 100
+```
+
+for **Sustained (s)** seconds. Frames that are not used (see
+[Frames that are not used](#frames-that-are-not-used)) do not change the
+baseline.
+
+| Setting | GUI label | YAML key | Default |
+|---|---|---|---|
+| Threshold | Threshold % | `rms_pct` | 50 % |
+| Sustained time | Sustained (s) | `rms_s` | 3.0 s (0 = first frame) |
+| Baseline time constant | EWMA time (s) | `rms_ewma_time` | 60 s (GUI) |
+| Baseline factor | (none) | `rms_alpha` | 0.97 |
+| Warm-up | Warmup frames | `warmup` | 10 frames |
+
+`rms_ewma_time` is in seconds. When it is present, it replaces `rms_alpha`.
+The GUI writes `rms_ewma_time`. Why 50 %: a 3.2 % speed change can move the
+overall by 10 % with no change of condition (see the speed gate).
+
+> **Caution:** An `acquisition.yaml` from an older installation can hold
+> `rms_pct: 10.0`. The value in the file replaces the default. Change it to
+> `50.0` if you want the current default.
+
+**Reset Baseline** restarts the baseline and the warm-up. Use it after a
+process change or a maintenance action.
+
+#### Spectral (headless only)
+
+The spectral detector compares each bin of the spectrum with a per-bin EWMA
+baseline. It triggers when **any** bin in the band deviates by more than
+`spec_pct` for `spec_n` consecutive frames.
+
+> **Caution:** This detector fires on almost every healthy frame. Each bin
+> of a single-segment spectrum scatters by about its own mean value. The GUI
+> does not offer it. Headless accepts `hook_type: spectral` and `both`.
+> Tracked as R39 in [doc/PROGRESS.md](doc/PROGRESS.md).
+
+| YAML key | Default |
+|---|---|
+| `spec_pct` | 50 % |
+| `spec_n` | 10 frames |
+| `spec_alpha` / `spec_ewma_time` | 0.995 / 300 s (GUI) |
+| `spec_fmin`, `spec_fmax` | `null` (whole spectrum) |
+
+#### Fixed level
+
+The fixed-level trigger fires at once when the overall crosses a level. It
+has no baseline and no warm-up. **Upper limit** and **Lower limit** are
+independent.
+
+The level unit must be the same quantity as the channel unit. Rev80 converts
+`in/s` to `mm/s`, but it cannot compare `in/s` with `g`. A channel in `mV` or
+in a different quantity is skipped, and the log records a warning once.
+
+#### Cooldown
+
+With **Cooldown** on, Rev80 blocks anomaly bursts for **Cooldown period (s)**
+(default 300 s) from the start of each burst. Interval captures continue.
+
+### Session browser
+
+Click **Load Session** to open the session browser.
+
+- **Session folder** sets the folder. The default is
+  `~/Documents/Rev80/data/monitor/`.
+- Click a session to load all its interval captures. The trend shows burst
+  times as vertical lines.
+- Click a burst to load its frames. The trend starts at the trigger.
+- **Save Config** writes the current channel names, sensors, units and
+  amplitude modes into the session file. Then it reprocesses the trend.
+- **Reprocess** calculates the stored overalls again with the current
+  settings.
+
+> **Caution:** **Save Config** changes the session file.
+
+---
+
+## Headless datalogger
+
+`rev80 headless` and `rev80-headless` run Monitor Mode with no GUI. Use them
+on a computer with no display, for example in a cabinet.
+
+### First run on a new computer
+
+1. Seed the configuration:
+
+   ```bash
+   rev80-headless --init-config
+   ```
+
+2. Connect the scope. Check that Rev80 finds it:
+
+   ```bash
+   rev80-headless --list-devices
+   ```
+
+3. Start once. Rev80 writes `devices/picoscope-<model>-<SN>.yaml` from the
+   template and shows the session summary:
+
+   ```bash
+   rev80-headless
+   ```
+
+4. Press `Ctrl+C` at the prompt.
+5. Edit the device file: coupling, range, sensor, unit and name for each
+   channel.
+6. Edit `acquisition.yaml`: interval, bursts and anomaly settings.
+7. Start the unattended run:
+
+   ```bash
+   rev80-headless --start-now
+   ```
+
+### Run
+
+Before it connects, headless prints a summary: device, channels, display
+sample rate, block, resolution, tachometer, monitor and anomaly settings, and
+the paths of the configuration files. It then waits for `Enter`.
+`--start-now` skips the prompt.
+
+During the run:
+
+- The status line shows elapsed time, capture count, time to the next
+  capture, file size, and the shaft speed (`-- RPM` when there is no
+  reading). `[off-speed]` shows when the speed gate excludes the frame.
+  `[BURST Ns]` shows during a burst.
+- Type `t` and `Enter` to start a manual burst.
+- `Ctrl+C` or `SIGTERM` stops the recording, flushes the file and closes the
+  device. This works with systemd `Restart=on-failure`.
+- A write error stops the run.
+
+Headless writes a v6 `session.h5`. Open it with the GUI session browser or
+with `rev80 --from-file`.
+
+### Channels
+
+`--channels 0 1` enables the listed channels and saves the selection in the
+device file. You do not need to repeat it.
+
+A tachometer channel is different. Its role owns its enabled state. If
+`--channels` omits the tachometer, headless drops it for this run only and
+logs a warning. Then no speed is recorded, and with the speed gate on, all
+frames are excluded from trends and alarms.
+
+### Tachometer in headless
+
+Set up the tachometer in the GUI Tachometer tab. Or edit the device file: set
+`role: tachometer` on the channel and fill its `tach:` block. A tachometer
+channel with no `tach:` block uses the defaults (adaptive threshold, rising
+edge, 1 pulse/rev), and headless logs a warning.
+
+The summary shows the tachometer channel, threshold mode, polarity,
+pulses/rev, the slowest shaft for the block, and (above 1 pulse/rev) the
+speed up to which full accuracy applies.
+
+### Examples
+
+```bash
+# Explicit settings, no prompt (systemd, cron, scripts)
 rev80-headless \
   --interval 300 \
   --pre-buffer 30 \
@@ -278,816 +944,379 @@ rev80-headless \
   --binsize 1 \
   --start-now
 
-# Simulated sensor (no hardware)
+# Simulated sensor, no hardware. A tachometer channel in the device
+# file gets a pulse train at the same shaft speed as the vibration.
 rev80-headless --device sim --interval 10 --start-now
 ```
 
-Sessions written by the headless mode are identical v5 HDF5 files and can be loaded in the GUI:
-
-```bash
-# Open GUI on a specific session directory
-python -m rev80 --from-file /mnt/nas/vibration/2026-06-02-130000/
-
-# Or point at the session.h5 directly
-python -m rev80 --from-file /mnt/nas/vibration/2026-06-02-130000/session.h5
-
-# Or a regular single-measurement save
-python -m rev80 --from-file ~/Documents/Rev80/data/my_measurement.h5
-```
-
-The `picosdk` package requires the PicoScope 4000A driver (`ps4000a.dll` / `libps4000a.so`) to be present on the system for hardware use. The app will start without it and show a "driver not found" notice in the device dialog — the simulated sensor is still available.
-
-### Desktop integration (Linux)
-
-For a normal desktop install (not a dev checkout), use a **user-scheme pip
-install** — this places the `rev80` / `rev80-headless` console scripts in
-`~/.local/bin`, no venv or root required:
-
-```bash
-# Install the PicoScope driver (one-time, needs sudo — see drivers/)
-sudo ./drivers/install-picoscope4000a-driver.sh
-
-# Install rev80 itself into ~/.local/bin
-pip install --user ".[gui]"
-
-# Add a Rev80 entry to your application menu + an icon
-rev80 --install-desktop-entry
-
-# Remove it again
-rev80 --uninstall-desktop-entry
-```
-
-`--install-desktop-entry` writes `~/.local/share/applications/rev80.desktop`
-and a set of icon PNGs under `~/.local/share/icons/hicolor/*/apps/rev80.png`
-(a fixed-size raster set, not the scalable SVG — Qt/KDE's SVG renderer
-doesn't render the source icon correctly, so this sidesteps it entirely),
-pointing `Exec=` at the exact `rev80` script that ran the install (works the
-same way from a venv). If `~/.local/bin` isn't already on your `PATH`, the
-command prints the line to add to `~/.bashrc` / `~/.profile` — most desktop
-distros add it by default, so this is usually a no-op. This is Linux-only;
-Windows gets a Start Menu shortcut from the [Inno Setup installer](CONTRIBUTING.md#building-the-windows-installer) instead.
-
 ---
 
-## Configuration and Persistence
+## Configuration files
 
-Config lives in the OS-specific config directory:
-- **Linux/macOS:** `$XDG_CONFIG_HOME/rev80/` (default: `~/.config/rev80/`)
-- **Windows:** `%APPDATA%\rev80\`
-
-Run `rev80 --init-config` (or `rev80-headless --init-config`) to create the
-directory and seed all default files. The layout is:
+Run `rev80 --init-config` to create the configuration folder. It writes
+`acquisition.yaml` and `devices/picoscope-defaults.yaml` if they do not
+exist. It does not change existing files.
 
 ```
-~/.config/rev80/
-  acquisition.yaml                       # acquisition + monitor settings (instance-wide)
-  scope_sensors.yaml                     # IEPE sensor library (shared across all devices)
+~/.config/rev80/                        (%APPDATA%\rev80\ on Windows)
+  acquisition.yaml                      acquisition and Monitor Mode settings
+  scope_sensors.yaml                    IEPE sensor library
   devices/
-    picoscope-defaults.yaml              # channel template applied to new devices
-    picoscope-4424A-JY123.yaml           # per-device channel + siggen config
+    picoscope-defaults.yaml             channel template for a new device
+    picoscope-4424A-JY123.yaml          channels and signal generator of one device
 ```
 
-### `acquisition.yaml` — instance-wide settings
+When a key is missing from `acquisition.yaml`, Rev80 uses the built-in
+default. A key in the file always replaces the default.
 
-Acquisition and monitor settings are shared across all scopes on this machine. Edit this
-file to change capture intervals, anomaly thresholds, filter settings, etc.
+### `acquisition.yaml`
 
-```yaml
-acquisition:
-  maxfreq: 1000.0           # Hz — drives display sample rate (samplerate = 2.56 × maxfreq)
-  binsize: 1.0              # Hz — drives FFT block size
-  fft_window: hann
-  welch_overlap: 0.5
-  highpass_enabled: true
-  highpass_fc: 10.0         # Hz
-  trend_max_points: 5000
-  cache_frames: 15
+This file is for the whole computer, not for one device. The GUI and
+headless use the same file.
 
-monitor:
-  interval_s: 600           # seconds between interval captures
-  pre_burst_s: 30           # seconds of pre-trigger data saved with each burst
-  burst_duration_s: 120     # seconds of post-trigger burst capture
-  max_burst_s: 600          # maximum burst length even if anomaly keeps retriggering
-  output_dir: null          # null → ~/Documents/Rev80/data/monitor/
-  compression: gzip
-  compression_level: 4
-  anomaly:
-    enabled: true
-    hook_type: rms          # rms | spectral | both
-    warmup: 10              # frames before EWMA detection activates
-    rms_pct: 10.0           # % deviation from EWMA baseline to trigger
-    rms_s: 3.0               # seconds signal must stay above threshold before burst fires
-    rms_alpha: 0.97          # EWMA smoothing (higher → slower baseline adaptation)
-    spec_pct: 50.0           # % mean per-bin deviation from EWMA baseline to trigger
-    spec_n: 10                # consecutive frames required for spectral trigger
-    spec_alpha: 0.995         # very slow adaptation — spectral baseline changes slowly
-    spec_fmin: null           # null = full spectrum; set Hz to restrict band
-    spec_fmax: null
-    fixed_upper_enabled: false   # burst when overall amplitude rises above this level
-    fixed_upper_value: 1.0
-    fixed_upper_unit: in/s       # any unit in UNIT_TO_SI; converted automatically
-    fixed_lower_enabled: false   # burst when overall amplitude drops below this level
-    fixed_lower_value: 0.05
-    fixed_lower_unit: in/s
-    cooldown_enabled: false      # block re-triggers for this long after a burst fires
-    cooldown_s: 300.0
-```
+**`acquisition:` section**
 
-### `devices/picoscope-defaults.yaml` — channel template
+| Key | Unit | Seeded value | Widget | Meaning |
+|---|---|---|---|---|
+| `maxfreq` | Hz | 1000 | Freq. Range | F_max. Limited to 10000 Hz. |
+| `binsize` | Hz | 1 | Freq. Resolution | Bin size; frame time = 1 / bin size |
+| `fft_window` | | `hann` | FFT Window | `hann`, `blackmanharris`, `flattop`, `hamming`, `boxcar`, `bartlett` |
+| `welch_overlap` | fraction | 0.5 | Welch Overlap % | No effect at present (one segment per frame) |
+| `highpass_enabled` | | `true` | Highpass | High-pass filter on or off |
+| `highpass_fc` | Hz | 10 | Highpass Hz | Band edge of the high-pass |
+| `band_fmin`, `band_fmax` | Hz | `null` | Overall Band, min, max Hz | Declared band. `null` = high-pass edge to F_max |
+| `trend_max_points` | points | 5000 | YAML only | Trend length |
+| `cache_frames` | frames | 15 | Cache Frames | Frame cache depth |
+| `speed_gate_enabled` | | `false` | YAML only | Speed gate on or off |
+| `speed_gate_rpm` | RPM | `null` | YAML only | Reference speed. `null` = first reading |
+| `speed_gate_tolerance_pct` | % | 3.0 | YAML only | Allowed deviation from the reference |
+| `rotation_unit` | | `RPM` | Rate units | `RPM`, `Hz`, `rad/s`, `deg/s` |
+| `averaging_enabled` | | (false) | Average spectrum | Spectral averaging on or off |
+| `n_averages` | frames | (8) | Averages | Frames to average |
+| `peak_threshold_db` | dB | (9.5) | Peak Sig., dB | Peak threshold |
+| `envelope_enabled` | | (false) | Envelope/Demodulation | Show the Envelope tab |
 
-Applied to every channel when a new device is seen for the first time. Edit this before
-connecting a new scope to set your preferred defaults site-wide:
+Values in parentheses are not in a seeded file. The GUI writes them when it
+saves.
+
+**`monitor:` section**
+
+| Key | Unit | Seeded value | Widget | Meaning |
+|---|---|---|---|---|
+| `interval_s` | s | 600 | Capture interval | Time between interval captures |
+| `pre_burst_s` | s | 30 | Pre-trigger buffer (s) | Time before the trigger kept in a burst |
+| `burst_duration_s` | s | 120 | Burst duration (s) (GUI maximum 600) | Burst length after the trigger |
+| `max_burst_s` | s | 600 | YAML only | Upper limit of a burst length |
+| `output_dir` | path | `null` | Output directory | `null` = `~/Documents/Rev80/data/monitor/` |
+| `compression` | | `gzip` | gzip compression | `gzip` or `none` |
+| `compression_level` | | 4 | YAML only; the GUI writes 4 when it saves | gzip level |
+
+**`monitor.anomaly:` section**
+
+| Key | Unit | Seeded value | Widget |
+|---|---|---|---|
+| `enabled` | | `true` | Enable (Anomaly Detection) |
+| `hook_type` | | `rms` | Hook (GUI offers RMS only) |
+| `warmup` | frames | 10 | Warmup frames |
+| `rms_pct` | % | 50.0 | Threshold % |
+| `rms_s` | s | 3.0 | Sustained (s) |
+| `rms_alpha` | | 0.97 | YAML only |
+| `rms_ewma_time` | s | (none) | EWMA time (s); replaces `rms_alpha` |
+| `spec_pct` | % | 50.0 | Headless only |
+| `spec_n` | frames | 10 | Headless only |
+| `spec_alpha` | | 0.995 | Headless only |
+| `spec_ewma_time` | s | (none) | Replaces `spec_alpha` |
+| `spec_fmin`, `spec_fmax` | Hz | `null` | Headless only |
+| `fixed_upper_enabled`, `fixed_upper_value`, `fixed_upper_unit` | | `false`, 1.0, `in/s` | Upper limit |
+| `fixed_lower_enabled`, `fixed_lower_value`, `fixed_lower_unit` | | `false`, 0.05, `in/s` | Lower limit |
+| `cooldown_enabled`, `cooldown_s` | s | `false`, 300 | Cooldown, Cooldown period (s) |
+
+If the file holds `hook_type: spectral` or `both`, the GUI shows RMS but
+keeps the stored value when it saves.
+
+### `devices/picoscope-defaults.yaml`
+
+Rev80 applies this template to each channel of a device that it sees for the
+first time. Channel 0 is enabled. Edit the template before you connect a new
+scope.
 
 ```yaml
 channel:
-  enabled: false            # only channel 0 is enabled on new devices
+  enabled: false
   sensor_id: null
-  voltage_range: 6          # PS4000A range index (6 = ±1 V)
+  voltage_range: 6          # PS4000A range index; 6 = ±1 V
   coupling: AC
-  channel_name: null        # null → defaults to 'Ch A', 'Ch B', …
-  target_unit: null         # null → use sensor engineering units
+  channel_name: null        # null = 'Ch A', 'Ch B', ...
+  target_unit: null         # null = the sensor EU
   amplitude_mode: 0-P
-
+  role: vibration           # or tachometer
+  tach: null                # tachometer settings when role is tachometer
 siggen:
   enabled: false
   wave_type: PS4000A_SINE
   freq_hz: 1000.0
-  pktopk_uv: 1000000        # 1 V pk-pk
+  pktopk_uv: 1000000        # 1 V peak-to-peak
   offset_uv: 0
 ```
 
-### `devices/picoscope-<model>-<SN>.yaml` — per-device channel config
+Range index: 0 = ±10 mV, 1 = ±20 mV, 2 = ±50 mV, 3 = ±100 mV, 4 = ±200 mV,
+5 = ±500 mV, 6 = ±1 V, 7 = ±2 V, 8 = ±5 V, 9 = ±10 V, 10 = ±20 V.
 
-Channel coupling, voltage range, sensor assignments, and signal generator settings for a
-specific scope. Generated automatically on first connection; edit to customise each channel.
+### `devices/picoscope-<model>-<SN>.yaml`
+
+Rev80 writes this file when it sees a device for the first time. It holds
+the channels and the signal generator of that device. The GUI saves it when
+you close the Configuration dialog.
 
 ```yaml
 channels:
   0:
     enabled: true
     sensor_id: <uuid>       # from scope_sensors.yaml
-    voltage_range: 6        # ±1 V
+    voltage_range: 6
     coupling: AC
     channel_name: Motor NDE
     target_unit: in/s
     amplitude_mode: 0-P
+    role: vibration
+    tach: null
   1:
-    enabled: false
-    sensor_id: null
-    voltage_range: 6
-    coupling: AC
-    channel_name: null
-    target_unit: null
-    amplitude_mode: 0-P
+    enabled: true
+    coupling: DC
+    voltage_range: 9        # ±10 V for a 5 V TTL tach
+    role: tachometer
+    tach:                   # written by the Tachometer tab
+      pulses_per_rev: 1
+      polarity: rising
+      threshold_mode: adaptive
+      ...
 siggen:
   enabled: false
-  wave_type: PS4000A_SINE
-  freq_hz: 1000.0
-  pktopk_uv: 1000000
-  offset_uv: 0
+  ...
 ```
 
-### `scope_sensors.yaml` — global IEPE sensor library
+A tachometer channel is always enabled. An unknown `role` value reads as
+`vibration`, and the log records a warning.
 
-User-defined IEPE sensors shared across all devices. Add entries here to make sensors
-available for assignment in the GUI Channel Config panel or headless config:
+### `scope_sensors.yaml`
+
+The IEPE sensor library, for all devices. Edit it in the **Sensors** tab, or
+by hand. `rev80 --list-sensors` lists it.
 
 ```yaml
 - id: <uuid>
   name: PCB 352C33 Ch1
-  sensitivity: 10.2   # mV per engineering unit
+  sensitivity: 10.2         # mV per engineering unit
   engineering_units: g
   notes: ''
 ```
 
-Managed via `ScopeSensorRegistry` — provides CRUD operations. When a sensor is assigned to
-a channel, `DataCollector` divides incoming mV by `sensitivity` to produce engineering units.
+The key is `sensitivity`. When you assign a sensor to a channel, Rev80
+divides the signal in mV by `sensitivity` to get the engineering unit. The
+display unit and amplitude mode are channel settings, not sensor settings.
 
 ### Logging
 
-Logging is configured via `src/rev80/logging.yaml`. In development, log files are written
-to `log/`. In a frozen Windows build, logs go to `~/Documents/Rev80/logs/`.
+Rev80 writes `main.log`, `error.log` and `debug.log` to
+`~/Documents/Rev80/logs/`. The files rotate. `--debug` also writes verbose
+log lines to the console. `faulthandler.log` in the same folder records hard
+crashes.
 
 ---
 
-## Monitor Mode
+## Command reference
 
-Monitor Mode turns Rev80 into a continuous interval datalogger with automatic event capture.
+`rev80` is the entry point for the GUI, headless and the info commands.
+`rev80-headless` is the same as `rev80 headless`. Run `rev80 --help` or
+`rev80 headless --help` for the current list.
 
-### Interval recording
+### `rev80`
 
-When monitoring is active, the controller records a frame at the configured interval into
-`/monitor/{N}/` in `session.h5`. Interval captures continue regardless of whether a burst is
-in progress.
-
-Each stored frame is a full-bandwidth raw-rate capture (see
-[Data Storage](#data-storage)), so total storage scales with interval, not
-with `maxfreq`. The Monitor config dialog shows an estimated bytes/year
-figure as you adjust the interval; it turns red with a ⚠ warning icon above
-10 GB/year — a signal to reconsider the interval before arming a long run,
-not a hard limit.
-
-### Burst capture
-
-Any trigger source — automatic anomaly detection or the manual **Record Burst** button —
-causes the controller to:
-
-1. Snapshot `pre_buffer_s` of raw frames from the ring cache and prepend them to the burst as pre-trigger data.
-2. Capture frames at full rate for `burst_duration_s` seconds, writing to `/burst/{id}/`.
-3. Tag the t=0 frame (anomaly onset, not detection time) in `burst.attrs` as `trigger_timestamp` / `trigger_rel_time`.
-4. Start the cooldown gate to block further automatic triggers for `cooldown_s` seconds.
-
-### Anomaly detection hooks
-
-Three hook types can be used independently or combined (configured by the "Hook: RMS /
-Spectral / Both" selector):
-
-#### Broadband EWMA (RMS)
-
-Maintains a per-channel EWMA baseline of the overall broadband amplitude. Triggers when:
-
-```
-|current − baseline| / baseline  >  rms_pct / 100
-```
-
-…for `rms_s` seconds of sustained deviation. The baseline adapts continuously during normal operation and during burst playback. A warmup period (`warmup` frames) must elapse before triggering is enabled.
-
-| Parameter | Default | Description |
-|---|---|---|
-| `rms_pct` | 10.0 | % deviation from EWMA baseline |
-| `rms_s` | 3.0 | Seconds signal must stay above threshold (0 = first frame) |
-| `rms_alpha` | 0.97 | EWMA smoothing factor (higher = slower baseline) |
-| `warmup` | 10 | Frames to collect before triggers are enabled |
-
-#### Frequency-shape EWMA (Spectral)
-
-Compares the live PSD against a per-bin EWMA baseline. Triggers when the mean spectral deviation across the monitored frequency band exceeds `spec_pct` for `spec_n` consecutive frames. Useful for detecting new harmonics or bearing-tone shifts that don't change overall amplitude significantly.
-
-| Parameter | Default | Description |
-|---|---|---|
-| `spec_pct` | 50.0 | % mean per-bin deviation to trigger |
-| `spec_n` | 10 | Consecutive frames required |
-| `spec_fmin` / `spec_fmax` | null | Restrict band (null = full spectrum) |
-
-Use **Reset Baseline** (monitor card button) to reseed the EWMA from the current frame after a process change, speed change, or restart.
-
-#### Absolute level trigger (Fixed)
-
-Fires immediately (no warmup, no EWMA) when the overall amplitude crosses a fixed level. Accepts any supported unit and converts automatically — a threshold in `in/s` works correctly against a channel reporting `mm/s`.
-
-Upper and lower limits are independent. A channel with no sensor/EU assigned (raw `mV`) logs a one-time warning and is silently skipped.
-
-| Parameter | Description |
+| Option | Meaning |
 |---|---|
-| `fixed_upper_enabled` / `fixed_upper_value` / `fixed_upper_unit` | Trigger when amplitude rises above this level |
-| `fixed_lower_enabled` / `fixed_lower_value` / `fixed_lower_unit` | Trigger when amplitude falls below this level |
-
-#### Cooldown gate
-
-After any burst fires (automatic or manual), the controller optionally blocks further automatic triggers for `cooldown_s` seconds. Interval captures are unaffected. Use this to prevent a sustained fault from generating many overlapping burst files.
-
----
-
-## Tachometer
-
-A tachometer channel turns a spectrum into a diagnosis. A line at 162.9 Hz means
-nothing on its own; the same line at 5.43x shaft is a bearing outer race. Shaft
-speed is the denominator.
-
-Configure it in **Configuration → Tachometer**. That tab owns the tach: pick the
-channel there (it is enabled for you), set polarity and threshold, and watch the
-live preview while you adjust. Closing the dialog leaves the readouts behind.
-
-### What it is for
-
-- **Naming the lines.** Slip on a 4-pole 60 Hz motor moves 1800 → 1750 RPM between
-  no load and full load. A 5.43x bearing tone moves 6.1 Hz with it — twelve bins
-  at 0.5 Hz resolution, which is the difference between finding a defect and
-  looking in the wrong place.
-- **Separating electrical from mechanical.** On a 2-pole motor, 2x line frequency
-  is 7200 CPM exactly and 2x running speed is 7120 CPM. Eighty CPM apart, and
-  completely different repairs.
-- **Making trends comparable.** For a rigid rotor below its first critical the 1x
-  velocity goes as ω³, so a 3.2% speed change moves the overall by 10% on a
-  machine whose condition has not changed. Speed gating excludes those frames from
-  alarming while still measuring and storing them.
-
-### Setting one up
-
-Wire the tach to a spare input, **DC coupled** — AC coupling removes the signal's
-mean, and on a pulse train the mean *is* the duty cycle, so above roughly 55% duty
-an AC-coupled tach with a fixed threshold reads as a stopped machine. The default
-adaptive threshold tracks each block's own span and is immune to this, but DC is
-still the right way to wire it.
-
-Pick a voltage range that fits the pulse with headroom (±10 V for a 5 V TTL tach,
-±20 V for a 12 V one or a proximity-probe keyphasor). The anti-alias filter adds
-about 8% of Gibbs overshoot, so a 5.00 V pulse arrives near 5.9 V.
-
-The preview shows the raw signal, the computed threshold, and every edge the
-detector found, with the first pulse aligned to t=0 so successive frames overlay
-instead of sliding. If the rate reads nothing, the picture tells you which of the
-three usual causes it is: the pulse is too small, the threshold is in the wrong
-place, or the coupling is stripping the DC.
-
-### Pulses per revolution
-
-Rev80 defaults to one reflective tape or one keyway, and recommends it. This is
-not a simplification — it is the accurate configuration. At 1 pulse/rev every
-measured interval is exactly one revolution, so encoder division error and
-once-per-rev speed modulation cancel inside each interval rather than having to
-average out. Measured against a 60-line encoder with realistic division error:
-**0.0013% at 1 ppr, against 0.091% at 60 ppr no matter how long you observe
-for.**
-
-A keyphasor or an encoder already bolted to the machine is not something you can
-choose away, so **Pulses/rev** in the Tachometer tab takes any whole number and
-divides it out correctly. What keeps that honest is that the gate is
-*revolutions*, not pulses: no rate is reported until two whole turns are inside
-the block, so the cancellation a 1 ppr install gets by construction, a finer
-encoder gets by observing enough of a revolution for it to average out.
-
-Two things a high pulse count costs you, both shown in the tab when they bite:
-
-- **It does not read a slower shaft.** The gate is two revolutions either way. A
-  60-line encoder at a 1 s block reaches 121 RPM against 180 — a third, not
-  sixtyfold. Use a smaller bin size for a slow machine.
-- **It runs into the sample rate.** Edge interpolation needs about 70 samples
-  per pulse; below that accuracy falls to ~0.8%. That is 6000 RPM at 6 ppr and
-  600 RPM at 60 ppr. The acquisition rate is fixed and cannot be raised to
-  compensate.
-
-### What it reports, and its limits
-
-Accuracy is **±0.2% of reading** from 300 to 10200 RPM, verified by AWG loopback
-on the instrument itself.
-
-Two whole revolutions must fall inside one acquisition block, so the bin size
-sets a slowest measurable shaft — `180 / T_block` RPM at 1 pulse/rev, i.e. 180
-RPM at 1 Hz bins and 1800 RPM at 10 Hz bins. The Tachometer tab shows the figure
-for your current settings. Below it the reading is absent rather than wrong; it does not stop you
-configuring the tach against a machine that is not running.
-
-A shaft speed always carries its unit on screen. 30 is a plausible RPM, a
-plausible Hz and a plausible rad/s, and they differ by factors of 60 and 6.28.
-
-## Envelope-Demodulation Analysis (Bearing Diagnostics)
-
-The **Envelope** tab is for one specific job: catching rolling-element bearing defects — inner race, outer race, ball, or cage — early, before they show up as broadband vibration. It's off by default (enable it in the Acquisition dialog under **Analysis Tabs → Envelope/Demodulation (bearing analysis)**).
-
-### Why the raw spectrum misses this
-
-A bearing defect doesn't announce itself as a clean line at its own defect frequency. Every time a rolling element rolls over the defect it produces a sharp mechanical impulse, and that impulse rings a structural resonance of the bearing housing — typically somewhere in the 2–20 kHz range, well above anything the machine itself does mechanically (running speed, gear mesh, blade pass). In the raw spectrum that impulse energy is smeared thinly across the whole width of that resonance, and it sits *underneath* the 1x running-speed line and its harmonics, which are usually orders of magnitude larger. You can stare at the raw spectrum with a fresh defect right in front of you and see nothing but the same 1x/2x/3x peaks you always see.
-
-What actually carries the diagnosis isn't *where* the energy is — it's *how it's modulated*. The impulses repeat at a steady rate (the defect rate), so the resonance's amplitude keeps swelling and dying back at that rate. Recovering that swell-and-die pattern — the **envelope** — turns "energy smeared across a resonance" into a clean, discrete line at the defect rate, usually with sidebands at ±1x (running speed) on either side from the load zone modulating the impact severity as the shaft turns. This is the same technique sold as CSI PeakVue, SKF Enveloped acceleration (gE), or "shock pulse" analysis — the name changes, the physics doesn't.
-
-### Reading the envelope spectrum
-
-The Envelope plot looks like an ordinary spectrum, but the x-axis is **modulation frequency**, not vibration frequency, and the content on it means something different:
-
-- **A clean line at (or near) a known bearing defect frequency is the signature.** If you have the bearing's geometry (or a manufacturer table), compute BPFO, BPFI, BSF, or FTF for the actual running speed and compare — a line within a percent or two of one of those, that wasn't there on a healthy baseline, is the finding. Rev80 doesn't compute these for you; it gives you the clean line to compare against numbers you already have.
-- **±1x sidebands around a defect line** (spaced at running speed) are corroborating, not optional extra credit — they're the mechanism (load-zone modulation) showing up exactly where theory says it should. A defect-rate line with no sidebands is worth a second look before you commit to a bearing call.
-- **A rising forest of harmonics of the defect rate** (1x, 2x, 3x... of BPFO, say) as a fault progresses from a point defect toward spalling is a normal severity progression — more harmonics and a higher noise floor between them, not just a taller first line.
-- **A line at 1x running speed itself** (not a defect frequency) usually means the demodulation band leaked some of the machine's own vibration through the band-pass — see below — rather than a real finding.
-- **No lines at all, just a low, structureless floor** is the actual healthy-bearing picture. Resist the urge to read something into floor texture; the whole point of this technique is that a real defect stands out as a discrete line, not a shape.
-
-Trending matters here as much as it does for overall amplitude: a defect-rate line that grows session over session is a much stronger case than a single reading, and it's how you tell a marginal-but-stable indication from one that's headed toward failure.
-
-### Choosing the demodulation band
-
-The **Band** fields set the low/high edges (Hz) of the band-pass filter applied before demodulation — this is the single most consequential choice in the whole technique, because everything downstream is only as good as the resonance you picked:
-
-- **Leave both fields at 0 and click Auto**, or leave them at 0 and just let it re-run every frame — this searches the upper 75% of your configured frequency range (above F_max/4) for the frequency region carrying the most energy, smoothed over the width of the proposed band so a single tall harmonic can't fool it into centering on machine content instead of a resonance. This is deliberately restricted to the *upper* part of the range: the whole reason to demodulate is to escape the 1x/2x/gear-mesh content that dominates the lower part, so a band centered down there would just recover that content again, which is worse than doing nothing.
-- **Type an explicit band once you know where the resonance actually is.** The Auto suggestion is a reasonable first look, not necessarily the right answer — a housing or bearing has more than one structural resonance, and the one that rings loudest under a hammer tap or a bump test isn't guaranteed to be the one Auto finds from operating data alone. If you've identified the real resonance (bump test, or Auto's suggestion drifting frame to frame because there isn't one dominant peak), type it in and it stays fixed.
-- **Width matters as much as center.** Too narrow and you lose modulation sidebands and impulse energy the resonance actually carries — the band needs to be wide enough to pass the resonance's own bandwidth, typically several hundred Hz to a few kHz depending on how lightly damped it is. Too wide and you start letting the 1x/2x machine lines back in at the band edges, which shows up as that spurious 1x line in the envelope mentioned above.
-- **The band must sit strictly inside the acquisition range** (`0 < low < high < Nyquist`) and — since a bearing resonance is a structural, not running-speed-dependent, frequency — well above your highest expected running-speed harmonic. Acquisition always runs at a fixed rate independent of `F_max` — 25.6 kHz, Nyquist 12.8 kHz — specifically so the whole 2–20 kHz range a housing resonance can live in is always available to demodulate, regardless of what `F_max` you have the Spectrum tab set to. `F_max` only controls what the *Spectrum* tab displays; it has no effect on what Envelope can see.
-- **Rev80 still warns you if this ever isn't the case**: the Envelope tab checks the actual Nyquist of the data it's demodulating and shows a banner if it's implausibly low for a resonance to fit under. In normal use this should never fire — it exists as a safety net (e.g. if a future change lowers the acquisition rate) rather than something you'll routinely hit by choosing a low `F_max`.
-- The info line under the Band controls reports the resolved band and the resulting envelope's frequency ceiling for the current frame, so you can see what Auto actually picked.
-
----
-
-## Signal Generator
-
-The PicoScope 4000A has a built-in arbitrary waveform generator (AWG) on its AUX output. Rev80 exposes this through the **Generate** config tab.
-
-| Setting | Description |
-| --- | --- |
-| Enabled | Enable/disable AWG output |
-| Waveform | Sine, Square, Triangle, DC voltage, Ramp Up/Down |
-| Frequency (Hz) | Output frequency |
-| Amplitude (mV pk-pk) | Peak-to-peak voltage |
-| Offset (mV) | DC offset |
-
-**Timing:** The signal generator runs **continuously** from stream start to stream stop — it is programmed once when the stream starts, free-running, with no per-block triggering. The AWG and the ADC acquisition run independently and simultaneously.
-
-Signal generator settings are persisted per-device (see [Configuration and Persistence](#configuration-and-persistence)) and restored automatically when the same device reconnects.
-
----
-
-## Simulated Sensor
-
-`VibeSensor.simulated()` returns a `VibeSensor` with `is_simulation=True`. When connected, it starts a `SimulatedSensor` daemon thread that generates synthetic bearing-defect vibration data at the raw acquisition rate (`raw_samplerate`/`raw_blocksize`) — the same rate `PicoScopeStream` reports, so the simulated path exercises the same raw/display decimation everything else does rather than silently skipping it. Pass `--device sim` (headless) or select the simulated sensor in the GUI's device dialog — no PicoScope hardware required.
-
-`SimulatedSensor` is **excluded from `VibeSensor.find()`** — it will never appear in the hardware device list. Use `VibeSensor.simulated()` directly in tests and offline development.
-
-Available generators in `simulation.py`:
-
-| Generator | Description |
-| --- | --- |
-| `GenerateTone(config, ampl, freq, phase)` | Pure sinusoid |
-| `GenerateNoise(config, ampl)` | White Gaussian noise |
-| `GenerateBearingVibration_SpectralMethod(config)` | Bearing fault signal assembled in frequency domain (exponential noise floor + running harmonics + bearing-fault sidebands) |
-| `GenerateBearingVibration_TemporalMethod(config)` | Bearing fault signal assembled in time domain (noise + harmonics with phase variation) |
-
-The default source for `SimulatedSensor` is `GenerateBearingVibration_TemporalMethod`. The source can be overridden at construction for targeted unit testing.
-
----
-
-## Architecture
-
-The pipeline is strictly layered. The hardware thread and the GUI render loop are decoupled via a `threading.Event` — the collector never imports or calls into DPG. All DSP (Welch FFT, filtering, integration) lives in `collector.py`; `gui.py` is a pure presentation layer that consumes pre-computed `ChannelResult` objects.
-
-```text
-  Hardware thread                           Main (GUI) thread
-  ─────────────────                         ─────────────────────────────────
-
-┌────────────────────────────┐
-│  PicoScopeStream           │
-│  OR  SimulatedSensor       │
-│  → polls hardware          │
-│  → ADC → mV → callback     │
-└─────────────┬──────────────┘
-              │ dict: {status, rel_time,
-              │  timestamp, channels, data}
-              ▼
-┌────────────────────────────┐
-│  DataCollector             │
-│  receive_data():           │
-│  → mV → EU (ScopeSensor)  │
-│  → Butterworth HP + LP    │
-│  → VibeSample per channel  │
-│  → frame_cache.append()   │
-│  → new_frame_event.set()  │─ ─ ─ ─ ─ ─ ─▶┌──────────────────────────────┐
-└────────────────────────────┘               │  GUI render loop              │
-                                             │  _poll_new_frames():          │
-                                             │    if event set:              │
-                                             │      process_samples()   ←DSP │
-                                             │        Welch PSD              │
-                                             │        integration (mV→EU)    │
-                                             │        peak detection         │
-                                             │      → ChannelResult[]        │
-                                             │      _display_frame()         │
-                                             │        update DPG plots       │
-                                             │      monitor.on_results()─────┼──▶┌────────────────────┐
-                                             └─────────────┬────────────────┘   │ MonitorController  │
-                                                           │                    │ IntervalGate       │
-                                                           │ (on save)          │ MonitorWriterThread│
-                                                           ▼                    │ → session.h5       │
-                                             ┌────────────────────────────┐    └────────────────────┘
-                                             │  HDF5 files in data_dir()  │
-                                             │  save_data() / load_data() │
-                                             │  monitor/{id}/session.h5   │
-                                             └────────────────────────────┘
-```
-
-**Decoupling properties:**
-- `collector.py`, `monitor/`, `sample.py`, `picoscope.py` — zero DPG imports. Any event loop can drive them.
-- `new_frame_event` is a `threading.Event` — a stdlib primitive with no GUI dependency.
-- `MonitorWriterThread` runs as a daemon thread independent of both the hardware thread and GUI.
-- A headless process can replace the GUI by polling `new_frame_event`, calling `process_samples()`, and passing results to `MonitorController` — approximately 50 lines.
-
-When the GUI is slower than the hardware data rate it skips to the latest frame — earlier frames remain in the ring cache (default 32 frames) for browsing. The hardware thread is never blocked by rendering.
-
----
-
-## Module Reference
-
-| Module | Responsibility |
-| --- | --- |
-| `__main__.py` | `rev80` CLI entry point — top-level info commands, `--version`, `headless` subcommand dispatch, GUI launch (logging setup, `GUI` instantiation, main loop, cleanup) |
-| `desktop.py` | Linux desktop integration — `install()`/`uninstall()` write/remove `~/.local/share/applications/rev80.desktop` + icon, driven by `rev80 --install-desktop-entry` / `--uninstall-desktop-entry` |
-| `_paths.py` | Runtime-safe resource/data/log directory resolution — editable checkout, non-editable pip install, and frozen (PyInstaller) builds all resolve correctly; see [Configuration and Persistence](#configuration-and-persistence) |
-| `logger.py` | YAML-configured logging (`logging.yaml`); writes to `log/`; global exception hook |
-| `_profile.py` | Per-stage pipeline timing — thirteen named stages from the driver callback to `render_dearpygui_frame()`, grouped by thread. A shared no-op when disabled (442 ns/call), bounded rings when enabled. Driven by `rev80 --profile` / `REV80_PROFILE=1` and by `scripts/profile-pipeline` |
-| `util.py` | Constants (`MAXFREQ_PRESETS`, `BINSIZE_PRESETS`, `UNITS`, `AMPLITUDE_MODES`, `MONITOR_INTERVAL_PRESETS`), unit taxonomy and SI conversion, integration order helpers, `UI_Elements` DPG tag registry |
-| `icons.py` | CommitMono Nerd Font (Codicons) registry; `load()` registers font with DPG; `IC` dict maps icon names to `\uXXXX` codepoints |
-| `sensor.py` | `VibeSensor` dataclass — device metadata; `find()` enumerates hardware PicoScopes only; `simulated()` returns a test sensor; `connect()` returns the appropriate stream |
-| `picoscope.py` | `FindPicoScope()` — enumerates PS4000A units; `PicoScopeStream` — polling thread, vectorised ADC→mV (`_adc_to_mv()`; the vendor `adc2mV` is a per-sample Python loop 200–380× slower, run with the GIL held inside the driver callback), clock-grid-snapped streaming interval, overflow detection, anti-alias oversample/decimate (`antialias_decimate()`), streaming-rate degradation watchdog, silence-watchdog recovery, signal generator setup |
-| `scope_sensor.py` | `ScopeSensor` dataclass — IEPE sensor metadata: name, sensitivity (mV/EU), engineering units, amplitude mode, UUID |
-| `scope_sensor_registry.py` | `ScopeSensorRegistry` — YAML-backed CRUD for user sensor library and per-channel assignments |
-| `_dsp.py` | Windowing and band helpers for frequency-domain integration: Hann/Tukey tapers with their measured error tables, `band_mask()`, `integrate_rfft()`, `butter_knee_for_edge()`, `crest_factor()`, `kurtosis()` |
-| `peaks.py` | Significance-based spectral peak selection — per-bin local noise floor via a running median, array-valued `height`/`prominence` into a single `find_peaks` call |
-| `envelope.py` | Envelope (demodulation) analysis — `envelope_spectrum()` (band-pass → Hilbert magnitude → DC removal → amplitude spectrum) and `suggest_band()` for automatic demodulation-band selection |
-| `sample.py` | `AcquisitionSettings` — spectrum, filter, band, averaging and cache config with derived properties; `VibeSample` — single-channel time-domain block; `ChannelResult` — frozen display-ready result from `process_sample()` |
-| `config.py` | OS-aware config directory; per-device YAML persistence (channels, acquisition settings, monitor defaults); atomic writes; fallback to built-in defaults |
-| `collector.py` | `DataCollector` — multi-channel acquisition state machine: stream lifecycle, per-channel causal Butterworth highpass filtering with state carried across blocks, mV→EU conversion, frame ring cache, `new_frame_event` signal, DSP via `process_sample()` / `process_samples()`, trend accumulation, HDF5 save/load, monitor session loaders |
-| `simulation.py` | `SimulatedSensor` (daemon thread, paced against a deadline) + signal generators. `GenerateBearingVibration` is the default: a physically realistic defect model (impulse train, resonance carrier, load-zone AM, slip jitter) with `severity=0` as the healthy control. `GenerateTone`, `GenerateNoise` and the two older pure-tone generators remain for regression coverage |
-| `gui.py` | `GUI` class — dearpygui three-column layout with manual render loop (`_poll_new_frames`), all config dialogs, spectrum/time/trend plots, file I/O, monitor card, session browser |
-| `monitor/__init__.py` | Re-exports: `MonitorController`, `MonitorSession` |
-| `monitor/session.py` | `MonitorSession` frozen dataclass — session parameters, config snapshots, and cooldown settings |
-| `monitor/gate.py` | `IntervalGate` — snap-to-grid capture scheduler; burst mode entry/exit; caller-supplied time (unit-testable) |
-| `monitor/anomaly.py` | `AnomalyHook` Protocol; `NullAnomalyHook`; `RmsThresholdHook`; `SpectralThresholdHook`; `FixedThresholdHook`; `CompositeAnomalyHook`; `AnomalyEvent` dataclass |
-| `monitor/writer.py` | `MonitorWriterThread` — daemon thread; appends interval frames to `/monitor/` and burst frames to `/burst/` in `session.h5`; disk-space guard |
-| `monitor/controller.py` | `MonitorController` — owns gate, writer, anomaly hook; anomaly hook supplied at `start()` and active for the full session; `trigger_burst()` for manual burst |
-
----
-
-## Data Pipeline
-
-### 1. Acquisition — `PicoScopeStream` (`picoscope.py`)
-
-Acquisition and display run at two independent rates. `PicoScopeStream` always
-acquires at a fixed rate (`AcquisitionSettings.raw_samplerate`, see
-`RAW_SAMPLERATE_HZ` in `sample.py` — 25.6 kHz, 12.8 kHz Nyquist by default) high
-enough to always contain a bearing housing resonance (typically 2–20 kHz),
-completely independent of the user's chosen `maxfreq`. `maxfreq` only
-controls what gets *displayed* — the Spectrum tab's rate and the HDF5
-storage cost still track it (see `samplerate`/`blocksize` below), but the
-signal itself is always captured, stored, and available to envelope analysis
-at the full raw rate. This is the same approach other route-based vibration
-analyzers use: display capped low per ISO monitoring convention, demodulation
-still has full bandwidth underneath.
-
-`PicoScopeStream` is a background polling thread that wraps `ps4000aRunStreaming`. The ADC is always driven faster than `raw_samplerate` — at an oversampling ratio (up to 4×, capped by a measured safe continuous-streaming ceiling for this hardware) — so a linear-phase Kaiser-windowed FIR anti-alias filter (designed for ≥100 dB stopband; measured −111.7 dB worst case, against −60.0 dB for scipy's default Hamming kernel) can reject content above `raw_samplerate`'s Nyquist *before* decimating down to it; this is mandatory and not user-configurable. On each poll:
-
-1. Converts ADC counts → mV via `adc2mV()` for all enabled channels
-2. Detects ADC overflow per channel via the overflow bitmask
-3. Accumulates mV samples in a raw, oversampled `(raw_blocksize × effective_osr × N_channels)` buffer
-4. Once a full raw block has accumulated, anti-alias filters and decimates it down to `raw_blocksize` samples via `antialias_decimate()`, then fires the registered callback with:
-
-```python
-{
-    'status':        str,           # 'OKAY', 'OVERFLOW', etc.
-    'overflow_mask': int,           # bitmask, one bit per channel
-    'degraded':      bool,          # True if sustained USB streaming throughput has fallen below the rate watchdog's threshold
-    'rel_time':      float,         # seconds since stream start
-    'timestamp':     datetime,
-    'unit':          ['mV', ...],   # one entry per channel
-    'channels':      [0, 1, ...],   # enabled channel indices
-    'data':          ndarray,       # shape (raw_blocksize, N_channels), mV
-    'samplerate':    float,         # raw_samplerate (or driver-reported actual rate)
-}
-```
-
-A watchdog thread monitors for >5 s silence and attempts up to 3 reconnect cycles automatically. A second, independent watchdog monitors *sustained* USB streaming throughput every 2 s — this catches a different failure mode where the driver silently delivers only a fraction of the requested rate (`status='OKAY'`, no overflow, callbacks keep firing) that the silence watchdog can't see. It only sets `degraded=True` on the stream and logs a warning; it never triggers reconnect, since a bandwidth ceiling isn't fixed by reopening the device.
-
-**Device discovery** — `VibeSensor.find()` calls `FindPicoScope()` and returns hardware-only results. `SimulatedSensor` is excluded; use `VibeSensor.simulated()` for offline development and testing — it generates and reports at `raw_samplerate` too, so it exercises the same dual-rate path.
-
-### 2. Preprocessing — `DataCollector` (`collector.py`)
-
-`DataCollector.receive_data(frame)` runs in the hardware callback thread:
-
-1. For each enabled channel, extracts the channel column from `frame['data']` (at `raw_samplerate`)
-2. Converts mV → engineering units using `ScopeSensor.sensitivity` (if a sensor is assigned)
-3. Optionally applies a **4th-order Butterworth highpass** filter (default 10 Hz declared band edge), at the raw rate. Causal (`sosfilt`) with filter state carried across consecutive streaming blocks, seeded from the block mean on the first block; zero-phase `sosfiltfilt` was tried and reverted — its forward+backward pass effectively doubles the order and overshot both block edges by 35–45% for a low cutoff over a short block
-4. Wraps each channel's data in a `VibeSample` at the raw rate (anti-aliasing for the *acquisition* Nyquist is no longer applied here — it happens upstream in `PicoScopeStream`, before the ADC's own Nyquist limit can fold high-frequency content into the passband). `VibeSample.data`/`.samplerate` are this raw signal, and are what gets written to HDF5 and what envelope analysis reads directly
-5. Assembles a frame dict `{ch: VibeSample, 'overflow': mask}` and appends it to the frame ring cache (configurable depth via `AcquisitionSettings.cache_frames`, default 32)
-6. Sets `new_frame_event` to signal the GUI render loop
-
-### 3. Spectral Analysis — `DataCollector.process_sample()` (`collector.py`)
-
-`DataCollector.process_sample(ch, sample)` first decimates the raw-rate `VibeSample` down to the display rate (`AcquisitionSettings.samplerate`, `maxfreq`-driven) via `decimate_to_rate()` — a rational-ratio polyphase resample (`scipy.signal.resample_poly`) reusing the same Kaiser stopband design as the hardware anti-alias filter, cached on the sample so repeated calls (browsing, unit changes) don't re-resample. Everything below runs on that decimated signal and computes and returns a `ChannelResult`:
-
-- **Welch PSD** — `scipy.signal.welch` with a configurable window function, one segment per frame (`nperseg = blocksize`, so the delivered line count and bin width match what the UI states), and bin size controlled by `AcquisitionSettings.binsize`
-- **Spectral averaging** (optional) — the N most recent *valid* frames up to and including the one displayed are averaged in the **power** domain. Overloaded and rate-degraded frames are rejected from the average. Since the HDF5 stores individual raw frames, averaging is recomputed on load and N can be changed after the fact
-- **Frequency-domain integration** — when the assigned `ScopeSensor.engineering_units` modality differs from the target display unit, integration is applied by multiplying the spectrum by `(1j·2πf)^n` where `n` is the number of integration steps (negative = integrate, positive = differentiate)
-- **Peak detection** — `rev80.peaks.select_peaks`: a per-bin local noise floor is estimated with a running median, and array-valued `height`/`prominence` admit a line when it rises `peak_threshold_db` above its *own* neighbourhood. Ranking stays by descending amplitude; the reported value is the maximum bin's amplitude, with no interpolation or energy summation
-- **Overall amplitude** — RMS/0-P/P-P over the **declared band**, not the whole block. Computed from a Hann-tapered, band-masked transform so all five integration orders describe one band
-- **Crest factor and kurtosis** — computed on the band-limited displayed trace. Deliberately *not* averaged: they exist to catch the frame that is not steady
-
-**Envelope analysis reads around this.** `DataCollector.eu_scaled_raw(ch, sample)` returns the highpass-filtered signal in the sensor's own engineering units *at the raw rate*, skipping the `maxfreq` decimation step entirely — this is what the Envelope tab demodulates, so a low display `maxfreq` never limits how much bandwidth a bearing-resonance search can see.
-
-### 4. Visualisation — `GUI._poll_new_frames()` / `_display_frame()` (`gui.py`)
-
-The GUI uses a manual render loop (`while dpg.is_dearpygui_running()`). Each tick, `_poll_new_frames()` checks `DataCollector.new_frame_event`. If set, it grabs the latest frame from `frame_cache` and calls `_display_frame()`:
-
-- Calls `DataCollector.process_samples()` → list of `ChannelResult` for each enabled channel
-- Updates time-domain and spectrum line series via `dpg.set_value()`
-- Updates peak table and trend plot
-- If multiple frames arrived since the last tick, only the newest is rendered — earlier frames remain in cache for browsing
-- Axis limits are **not** automatically adjusted; press **Autoscale** to fit all axes on demand
-
----
-
-## AcquisitionSettings
-
-`AcquisitionSettings` (`sample.py`) centralises spectrum, filter, and channel config. Use the public properties — do not write to private `_` attributes directly.
-
-### Spectrum settings
-
-`samplerate`/`blocksize` are the **display** rate — what the Spectrum tab's
-Welch PSD is computed at, and what the Acquisition dialog's "Sample Rate"
-field shows. They no longer describe what the hardware actually acquires;
-that's the separate, fixed `raw_samplerate`/`raw_blocksize` pair below.
-`maxfreq` still only affects the display side.
-
-| Property | Description |
-| --- | --- |
-| `maxfreq` | Upper frequency of interest (Hz) — drives `samplerate` (display) selection. Clamped in the setter to what `raw_samplerate` can back (`≤ raw_samplerate / 2 / 1.28`), since nothing above that was ever captured |
-| `binsize` | Frequency resolution of Welch FFT (Hz) — drives `blocksize` selection |
-| `samplerate` | **Derived, display rate** — exactly 2.56 × maxfreq (the 28% margin above 2× Nyquist gives the mandatory anti-alias filter a real transition band — same ratio commercial FFT vibration analyzers use). Every preset divides `raw_samplerate` by an exact integer, and the top preset meets it exactly, so the display rate can never exceed what was acquired. This is the **requested** rate; because the hardware clock is quantised, `decimate_to_rate()` reports the rate it actually achieved (within −320 ppm), and that is what the frequency axis uses. The F_max control keeps showing the round preset. `DataCollector` decimates the raw acquisition down to this rate before computing the Spectrum tab's PSD |
-| `blocksize` | **Derived, display rate** — `ceil(samplerate / binsize)`. Not rounded to a power of two: `nextpow2` overstated the display rate by up to 2× |
-| `raw_samplerate` | **Fixed** — `RAW_SAMPLERATE_HZ` (25.6 kHz = 2.56 × the 10 kHz top preset), independent of `maxfreq`. What `PicoScopeStream` actually acquires, what gets stored to HDF5, and what envelope analysis (`DataCollector.eu_scaled_raw`) reads directly. Hardware-validated on a PicoScope 4424A — see the module comment above `STREAMING_CEILING_HZ` in `picoscope.py` and `scripts/validate-streaming-capacity` for re-validating on other hardware |
-| `raw_blocksize` | **Derived, raw rate** — sample count spanning the same `acquisition_period` as `blocksize`, at `raw_samplerate`. Not necessarily a power of two — it isn't a Welch segment length, just how many raw samples one frame holds |
-| `acquisition_period` | **Derived** — blocksize / samplerate (seconds). Same value whether computed from the display or raw pair — one frame is one time window at two sample counts |
-| `n_fft_bins` | **Derived** — number of spectrum lines actually displayed, DC up to `maxfreq`. Not the full one-sided transform: the band between `maxfreq` and fs/2 is the anti-alias guard band and is not shown |
-| `fft_window` | Welch window function: `'hann'` (default), `'blackmanharris'`, `'flattop'`, `'hamming'`, `'boxcar'`, `'bartlett'` |
-| `welch_overlap` | Welch segment overlap fraction (default 0.5). Currently inert: `nperseg == blocksize`, so there is exactly one segment per frame |
-| `band_fmin` / `band_fmax` | Declared measurement band for the overall amplitude (Hz). `None` = derive: `highpass_fc` up to `maxfreq`. ISO 20816 presets are offered in the acquisition dialog. Stored with the data — an overall taken over a different band is a different measurement |
-| `averaging_enabled` / `n_averages` | Linear power averaging of the spectrum over N frames (default off, N = 8). Cuts noise-floor scatter as 1/√N; does **not** lower the floor's level, and assumes the machine is steady across the window. Clamped by `cache_frames` |
-| `peak_threshold_db` | How far a spectral line must rise above its own local noise floor to be reported (default 9.5 dB) |
-
-### Filter settings
-
-| Property | Description |
-| --- | --- |
-| `highpass_enabled` | Enable the 4th-order Butterworth highpass filter. Causal (`sosfilt`) with filter state carried across consecutive streaming blocks; replayed frames are filtered statelessly from a settled initial condition, so browsing is order-independent |
-| `highpass_fc` | Lower edge of the declared measurement band (Hz) — the frequency at which the response must still be within ±10% (ISO 2954), **not** the −3 dB knee. The Butterworth knee is placed below it at `f_edge × (A²/(1−A²))^(−1/2N)`, which is `0.834 × f_edge` at the shipped order 4 |
-
-Anti-aliasing is no longer a user-configurable lowpass. Two mandatory,
-automatic filters are involved: `PicoScopeStream` anti-alias filters and
-decimates the oversampled ADC signal down to `raw_samplerate` at capture
-time (fixed, not `maxfreq`-derived); `DataCollector` then anti-alias
-filters and decimates that raw signal again, down to `samplerate` (display,
-`maxfreq`-derived), before computing the Spectrum tab's PSD. There's no
-separate cutoff to set for either.
-
-### Channel settings
-
-| Property | Description |
-| --- | --- |
-| `enabled_channels` | List of active channel indices |
-| `channel_voltage_ranges` | Dict `{ch: range_index}` — PS4000A voltage range per channel |
-| `channel_couplings` | Dict `{ch: 'AC'|'DC'}` — input coupling per channel |
-
-### Cache settings
-
-| Property | Description |
-| --- | --- |
-| `cache_frames` | Ring buffer depth in frames (default 32); configurable via GUI Acquisition tab |
-
-Helper methods: `voltage_range_for(ch)`, `coupling_for(ch)`, `name_for(ch)`, `target_unit_for(ch)`, `amplitude_mode_for(ch)`, `copy()`.
-
----
-
-## VibeSample and ChannelResult
-
-### VibeSample
-
-`VibeSample` (`sample.py`) holds one block of time-domain samples for a single channel.
-
-```python
-sample.data                          # numpy.ndarray float64, shape (N,), raw mV samples
-sample.samplerate                    # int — Hz
-sample.unit                          # str — 'mV' (raw hardware unit)
-sample.timestamp                     # str — ISO format timestamp
-sample.rel_time                      # float — seconds since stream start
-sample.status                        # str — 'OKAY', 'OVERFLOW', etc.
-sample.overall_ampl_by_integration_order  # ndarray (5,) — broadband RMS for orders -2..+2
-
-# Cached on first call; re-computed when Welch config changes:
-sample.psd_mv                        # numpy.ndarray — Welch PSD (mV RMS)
-sample.freq_hz                       # numpy.ndarray — frequency axis (Hz)
-```
-
-HDF5 save/load is handled by `DataCollector.save_data()` and `DataCollector.load_data()`, not by VibeSample directly.
-
-### ChannelResult
-
-`ChannelResult` is a frozen dataclass returned by `DataCollector.process_sample(ch, sample)`. It is the canonical display-ready result for one channel at one instant.
-
-```python
-result.channel      # int
-result.unit         # str — display unit
-result.time_data    # ndarray — time-domain signal in display units
-result.time_vec     # ndarray — time axis (seconds)
-result.freq         # ndarray — full Welch frequency axis (Hz)
-result.spectrum     # ndarray — PSD in display units
-result.peaks        # ndarray — indices into freq/spectrum arrays
-result.overall      # float — broadband amplitude (RMS/0-P/P-P per config)
-result.timestamp    # datetime
-result.rel_time     # float
-result.status       # str
-```
-
-The `freq` and `spectrum` arrays cover the **full Welch output range** (up to Nyquist). `maxfreq` governs samplerate selection and broadband energy integration but does not crop the displayed spectrum.
-
----
-
-## ScopeSensor
-
-`ScopeSensor` (`scope_sensor.py`) describes an IEPE sensor connected to one PicoScope channel.
-
-```python
-sensor.name               # str — user label (e.g., 'PCB 352C33 Ch1')
-sensor.engineering_units  # str — source modality (e.g., 'g', 'mm/s')
-sensor.sensitivity        # float — mV per engineering unit (e.g., 10.2 for 10.2 mV/g)
-sensor.id                 # str — UUID, used as persistent key
-sensor.notes              # str — freeform
-```
-
-Sensors are managed through `ScopeSensorRegistry` and assigned to channels via the GUI Channel Config panel. When a sensor is assigned, `DataCollector` divides incoming mV data by `sensitivity` to produce engineering units before creating `VibeSample` objects.
-
-The display/integration target unit and amplitude mode (`RMS`, `0-P`, `P-P`)
-are **per-channel** settings (`AcquisitionSettings.channel_target_units` /
-`channel_amplitude_modes`), not part of the sensor definition — the same
-sensor can be wired to different channels with different targets.
-
----
-
-## Data Storage
-
-Every stored frame — manual save or Monitor Mode interval/burst — is the
-full raw-acquisition-rate capture (`raw_samplerate`/`raw_blocksize`), not
-the `maxfreq`-driven display rate: storage cost is independent of whatever
-`maxfreq` is set to. This is what lets envelope analysis re-run at full
-bandwidth on an old file even if it was captured with a low `maxfreq` for
-the Spectrum tab. It's also why the per-year estimate in the Monitor
-config dialog can be substantial for a tight interval — see
-[Monitor Mode](#monitor-mode).
-
-### Manual saves (v4 format)
-
-Single-measurement saves written by **File → Save** or `DataCollector.save_data()`, into `~/Documents/Rev80/data/` by default (`_paths.data_dir()`):
-
-```
-~/Documents/Rev80/data/YYYY-MM-DD-HHMMSS.h5
-  /metadata/
-    .attrs              version=4, notes
-    acquisition/        AcquisitionSettings fields
-    scope_sensors/      sensor library snapshot
-    channels/{ch}/      per-channel config
-  /frames/{i}/
-    .attrs              timestamp, rel_time, samplerate, status
-    {ch}/data           (blocksize,) float64 mV, gzip-compressed
-  /trend/{ch}/
-    rel_times, orders   (M,5) integration orders matrix
-```
-
-```python
-collector.save_data(Path("~/Documents/Rev80/data/my_run.h5").expanduser())
-collector.load_data(Path("~/Documents/Rev80/data/my_run.h5").expanduser())
-```
-
-### Monitor sessions (v5 format)
-
-Monitor Mode writes one `session.h5` per session, appending frames as the interval gate fires, under `~/Documents/Rev80/data/monitor/` by default (`--output` overrides this in headless mode; see [CLI Reference](#cli-reference)):
-
-```
-~/Documents/Rev80/data/monitor/{session_id}/session.h5
-  /metadata/
-    .attrs              file_version=5, session_id, start_time, interval_s
-    acquisition/        AcquisitionSettings snapshot at arm time
-    scope_sensors/      sensor library at arm time
-    channels/{ch}/      per-channel config at arm time
-  /monitor/{N}/         one group per interval gate firing (N=0,1,2,…)
-    .attrs              timestamp, rel_time, samplerate, status,
-                        overall_json, peaks_json
-    {ch}/data           (blocksize,) float64 mV, gzip-compressed
-  /burst/{burst_id}/    one group per burst event
-    .attrs              trigger_type, trigger_timestamp, trigger_rel_time,
-                        burst_duration_s, max_overall_json, n_frames,
-                        n_pretrigger_frames
-    {frame_index}/
-      .attrs            timestamp, rel_time, is_pretrigger, overall_json
-      {ch}/data
-  /burst.attrs          burst_list — JSON array of burst summaries
-```
-
-`session_id = "YYYY-MM-DD-HHMMSS"` (UTC). Loaded via the session browser or:
-
-```python
-collector.load_monitor_session(session_h5)
-collector.load_monitor_burst(session_h5, burst_id)
-```
-
----
-
-## PicoScope Integration
-
-Rev80 targets the **PicoScope 4000A series** as its primary acquisition hardware via the `picosdk` Python bindings.
-
-### Key implementation details
-
-| Component | Role |
-| --- | --- |
-| `FindPicoScope()` | Opens each unit in sequence; reads model, serial, build date, channel count via `ps4000aGetUnitInfo`; returns dicts compatible with `VibeSensor(**dev)` |
-| `PicoScopeStream` | Background thread: `ps4000aRunStreaming` → streaming callback → ADC→mV → accumulator → app callback |
-
-**Resilience features:**
-- USB power-source fallback: if `ps4000aOpenUnit` fails, retries with `ps4000aChangePowerSource`
-- Up to 5 open attempts with 1–2 s delay (extended delay after `PICO_NOT_RESPONDING`)
-- Watchdog: if no data arrives for 5 s, attempts up to 3 reconnect cycles before raising
-- Overflow logging rate-limited to once per 2 s per channel to avoid log spam
-
-### Dependencies
+| `--version` | Print the version and exit |
+| `--init-config` | Create the default configuration files and exit |
+| `--list-devices` | List the connected PicoScopes and exit |
+| `--list-sensors` | List the IEPE sensor library and exit |
+| `--edit-config` | Open `acquisition.yaml` in `$EDITOR` (then `$VISUAL`, then `nano`) and exit |
+| `--install-desktop-entry` | Linux: add the application-menu entry and exit |
+| `--uninstall-desktop-entry` | Linux: remove the entry and exit |
+| `--from-file PATH` | Open a measurement `.h5`, a `session.h5`, or a session folder at start |
+| `--autodetect` / `--no-autodetect` | Connect to the first PicoScope at start. Default: on, off with `--from-file` |
+| `--debug` | Verbose logging to the console |
+| `--profile` | Time the pipeline stages and log the table at exit. `REV80_PROFILE=1` does the same. |
+| `headless ...` | Run the headless datalogger |
+
+Examples:
 
 ```bash
-pip install picosdk
+rev80 --from-file ~/Documents/Rev80/data/my_run.h5
+rev80 --from-file ~/Documents/Rev80/data/monitor/2026-06-02-130000/
+rev80 --from-file /mnt/nas/vibration/2026-06-02-130000/session.h5
 ```
 
-The PicoScope 4000A driver (`ps4000a.dll` on Windows, `libps4000a.so` on Linux) must be present on the system path.
+### `rev80 headless` / `rev80-headless`
+
+The four info commands above are also available here.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--interval SECS` | `interval_s` from `acquisition.yaml`, else 600 | Capture interval |
+| `--pre-buffer SECS` | `pre_burst_s`, else 30 | Pre-trigger time |
+| `--burst-duration SECS` | `burst_duration_s`, else 120 | Burst length (limited by `max_burst_s`) |
+| `--output DIR` | `output_dir`, else `~/Documents/Rev80/data/monitor/` | Root folder for sessions |
+| `--no-compress` | `compression` | No gzip |
+| `--start-now` | | Skip the start prompt |
+| `--device SERIAL` | first scope found | Serial number (a part is sufficient), or `sim` |
+| `--channels N [N ...]` | device file | Channels to enable; saved in the device file |
+| `--maxfreq HZ` | `maxfreq` | F_max for this run. Limited to 10000 Hz. |
+| `--binsize HZ` | `binsize` | Bin size for this run |
+| `--debug` | | Verbose logging to the console |
+
+> **Note:** `--help` gives other defaults for `--interval`, `--pre-buffer`
+> and `--burst-duration` (3600, 60 and 60). The code uses the values in this
+> table.
 
 ---
 
-Looking to build, package, or contribute to Rev80? See **[CONTRIBUTING.md](CONTRIBUTING.md)**.
+## Data files
+
+Every stored frame is the raw-rate frame in mV. Analysis settings are not
+fixed in the file: after you load a file, you can change the averaging, the
+declared band, the unit or the pulses per revolution, and Rev80 calculates
+again. Rev80 stores the achieved sample rate as a float.
+
+> **Note for programs that read the files:** A tachometer channel has no
+> `data` dataset. Test for `data` before you read it.
+
+### Measurement files (version 5)
+
+**File → Save** writes the frame cache of the enabled channels to one file,
+by default in `~/Documents/Rev80/data/`. The file is not compressed.
+
+```
+/metadata.attrs                     version = 5, notes
+/metadata/acquisition.attrs         acquisition settings (null stored as '')
+/metadata/scope_sensors/{id}.attrs  each sensor in use
+/metadata/channels/{ch}.attrs       name, unit, coupling, voltage_range,
+                                    scope_sensor_id, target_unit,
+                                    amplitude_mode, role,
+                                    tach_* (tachometer channels only)
+/frames/{i}.attrs                   timestamp, rel_time, samplerate, status
+/frames/{i}/{ch}.attrs              timestamp, rel_time, samplerate, status,
+                                    overflow, degraded
+/frames/{i}/{ch}/data               (N,) float64, mV        vibration channels
+/frames/{i}/{ch}/edge_times         (E,) float64, s from block start
+/frames/{i}/{ch}/pulse_widths       (P,) float64, s          tachometer channels
+/frames/{i}/{ch}.attrs (tach)       also rpm (NaN = none), quality, n_edges,
+                                    interval_spread, speed_drift_pct,
+                                    duty_cycle, pulses_per_rev
+/trend/{ch}/rel_times               (M,) float64, s
+/trend/{ch}/orders                  (M, 5) float64, mV RMS, integration orders −2 to +2
+/trend/{ch}/crest_factor            (M,) float64
+/trend/{ch}/kurtosis                (M,) float64
+/tach_trend/{ch}/rel_times          (M,) float64, s
+/tach_trend/{ch}/rpm                (M,) float64, RPM
+```
+
+### Monitor sessions (version 6)
+
+Monitor Mode writes `{output}/{session_id}/session.h5`. The `session_id` is
+`YYYY-MM-DD-HHMMSS`: UTC for headless, local time for the GUI.
+`start_time` is local time. Frame data is gzip-compressed unless you select
+`none`.
+
+```
+/metadata.attrs                     file_version = 6, session_id, start_time,
+                                    interval_s
+/metadata/acquisition.attrs         acquisition settings at start
+/metadata/scope_sensors/{id}.attrs  sensors at start
+/metadata/channels/{ch}.attrs       channel settings at start (as above)
+/monitor/{N}.attrs                  timestamp, rel_time, samplerate, status,
+                                    overall_json, peaks_json, band_json,
+                                    scalars_json, rpm, speed_ok
+/monitor/{N}/{ch}/...               one channel group, as in version 5
+/burst.attrs                        burst_list (JSON list of burst summaries)
+/burst/{id}.attrs                   trigger_type, trigger_timestamp,
+                                    trigger_rel_time, burst_duration_s,
+                                    max_overall_json, band_json, scalars_json,
+                                    rpm, speed_ok, n_frames, n_pretrigger_frames
+/burst/{id}/{k}.attrs               timestamp, rel_time, samplerate, status,
+                                    is_pretrigger, overall_json
+/burst/{id}/{k}/{ch}/...            one channel group, as in version 5
+```
+
+`rpm` is `NaN` when there is no reading. Rev80 opens a file up to the
+version that it writes (5 for measurements, 6 for sessions).
+
+---
+
+## Signal generator
+
+The PicoScope 4000A has an arbitrary waveform generator (AWG) on its
+front-panel output. Use it for sensor check-out, resonance excitation or
+loopback tests. Set it in the **Generate** tab.
+
+| Setting | Values |
+|---|---|
+| Enable signal generator | on / off |
+| Waveform | Sine, Square, Triangle, Ramp Up, Ramp Down, DC |
+| Frequency (Hz) | 0 to 20000000 |
+| Amplitude pk-pk (mV) | 0 to 4000 |
+| Offset (mV) | −2000 to 2000 |
+
+The generator runs continuously from stream start to stream stop. It is
+programmed once when the stream starts and has no trigger for each block.
+Rev80 saves the settings in the device file and restores them when the same
+device connects. The generator has no effect with the simulated sensor.
+
+---
+
+## Simulated sensor
+
+The simulated sensor lets you use Rev80 with no scope. Select it in the
+Device tab, or use `--device sim` with headless. `--list-devices` does not
+show it.
+
+It generates data at the raw rate (25600 Hz exactly), as the scope does. The
+default signal is a machine with a bearing defect:
+
+- Shaft speed 60 Hz (3600 RPM).
+- Defect impacts at 5.43 × shaft speed, with 1.5 % slip jitter.
+- Each impact rings a 4000 Hz resonance.
+- The load zone modulates the impacts at the shaft speed.
+- White noise.
+
+When the device file has a tachometer channel, that channel gets a 5 V pulse
+train at the same shaft speed.
+
+> **Caution:** The simulated sensor reports exactly 25600 Hz. A real scope
+> reports about 25591.8 Hz. A speed or accuracy result from simulation only
+> can be wrong on hardware.
+
+Other generators in `simulation.py` (`GenerateTone`, `GenerateNoise`, and the
+older spectral and temporal bearing models) are for tests. See
+CONTRIBUTING.md.
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause | Action |
+|---|---|---|
+| The next start fails with `PICO_NOT_FOUND` | The scope stayed open after a crash | Disconnect and connect the USB cable |
+| "PicoScope driver not found" in the Device tab; `--list-devices` says the driver is not installed | PicoSDK is not installed | Install PicoSDK. On Linux, run `sudo ./drivers/install-picoscope4000a-driver.sh`. Restart the computer. |
+| "No devices found" | USB, power or driver | Check the cable. Run `rev80 --list-devices`. |
+| SmartScreen blocks the installer | The installer is not signed | Click *More info*, then *Run anyway* |
+| Anomaly bursts at a 10 % change | An old `acquisition.yaml` holds `rms_pct: 10.0` | Set `rms_pct: 50.0`, or set it in the Monitor tab |
+| Monitor settings changed to 1 h / 60 s / 60 s after you closed the Configuration dialog | The Monitor tab was not opened in this GUI session (see [Monitor Mode](#monitor-mode)) | Open **Monitor Mode → Setup**, set the values again, click **Close** |
+| Shaft speed shows `--` | No signal, too few revolutions in the frame, or a missing tachometer | Read the quality text. Check coupling, range and **Min ampl.** Use a smaller bin size for a slow shaft. |
+| "Overvoltage Ch X" | The input clips | Select a larger **Range** |
+| "rate degraded" | USB delivers too few samples | Use fewer channels, a different USB port, or no USB hub |
+| The monitor records nothing | The stream is stopped | Start the stream. Do not use `Ctrl+K` during a recording. |
+| Load, Load Session or Clear Cache is disabled | A recording runs | Stop the recording |
+| Crash with no message | A hard crash or a kill by the operating system | Read `~/Documents/Rev80/logs/faulthandler.log` and `error.log` |
+
+---
+
+To build, package or change Rev80, read **[CONTRIBUTING.md](CONTRIBUTING.md)**.
