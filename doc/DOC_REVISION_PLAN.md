@@ -1469,6 +1469,17 @@ measurement.
 
 `core.hooksPath` is now `.githooks` (relative).
 
+### 14.5 New package W2-BLD (owner request, 2026-09-30)
+
+Apply the same revision rules to the build chain: `pyproject.toml`,
+`installer/rev80.iss`, `build/rev80.spec`, `build/collect_pico_dlls.py`. Owns
+those four files and the build/release sections of `CONTRIBUTING.md`
+(environment, layout rows for these files, Windows installer, releases). Starts
+after W2-A merges, because both edit CONTRIBUTING. Comments only in the build
+files unless a comment reveals a defect: report defects, do not fix code.
+
+R35 (owner): Done, with the -1.05 dB at 10 Hz point as a note only.
+
 ---
 
 ## 15. Not verifiable here
