@@ -418,7 +418,7 @@ def run(args: argparse.Namespace) -> int:
 
     def _handle_signal(signum, frame):
         rev80.get_logger('rev80-cli').info(
-            f"Signal {signum} received — shutting down after current interval…"
+            f"Signal {signum} received — stopping within about 1 s…"
         )
         shutdown.set()
 
