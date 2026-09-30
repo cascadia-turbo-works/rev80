@@ -330,10 +330,9 @@ before and after for each fix.
 | 2026-09-30 | `34cab9f` | Envelope band limit, degraded-rate text and storage estimate |
 | 2026-09-30 | `3e30b2e` | The GUI refuses a stream stop while a recording runs |
 | 2026-09-30 | `a9d2757` | The Welch Overlap tooltip says that the overlap has no effect |
-
-Two more defects are in work on a separate branch and are not in this table:
-`tach.is_usable` has no caller, so an `inconsistent` or `unsteady` reading
-reaches the speed gate and the RPM trend; and `_dsp.band_rms` has no caller.
+| 2026-09-30 | `a51a26d` | An `inconsistent` or `unsteady` tachometer reading counts as no reading: the speed gate fails closed and the RPM trend does not record it |
+| 2026-09-30 | `186096e` | `_dsp.band_rms` is removed; it had no caller |
+| 2026-09-30 | `59bed55` | GUI sessions use `monitor.compression_level` |
 
 ### Requirements added in Phase 6
 
