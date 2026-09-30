@@ -556,6 +556,10 @@ machine. A refusal to divide by its pulse count is a refusal of the machine.
 
 ## [0.1.3] - 2026-09-17
 
+Tag v0.1.2 was not released: its build failed on the Windows runner. 0.1.3
+contains the same content and the CI fix that installs PicoSDK on the Windows
+runner (`951ff47`).
+
 ### fix/stability-cluster (2026-08-30, merged 2026-09-11)
 
 This branch fixes the four audit findings about whether the app *stays up*,
