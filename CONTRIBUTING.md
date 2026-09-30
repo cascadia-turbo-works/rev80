@@ -26,7 +26,12 @@ operation, configuration and the meaning of the results, see
 ## 1. Development environment
 
 Use Linux or macOS. Python 3.10 is the minimum (`requires-python` in
-`pyproject.toml`). CI tests Python 3.10, 3.11, 3.12 and 3.13.
+`pyproject.toml`), because most modules evaluate their annotations at import
+time. CI tests Python 3.10, 3.11, 3.12 and 3.13 on Linux (`ubuntu-latest`)
+only. The Windows build is in section 10.
+
+On a Linux machine with no desktop, install `libx11-6` first. The compiled
+extension of `dearpygui` loads it, and `import dearpygui` fails without it.
 
 ```bash
 git clone <repo-url>/rev80.git
@@ -36,7 +41,7 @@ cd rev80
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 
-# Install in editable mode with the dev tools (pytest, ruff, pyinstaller, build)
+# Install in editable mode with the dev tools (pytest, ruff, pyinstaller, build, ipykernel)
 pip install -e ".[dev]"
 
 # Enable the git hooks (once for each clone). The hook runs the same ruff
@@ -59,7 +64,21 @@ even when the editable install is broken (see section 2).
 
 The version is not stamped by a commit hook. `setuptools_scm` writes
 `src/rev80/_version.py` at build or install time from `git describe`. The
-file is gitignored.
+file is gitignored. Run `pip install -e .` again after you apply a tag, to
+refresh it. A clone with no reachable tag gets the fallback `0.0.0+unknown`.
+
+Dependencies in `pyproject.toml` have lower bounds, not exact pins. CI
+installs the newest releases, so no job tests the lower bounds. Two
+exceptions:
+
+- **`dearpygui==2.0.0`.** Later versions crash the viewport on Windows.
+  Test on Windows before you change the pin.
+- **`picosdk`** installs from the vendor repository, pinned to one commit.
+  It is not a PyPI package.
+
+`ruff` is bounded (`>=0.15,<0.17`), and `[tool.ruff.lint]` selects the rule
+set explicitly (`E4`, `E7`, `E9`, `F`). The default rule set changes between
+ruff releases: on one tree, ruff 0.15.10 gave 0 errors and 0.16.5 gave 167.
 
 Do not start the GUI from an automated session or a test. The test suite
 creates a dearpygui context but never a viewport, so it needs no display.
@@ -113,12 +132,13 @@ assets/
   fonts/                   CommitMono Nerd Font, tracked (the source of the copy above)
   icons/rev80.svg          App icon source artwork
   icons/rev80.ico          Windows icon for the installer and the exe
+pyproject.toml             Package metadata, dependencies, setuptools_scm, pytest and ruff settings
 build/
-  rev80.spec               PyInstaller build spec
-  collect_pico_dlls.py     Copies the PicoSDK DLLs into drivers/
+  rev80.spec               PyInstaller spec; also writes installer/version.iss
+  collect_pico_dlls.py     Copies ps4000a.dll and picoipp.dll into drivers/
 drivers/                   PicoSDK DLLs for the Windows build (DLLs gitignored);
                            install-picoscope4000a-driver.sh for Linux
-installer/rev80.iss        Inno Setup script
+installer/rev80.iss        Inno Setup script; includes the generated version.iss
 scripts/
   build.sh                 Build pipeline (Git Bash); see section 10
   fetch_font.sh            Copies the tracked font into src/rev80/assets/fonts/
@@ -2195,7 +2215,7 @@ Run from the repository root:
 
 ./scripts/build.sh dlls         # collect the PicoSDK DLLs into drivers/ only
 ./scripts/build.sh pyinstaller  # PyInstaller only
-./scripts/build.sh installer    # Inno Setup only (dist/ must exist)
+./scripts/build.sh installer    # Inno Setup only (the PyInstaller step must have run)
 ./scripts/build.sh wheel        # wheel + sdist; runs on any OS
 
 # Flags, in any position
@@ -2207,8 +2227,22 @@ Every target first runs `scripts/fetch_font.sh` and `pip install -e . --no-deps`
 (to refresh `_version.py`). Thus the build changes the editable install of
 the active environment to point at this checkout.
 
-`build/collect_pico_dlls.py` finds `ps4000a.dll` and `picoipp.dll` from the
-PicoSDK install (registry), from `PICO_DLL_DIR`, or from `vendor/pico/`.
+`build/collect_pico_dlls.py` copies `ps4000a.dll` and `picoipp.dll` into
+`drivers/`. It searches these directories in this order, and the first match
+wins:
+
+1. The `InstallPath` registry value of PicoSDK, plus `\lib`. PicoSDK 11.x
+   writes no registry value.
+2. `C:\Program Files\Pico Technology\SDK\lib`, then the `(x86)` equivalent.
+3. The directory in the `PICO_DLL_DIR` environment variable.
+4. `vendor/pico/` in the repository (gitignored).
+
+A full build without `nodlls` stops if a DLL is missing or is not 64-bit.
+
+The PyInstaller step (`build/rev80.spec`) reads the version from
+`_version.py` and writes `installer/version.iss`. `installer/rev80.iss`
+includes that file and packs `dist/rev80/`. Thus the `installer` target needs
+the output of the PyInstaller step.
 
 > **`python -m build` does not work from the repository root.** The
 > repository's `build/` directory hides the `build` package from PyPI, so
@@ -2221,9 +2255,16 @@ PicoSDK install (registry), from `PICO_DLL_DIR`, or from `vendor/pico/`.
 | Path | Contents |
 |---|---|
 | `dist/rev80/rev80.exe` | Stand-alone executable (no installation necessary) |
-| `installer/Output/Rev80Setup-<version>.exe` | Installer with Start Menu shortcut and uninstaller |
+| `dist/rev80/_internal/` | Python runtime, `rev80/logging.yaml`, `assets/`, `drivers/` (PyInstaller 6 layout; `sys._MEIPASS` points here) |
+| `installer/Output/Rev80Setup-<version>.exe` | Installer with Start Menu shortcut, optional desktop shortcut and uninstaller |
 | `dist/rev80-<version>-py3-none-any.whl` | Python wheel |
 | `dist/rev80-<version>.tar.gz` | Source distribution |
+
+The installer needs no admin rights. A per-user install goes to
+`%LOCALAPPDATA%\Programs\Rev80`; a dialog permits an install for all users.
+The uninstaller does not delete the user data in `Documents\Rev80\` or the
+configuration in `%APPDATA%\rev80\`. If PicoSDK is not found, the installer
+asks the user to continue or stop.
 
 ### 10.4 Constraints
 
@@ -2234,6 +2275,14 @@ PicoSDK install (registry), from `PICO_DLL_DIR`, or from `vendor/pico/`.
 - **USB kernel driver.** `ps4000a.dll` is the user-mode library. PicoSDK
   installs the kernel driver separately and needs a restart before the first
   connection to a scope.
+- **Windows 10 version 1809 (build 17763) or later.** `MinVersion` in
+  `installer/rev80.iss` sets it.
+- **UPX stays off** in `build/rev80.spec`. UPX compression of
+  `python3XX.dll` makes the exe fail at start with "LoadLibrary failed".
+- **Do not change `AppId`** in `installer/rev80.iss`. Setup uses it to find
+  an earlier install for upgrade and uninstall.
+- **The frozen interpreter is the build interpreter.** The release workflow
+  uses Python 3.12 (x64). A change of that version changes what users run.
 - **No code signing.** Windows SmartScreen shows a warning at the first
   start. Sign with `osslsigncode` and a certificate if necessary.
 - **A local full build needs Windows.** PyInstaller does not cross-compile,
@@ -2256,18 +2305,22 @@ git push origin v0.2.0
 # -> test gate -> wheel (ubuntu) + installer (windows) + docs (ubuntu) -> draft release
 ```
 
-`workflow_dispatch` runs the same jobs on any ref without a release. The
-`release` job runs only for a tag.
+`workflow_dispatch` runs the same jobs on any ref without a release. It is
+available only when `release.yml` is on the default branch. The `release`
+job runs only for a tag.
 
 Five facts about the workflow:
 
 - **CI installers are driver-less by choice.** The build passes `nodlls`, so
   no DLLs are bundled. The user installs PicoSDK, and the installer warns if
   it is missing. A local `./scripts/build.sh` still bundles `ps4000a.dll`
-  and `picoipp.dll`. `rev80.spec` bundles `drivers/` also when it is empty,
-  and `_pico_loader.ensure_pico_dlls_loadable()` warns but does not raise.
-  To ship the DLLs, remove `nodlls`. The Pico redistribution licence
-  controls that decision.
+  and `picoipp.dll`. In a checkout, `drivers/` is never empty: it holds the
+  tracked `.gitkeep`, `.gitignore` and `install-picoscope4000a-driver.sh`.
+  Thus `rev80.spec` always bundles `drivers/`, and
+  `_pico_loader.ensure_pico_dlls_loadable()` registers it with no warning.
+  `picosdk` then finds `ps4000a.dll` with `ctypes.util.find_library`, which
+  searches `PATH`. To ship the DLLs, remove `nodlls`. The Pico
+  redistribution licence controls that decision.
 - **PicoSDK is installed on the Windows runner.** This is a different
   requirement from bundling. The `setup.py` of `picosdk` loads the native
   DLLs at **install** time. Without the SDK, `find_library()` returns
@@ -2303,10 +2356,14 @@ Use a throwaway tag first. Check that the installer job log shows a real
 version, not the fallback:
 
 ```bash
-git tag v0.0.1rcx && git push origin v0.0.1rcx
+git tag v0.0.1rc1 && git push origin v0.0.1rc1
 # ...then delete the draft release and:
-git push origin :v0.0.1rcx && git tag -d v0.0.1rcx
+git push origin :v0.0.1rc1 && git tag -d v0.0.1rc1
 ```
+
+The tag must be a valid PEP 440 version after the `v`. On a commit tagged
+`v0.0.1rcx`, `setuptools_scm` 10.3.4 stops with *Can't parse version from
+tag*.
 
 The `gh release create --draft` step runs only on a tag. A branch run or a
 manual run does not test it.
