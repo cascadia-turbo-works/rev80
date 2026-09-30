@@ -62,8 +62,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 #### Fixed
 - **The installer shortcuts had no icon.** `installer/rev80.iss` pointed
-  `IconFilename` at `{app}\rev80.ico`, and no file is at that path. The
-  shortcuts now use the icon embedded in `rev80.exe`.
+  `IconFilename` at `{app}\rev80.ico`, and no file is at that path.
+  PyInstaller 6 puts data files under `_internal\`. The shortcuts now point
+  at `{app}\_internal\assets\icons\rev80.ico`.
 
 #### Changed
 - **`AppId` is a real GUID.** It was the placeholder
