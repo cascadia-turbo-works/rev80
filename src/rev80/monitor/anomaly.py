@@ -31,33 +31,13 @@ class AnomalyEvent:
 
 
 def valid_results(results: list) -> list:
-    """Drop frames that are not valid measurements.
+    """Return the results that a hook may evaluate or learn from.
 
-    A frame whose ADC clipped (overflow) reads high and carries harmonic
-    distortion that is an artifact of the clipping, not of the machine. A
-    frame captured while USB streaming was degraded is missing samples. Either
-    one looks exactly like a real step change in level, so feeding them to a
-    threshold detector is the classic spurious-alarm mechanism — and the
-    operator investigating has no way to tell, because the stored record used
-    to come back with the flags stripped (see collector._read_frame_group).
-
-    Flagged frames are excluded from both event evaluation and baseline
-    adaptation: letting one into an EWMA baseline poisons the reference for
-    the following ~33 frames just as surely as firing on it raises a false
-    alarm now.
-
-    A frame captured outside the declared shaft-speed window is excluded for a
-    different reason than the other two: its amplitude is *correct*, it is
-    simply not comparable. For a rigid rotor below its first critical the 1x
-    velocity goes as omega^3, so a 3.2% speed change alone moves the overall
-    10% -- the shipped RmsThresholdHook default. Without this clause the
-    detector measures load rather than condition on any VFD or load-following
-    machine. Such a frame is still measured, displayed and stored; it is kept
-    out of alarm evaluation and baseline adaptation only.
-
-    This is the single place the speed gate is applied. Adding it as a hook
-    parameter instead would mean editing `_build_anomaly_hook` in both gui.py
-    and headless.py, which audit H-01 exists to prevent.
+    Drops results with `overflow` or `degraded` set, or with `speed_ok` False.
+    The frame is still shown and stored, but it must not raise an alarm or
+    move a baseline. This is the only place the speed gate is applied: do not
+    add it to `_build_anomaly_hook`, which is still copied in `gui.py` and
+    `headless.py`. Evidence: CONTRIBUTING.md, "E20. Speed gate".
     """
     return [r for r in results
             if not (getattr(r, 'overflow', False) or getattr(r, 'degraded', False))
@@ -70,51 +50,24 @@ class AnomalyHook(Protocol):
 
 
 class NullAnomalyHook:
-    """Phase 1 stub — never fires."""
+    """A hook that never fires. Use it to record with no anomaly detection."""
     def on_results(self, results: list, frame_cache) -> 'AnomalyEvent | None':
         return None
 
 
 class RmsThresholdHook:
-    """EWMA self-calibrating RMS baseline — fires when deviation exceeds threshold.
+    """Fire when a channel's overall deviates from its EWMA baseline.
 
     Parameters
     ----------
-    rms_threshold_pct:
-        Percentage deviation from the EWMA baseline that triggers an event
-        (e.g. 50 means 50 %).
-
-        The default was 10 %, which a 3.2 % speed change crosses on its own.
-        For a rigid rotor below its first critical the 1x velocity goes as
-        omega^3, so a typical induction motor's ~2 % no-load-to-full-load slip
-        swing shows up as a +6 % rise on a machine whose condition has not
-        changed -- and on a VFD or load-following machine the detector was
-        measuring load rather than condition.
-
-            speed deviation   1x velocity change
-                 0.5 %              +1.5 %
-                 1.0 %              +3.0 %
-                 2.0 %              +6.1 %
-                 3.2 %             +10.0 %   <- the old default
-                 5.0 %             +15.8 %
-                10.0 %             +33.1 %
-
-        50 % is the level at which a broadband RMS rise means something on its
-        own, without a speed reference. Where a tachometer is fitted the speed
-        gate (see valid_results) is the more certain discriminator and this can
-        be tightened per installation; where one is not -- common, and often
-        impractical to retrofit -- detection has to come from envelope
-        techniques or fixed thresholds instead.
-    consecutive_n:
-        Number of consecutive above-threshold frames required before firing.
-    baseline_alpha:
-        EWMA decay factor.  Higher → slower adaptation.  0.97 ≈ 33-frame
-        half-life.
-    min_baseline_samples:
-        Warmup period; no events are raised until each channel has received
-        at least this many samples.
-    burst_duration_s:
-        Duration placed in the returned AnomalyEvent.
+    rms_threshold_pct: deviation from the baseline that fires, in % (50 = 50 %).
+        A 3.2 % shaft-speed change alone moves the overall 10 %. Evidence:
+        CONTRIBUTING.md, "E16. Anomaly thresholds".
+    consecutive_n: consecutive frames above the threshold before the event fires.
+    baseline_alpha: EWMA decay per frame. 0.97 is a time constant of about
+        33 frames (half-life about 23 frames).
+    min_baseline_samples: frames per channel before an event can fire.
+    burst_duration_s: value put into the returned AnomalyEvent, in s.
     """
 
     def __init__(
@@ -251,22 +204,13 @@ class RmsThresholdHook:
 
 
 class SpectralThresholdHook:
-    """EWMA self-calibrating per-bin baseline — fires when any bin deviates beyond threshold.
+    """Fire when any spectrum line in the band deviates from its EWMA baseline.
 
-    Parameters
-    ----------
-    spectral_threshold_pct:
-        Percentage deviation from the EWMA baseline that triggers (e.g. 50 means 50 %).
-    consecutive_n:
-        Number of consecutive above-threshold frames required before firing.
-    baseline_alpha:
-        EWMA decay factor per bin.  0.995 ≈ very slow adaptation (~200-frame half-life).
-    min_baseline_samples:
-        Warmup period; no events until each channel has at least this many frames.
-    fmin, fmax:
-        Frequency band limits (Hz).  None or negative value means no limit on that side.
-    burst_duration_s:
-        Duration placed in the returned AnomalyEvent.
+    Not offered in the GUI, because it fires on healthy one-segment Welch
+    spectra (tracked as R39 in doc/PROGRESS.md; evidence: CONTRIBUTING.md,
+    "E16. Anomaly thresholds"). Headless still accepts it. Units: threshold
+    in %, counts in frames, fmin and fmax in Hz (None = no limit).
+    baseline_alpha is per frame: 0.995 is a time constant of about 200 frames.
     """
 
     def __init__(
@@ -392,29 +336,13 @@ class SpectralThresholdHook:
 
 
 class FixedThresholdHook:
-    """Fires immediately when the broadband overall amplitude crosses a fixed,
-    user-specified level — no baseline calibration or warmup involved.
+    """Fire when a channel's overall crosses a fixed upper or lower limit.
 
-    Either or both limits may be enabled independently:
-
-    Parameters
-    ----------
-    upper_limit, upper_unit:
-        If `upper_limit` is not None, fires when ``overall > upper_limit``
-        (converted into the channel's reported unit).
-    lower_limit, lower_unit:
-        If `lower_limit` is not None, fires when ``overall < lower_limit``
-        (converted into the channel's reported unit).
-    burst_duration_s:
-        Duration placed in the returned AnomalyEvent.
-
-    Threshold values are entered in an arbitrary engineering unit and
-    converted to ``ChannelResult.unit`` via the SI ratio in `UNIT_TO_SI`.
-    Conversion is only possible between units of the same physical modality
-    (e.g. velocity↔velocity). If the channel has no sensor assigned (its
-    reported unit is the raw passthrough 'mV') or the modalities differ, the
-    conversion is impossible — a warning is logged once per channel and that
-    channel is simply skipped.
+    No baseline and no warm-up. Set `upper_limit` or `lower_limit` to None to
+    disable that side. Each limit is in its own unit and is converted to
+    `ChannelResult.unit` through `UNIT_TO_SI`. If the channel has no sensor
+    (unit 'mV') or the quantities differ, that channel is skipped and a
+    warning is logged once.
     """
 
     def __init__(

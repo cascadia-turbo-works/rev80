@@ -15,12 +15,12 @@ log = rev80.get_logger(__name__)
 class MonitorController:
     """Gate, anomaly detection, and write dispatch for Monitor Mode.
 
-    Recording lifecycle: start(session, anomaly_hook) / stop(). The anomaly
-    hook is supplied at session start and active for the whole session — there
-    is no separate arm/disarm step; config alone controls detection.
+    Lifecycle: start(session, anomaly_hook) / stop(). The hook given to
+    start() is active for the whole session; there is no arm step.
 
-    Called from the GUI thread via ``on_results(results, frame_cache)``
-    after each call to ``collector.process_samples()``.
+    Call ``on_results(results, frame_cache)`` after each call to
+    ``collector.process_samples()``, from the same thread (the GUI render
+    loop or the headless loop).
     """
 
     def __init__(self) -> None:
@@ -49,13 +49,9 @@ class MonitorController:
         self._last_frame:           dict | None  = None
         self._last_results:         list         = []
 
-        # Resource trail. An OOM kill is SIGKILL: no traceback, no atexit, no
-        # log line — the process simply vanishes, which is exactly the
-        # "crashed with no evidence" report. The only way to attribute one
-        # afterwards is a trail written BEFORE it, so an unattended session
-        # logs memory, thread count, burst retention and writer queue depth on
-        # a slow cadence. Cheap, and it turns an unexplained disappearance into
-        # a readable ramp.
+        # Resource trail. An OOM kill leaves no traceback, so a session logs
+        # memory, threads, burst retention and queue depth every
+        # TRAIL_INTERVAL_S. The log then shows the ramp before the kill.
         self._last_trail_mono: float = 0.0
 
     # ------------------------------------------------------------------
@@ -159,6 +155,9 @@ class MonitorController:
                 [[]] * self._burst_pretrigger + [list(self._last_results)])
         else:
             self._burst_all_results = []
+        # This path does not use capped_burst_end() and does not set
+        # _max_burst_frames: the end is burst_duration_s after now, and the
+        # frame cap is whatever the last anomaly burst left (none before one).
         self._gate.enter_burst(self._session.burst_duration_s, now, self._session.max_burst_s)
         self._start_cooldown(now)
         log.info('Monitor burst triggered manually')
@@ -167,7 +166,7 @@ class MonitorController:
         """Cached frames, oldest first, that end at the last processed frame.
 
         Returns an empty list when on_results has not seen a frame, or when
-        that frame is no longer in the cache.
+        that frame has left the cache.
         """
         if not self._last_frame_cache or self._last_frame is None:
             return []
@@ -187,33 +186,12 @@ class MonitorController:
 
     @staticmethod
     def burst_frame_cap(max_burst_s: float, acquisition_period: float) -> int:
-        """How many frames a burst may retain, derived from max_burst_s.
+        """Frames that one burst may keep: max_burst_s / acquisition_period + 1.
 
-        Burst capture held every frame AND every ChannelResult, with no cap at
-        all, until the single flush at the end -- and S-02b meant max_burst_s
-        was inert on the anomaly path, so unattended there was no end. That is
-        an OOM kill on the documented Raspberry Pi target: SIGKILL, no
-        traceback, nothing in the log (audit S-02a).
-
-        Measured on 4 channels through the real pipeline, at RAW_SAMPLERATE_HZ
-        = 25600 (deep ndarray bytes reachable from one retained frame + its
-        ChannelResults):
-
-            binsize   period   raw block   retained   multiple
-              0.5 Hz   2.000 s   1.638 MB   4.517 MB    2.76x
-              1.0 Hz   1.000 s   0.819 MB   2.259 MB    2.76x
-              2.0 Hz   0.500 s   0.410 MB   1.130 MB    2.76x
-
-        The multiple is flat because retention is raw-rate storage plus its
-        derived views. What that means for growth is the point: **2.26 MB/s on
-        4 channels, or ~8.1 GB/h, independent of BOTH F_max and binsize** --
-        since the raw/display split, stored frames are the fixed-rate capture,
-        so a lower F_max no longer buys any headroom here the way it did when
-        this defect was first written up. At the shipped max_burst_s default of
-        600 s the cap holds one burst to ~1.36 GB.
-
-        Deriving the cap from the configured burst length keeps it honest
-        rather than a magic number.
+        Never fewer than MIN_BURST_FRAMES. A burst holds all its frames and
+        results in memory until the flush, about 2.26 MB/s on 4 channels at
+        any F_max and binsize, so this cap prevents an OOM kill. Evidence:
+        CONTRIBUTING.md, "E17. Burst memory".
         """
         if acquisition_period <= 0:
             return MonitorController.MIN_BURST_FRAMES
@@ -223,13 +201,9 @@ class MonitorController:
     @staticmethod
     def capped_burst_end(now: float, duration_s: float,
                          max_burst_s: float, burst_start: float) -> float:
-        """Burst end time, clamped so it cannot exceed max_burst_s.
+        """Burst end time, clamped to burst_start + max_burst_s (all in s).
 
-        The manual path went through IntervalGate.enter_burst(), which applies
-        this clamp. The ANOMALY path set _burst_end_mono directly and skipped
-        it -- so the cap was inert on exactly the path that fires unattended
-        (audit S-02b). A max_burst_s of 0 or None means unset, not
-        zero-length.
+        A max_burst_s of 0 or None means no limit, not a zero-length burst.
         """
         end = now + float(duration_s)
         if max_burst_s and max_burst_s > 0:
@@ -258,6 +232,8 @@ class MonitorController:
                     resource_snapshot(),
                     burst_frames=len(self._burst_frames),
                     queue=getattr(writer, 'queue_depth', -1),
+                    # Open defect: the controller has no _monitor_count
+                    # (it is _capture_count), so this always logs -1.
                     captures=self._monitor_count if hasattr(self, '_monitor_count') else -1,
                 ),
             )
@@ -265,7 +241,7 @@ class MonitorController:
             log.debug('resource trail failed', exc_info=True)
 
     def on_results(self, results: list, frame_cache: deque) -> None:
-        """Called from GUI thread after process_samples(). Non-blocking."""
+        """Handle one frame's results. Call after process_samples(). Does not block."""
         if not self._recording or not results:
             return
 
@@ -326,9 +302,7 @@ class MonitorController:
             'burst_count':      self._burst_count,
             'next_capture_s':   time_next,
             'queue_depth':      depth,
-            # Surfaced rather than silent: enqueue() previously always
-            # reported success, so the capture counter it gates counted
-            # captures that were never written to disk (S-02c).
+            # Captures lost because the writer queue was full.
             'dropped_captures': dropped,
             'total_bytes':      total_bytes,
             'error':            str(err) if err else None,
@@ -371,14 +345,8 @@ class MonitorController:
         ch_snap   = session.channel_snapshot   # {str(ch): {scope_sensor_id, ...}}
         sens_snap = session.sensor_snapshot    # {sensor_id: ScopeSensor.to_dict()}
 
-        # Rehydrate real ScopeSensor objects once, up front, rather than
-        # reading raw dict keys per frame. sensor_snapshot holds
-        # ScopeSensor.to_dict() output, so the field names must match
-        # ScopeSensor exactly — this previously read a key
-        # ('sensitivity_mv_per_eu') that to_dict() has never emitted, so the
-        # 1.0 default always won and the mV->EU division silently never
-        # happened. Going through from_dict() means the field name can only
-        # be wrong in one place.
+        # Rebuild ScopeSensor objects with from_dict(). Do not read the dict
+        # keys here: the field names must be defined in ScopeSensor only.
         sensors: dict = {}
         for _sid, _cfg in sens_snap.items():
             try:
@@ -394,11 +362,9 @@ class MonitorController:
                 if not isinstance(ch, int):
                     continue
                 if getattr(sample, 'tach', None) is not None:
-                    # A tachometer channel has no overall. Its
-                    # overall_ampl_by_integration_order is never populated,
-                    # because process_sample never runs on it -- so including
-                    # it here writes 0.0, and load_monitor_session then rebuilds
-                    # a trend line pinned at zero for that channel.
+                    # A tachometer channel has no overall. Including it
+                    # writes 0.0, and the loaded session shows a trend line
+                    # at zero for that channel.
                     continue
                 ch_cfg  = ch_snap.get(str(ch), {})
                 sid     = ch_cfg.get('scope_sensor_id')
@@ -424,12 +390,13 @@ class MonitorController:
     def _start_burst(self, event: AnomalyEvent, results: list,
                      frame_cache: deque, now: float, rel_time: float) -> None:
         self._in_burst            = True
-        # Through the shared clamp, so max_burst_s applies here too. This path
-        # previously set the end time directly and bypassed IntervalGate's
-        # cap entirely (audit S-02b).
+        # Through the shared clamp, so max_burst_s applies to this path.
         max_burst_s = self._session.max_burst_s if self._session else 0.0
         self._burst_end_mono      = self.capped_burst_end(
             now, event.burst_duration_s, max_burst_s, burst_start=now)
+        # Open defect: MonitorSession has no acquisition_period field, so
+        # this passes 0.0 and the cap is MIN_BURST_FRAMES (4 frames). An
+        # anomaly burst then keeps only its last 4 frames.
         self._max_burst_frames    = self.burst_frame_cap(
             max_burst_s or event.burst_duration_s,
             self._session.acquisition_period if self._session

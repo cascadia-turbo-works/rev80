@@ -59,8 +59,11 @@ class VibeSensor:
                                serial=self.serial_number, siggen_config=siggen_config)
 
     def _callback(self, raw_data: np.ndarray, frames: int, cb_time, cb_status):
-        """SimulatedSensor callback — packages raw data into a dict and forwards
-        to the registered app callback (DataCollector.receive_data)."""
+        """SimulatedSensor callback: package a block and pass it to the app callback.
+
+        Only the simulated stream uses it; PicoScopeStream calls the app
+        callback (DataCollector.receive_data) directly.
+        """
         status = str(cb_status)
         try:
             rel_time = float(cb_time)
@@ -68,13 +71,9 @@ class VibeSensor:
             rel_time = 0.0
 
         data = raw_data.copy()
-        # `scale` is per-channel, but its length comes from the device record
-        # while the column count comes from however many channels are enabled.
-        # simulated() ships a 2-element scale, so three enabled channels raised
-        # a broadcast ValueError inside SimulatedSensor._stream -- which had no
-        # try/except, so the acquisition thread died while _running stayed set
-        # and is_streaming reported a healthy stream that produced nothing,
-        # indefinitely (audit S-12). Fit the scale to the data instead.
+        # `scale` has one entry per device channel, but the data has one
+        # column per enabled channel. Fit the scale to the column count: a
+        # broadcast error here stops the simulated stream thread.
         if data.ndim == 2:
             scale = np.asarray(self.scale, dtype=np.float64).ravel()
             n_ch = data.shape[1]
@@ -122,18 +121,10 @@ class VibeSensor:
 def _simulate_tach_sources(stream, config) -> None:
     """Give a simulated tachometer channel an actual pulse train.
 
-    `SimulatedSensor` tiles one generator across every enabled channel
-    unless `channel_sources` says otherwise, so without this a tach-role
-    channel receives the same accelerometer waveform as the vibration
-    input -- which is not a tachometer signal and reads as `no_signal`.
-    Nothing in the package set `channel_sources`; only tests did, which
-    meant neither front end could be dry-run against a tach offline.
-
-    `machine_with_tach_sources` is used rather than two separate
-    generators because the coherence is the point: a pulse train that is
-    not locked to the vibration channel's own shaft rate simulates a
-    tachometer reading a different machine, and would validate nothing.
-    Vibration channels it does not name keep the default source.
+    Without this, `SimulatedSensor` sends the vibration waveform to every
+    channel, and a tachometer channel reads `no_signal`. The pulse train is
+    locked to the shaft rate of the first vibration channel
+    (`machine_with_tach_sources`). Other channels keep the default source.
     """
     tach_channels = config.tach_channels
     if not tach_channels:

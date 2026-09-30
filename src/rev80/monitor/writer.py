@@ -1,4 +1,4 @@
-"""Monitor writer — accumulates all session frames into a single session.h5 (file_version=5)."""
+"""Monitor writer: a daemon thread that appends a session's captures and bursts to one session.h5 (file_version 6)."""
 
 import json
 import queue
@@ -17,23 +17,17 @@ _QUEUE_WARN_DEPTH: int = 50
 _FILE_VERSION: int = 6
 
 
-# Deliberately the same function DataCollector.save_data uses, not a copy.
-# The previous local copy had drifted and wrote no overflow/degraded attrs,
-# so monitor sessions stored clipped captures indistinguishable from clean
-# ones. Importing it is what keeps the two write paths honest.
+# The same channel writer as DataCollector.save_data. Do not add a local
+# copy: both file types must store the overflow and degraded flags.
 from rev80.collector import _write_channel_group, role_of_sample  # noqa: E402
 
 
 def _frame_speed(results: list) -> tuple[float, bool]:
-    """Shaft speed for a capture, and whether it was inside the declared window.
+    """Return (shaft speed in RPM, speed_ok) for a capture.
 
-    A scalar rather than a per-channel map: this instrument supports one
-    tachometer on one shaft (multi-shaft needs order ratios and a machine-train
-    model, which is a different feature), so every result in a frame carries
-    the same reading and a {ch: rpm} map would be redundant.
-
-    NaN means no reading. It is never 0.0 -- "I cannot see a tach signal" and
-    "the shaft is stopped" lead an analyst to different places.
+    One value, not one per channel: every result of a frame carries the same
+    shaft speed. NaN means no reading, never 0.0, because "no signal" is not
+    "stopped".
     """
     for r in results:
         rpm = getattr(r, 'rpm', None)
@@ -46,10 +40,8 @@ def _frame_speed(results: list) -> tuple[float, bool]:
 def _compute_overall_peaks(results: list) -> tuple[str, str, str, str]:
     """Return (overall_json, peaks_json, band_json, scalars_json) from ChannelResults.
 
-    The band goes in beside the overall because an overall without the band it
-    was measured over cannot be compared with any other one -- it was the
-    absence of exactly this that let the same trend mix readings taken over
-    bands differing by a factor of two (M-06).
+    The band is stored beside the overall, because an overall is comparable
+    only with an overall measured over the same band.
     """
     overall: dict[str, float] = {}
     peaks: dict[str, list] = {}
@@ -81,11 +73,9 @@ class MonitorWriterThread:
 
     def __init__(self, session: MonitorSession):
         self._session = session
-        # Bounded. An unbounded queue turns a slow disk into unbounded memory
-        # growth, and made the `except queue.Full` branch below unreachable
-        # dead code: enqueue() always returned True, and its return is what
-        # increments the capture counter, so the UI reported successes that
-        # were never written (audit S-02c).
+        # Bounded, so a slow disk cannot grow memory without limit. When it is
+        # full, enqueue() drops the item and returns False; the controller
+        # counts a capture only when enqueue() returns True.
         self._queue: queue.Queue = queue.Queue(maxsize=self.MAX_QUEUE_DEPTH)
         self._stop_event = threading.Event()
         self._thread = threading.Thread(
@@ -285,12 +275,12 @@ class MonitorWriterThread:
             gate_grp.attrs['speed_ok'] = speed_ok
 
             for ch, sample in sorted(ch_samples.items()):
-                # role= is not optional here. It defaults to 'vibration', and
-                # omitting it stored a tachometer channel's full waveform in
-                # every monitor session -- ~1400x the size of its edge times,
-                # on the one code path that runs unattended for hours, and
-                # without the per-frame rpm/quality that makes the speed a
-                # view on stored data (decision D-2).
+                # Always pass role=. The default 'vibration' stores a
+                # tachometer channel's whole waveform (25600 samples/s)
+                # instead of its edge times and speed attributes.
+                # Open defect: session.compression 'none' goes to h5py
+                # unchanged. h5py raises ValueError, and the session stops
+                # at its first write (seen with rev80-headless --no-compress).
                 _write_channel_group(
                     gate_grp, ch, sample,
                     compression=session.compression,
@@ -329,7 +319,7 @@ class MonitorWriterThread:
 
             bid_grp = burst_root.create_group(burst_id)
             bid_grp.attrs['trigger_type']        = trigger
-            bid_grp.attrs['trigger_timestamp']   = timestamp_str   # trigger time (UTC ISO)
+            bid_grp.attrs['trigger_timestamp']   = timestamp_str   # trigger time, local, ISO 8601, no offset
             bid_grp.attrs['trigger_rel_time']    = rel_time        # session-relative trigger time
             bid_grp.attrs['burst_duration_s']    = duration_s
             bid_grp.attrs['max_overall_json']    = overall_json
