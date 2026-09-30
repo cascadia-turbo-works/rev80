@@ -58,6 +58,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `CLAUDE.md` still had its old IDs, and only `[Unreleased]` and `[0.1.3]` of
   this file were revised. Later commits on the same branch do the rest.
 
+### build — installer identity and shortcut icon (2026-09-30)
+
+#### Fixed
+- **The installer shortcuts had no icon.** `installer/rev80.iss` pointed
+  `IconFilename` at `{app}\rev80.ico`, and no file is at that path. The
+  shortcuts now use the icon embedded in `rev80.exe`.
+
+#### Changed
+- **`AppId` is a real GUID.** It was the placeholder
+  `A1B2C3D4-E5F6-7890-ABCD-EF1234567890`. Setup does not upgrade an install
+  made with the old `AppId` in place: uninstall v0.1.3 once before you install
+  a later version.
+- **`build/rev80.spec`** no longer passes `win_no_prefer_redirects`,
+  `win_private_assemblies` or `cipher`. They have no effect in PyInstaller 6.
+
+#### Notes for the next person
+- Not verified by a Windows build yet. The next release-tag build verifies it.
+
 ### fix/tach — unusable tach readings, GUI compression level (2026-09-30)
 
 #### Fixed
