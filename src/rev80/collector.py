@@ -81,6 +81,17 @@ def role_of_sample(sample) -> str:
     return 'tachometer' if getattr(sample, 'tach', None) is not None else 'vibration'
 
 
+def _stored_waveforms(h5_grp):
+    """Yield (ch, data) for each channel group in h5_grp that has a waveform.
+
+    A tachometer channel group has no 'data' dataset, so this skips it.
+    """
+    for ch_str in [k for k in h5_grp.keys() if k.isdigit()]:
+        if "data" not in h5_grp[ch_str]:
+            continue
+        yield int(ch_str), np.asarray(h5_grp[ch_str]["data"][()], dtype=np.float64)
+
+
 def _write_channel_group(h5_grp, ch: int, sample: 'rev80.VibeSample',
                          compression: str | None = None,
                          compression_opts: int | None = None,
@@ -968,8 +979,8 @@ class DataCollector:
         freq_hz      = freq_hz[keep_band]
         spectrum_amp = spectrum_amp[keep_band]
 
-        # A peak is a line config.peak_threshold_db above its own local noise
-        # floor; the count is not fixed (see rev80.peaks). n_segments feeds the
+        # Report each line that is config.peak_threshold_db above its own local
+        # noise floor. See CONTRIBUTING.md, "E12.1. Method". n_segments feeds the
         # median-to-mean floor correction. It is 1 at every shipped preset,
         # but it is computed here, not assumed.
         seg_len    = min(config.nperseg, len(filtered_mv))
@@ -1882,9 +1893,7 @@ class DataCollector:
             for i, key in enumerate(keys):
                 grp     = mon_grp[key]
                 overall = {}
-                for ch_str in [k for k in grp.keys() if k.isdigit()]:
-                    ch   = int(ch_str)
-                    data = np.asarray(grp[ch_str]["data"][()], dtype=np.float64)
+                for ch, data in _stored_waveforms(grp):
                     ts   = str(grp.attrs.get("timestamp", ""))
                     sr   = float(grp.attrs.get("samplerate", self.config.raw_samplerate))
                     try:
@@ -1920,9 +1929,7 @@ class DataCollector:
                     for fi_str in [k for k in bid_grp.keys() if k.isdigit()]:
                         fi_grp  = bid_grp[fi_str]
                         overall = {}
-                        for ch_str in [k for k in fi_grp.keys() if k.isdigit()]:
-                            ch   = int(ch_str)
-                            data = np.asarray(fi_grp[ch_str]["data"][()], dtype=np.float64)
+                        for ch, data in _stored_waveforms(fi_grp):
                             ts   = str(fi_grp.attrs.get("timestamp", ""))
                             sr   = float(fi_grp.attrs.get("samplerate",
                                                           self.config.raw_samplerate))
