@@ -885,8 +885,9 @@ PicoSDK install (registry), from `PICO_DLL_DIR`, or from `vendor/pico/`.
 ### 10.4 Constraints
 
 - **64-bit only.** The PicoSDK DLLs are 64-bit.
-- **dearpygui is pinned to 2.0.0** in `pyproject.toml`. Do not change the pin
-  without a test on Windows.
+- **dearpygui is pinned to 2.0.0** in `pyproject.toml`, because later versions
+  crash the viewport on Windows. Do not change the pin without a test on
+  Windows.
 - **USB kernel driver.** `ps4000a.dll` is the user-mode library. PicoSDK
   installs the kernel driver separately and needs a restart before the first
   connection to a scope.
