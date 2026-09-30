@@ -406,8 +406,7 @@ def test_causal_highpass_no_severe_edge_overshoot():
 
     assert result is not None
     expected = acc_ampl / (2 * np.pi * freq)  # == 1.0
-    # Wide bound: hardware data showed 55 % and 31 % edge overshoot with the
-    # causal filter, against 350 % and 246 % before the change to it.
+    # Wide bound: it catches a severe edge overshoot, not a small one.
     assert np.abs(result.time_data).max() < expected * 2.0, (
         f'time_data max {np.abs(result.time_data).max():.4f} far exceeds '
         f'expected ~{expected:.4f} -- possible regression to severe edge overshoot'
