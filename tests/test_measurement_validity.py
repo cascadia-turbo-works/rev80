@@ -1,19 +1,8 @@
-"""Measurement-validity regression tests (branch: fix/measurement-validity).
+"""Accuracy of the measurement chain under input that a real machine produces.
 
-These tests exist because the pre-existing DSP suite passed completely while
-the instrument was measurably wrong.  Every amplitude test in
-``tests/test_sample.py`` excites the chain only at *bin-centred* frequencies
-(F_max=10000, binsize=2 → df exactly 2.000 Hz, tones at 500, 1000, 1500 …),
-which is the single degenerate case where the block is genuinely periodic in
-N samples, the FFT's circular-wrap discontinuity vanishes, and the
-integration error is identically zero.
-
-Everything here therefore excites the chain **off-bin**, with the high-pass
-filter enabled, across block boundaries, and at every preset — the conditions
-a real machine actually produces.
-
-Defect IDs (F-1 … F-9) refer to the vibration-engineering audit; see
-BRANCH-NOTES.md for root causes and measured before/after numbers.
+Tones are off-bin where a test checks leakage, and start at a non-zero phase.
+A bin-centred tone makes the FFT wrap error zero and hides integration defects.
+Put new amplitude assertions in this file, not in test_sample.py.
 """
 
 from datetime import datetime
@@ -64,28 +53,18 @@ def make_sample(dc, data: np.ndarray, overflow: bool = False,
     )
 
 
-# Default starting phase for generated tones. Deliberately NOT 0.
-#
-# sin(0) == 0 makes x[0] equal the signal's DC level, which is a degenerate
-# case in exactly the same way bin-centred frequencies are: it happens to be
-# the one starting condition for which a high-pass seeded from x[0] behaves
-# correctly. Real captures do not oblige -- measured on four consecutive
-# PicoScope blocks of a 447.3 Hz loopback tone, x[0] ranged over 36..305 mV
-# while the true block mean was -0.06..-0.21 mV. An earlier version of these
-# tests used phase 0 throughout and passed against a seeding bug that made the
-# first block of every stream read +4297% high in displacement.
+# Default start phase of generated tones, in radians. Not 0: at phase 0, x[0]
+# equals the DC level, which hides a high-pass seeded from x[0]. On AWG
+# loopback (447.3 Hz), x[0] was 36 to 305 mV; the block mean was -0.06 to -0.21 mV.
 DEFAULT_PHASE = 0.7
 
 
 def tone(dc, freq: float, amp: float = 1.0, offset: float = 0.0,
          n: int | None = None, start_sample: int = 0,
          phase: float = DEFAULT_PHASE) -> np.ndarray:
-    """A pure sine of `amp` (0-peak) at `freq`, sampled at the collector rate.
+    """A sine of `amp` (0-peak) at `freq`, sampled at config.samplerate.
 
-    `phase` (radians) shifts the start of the record. Amplitude, RMS and the
-    analytic integration results are all phase-independent, so every assertion
-    here holds for any phase -- which is precisely why the tests must not all
-    share the one phase that is arithmetically convenient.
+    `phase` is in radians. The analytic results do not depend on phase.
     """
     fs = dc.config.samplerate
     n = n if n is not None else dc.config.blocksize
@@ -113,23 +92,18 @@ def as_streaming(dc):
     return dc
 
 
-# Fractional bin offsets.  0.0 is the degenerate on-bin case the old suite
-# used exclusively; the rest are what a real machine produces.
+# Fractional bin offsets. 0.0 (on-bin) is not included: it hides wrap error.
 OFFBIN_FRACTIONS = [0.37, 0.5, 0.13, 0.71]
 
 
 # ===========================================================================
-# F-1 — FFT wrap leakage corrupts every integrated overall and waveform
+# Integration is accurate for off-bin tones
+# (CONTRIBUTING.md, "E9. Tapers for integration")
 # ===========================================================================
 
 @pytest.mark.parametrize('frac', OFFBIN_FRACTIONS)
 def test_integrated_velocity_overall_accurate_off_bin(frac):
-    """Off-bin tone, acc→vel: result.overall must match the analytic RMS.
-
-    The old suite only ever asserted this at exact bin centres.
-
-    Regression test for audit finding F-1.
-    """
+    """Off-bin tone, acceleration to velocity: the overall equals the analytic RMS."""
     dc = make_collector(eu='mm/s2', target_unit='mm/s')
     df = dc.config.samplerate / dc.config.blocksize
     freq = 61 * df + frac * df          # deliberately not a bin centre
@@ -148,9 +122,9 @@ def test_integrated_velocity_overall_accurate_off_bin(frac):
 
 @pytest.mark.parametrize('frac', OFFBIN_FRACTIONS)
 def test_integrated_displacement_overall_accurate_off_bin(frac):
-    """Off-bin tone, acc→disp: double integration amplifies wrap leakage by 1/w^2.
+    """Off-bin tone, acceleration to displacement: the overall equals the analytic RMS.
 
-    Regression test for audit finding F-1.
+    Double integration amplifies wrap leakage by 1/w^2.
     """
     dc = make_collector(eu='mm/s2', target_unit='mm')
     df = dc.config.samplerate / dc.config.blocksize
@@ -170,10 +144,7 @@ def test_integrated_displacement_overall_accurate_off_bin(frac):
 
 @pytest.mark.parametrize('freq_hz', [61.0, 120.7, 501.0])
 def test_displacement_overall_accurate_at_specific_off_bin_frequencies(freq_hz):
-    """The exact frequencies the audit reproduced numerically.
-
-    Regression test for audit finding F-1.
-    """
+    """The displacement overall is accurate at 61.0, 120.7 and 501.0 Hz (off-bin)."""
     dc = make_collector(eu='mm/s2', target_unit='mm')
     result = dc.process_sample(0, make_sample(dc, tone(dc, freq_hz, 1.0)))
     assert result is not None
@@ -187,12 +158,9 @@ def test_displacement_overall_accurate_at_specific_off_bin_frequencies(freq_hz):
 
 @pytest.mark.parametrize('frac', [0.37, 0.5])
 def test_integrated_velocity_waveform_peak_accurate_off_bin(frac):
-    """result.time_data (the displayed trace) must not carry a leakage ramp.
+    """The displayed velocity trace has no leakage ramp.
 
-    The peak of the integrated waveform must match the analytic 0-peak
-    velocity amplitude.
-
-    Regression test for audit finding F-1.
+    Its peak equals the analytic 0-peak velocity amplitude.
     """
     dc = make_collector(eu='mm/s2', target_unit='mm/s')
     df = dc.config.samplerate / dc.config.blocksize
@@ -215,10 +183,7 @@ def test_integrated_velocity_waveform_peak_accurate_off_bin(frac):
 
 @pytest.mark.parametrize('frac', [0.37, 0.5])
 def test_integrated_displacement_waveform_peak_accurate_off_bin(frac):
-    """Displacement trace — 1/w^2 makes the leakage ramp dominate the display.
-
-    Regression test for audit finding F-1.
-    """
+    """The displayed displacement trace has no leakage ramp (1/w^2 makes one dominate)."""
     dc = make_collector(eu='mm/s2', target_unit='mm')
     df = dc.config.samplerate / dc.config.blocksize
     freq = 61 * df + frac * df
@@ -238,10 +203,7 @@ def test_integrated_displacement_waveform_peak_accurate_off_bin(frac):
 
 
 def test_integration_still_exact_for_bin_centred_tones():
-    """Regression guard: the on-bin case the old suite covered must stay exact.
-
-    Regression test for audit finding F-1.
-    """
+    """A bin-centred tone (500 Hz) still integrates to the analytic RMS."""
     dc = make_collector(eu='mm/s2', target_unit='mm')
     result = dc.process_sample(0, make_sample(dc, tone(dc, 500.0, 1.0)))
     assert result is not None
@@ -250,29 +212,14 @@ def test_integration_still_exact_for_bin_centred_tones():
 
 
 def test_passthrough_overall_recovers_the_tone_rms_off_bin():
-    """n_steps == 0 must report the tone's RMS, not the record's arithmetic RMS.
+    """Order 0 reports the tone RMS A/sqrt(2), not the RMS of the record.
 
-    This test used to assert `overall == sqrt(mean(data**2))` to 1e-9, because
-    the passthrough path performed no transform at all. Band-limiting (M-06)
-    changed that premise: the band mask is a frequency-domain multiply, hence a
-    circular convolution in time, with exactly the wrap sensitivity the Hann
-    taper exists to control — so order 0 now runs the same tapered, masked path
-    as the other four, and all five describe one band.
-
-    The un-tapered alternative was measured. It stays exact for in-band content
-    but inherits a rectangular window's band edge, with -13 dB first sidelobes:
-    a 3x tone at 30 Hz against a 100 Hz lower edge leaked in at only -22 dB and
-    inflated the overall by +2.7%. Hann rejects that same tone by -84 dB, and by
-    -100 to -144 dB in the other cases measured.
-
-    What is asserted therefore changes from the record's arithmetic RMS to the
-    tone's true RMS, A/sqrt(2) — and the tapered estimate is the *better* answer
-    of the two. An off-bin tone spans a non-integer number of cycles, so the raw
-    record RMS carries a ~0.1% partial-cycle bias (here +0.097%) that is an
-    artefact of where the block happened to start, not a property of the signal.
-    The Hann estimate lands on A/sqrt(2) to 1e-9; the raw record RMS does not.
-
-    Regression test for audit findings F-1 and M-06.
+    Order 0 uses the same Hann-tapered, band-masked path as the other four
+    orders. An off-bin record holds a non-integer number of cycles, so its own
+    RMS has a partial-cycle bias (+0.097 % here). An untapered mask was rejected:
+    a 30 Hz tone below a 100 Hz band edge leaked in at -22 dB (+2.7 % on the
+    overall), against -84 dB with Hann. See CONTRIBUTING.md, "E9. Tapers for
+    integration".
     """
     dc = make_collector(eu='mm/s2', target_unit='mm/s2')
     data = tone(dc, 120.7, 1.0)
@@ -288,13 +235,7 @@ def test_passthrough_overall_recovers_the_tone_rms_off_bin():
 
 @pytest.mark.parametrize('frac', [0.37, 0.5])
 def test_integrated_velocity_overall_accurate_off_bin_with_highpass(frac):
-    """Same off-bin integration, but through the high-pass path.
-
-    `_make_dc` in test_sample.py defaults highpass_enabled=False, so the
-    filtered path was never exercised by any amplitude assertion.
-
-    Regression test for audit finding F-1.
-    """
+    """Off-bin integration is accurate through the high-pass path (edge 10 Hz)."""
     dc = make_collector(eu='mm/s2', target_unit='mm/s',
                         highpass_enabled=True, highpass_fc=10.0)
     df = dc.config.samplerate / dc.config.blocksize
@@ -312,10 +253,7 @@ def test_integrated_velocity_overall_accurate_off_bin_with_highpass(frac):
 
 
 def test_highpass_removes_dc_offset_before_integration():
-    """A DC offset must be removed by the high-pass, not integrated into a ramp.
-
-    Regression test for audit finding F-1.
-    """
+    """The high-pass removes a 1000 mV DC offset, so integration makes no ramp."""
     dc = make_collector(eu='mm/s2', target_unit='mm/s',
                         highpass_enabled=True, highpass_fc=10.0)
     df = dc.config.samplerate / dc.config.blocksize
@@ -334,17 +272,15 @@ def test_highpass_removes_dc_offset_before_integration():
 
 
 # ===========================================================================
-# F-4 — High-pass filter state is reset to zero on every block
+# High-pass state: carried while streaming, seeded from the block mean on replay
+# (CONTRIBUTING.md, "E8.1. Stateful filter" and "E8.2. Seed from the block mean")
 # ===========================================================================
 
 def test_highpass_state_persists_across_streaming_blocks():
-    """Consecutive blocks of ONE continuous stream must not each restart the filter.
+    """The blocks of one continuous stream share the filter state.
 
-    Feeding a continuous sine in blocks, every block after the first should
-    read the true RMS — a per-block state reset injects a startup transient
-    into every frame.
-
-    Regression test for audit finding F-4.
+    After block 0, each block reads the true peak. A reset in each block would
+    put a start-up transient into every frame.
     """
     dc = as_streaming(make_collector(eu='mm/s2', target_unit='mm/s2',
                                      maxfreq=2000, binsize=2.0,
@@ -377,10 +313,7 @@ def test_highpass_state_persists_across_streaming_blocks():
 
 
 def test_highpass_state_persists_across_blocks_with_dc_offset():
-    """With a DC offset the per-block reset is catastrophic, not cosmetic.
-
-    Regression test for audit finding F-4.
-    """
+    """With a 1000 mV DC offset, blocks after block 0 read the true RMS within 1 %."""
     dc = as_streaming(make_collector(eu='mm/s2', target_unit='mm/s2',
                                      maxfreq=2000, binsize=2.0,
                                      highpass_enabled=True, highpass_fc=10.0))
@@ -409,12 +342,10 @@ def test_highpass_state_persists_across_blocks_with_dc_offset():
 
 
 def test_replay_processing_is_order_independent():
-    """Browse/offline mode re-processes cached frames out of order.
+    """Replay gives the same result for a stored frame in any processing order.
 
-    Carried streaming state must NOT leak into replay: processing the same
-    stored frame twice, and in a different order, must give identical results.
-
-    Regression test for audit finding F-4.
+    Browse mode processes cached frames out of order, so streaming filter
+    state must not leak into replay.
     """
     dc = make_collector(eu='mm/s2', target_unit='mm/s2', maxfreq=2000,
                         binsize=2.0, highpass_enabled=True, highpass_fc=10.0)
@@ -438,14 +369,11 @@ def test_replay_processing_is_order_independent():
 @pytest.mark.parametrize('phase', [0.0, np.pi / 2, np.pi, 2.4, -np.pi / 2])
 @pytest.mark.parametrize('target', ['mm/s2', 'mm/s'])
 def test_highpass_seed_correct_regardless_of_start_phase(phase, target):
-    """An isolated block must filter correctly whatever sample it starts on.
+    """An isolated block filters correctly at any start phase.
 
-    Seeding the high-pass with sosfilt_zi * x[0] treats the first sample as the
-    signal's DC baseline. That is true only when the record happens to start at
-    a zero crossing. At phase pi/2 the block starts at the positive peak, and
-    the filter then decays a step that was never in the signal.
-
-    Regression test for audit finding F-4.
+    A seed of sosfilt_zi * x[0] treats the first sample as the DC level. That
+    is true only at a zero crossing: at phase pi/2 the filter decays a step
+    that is not in the signal. The seed comes from the block mean.
     """
     dc = make_collector(eu='mm/s2', target_unit=target, maxfreq=2000,
                         binsize=2.0, highpass_enabled=True, highpass_fc=10.0)
@@ -468,12 +396,9 @@ def test_highpass_seed_correct_regardless_of_start_phase(phase, target):
 
 @pytest.mark.parametrize('phase', [np.pi / 2, -np.pi / 2])
 def test_highpass_seed_correct_with_phase_and_dc_offset(phase):
-    """Phase offset AND a real DC offset -- the case seeding exists to handle.
+    """With a phase offset and a 1000 mV DC offset, the seed follows the DC level.
 
-    The seed must track the block's DC content (which the high-pass should
-    reject) and not the waveform excursion on top of it.
-
-    Regression test for audit finding F-4.
+    The seed must not follow the waveform excursion on top of the DC level.
     """
     dc = make_collector(eu='mm/s2', target_unit='mm/s2', maxfreq=2000,
                         binsize=2.0, highpass_enabled=True, highpass_fc=10.0)
@@ -485,8 +410,7 @@ def test_highpass_seed_correct_with_phase_and_dc_offset(phase):
 
     expected = amp / np.sqrt(2)
     err = rel_err(result.overall, expected)
-    # Tight: x[0]-seeding errs +1.017% here (the seed misses the DC level by
-    # the waveform excursion), mean-seeding by -0.000%.
+    # Tight: a seed from x[0] gives +1.017 % here; a seed from the mean, -0.000 %.
     assert abs(err) < 0.005, (
         f'overall at phase {phase:.3f} with {offset} mV DC offset '
         f'(x[0]={data[0]:.3f}, mean={data.mean():.3f}): expected '
@@ -495,10 +419,7 @@ def test_highpass_seed_correct_with_phase_and_dc_offset(phase):
 
 
 def test_first_streaming_block_highpass_seeded_from_dc_not_first_sample():
-    """Block 0 of a live stream is seeded, not carried -- the seed must be right.
-
-    Regression test for audit finding F-4.
-    """
+    """Block 0 of a live stream is seeded from the DC level, not from x[0]."""
     dc = as_streaming(make_collector(eu='mm/s2', target_unit='mm/s2',
                                      maxfreq=2000, binsize=2.0,
                                      highpass_enabled=True, highpass_fc=10.0))
@@ -521,10 +442,7 @@ def test_first_streaming_block_highpass_seeded_from_dc_not_first_sample():
 
 
 def test_replayed_frame_has_no_highpass_startup_transient():
-    """An isolated stored frame must still be filtered without a step transient.
-
-    Regression test for audit finding F-4.
-    """
+    """An isolated stored frame with a DC offset filters without a step transient."""
     dc = make_collector(eu='mm/s2', target_unit='mm/s2', maxfreq=2000,
                         binsize=2.0, highpass_enabled=True, highpass_fc=10.0)
     data = tone(dc, 200.0, 1.0, offset=1000.0)
@@ -538,24 +456,23 @@ def test_replayed_frame_has_no_highpass_startup_transient():
 
 
 # ===========================================================================
-# F-2 — The reported sample rate is not the sample rate actually used
+# The reported sample rate is the achieved rate
+# (CONTRIBUTING.md, "E5. Report the achieved rate")
 # ===========================================================================
 
 def test_reported_samplerate_matches_actual_hardware_rate():
-    """PicoScopeStream must report actual_raw_fs / osr, not the requested rate.
+    """PicoScopeStream reports the achieved raw rate / OSR, not the requested rate.
 
-    The driver rounds the streaming interval to whole microseconds and writes
-    back what it used.  Reporting the requested rate instead scales every
-    displayed frequency by (requested / actual).
-
-    Regression test for audit finding F-2.
+    The driver quantises the streaming interval and writes back the value it
+    used. This test models a whole-microsecond interval, so that the two rates
+    differ by more than 1 %. The requested rate would scale every frequency.
     """
     from rev80.picoscope import STREAMING_CEILING_HZ, OSR_TARGET
 
     cfg = vc.AcquisitionSettings()
     cfg.maxfreq = 2000
     cfg.binsize = 2.0
-    fs = cfg.samplerate                      # 8192
+    fs = cfg.samplerate                      # 5120 Hz
     osr = max(1, int(min(OSR_TARGET, STREAMING_CEILING_HZ / fs)))
     raw_req = fs * osr
     interval_us = max(1, int(1e6 / raw_req))
@@ -594,10 +511,7 @@ def _simulate_run_streaming(stream, interval_us: int):
 
 @pytest.mark.parametrize('maxfreq', [200, 500, 1000, 2000, 5000, 10000])
 def test_reported_samplerate_consistent_across_all_presets(maxfreq):
-    """Whatever the preset, the reported rate must equal raw_actual / osr.
-
-    Regression test for audit finding F-2.
-    """
+    """At every preset, the reported rate equals the achieved raw rate / OSR."""
     cfg = vc.AcquisitionSettings()
     cfg.maxfreq = maxfreq
     cfg.binsize = 2.0
@@ -612,17 +526,16 @@ def test_reported_samplerate_consistent_across_all_presets(maxfreq):
 
 
 # ===========================================================================
-# F-3 — No anti-alias filtering at all above F_max = 20 kHz
+# Every F_max preset gets anti-alias filtering below the streaming ceiling
+# (CONTRIBUTING.md, "E1. Streaming ceiling and the raw rate", "E6. Oversampling ratio")
 # ===========================================================================
 
 @pytest.mark.parametrize('maxfreq', vc.MAXFREQ_PRESETS)
 def test_every_maxfreq_preset_has_antialias_headroom(maxfreq):
-    """Every offered preset must actually get anti-alias protection.
+    """Every F_max preset gets an OSR of 2 or more, below the streaming ceiling.
 
-    antialias_decimate() is a no-op at factor=1, so an oversample ratio of 1
-    means NO anti-alias filtering at all.
-
-    Regression test for audit finding F-3.
+    antialias_decimate() does nothing at factor 1, so an OSR of 1 means that
+    there is no anti-alias filter.
     """
     from rev80.picoscope import STREAMING_CEILING_HZ
 
@@ -645,10 +558,7 @@ def test_every_maxfreq_preset_has_antialias_headroom(maxfreq):
 
 
 def test_presets_are_gated_against_streaming_ceiling():
-    """MAXFREQ_PRESETS must not offer a rate the hardware cannot stream safely.
-
-    Regression test for audit finding F-3.
-    """
+    """No MAXFREQ_PRESETS entry needs more than the streaming ceiling at 2x oversampling."""
     from rev80.picoscope import STREAMING_CEILING_HZ
 
     for maxfreq in vc.MAXFREQ_PRESETS:
@@ -661,14 +571,11 @@ def test_presets_are_gated_against_streaming_ceiling():
 
 
 # ===========================================================================
-# F-5 — Overload / degraded frames are trended, alarmed on, and lose their flags
+# Overflow and degraded frames: shown and stored, not trended or alarmed on
 # ===========================================================================
 
 def test_overflow_and_degraded_flags_survive_hdf5_round_trip(tmp_path):
-    """overflow and degraded are written by _write_channel_group but never read back.
-
-    Regression test for audit finding F-5.
-    """
+    """The overflow and degraded flags are written to HDF5 and read back."""
     dc = as_streaming(make_collector(eu='mm/s2', target_unit='mm/s2',
                                      maxfreq=2000, binsize=2.0))
     N = dc.config.blocksize
@@ -693,10 +600,7 @@ def test_overflow_and_degraded_flags_survive_hdf5_round_trip(tmp_path):
 
 
 def test_overflow_and_degraded_frames_excluded_from_trend():
-    """A clipped or degraded frame must not become a trend point.
-
-    Regression test for audit finding F-5.
-    """
+    """A clipped or degraded frame does not become a trend point."""
     dc = as_streaming(make_collector(eu='mm/s2', target_unit='mm/s2',
                                      maxfreq=2000, binsize=2.0))
     dc.init_trend_channels()
@@ -721,9 +625,9 @@ def test_overflow_and_degraded_frames_excluded_from_trend():
 
 
 def test_anomaly_hook_ignores_overflow_and_degraded_frames():
-    """A clipped frame reads high with harmonic distortion — it must not alarm.
+    """A clipped or degraded frame does not fire the RMS hook.
 
-    Regression test for audit finding F-5.
+    A clipped frame reads high, with harmonic distortion.
     """
     from rev80.monitor.anomaly import RmsThresholdHook
 
@@ -751,10 +655,7 @@ def test_anomaly_hook_ignores_overflow_and_degraded_frames():
 
 
 def test_overflow_frames_do_not_poison_anomaly_baseline():
-    """A clipped frame must not be folded into the EWMA baseline either.
-
-    Regression test for audit finding F-5.
-    """
+    """A clipped frame does not move the EWMA baseline."""
     from rev80.monitor.anomaly import RmsThresholdHook
 
     hook = RmsThresholdHook(rms_threshold_pct=10.0, consecutive_n=1,
@@ -779,10 +680,7 @@ def test_overflow_frames_do_not_poison_anomaly_baseline():
 
 
 def test_monitor_writer_stores_overflow_and_degraded_flags(tmp_path):
-    """monitor/writer.py has its own _write_channel_group that wrote no flags.
-
-    Regression test for audit finding F-5.
-    """
+    """monitor.writer._write_channel_group stores the overflow and degraded flags."""
     import h5py
     from rev80.monitor.writer import _write_channel_group
 
@@ -799,10 +697,7 @@ def test_monitor_writer_stores_overflow_and_degraded_flags(tmp_path):
 
 
 def test_overflow_mask_latched_across_block_accumulation():
-    """An overflow in a callback that does not complete a block must not be lost.
-
-    Regression test for audit finding F-5.
-    """
+    """An overflow in a callback that does not complete a block is kept (latched)."""
     import ctypes
     from rev80.picoscope import PicoScopeStream
 
@@ -819,7 +714,7 @@ def test_overflow_mask_latched_across_block_accumulation():
     raw_bs = cfg.blocksize * stream._effective_osr
     chunk = max(1, raw_bs // 4)
 
-    # Fill the driver buffer with a benign ramp.
+    # Fill the driver buffer with a constant 1000 counts.
     for ch in stream._driver_buffers:
         stream._driver_buffers[ch][:] = 1000
 
@@ -837,16 +732,11 @@ def test_overflow_mask_latched_across_block_accumulation():
 
 
 def test_overflow_warns_once_per_channel_per_stream(caplog):
-    """Sustained clipping must log once per channel, not once per callback.
+    """Sustained clipping logs one warning per channel, not one per callback.
 
-    The old `elif ch in self._overflow_warned: remove(ch)` fired precisely when
-    a channel was STILL clipping (the first branch being False only because it
-    had already been warned), re-arming the warning every other callback. At a
-    1 ms poll interval that floods the rotating log during exactly the event
-    being diagnosed, and contradicts the class docstring's "once per channel
-    per stream start".
-
-    Regression test for audit finding S-09.
+    The warning is armed again when the channel stops clipping, so a new
+    overflow event logs again. A warning in each callback would fill the
+    rotating log during the event that the operator must diagnose.
     """
     import ctypes
     import logging
@@ -897,16 +787,13 @@ def test_overflow_warns_once_per_channel_per_stream(caplog):
 
 
 # ===========================================================================
-# F-6 — The acquisition dialog computes sample rate with 2x, not 2.56x
+# The Acquisition dialog preview uses the AcquisitionSettings formulas
 # ===========================================================================
 
 @pytest.mark.parametrize('maxfreq', [200, 500, 1000, 2000, 5000, 10000])
 @pytest.mark.parametrize('binsize', [0.5, 2.0, 10.0])
 def test_acquisition_dialog_preview_matches_settings(maxfreq, binsize):
-    """The dialog must not duplicate the samplerate formula.
-
-    Regression test for audit finding F-6.
-    """
+    """derive_acquisition_preview gives the same values as AcquisitionSettings."""
     from rev80.gui import derive_acquisition_preview
 
     cfg = vc.AcquisitionSettings()
@@ -925,18 +812,14 @@ def test_acquisition_dialog_preview_matches_settings(maxfreq, binsize):
 
 
 # ===========================================================================
-# F-7 — The PSD cache key omits binsize and samplerate
+# The PSD cache key includes the bin size and the sample rate
 # ===========================================================================
 
 def test_psd_cache_invalidates_on_binsize_change():
-    """Changing binsize must actually recompute the spectrum.
+    """A bin size change from 0.5 Hz to 8 Hz recomputes the spectrum.
 
-    Exercised by going coarser (0.5 → 8 Hz). Going *finer* than the captured
-    record supports is physically impossible — a stored 0.5 s block cannot
-    yield 0.5 Hz bins no matter what is requested — so a coarsening change is
-    what actually distinguishes a live recompute from a stale cache hit.
-
-    Regression test for audit finding F-7.
+    The test makes the bins coarser, because a stored block cannot give bins
+    finer than its length allows.
     """
     dc = make_collector(eu='mm/s2', target_unit='mm/s2', maxfreq=2000, binsize=0.5)
     sample = make_sample(dc, tone(dc, 200.0, 1.0, n=dc.config.blocksize))
@@ -958,10 +841,7 @@ def test_psd_cache_invalidates_on_binsize_change():
 
 
 def test_resolution_never_claimed_finer_than_the_record_supports():
-    """A stored block cannot be re-binned finer than its own length allows.
-
-    Regression test for audit finding F-7.
-    """
+    """A stored block is not re-binned finer than its own length allows."""
     dc = make_collector(eu='mm/s2', target_unit='mm/s2', maxfreq=2000, binsize=2.0)
     sample = make_sample(dc, tone(dc, 200.0, 1.0, n=dc.config.blocksize))
     captured_df = dc.config.samplerate / sample.blocksize
@@ -977,10 +857,7 @@ def test_resolution_never_claimed_finer_than_the_record_supports():
 
 
 def test_psd_cache_invalidates_on_samplerate_change():
-    """A sample captured at a different rate must not reuse a cached PSD.
-
-    Regression test for audit finding F-7.
-    """
+    """A sample with a different sample rate does not use a cached PSD."""
     dc = make_collector(eu='mm/s2', target_unit='mm/s2', maxfreq=2000, binsize=2.0)
     sample = make_sample(dc, tone(dc, 200.0, 1.0, n=dc.config.blocksize))
     first = dc.process_sample(0, sample)
@@ -1001,16 +878,14 @@ def test_psd_cache_invalidates_on_samplerate_change():
 
 
 # ===========================================================================
-# F-8 — Stated line count and bin width do not match the computed spectrum
+# The stated line count and bin width match the computed spectrum
+# (CONTRIBUTING.md, "E11. Display rate, block size and line count")
 # ===========================================================================
 
 @pytest.mark.parametrize('maxfreq', [200, 500, 1000, 2000])
 @pytest.mark.parametrize('binsize', [0.5, 2.0, 5.0, 20.0, 100.0])
 def test_line_count_matches_computed_spectrum(maxfreq, binsize):
-    """config.n_fft_bins must equal the number of lines Welch actually returns.
-
-    Regression test for audit finding F-8.
-    """
+    """config.n_fft_bins equals the number of lines that Welch returns."""
     dc = make_collector(eu='mm/s2', target_unit='mm/s2',
                         maxfreq=maxfreq, binsize=binsize)
     result = dc.process_sample(0, make_sample(dc, tone(dc, maxfreq / 4, 1.0)))
@@ -1024,10 +899,7 @@ def test_line_count_matches_computed_spectrum(maxfreq, binsize):
 @pytest.mark.parametrize('maxfreq', [200, 500, 1000, 2000])
 @pytest.mark.parametrize('binsize', [0.5, 2.0, 5.0, 20.0, 100.0])
 def test_actual_bin_width_is_at_least_as_fine_as_requested(maxfreq, binsize):
-    """Actual resolution must never be coarser than what the user asked for.
-
-    Regression test for audit finding F-8.
-    """
+    """The delivered bin width is not coarser than requested; binsize_actual states it."""
     dc = make_collector(eu='mm/s2', target_unit='mm/s2',
                         maxfreq=maxfreq, binsize=binsize)
     result = dc.process_sample(0, make_sample(dc, tone(dc, maxfreq / 4, 1.0)))
@@ -1043,17 +915,14 @@ def test_actual_bin_width_is_at_least_as_fine_as_requested(maxfreq, binsize):
 
 
 # ===========================================================================
-# F-9 — Spectrum is displayed out to fs/2, where alias rejection is ~12 dB
+# The spectrum and the peaks stop at F_max
 # ===========================================================================
 
 @pytest.mark.parametrize('maxfreq', [200, 1000, 2000])
 def test_spectrum_truncated_at_maxfreq(maxfreq):
-    """The guard band between F_max and fs/2 must never be displayed.
+    """The guard band between F_max and fs/2 is not displayed.
 
-    F_max = fs/2.56 exists precisely so the region where the anti-alias
-    filter has not yet reached full attenuation is not shown as measurement.
-
-    Regression test for audit finding F-9.
+    In the guard band the anti-alias filter is not at full attenuation.
     """
     dc = make_collector(eu='mm/s2', target_unit='mm/s2',
                         maxfreq=maxfreq, binsize=2.0)
@@ -1068,10 +937,7 @@ def test_spectrum_truncated_at_maxfreq(maxfreq):
 
 
 def test_peaks_exclude_the_guard_band():
-    """find_peaks must not report peaks from the untrustworthy guard band.
-
-    Regression test for audit finding F-9.
-    """
+    """No peak is reported in the guard band, also for a 5x stronger tone there."""
     dc = make_collector(eu='mm/s2', target_unit='mm/s2', maxfreq=2000, binsize=2.0)
     fs = dc.config.samplerate
     # Real tone in-band plus a strong tone inside the guard band (F_max..fs/2).

@@ -1,9 +1,7 @@
-"""Selectable rotation-rate units, and the discipline of always labelling them.
+"""Selectable units for shaft speed: RPM, Hz, rad/s and deg/s.
 
-A shaft rate shown without its unit is a number waiting to be misread -- 30 is
-a plausible RPM, a plausible Hz and a plausible rad/s, and they differ by
-factors of 60 and 6.28. The amplitude side of this app already carries its unit
-everywhere; the rate side must too.
+A shaft speed of 30 is a plausible value in RPM, Hz and rad/s, so the unit
+is always shown. Stored data is always in RPM.
 """
 
 import math
@@ -16,8 +14,7 @@ from rev80.util import (DEFAULT_ROTATION_UNIT, ROTATION_UNIT_LABELS,
 
 
 def test_the_four_distinct_units():
-    """rad/s IS angular frequency omega -- they are one option, not two, and
-    the label says so."""
+    """Four units. rad/s is angular frequency omega, and its label says so."""
     assert ROTATION_UNITS == ('RPM', 'Hz', 'rad/s', 'deg/s')
     assert 'omega' in ROTATION_UNIT_LABELS['rad/s'] or 'ω' in ROTATION_UNIT_LABELS['rad/s']
 
@@ -65,10 +62,7 @@ def test_setting_round_trips_and_survives_copy():
 
 
 def test_rate_is_stored_in_rpm_regardless_of_display_unit():
-    """The unit is a display preference, never a property of stored data. A
-    number in the file whose meaning depends on a setting is the class of
-    defect this codebase keeps finding.
-    """
+    """TachResult.rpm is in RPM for any display unit (41666.5 Hz is a non-nominal test rate)."""
     from rev80 import tach
     import numpy as np
     fs = 41666.5

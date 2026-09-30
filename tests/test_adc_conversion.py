@@ -1,19 +1,8 @@
-"""Bit-exactness tests for rev80.picoscope._adc_to_mv.
+"""rev80.picoscope._adc_to_mv is bit-identical to picosdk.functions.adc2mV.
 
-`_adc_to_mv` replaced `picosdk.functions.adc2mV`, which is a per-sample Python
-list comprehension boxing an `np.int64` per element -- 200-380x slower than the
-vectorised form, and run inside the driver callback holding the GIL, which made
-the GUI unusable above 3 enabled channels.
-
-A speed fix on a measurement path is only acceptable if it moves nothing. These
-tests assert the replacement is not merely close to the vendor function but
-**bit-identical** to it, which is why the operation order in `_adc_to_mv`
-matters: `x * vRange / maxADC` reproduces adc2mV exactly, while the tempting
-`x * (vRange / maxADC)` does not -- the pre-divided scale factor rounds
-differently in the last bit. These tests fail if anyone "simplifies" it.
-
-They skip when the picosdk wrapper is unavailable (CI, offline development),
-since there is then nothing to compare against.
+The operation order `x * vRange / maxADC` is necessary; `x * (vRange / maxADC)`
+rounds differently. See CONTRIBUTING.md, "E3. ADC-to-mV conversion". The tests
+skip when the picosdk wrapper is not installed.
 """
 
 import ctypes
@@ -69,8 +58,8 @@ def test_bit_identical_at_the_extremes(rng_idx):
 
 
 def test_full_int16_domain_on_the_shipped_range():
-    """Every representable count on the +/-1 V range used by the hw tests."""
-    rng_idx = 7   # +/-2000 mV, what tests/test_picoscope_hw.py and the AWG use
+    """Every representable int16 count on the +/-2 V range (index 7)."""
+    rng_idx = 7   # +/-2000 mV
     counts  = np.arange(-32768, 32768, dtype=np.int16)
 
     got = _adc_to_mv(counts, rng_idx, MAX_ADC)
@@ -80,12 +69,7 @@ def test_full_int16_domain_on_the_shipped_range():
 
 
 def test_premultiplied_scale_factor_is_not_equivalent():
-    """The regression this file exists for.
-
-    Documents that the operation ORDER is load-bearing, so a future reader who
-    finds `* vRange / maxADC` clumsy can see, in a test rather than a comment,
-    that the obvious tidy-up changes results.
-    """
+    """A pre-divided scale factor, x * (vRange / maxADC), gives different results."""
     rng_idx = 7
     rng     = np.random.default_rng(0)
     counts  = rng.integers(-32768, 32768, 8192, dtype=np.int16)

@@ -66,13 +66,7 @@ def test_trend_max_points_is_positive_int():
 
 
 def test_samplerate_is_exactly_2p56x_maxfreq():
-    """The display rate is the ratio the dialog advertises, not a rounded-up one.
-
-    Replaces test_samplerate_is_power_of_two. nextpow2(2.56 * maxfreq)
-    overstated the rate by up to 2x; at the top preset that meant advertising
-    32768 Hz against 25600 Hz of real data. A power-of-two *rate* buys nothing
-    -- the FFT length is blocksize, tested separately.
-    """
+    """The display rate is exactly 2.56 x F_max at every preset (no rounding)."""
     config = AcquisitionSettings()
     for fm in rev80.MAXFREQ_PRESETS:
         config.maxfreq = fm
@@ -82,14 +76,10 @@ def test_samplerate_is_exactly_2p56x_maxfreq():
 
 
 def test_display_rate_never_exceeds_acquisition_rate():
-    """You cannot display a rate you did not acquire.
+    """At every preset, the display rate is not more than the raw rate.
 
-    The bug this pins: decimate_to_rate returns the block undecimated when
-    target_rate >= raw_rate, so an overstated samplerate does not fail loudly
-    -- the dialog simply advertises a rate the pipeline never produces, and
-    n_fft_bins / binsize_actual are computed from it. Every preset must
-    satisfy samplerate <= raw_samplerate, which is exactly the condition
-    maxfreq's setter clamps to.
+    decimate_to_rate does not upsample, so a display rate above the raw rate
+    would be stated but never produced. The maxfreq setter clamps to this.
     """
     config = AcquisitionSettings()
     for fm in rev80.MAXFREQ_PRESETS:
@@ -105,11 +95,10 @@ def test_display_rate_never_exceeds_acquisition_rate():
 
 
 def test_decimation_ratio_is_an_exact_integer_at_every_preset():
-    """raw -> display decimation should be a clean integer factor.
+    """At the nominal raw rate, raw/display is an integer at every preset.
 
-    Not a correctness requirement on its own, but it is the property that
-    makes the polyphase resampler cheap and exact, and it is what picks
-    RAW_SAMPLERATE_HZ = 2.56 x the top preset over any nearby value.
+    This keeps the polyphase resampler short. It is why RAW_SAMPLERATE_HZ is
+    2.56 x the top F_max preset.
     """
     config = AcquisitionSettings()
     for fm in rev80.MAXFREQ_PRESETS:
@@ -121,12 +110,9 @@ def test_decimation_ratio_is_an_exact_integer_at_every_preset():
 
 
 def test_blocksize_delivers_the_requested_binsize():
-    """Replaces test_blocksize_is_power_of_two.
+    """The delivered bin is never coarser than requested, and a frame is 1/binsize s.
 
-    blocksize is a Welch segment length, and pocketfft is efficient for any
-    5-smooth length -- being a power of two was never the invariant that
-    mattered. What matters is that the delivered bin is never coarser than
-    the requested one, and that a frame really is 1/binsize seconds.
+    blocksize need not be a power of two (CONTRIBUTING.md, "E11").
     """
     config = AcquisitionSettings()
     for fm in rev80.MAXFREQ_PRESETS:
@@ -137,12 +123,8 @@ def test_blocksize_delivers_the_requested_binsize():
                 f'F_max={fm} df={df}: delivered bin {config.binsize_actual} '
                 f'is coarser than requested'
             )
-            # A frame is 1/binsize seconds, rounded up to a whole sample --
-            # never shorter (you cannot resolve df from less data) and never
-            # more than one sample longer. The dialog's "a frame is exactly
-            # 1/binsize seconds" only ever held when samplerate/binsize landed
-            # on a power of two; with nextpow2 the overshoot reached 56.2%
-            # (F_max=200, df=50: 31.2 ms for a nominal 20 ms). This bounds it.
+            # A frame is 1/binsize seconds, rounded up to a whole sample:
+            # never shorter, and not more than one sample longer.
             ideal = 1.0 / df
             assert config.acquisition_period >= ideal - 1e-12, (
                 f'F_max={fm} df={df}: frame {config.acquisition_period} s is '
@@ -155,13 +137,10 @@ def test_blocksize_delivers_the_requested_binsize():
 
 
 def test_n_fft_bins():
-    """n_fft_bins must describe the spectrum that is actually computed.
+    """n_fft_bins and binsize_actual agree with the spectrum that Welch computes.
 
-    The old assertion (`n_fft_bins == blocksize // 2 + 1`) merely restated the
-    implementation, so it stayed green while the Welch call produced a
-    different number of lines at 40 of the 72 preset combinations (F-8).
-    The real invariant is that the stated line count and the stated bin width
-    agree with each other and with the block that is actually transformed.
+    The test runs Welch at all preset combinations; it does not restate the
+    formula for n_fft_bins.
     """
     import numpy as np
     import scipy.signal
@@ -180,8 +159,8 @@ def test_n_fft_bins():
                 noverlap=int(config.nperseg * config.welch_overlap),
                 nfft=config.nperseg, scaling='spectrum',
             )
-            # Only the band up to maxfreq is displayed; the guard band between
-            # maxfreq and fs/2 is discarded in process_sample (F-9).
+            # Only the band up to maxfreq is displayed; process_sample removes
+            # the guard band between maxfreq and fs/2.
             displayed = int((freq <= config.maxfreq).sum())
             assert config.n_fft_bins == displayed, (
                 f'F_max={maxfreq} df={binsize}: n_fft_bins states '
@@ -194,8 +173,7 @@ def test_n_fft_bins():
 
 
 def test_memory_bytes():
-    """Against raw_blocksize, not blocksize: frame_cache/HDF5 hold the raw
-    (acquisition-rate) data, not the maxfreq-decimated display view."""
+    """memory_bytes uses raw_blocksize: frame_cache and HDF5 hold raw-rate data."""
     config = AcquisitionSettings()
     assert config.memory_bytes == config.raw_blocksize * 8
 
@@ -213,11 +191,11 @@ def test_welch_overlap_default():
 
 
 # ---------------------------------------------------------------------------
-# Channel roles (R43 — tachometer support)
+# Channel roles (vibration or tachometer)
 # ---------------------------------------------------------------------------
 
 def test_channels_are_vibration_by_default():
-    """Every existing config predates roles and must keep behaving as before."""
+    """A channel with no role set is a vibration channel."""
     config = AcquisitionSettings()
     assert config.role_for(0) == 'vibration'
     assert config.role_for(7) == 'vibration'
@@ -233,9 +211,7 @@ def test_role_partitions_enabled_channels():
 
 
 def test_role_partition_ignores_disabled_channels():
-    """A tach configured on a channel that is switched off is not a tach
-    channel this run -- otherwise the collector would look for a pulse train
-    on an input nobody is sampling."""
+    """A tachometer role on a disabled channel does not make a tachometer channel."""
     config = AcquisitionSettings()
     config.enabled_channels = [0]
     config.channel_roles = {3: 'tachometer'}
@@ -251,12 +227,10 @@ def test_unknown_role_string_falls_back_to_vibration():
 
 
 def test_copy_carries_channel_roles():
-    """AcquisitionSettings.copy() enumerates the per-channel dicts by name,
-    because they live in the 'channels' config section and so are outside the
-    to_dict/from_dict round trip. A sixth dict added without editing that tuple
-    is audit H-08 again: the copy silently reverts every tachometer channel to
-    vibration, and the pipeline then high-passes a pulse train and reports
-    kurtosis ~16 on it.
+    """AcquisitionSettings.copy() carries channel_roles.
+
+    The per-channel dicts are outside the to_dict/from_dict round trip, so
+    copy() lists them by name. A dict not in that list is lost on copy.
     """
     config = AcquisitionSettings()
     config.enabled_channels = [0, 1]
@@ -275,12 +249,11 @@ def test_copy_deep_copies_channel_roles():
 
 
 # ---------------------------------------------------------------------------
-# Speed gate (R43)
+# Speed gate
 # ---------------------------------------------------------------------------
 
 def test_speed_gate_defaults_to_off():
-    """Off by default: with no tach fitted there is no reference to gate on,
-    and a gate that fails closed would reject every frame."""
+    """The speed gate is off by default: with no tachometer, it would reject every frame."""
     config = AcquisitionSettings()
     assert config.speed_gate_enabled is False
     assert config.speed_gate_rpm is None
@@ -288,8 +261,7 @@ def test_speed_gate_defaults_to_off():
 
 
 def test_speed_gate_round_trips_through_dict():
-    """Scalars belong in to_dict/from_dict so a field added there is carried
-    by copy() automatically."""
+    """The speed gate settings round-trip through to_dict/from_dict."""
     config = AcquisitionSettings()
     config.speed_gate_enabled = True
     config.speed_gate_rpm = 1780.0
@@ -301,9 +273,7 @@ def test_speed_gate_round_trips_through_dict():
 
 
 def test_speed_gate_rpm_none_survives_the_round_trip():
-    """None means 'latch the reference from the first valid frame'. Writing a
-    resolved value back would freeze one session's speed into the config --
-    the same trap band_fmin/band_fmax already guard against."""
+    """speed_gate_rpm None round-trips as None (take the first valid frame's speed)."""
     config = AcquisitionSettings()
     config.speed_gate_rpm = None
     assert AcquisitionSettings.from_dict(config.to_dict()).speed_gate_rpm is None

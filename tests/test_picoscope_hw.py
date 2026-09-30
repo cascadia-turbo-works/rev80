@@ -1,20 +1,8 @@
-"""
-Hardware integration tests for PicoScope 4000A.
+"""Hardware tests for a PicoScope 4000A, with AWG output looped back to channel A.
 
-Requires a PicoScope 4000A with its signal generator output looped back
-to Channel A.  Tests are automatically skipped if no hardware is detected.
-
-All tests in TestPicoScopeHardwareStream share a single captured sample
-that is collected once in setup_class, avoiding repeated hardware triggers
-for read-only signal-inspection tests.  Tests that specifically need to
-verify re-triggering (multi-capture, start/stop cycles) do their own
-minimal captures and are clearly labelled.
-
-Run hardware tests only:
-    pytest tests/test_picoscope_hw.py -v
-
-Run alongside the full suite (hardware tests skip if scope absent):
-    pytest tests/ -v
+The tests skip when no scope is found. Run them alone with
+`pytest tests/test_picoscope_hw.py -v`. TestPicoScopeHardwareStream shares one
+capture; the other classes make their own captures.
 """
 
 import math
@@ -38,17 +26,9 @@ CHANNEL_RANGE    = 8            # PS4000A_5V (index 8, ±5 V)
 
 FREQ_TOL_HZ      = 20.0         # acceptable deviation from SIGGEN_FREQ_HZ
 
-# PicoScopeStream acquires at config.raw_samplerate (RAW_SAMPLERATE_HZ), never
-# at the maxfreq-derived display samplerate -- see the raw/display split in
-# sample.py. These pick a *legal* display config; every rate and timing
-# expectation below is derived from the config, never hardcoded, because the
-# rate the hardware is actually asked for is raw_samplerate.
-#
-# The previous constants (STREAM_SAMPLERATE/STREAM_BLOCKSIZE = 50_000) predated
-# that split: they asked for maxfreq=25 kHz, which the setter clamps, and then
-# asserted the delivered rate was within 40% of 50 kHz. The stream never ran at
-# 50 kHz -- the assertion passed only while raw_samplerate happened to be
-# 40 kHz, 20% away, and broke as soon as it became 25600.
+# PicoScopeStream acquires at config.raw_samplerate, not at the display rate.
+# These values give a valid display configuration. Every rate and time below
+# comes from the config.
 STREAM_MAXFREQ_HZ = 10_000.0    # top MAXFREQ_PRESETS entry → Nyquist 12.8 kHz
 STREAM_BINSIZE_HZ = 1.0         # 1 Hz bins → a 1 s acquisition window
 
@@ -80,7 +60,7 @@ hardware_skip = pytest.mark.skipif(
 
 
 def _make_stream_config(highpass: bool = True) -> vc.AcquisitionSettings:
-    """Return AcquisitionSettings for 500 Hz detection at the acquisition rate."""
+    """Return AcquisitionSettings for 500 Hz detection at the raw rate."""
     cfg = vc.AcquisitionSettings()
     cfg.maxfreq = STREAM_MAXFREQ_HZ
     cfg.binsize = STREAM_BINSIZE_HZ
@@ -141,15 +121,10 @@ class TestPicoScopeHardwareStream:
         assert self.sample.blocksize > 0
 
     def test_samplerate_close_to_requested(self):
-        """The stream must deliver config.raw_samplerate.
+        """The stream delivers config.raw_samplerate within 5 %.
 
-        This is the acquisition rate the whole raw/display split is built on:
-        VibeSample, HDF5 and envelope analysis all assume the block came in at
-        raw_samplerate. The 4000A uses discrete time bases, so the achieved
-        rate is quantised -- at 25600 Hz the driver picks a 39 us interval and
-        delivers 25641 Hz, +0.16%. 5% leaves room for quantisation at other
-        rates while still catching a real regression; the old 40% band was
-        wide enough to hide the rate being wrong by a factor of 1.56.
+        The clock is quantised: on a 4824A the achieved rate is 25591.8 Hz,
+        -320 ppm (CONTRIBUTING.md, "E4. Sample-clock grid").
         """
         expected = _make_stream_config().raw_samplerate
         deviation = abs(self.sample.samplerate - expected) / expected
@@ -212,7 +187,7 @@ class TestPicoScopeHardwareStream:
             assert vs2 is not None, 'Channel 0 missing after load'
             assert vs2.status    == vs1.status
             assert vs2.samplerate == vs1.samplerate
-            assert vs2.unit      == 'mV'   # v4 always stores mV
+            assert vs2.unit      == 'mV'   # measurement files store mV
             assert np.allclose(vs2.data, vs1.data), 'Data changed after HDF5 round-trip'
         finally:
             os.unlink(fname)
@@ -251,11 +226,8 @@ class TestPicoScopeRetrigger:
         received = []
         stream = PicoScopeStream(cfg, lambda s: received.append(s),
                                  siggen_config=SIGGEN_CFG)
-        # One callback arrives per acquisition_period at raw_samplerate. Deriving
-        # this from the config rather than hardcoding it is what makes the test
-        # independent of RAW_SAMPLERATE_HZ: with the old hardcoded 1.0 s the
-        # sleep was shorter than the real 1.95 s period and no callback ever
-        # arrived, so the test reported a streaming failure that was its own.
+        # One callback arrives per acquisition_period. Take it from the config,
+        # so that the sleep is longer than one block at any RAW_SAMPLERATE_HZ.
         block_duration = cfg.acquisition_period
 
         for _ in range(2):
@@ -273,12 +245,11 @@ class TestPicoScopeRetrigger:
 
 
 # ---------------------------------------------------------------------------
-# Tachometer (R43) — AWG loopback on Channel A
+# Tachometer — AWG loopback on Channel A
 # ---------------------------------------------------------------------------
-# These drive the real acquisition path: PicoScopeStream -> antialias_decimate
-# -> DataCollector.receive_data -> tach.tach_result. A synthetic array handed
-# straight to the detector proves nothing about the chain in between, which is
-# where the anti-alias filter and the 41666.5 Hz reported rate live.
+# These use the real chain: PicoScopeStream -> antialias_decimate ->
+# DataCollector.receive_data -> tach.tach_result. The anti-alias filter and
+# the achieved rate (not RAW_SAMPLERATE_HZ) are in that chain.
 
 TACH_PKTOPK_UV = 2_000_000   # the 4424A generator is a +-2 V part: 5 Vpp at
 TACH_OFFSET_UV = 1_000_000   # 2.5 V offset returns PICO_SIGGEN_OFFSET_VOLTAGE
@@ -320,11 +291,12 @@ def _capture_tach(freq_hz: float, coupling: str = 'DC', settings=None,
 
 @hardware_skip
 class TestPicoScopeTachometer:
-    """Electrical close-out for R43."""
+    """The tachometer chain on hardware, with an AWG square wave on channel A."""
 
     def test_reads_the_awg_square_wave(self):
-        """30 Hz square = 1800 RPM. The AWG's DDS clock is orders of magnitude
-        better than the 0.3 % that naming spectral lines needs."""
+        """A 30 Hz square wave reads 1800 RPM within 0.2 %.
+
+        The AWG clock error is below this tolerance."""
         res, _ = _capture_tach(30.0)
         assert res is not None
         assert res.quality == rev80_tach.QUALITY_OK
@@ -332,46 +304,27 @@ class TestPicoScopeTachometer:
 
     @pytest.mark.parametrize('freq_hz', [5.0, 10.0, 30.0, 60.0, 100.0, 170.0])
     def test_tracks_a_speed_sweep(self, freq_hz):
-        """300 to 10200 RPM. Measured worst case is 0.164 % at 300 RPM and
-        <= 0.04 % above; the tolerance here is the published +-0.2 % of
-        reading, which is what the docs claim."""
+        """300 to 10200 RPM within the stated +/-0.2 % of reading.
+
+        Measured at the 41666.5 Hz raw rate: worst 0.164 % at 300 RPM,
+        0.04 % or less above it. Not recorded again at 25600 Hz."""
         res, _ = _capture_tach(freq_hz)
         assert res is not None and res.rpm is not None
         assert res.rpm == pytest.approx(freq_hz * 60.0, rel=2e-3)
 
     def test_reported_rate_is_the_hardware_rate_not_the_constant(self):
-        """The quantisation trap. The driver can only run the ADC at points on
-        its own clock grid, so the delivered rate is never exactly
-        RAW_SAMPLERATE_HZ. Anything computed from the constant reads wrong on
-        hardware and is exactly right in CI -- the worst combination a defect
-        can have.
+        """The tach uses the achieved rate on the 12.5 ns clock grid, not RAW_SAMPLERATE_HZ.
 
-        The expectation is *derived* from the constant, the oversample ratio
-        and the clock grid rather than hardcoded, because a hardcoded one has
-        now gone stale twice:
-
-          - 41666.5 was correct only while RAW_SAMPLERATE_HZ was 40000
-            (osr=2, 12.5 us -> 12 us, 4.166% error), and failed the merge that
-            moved the constant to 25600;
-          - the us-derived form that replaced it (osr=3, 13.02 us -> 13 us ->
-            25641.0 Hz, 0.160% error) failed in turn when the streaming
-            interval moved to ns snapped to the device's 12.5 ns grid
-            (13025 ns -> 25591.81 Hz, -0.032% error).
-
-        So this now derives from _TIMEBASE_NS, and additionally asserts the
-        property that actually matters and does not depend on how the interval
-        is requested: the delivered rate is CLOSE to nominal, and closer than
-        whole-microsecond quantisation could ever have been. That second
-        assertion is what would have caught the ns change regressing rather
-        than improving accuracy, which a bare equality check cannot.
+        The expected rate is derived from _TIMEBASE_NS, not hardcoded. It must
+        also be within 1000 ppm of nominal and closer than a whole-us request.
         """
         res, _ = _capture_tach(30.0)
         assert res is not None
         raw = rev80.sample.RAW_SAMPLERATE_HZ
         osr = PicoScopeStream._choose_osr(raw)
 
-        # Same derivation the driver is asked for: nearest point on the clock
-        # grid, ceil-ed into whole ns because the driver floors a request.
+        # The same derivation as the request: nearest grid point, rounded up to
+        # whole ns, because the driver floors a request to the grid.
         target_ns   = 1e9 / (raw * osr)
         grid_ns     = round(target_ns / _TIMEBASE_NS) * _TIMEBASE_NS
         interval_ns = math.ceil(grid_ns)
@@ -381,8 +334,8 @@ class TestPicoScopeTachometer:
         # The point of the whole test: not the constant.
         assert res.samplerate != raw
 
-        # And better than the microsecond request it replaced. Derived, not
-        # hardcoded, so it keeps meaning something if RAW_SAMPLERATE_HZ moves.
+        # Closer to nominal than a whole-microsecond request. Derived, not
+        # hardcoded, so it stays valid if RAW_SAMPLERATE_HZ changes.
         us_rate  = 1e6 / round(1e6 / (raw * osr)) / osr
         err_now  = abs(res.samplerate / raw - 1.0)
         err_us   = abs(us_rate / raw - 1.0)
@@ -393,8 +346,10 @@ class TestPicoScopeTachometer:
         assert err_now < 1e-3, f'{err_now * 1e6:.0f} ppm from nominal'
 
     def test_adaptive_threshold_survives_ac_coupling(self):
-        """AC coupling removes the mean, and on a pulse train the mean IS the
-        duty cycle. Adaptive tracks each block's own span, so it does not care.
+        """The adaptive threshold reads 1800 RPM with DC and with AC coupling.
+
+        It follows the span of each block, so the mean that AC coupling removes
+        does not change the result.
         """
         dc_res, _ = _capture_tach(30.0, coupling='DC')
         ac_res, _ = _capture_tach(30.0, coupling='AC')
@@ -402,16 +357,10 @@ class TestPicoScopeTachometer:
         assert ac_res.rpm == pytest.approx(1800.0, rel=2e-3)
 
     def test_fixed_threshold_works_in_its_own_regime(self):
-        """A fixed threshold is correct on a DC-coupled input at a level inside
-        the signal's swing. That is the configuration it is for.
+        """A fixed 1000 mV threshold reads correctly on a DC-coupled input.
 
-        Deliberately no assertion about AC coupling at 50 % duty: that is the
-        one duty at which fixed and adaptive coincide, and whether a 1000 mV
-        level lands inside the AC-coupled swing depends on where the coupling
-        settles and on the AWG's phase. It was observed both ways across runs,
-        so pinning either outcome would be pinning a coin-flip. The regime
-        where the difference is real and repeatable is high duty --
-        test_fixed_threshold_fails_outright_at_high_duty.
+        There is no assertion for AC coupling at 50 % duty: the result changed
+        from run to run. The high-duty test covers AC coupling.
         """
         fixed = rev80_tach.TachSettings(threshold_mode='fixed',
                                         threshold_mv=1000.0)
@@ -420,15 +369,12 @@ class TestPicoScopeTachometer:
         assert dc_res.quality == rev80_tach.QUALITY_OK
 
     def test_fixed_threshold_fails_outright_at_high_duty(self):
-        """The failure the adaptive default exists to prevent, reproduced
-        electrically.
+        """At 70 % duty with AC coupling, a fixed threshold gives no reading.
 
-        AC coupling removes the mean, and on a pulse train the mean IS the duty
-        cycle: above ~55 % the signal maximum falls below any fixed level and
-        the shaft reads as stopped on a machine that is running. Needs a
-        non-50 % waveform, which the built-in generator cannot produce -- hence
-        the arbitrary-waveform stimulus. Only the stimulus is patched; the
-        acquisition path under test is the real one.
+        AC coupling removes the mean, which is the duty cycle. Above about 55 %
+        duty the signal does not reach a fixed level. The adaptive threshold
+        still reads. The arbitrary-waveform generator makes the 70 % duty; only
+        the stimulus is patched.
         """
         import ctypes
         import numpy as _np
@@ -468,12 +414,10 @@ class TestPicoScopeTachometer:
 
     @pytest.mark.parametrize('ppr', [1, 2, 6])
     def test_pulses_per_rev_divides_the_hardware_rate(self, ppr):
-        """The AWG produces the *pulse* rate; ppr is the divisor to the shaft.
+        """pulses_per_rev divides the pulse rate once: 60 Hz is 3600/ppr RPM.
 
-        60 Hz of square wave is 3600 RPM at 1 pulse/rev and 600 at 6, and the
-        divide happens exactly once in the chain. Same published +-0.2 % of
-        reading as the 1 ppr sweep -- 60 Hz is 3600/ppr RPM with well over the
-        two revolutions the gate wants inside a 1 s block at every value here.
+        Tolerance +/-0.2 % of reading. A 1 s block holds more than the 2
+        revolutions that MIN_REVS needs at each ppr here.
         """
         res, _ = _capture_tach(
             60.0, settings=rev80_tach.TachSettings(pulses_per_rev=ppr))
@@ -482,13 +426,10 @@ class TestPicoScopeTachometer:
         assert res.rpm == pytest.approx(60.0 * 60.0 / ppr, rel=2e-3)
 
     def test_a_block_under_min_revs_withholds_the_rate_electrically(self):
-        """The MIN_REVS gate, demonstrated on real edges rather than synthetic.
+        """A block with fewer than MIN_REVS revolutions gives no shaft speed.
 
-        5 Hz of square wave in a 1 s block is ~5 rising edges. Read as 1
-        pulse/rev that is 5 revolutions and a good 300 RPM reading. Read as a
-        6-line encoder it is 0.8 of a revolution -- more than the three edges
-        the old fixed gate asked for, and it used to return 50 RPM with
-        quality 'ok', computed from a fraction of a turn. It must now withhold.
+        5 Hz in a 1 s block is about 5 rising edges: 5 revolutions at 1 ppr
+        (300 RPM), but 0.8 revolution at 6 ppr, so no rate is reported.
         """
         ok, _ = _capture_tach(5.0)
         assert ok is not None and ok.rpm == pytest.approx(300.0, rel=2e-3)
@@ -503,22 +444,21 @@ class TestPicoScopeTachometer:
         assert gated.quality == rev80_tach.QUALITY_TOO_FEW_EDGES
 
     def test_duty_cycle_is_measured(self):
-        """The built-in square is 50 % duty; duty is what R46 turns into a
-        surface velocity."""
+        """The built-in square wave measures 50 % duty within 5 %.
+
+        Surface velocity from duty is tracked as R46 in doc/PROGRESS.md."""
         res, _ = _capture_tach(30.0)
         assert res.duty_cycle == pytest.approx(0.5, abs=0.05)
 
     def test_tach_channel_produces_no_channel_result(self):
-        """Role plumbing, end to end on real hardware: a pulse train must not
-        acquire an overall, a spectrum or a kurtosis."""
+        """A tachometer channel gives no ChannelResult (no overall, spectrum or kurtosis)."""
         _, dc = _capture_tach(30.0, channels=(0, 1))
         assert dc is not None
         results = dc.process_samples()
         assert all(r.channel != 0 for r in results)
 
     def test_four_channels_with_a_tach_stream_cleanly(self):
-        """A tach as one of four inputs sits inside the streaming envelope the
-        STREAMING_CEILING_HZ measurements already established."""
+        """Four channels, one a tachometer, stream 8 s with no overflow or degraded frame."""
         sensor = _get_hardware_sensor()
         dc = vc.DataCollector(config=_tach_config('DC', channels=(0, 1, 2, 3)))
         dc.connect_sensor(sensor, siggen_config={

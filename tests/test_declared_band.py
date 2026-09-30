@@ -1,22 +1,8 @@
-"""The overall must be computed over a declared, configurable band (M-06).
+"""The overall is measured over a declared band (band_fmin to band_fmax).
 
-Before this, `overall` was the RMS of the whole filtered block, so its band was
-`highpass_fc` … fs/2 -- and fs/2 is 1.28x-2.56x maxfreq depending on where the
-power-of-two rounding in `AcquisitionSettings.samplerate` lands (2.048x at the
-500/1000/2000 Hz presets).  Meanwhile F-9 had already truncated the *spectrum*
-at maxfreq, so the overall and the spectrum on screen described different bands.
-
-Two consequences, both quantified by the audit:
-
-  * Content the user explicitly excluded via F_max still landed in the trend.
-    2 g RMS above a 1000 Hz F_max inflated reported overall
-    velocity from 3.00 to 3.74 mm/s (+25%) -- enough to move a machine from
-    ISO 20816 zone B to zone C on a reading that should have excluded it.
-  * Overalls were not comparable across sessions taken at different F_max,
-    which silently invalidates long-horizon trending.
-
-Everything here excites the chain off-bin, reusing the helpers in
-test_measurement_validity.py for the same reason that file gives.
+Content outside the band does not reach the overall, and the overall does not
+change with F_max at a fixed band, so trends stay comparable. The tones are
+off-bin; the helpers come from test_measurement_validity.py.
 """
 
 import numpy as np
@@ -55,7 +41,7 @@ def feed(dc, block: np.ndarray) -> None:
 # ===========================================================================
 
 def test_band_defaults_to_highpass_fc_and_maxfreq():
-    """Unset band edges resolve to the high-pass corner and F_max.
+    """Unset band edges resolve to the high-pass band edge and F_max.
 
     Not fs/2: the guard band between F_max and fs/2 is where the anti-alias
     filter has not reached full attenuation, so content there is not a
@@ -71,12 +57,10 @@ def test_band_defaults_to_highpass_fc_and_maxfreq():
 
 
 def test_band_default_upper_edge_is_maxfreq_not_nyquist():
-    """The whole point of M-06: fs/2 is up to 2.048x maxfreq at these presets."""
+    """The default upper band edge is F_max, not fs/2 = 1.28 x F_max."""
     cfg = vc.AcquisitionSettings()
     cfg.maxfreq = 1000.0
-    # There really is a guard band above maxfreq. It used to be up to 2.048x
-    # maxfreq wide, an artifact of samplerate being rounded up to a power of
-    # two; with the corrected exact-2.56x rate it is the designed 1.28x.
+    # A guard band exists above F_max: fs/2 is 1.28 x F_max.
     assert cfg.samplerate / 2 == pytest.approx(1.28 * cfg.maxfreq)
     assert cfg.band_fmax_resolved == pytest.approx(cfg.maxfreq)
 
@@ -129,7 +113,7 @@ def test_unset_band_round_trips_as_unset():
 
 
 def test_copy_carries_the_band():
-    """AcquisitionSettings.copy() dropped every field but maxfreq/binsize (H-08)."""
+    """AcquisitionSettings.copy() carries the band and highpass_fc."""
     cfg = vc.AcquisitionSettings()
     cfg.maxfreq = 5000.0
     cfg.band_fmin = 10.0
@@ -156,22 +140,16 @@ def test_channel_result_reports_the_band_it_was_measured_over():
 
 
 # ===========================================================================
-# Out-of-band content is excluded -- the audit's quantified +25% case
+# Out-of-band content is excluded from the overall
 # ===========================================================================
 
 @pytest.mark.parametrize('frac', OFFBIN_FRACTIONS)
 def test_out_of_band_tone_does_not_reach_the_overall(frac):
-    """The audit's case: content above F_max inflated the reported velocity
-    overall by +25%, on a reading that should have excluded it.
+    """A tone above F_max, inside the guard band, does not reach the overall.
 
-    The audit used 1500 Hz. That sat inside the guard band only while
-    samplerate was nextpow2(2.56 * maxfreq) = 4096 (fs/2 = 2048); at the
-    corrected exact 2.56x rate fs/2 is 1280 and 1500 Hz is above Nyquist,
-    where the decimation anti-alias filter removes it outright (-240 dB
-    measured) and the test would pass without the band mask doing anything.
-    1100 Hz is the equivalent case at the real guard band: above F_max=1000,
-    below fs/2=1280, and measured to survive decimation at -0.7 dB, so the
-    band mask is the only thing that can keep it out of the overall.
+    1100 Hz is above F_max = 1000 Hz and below fs/2 = 1280 Hz. It passes the
+    decimation filter at -0.7 dB, so only the band mask can remove it. A tone
+    above fs/2 would be removed by the decimation filter, and prove nothing.
     """
     dc = make_collector(eu='mm/s2', target_unit='mm/s2', amp_mode='RMS',
                         maxfreq=1000, binsize=2.0)
@@ -187,7 +165,7 @@ def test_out_of_band_tone_does_not_reach_the_overall(frac):
 
 @pytest.mark.parametrize('frac', OFFBIN_FRACTIONS)
 def test_out_of_band_tone_excluded_from_integrated_overall(frac):
-    """Same, through the acc->vel integration path."""
+    """The same, through the acceleration-to-velocity integration path."""
     dc = make_collector(eu='mm/s2', target_unit='mm/s', amp_mode='RMS',
                         maxfreq=1000, binsize=2.0)
     f_in  = offbin(dc, 300.0, frac)
@@ -199,7 +177,7 @@ def test_out_of_band_tone_excluded_from_integrated_overall(frac):
 
 @pytest.mark.parametrize('frac', OFFBIN_FRACTIONS)
 def test_below_band_tone_does_not_reach_the_overall(frac):
-    """The lower edge must exclude too -- sub-synchronous content and drift."""
+    """The lower band edge excludes content too (sub-synchronous content, drift)."""
     dc = make_collector(eu='mm/s2', target_unit='mm/s2', amp_mode='RMS',
                         maxfreq=1000, binsize=2.0)
     dc.config.band_fmin = 100.0
@@ -216,11 +194,9 @@ def test_below_band_tone_does_not_reach_the_overall(frac):
 
 @pytest.mark.parametrize('maxfreq', [1000.0, 2000.0, 5000.0])
 def test_overall_is_invariant_to_maxfreq_at_a_fixed_band(maxfreq):
-    """A trend must stay comparable when the operator changes F_max.
+    """At a fixed declared band, the overall does not change with F_max.
 
-    Same signal, same declared band, three presets: the reported overall must
-    agree. Before this it moved with fs/2, so long-horizon trending across a
-    settings change was silently invalid.
+    This keeps a trend comparable when the operator changes F_max.
     """
     dc = make_collector(eu='mm/s2', target_unit='mm/s2', amp_mode='RMS',
                         maxfreq=maxfreq, binsize=2.0)
@@ -234,10 +210,10 @@ def test_overall_is_invariant_to_maxfreq_at_a_fixed_band(maxfreq):
 
 @pytest.mark.parametrize('frac', OFFBIN_FRACTIONS)
 def test_in_band_passthrough_overall_still_exact(frac):
-    """Band-limiting must not cost the exactness the passthrough path had.
+    """Order 0 through the band mask is exact within 0.5 % for an in-band tone.
 
-    Order 0 moved from a time-domain sqrt(mean(x^2)) to a masked rFFT under
-    Parseval; over a band containing all the signal the two must agree.
+    Over a band that holds all of the signal, the masked rFFT (Parseval) must
+    agree with the time-domain RMS.
     """
     dc = make_collector(eu='mm/s2', target_unit='mm/s2', amp_mode='RMS',
                         maxfreq=1000, binsize=2.0)
@@ -247,10 +223,9 @@ def test_in_band_passthrough_overall_still_exact(frac):
 
 
 def test_all_integration_orders_share_one_band():
-    """Every order must exclude the same content, or the five disagree.
+    """All integration orders exclude the same out-of-band content.
 
-    An out-of-band tone is added; each order's overall must match what the
-    in-band tone alone predicts, at that order.
+    Each order's overall matches the value for the in-band tone alone.
     """
     for target, n_int in (('mm/s2', 0), ('mm/s', 1), ('mm', 2)):
         dc = make_collector(eu='mm/s2', target_unit=target, amp_mode='RMS',
@@ -275,11 +250,11 @@ def test_waveform_and_overall_describe_the_same_band():
 
 
 # ===========================================================================
-# The PSD cache must not outlive a band change (the M-09 failure mode)
+# A band change invalidates the PSD cache
 # ===========================================================================
 
 def test_changing_the_band_invalidates_the_cached_overall():
-    """M-09 was exactly this bug for binsize: a stale cache under a new setting."""
+    """A narrower band recomputes the overall; the cache key includes the band."""
     dc = make_collector(eu='mm/s2', target_unit='mm/s2', amp_mode='RMS',
                         maxfreq=1000, binsize=2.0)
     data = tone(dc, 317.3, amp=1.0) + tone(dc, 717.3, amp=1.0)
@@ -297,12 +272,16 @@ def test_changing_the_band_invalidates_the_cached_overall():
 
 
 # ===========================================================================
-# High-pass: highpass_fc is the start of attenuation, not the -3 dB knee
+# High-pass: highpass_fc is the band edge, not the -3 dB knee
+# (CONTRIBUTING.md, "E8.3. Knee below the band edge")
 # ===========================================================================
 
 def test_highpass_knee_sits_below_the_declared_edge():
-    """A 4th-order Butterworth designed AT 10 Hz is -3 dB at 10 Hz, inside the
-    band ISO 2954 requires flat. The knee must be placed below the edge."""
+    """The knee is 0.8342 x the band edge (8.342 Hz for a 10 Hz edge).
+
+    A 4th-order Butterworth with its knee at 10 Hz is -3 dB at 10 Hz, inside
+    the band that ISO 2954 requires flat.
+    """
     dc = make_collector(highpass_enabled=True, highpass_fc=10.0,
                         maxfreq=1000, binsize=2.0)
     knee = dc.highpass_knee_hz(dc.config.samplerate)
@@ -312,7 +291,7 @@ def test_highpass_knee_sits_below_the_declared_edge():
 
 @pytest.mark.parametrize('fc', [2.0, 5.0, 10.0, 20.0])
 def test_highpass_response_at_the_declared_edge_is_within_tolerance(fc):
-    """+/-10% amplitude (ISO 2954) at the declared edge, not -3 dB."""
+    """The response at the band edge is 0.9 (-10 %, ISO 2954), not -3 dB."""
     import scipy.signal
 
     dc = make_collector(highpass_enabled=True, highpass_fc=fc,
@@ -326,7 +305,7 @@ def test_highpass_response_at_the_declared_edge_is_within_tolerance(fc):
 
 
 def test_highpass_still_rejects_well_below_the_edge():
-    """Moving the knee down must not turn the high-pass into a pass-through."""
+    """The high-pass still attenuates 1 Hz to less than 1 % (edge 10 Hz)."""
     import scipy.signal
 
     dc = make_collector(highpass_enabled=True, highpass_fc=10.0,
@@ -338,15 +317,15 @@ def test_highpass_still_rejects_well_below_the_edge():
 
 
 # ===========================================================================
-# M-12 -- anti-alias stopband against an absolute dB spec
+# Anti-alias stopband against an absolute dB limit
+# (CONTRIBUTING.md, "E2. Anti-alias kernel")
 # ===========================================================================
 
 def test_antialias_stopband_meets_80_db():
-    """scipy decimate(ftype='fir') uses a Hamming kernel with ~-53 dB sidelobes;
-    measured -55.5 dB worst case. ISO 2954 and analyzer practice want >= 80 dB.
+    """The worst stopband rejection of antialias_decimate is -80 dB or better.
 
-    Sweeps tones across the stopband and checks how much of each survives
-    decimation, measured at the frequency it folds to.
+    The test sweeps 40 tones across the stopband and measures the residual
+    after decimation. scipy's default Hamming kernel measured -55.5 dB worst case.
     """
     from rev80.picoscope import antialias_decimate
 
@@ -374,7 +353,7 @@ def test_antialias_stopband_meets_80_db():
 
 
 def test_antialias_passband_is_not_attenuated():
-    """The steeper kernel must not eat the top of the usable band."""
+    """The passband amplitude stays within 2 % up to 0.39 x the output rate."""
     from rev80.picoscope import antialias_decimate
 
     fs_raw, factor = 32768.0, 4
@@ -395,7 +374,7 @@ def test_antialias_passband_is_not_attenuated():
 # ===========================================================================
 
 def test_band_survives_the_hdf5_round_trip(tmp_path):
-    """A stored overall is uninterpretable without the band it was taken over."""
+    """The declared band is saved to HDF5 and read back with the frames."""
     dc = make_collector(eu='mm/s2', target_unit='mm/s', maxfreq=1000, binsize=2.0)
     dc.config.band_fmin = 10.0
     dc.config.band_fmax = 500.0
@@ -411,8 +390,7 @@ def test_band_survives_the_hdf5_round_trip(tmp_path):
 
 
 def test_underived_band_survives_the_hdf5_round_trip_as_unset(tmp_path):
-    """None must not come back as a number: that would freeze the saving
-    session's F_max into every future reload of the file."""
+    """An unset band (None) is read back as None, not as the F_max at save time."""
     dc = make_collector(eu='mm/s2', target_unit='mm/s', maxfreq=1000, binsize=2.0)
     assert dc.config.band_fmin is None
     feed(dc, tone(dc, 137.3))
@@ -439,8 +417,7 @@ def test_monitor_writer_records_the_band_beside_the_overall():
 
 
 def test_band_json_is_empty_when_results_carry_no_band():
-    """A ChannelResult built outside process_sample declares no band, and the
-    writer must record that honestly rather than inventing one."""
+    """For a result with no band, the monitor writer records an empty band_json."""
     import json
     from datetime import datetime
 

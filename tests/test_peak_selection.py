@@ -1,24 +1,8 @@
-"""Tests for rev80.peaks — local noise floor estimation and significance gating.
+"""rev80.peaks: local noise floor and significance gate (CONTRIBUTING.md, E12).
 
-Two kinds of test live here.
-
-**Synthetic ground truth.**  The floor and the tone list are constructed, so
-the right answer is known exactly.  These carry the load: they pin the floor
-estimator's accuracy, its behaviour at the band edges, and the gate's ability
-to separate injected lines from the noise they sit in — including on a
-deliberately non-flat floor, which is the case the old amplitude ranking got
-wrong.
-
-**Real-corpus regression.**  ``DEVDATA/old castle`` is not tracked (see
-.gitignore), so those tests skip unless the corpus is present.  Point
-``REV80_CORPUS_DIR`` at it to run them::
-
-    REV80_CORPUS_DIR='/path/to/DEVDATA/old castle' pytest tests/test_peak_selection.py
-
-They encode the field case the whole change exists for: on
-``blower 4 - bearing DE.h5`` ch2 the 1034 / 1059 / 1088 Hz bearing sideband
-family must survive selection, and the top-of-band ripple at 1947 / 1967 /
-1982 Hz must not.
+Synthetic tests know the true floor and lines. The corpus tests skip unless
+``DEVDATA/old castle`` exists or ``REV80_CORPUS_DIR`` points to it; they check
+the 1034/1059/1088 Hz bearing sidebands and the 1947/1967/1982 Hz ripple.
 """
 
 import os
@@ -44,11 +28,10 @@ def flat_floor(level=10.0, n=NBINS):
 
 
 def sloped_floor(low=8.0, high=56.0, n=NBINS):
-    """A 7x floor rise concentrated at the top of the band.
+    """A 7x floor rise at the top of the band, the shape measured on the corpus.
 
-    This is the shape measured on the corpus: on blower 4 ch2 the median local
-    floor is 9.0 mV overall but 39.4 mV over the top 110 Hz.  It is the shape
-    that breaks absolute-amplitude ranking.
+    On blower 4 ch2 the median local floor is 9.0 mV overall, 39.4 mV over the
+    top 110 Hz.
     """
     x = np.arange(n) / (n - 1)
     step = 1.0 / (1.0 + np.exp(-(x - 0.93) / 0.02))
@@ -97,7 +80,7 @@ class TestMedianToMeanRatio:
         assert ratios[0] < 0.70 < ratios[-1] < 1.0
 
     def test_ignoring_segment_count_would_bias_the_floor_by_up_to_3_dB(self):
-        """Why the correction is not hardcoded to ln2: the error is not small."""
+        """ln2 for 16 segments would bias the floor by more than 1.4 dB."""
         err_db = 10 * np.log10(pk.median_to_mean_ratio(16) / pk.median_to_mean_ratio(1))
         assert err_db > 1.4
 
@@ -131,12 +114,10 @@ class TestLocalNoiseFloor:
         assert np.median(est[loud]) / np.median(est[quiet]) > 5.0
 
     def test_strong_lines_barely_lift_the_floor_estimate(self):
-        """The median must stay in the noise even under a dense line family.
+        """The median stays in the noise under a dense line family.
 
-        It is not perfectly immune, and the residual is worth stating.  Lines
-        every 22 bins (the corpus's median gap between significant peaks) each
-        occupy 3 bins of a 65-bin window, so 9 of 65 samples are forced high
-        and the median moves up a rank or two.  Measured lift, 20 trials:
+        Lines every 22 bins (the corpus median gap) put 9 of 65 window samples
+        high. Measured lift of the floor on synthetic spectra, 20 trials:
 
             line gap    median      p95
              11 bins   +2.12 dB   +3.39 dB
@@ -144,8 +125,7 @@ class TestLocalNoiseFloor:
              44 bins   +0.35 dB   +1.15 dB
              88 bins   +0.13 dB   +0.75 dB
 
-        The bias is upward, i.e. toward *rejecting* lines, so a dense family
-        makes the gate slightly conservative rather than credulous.
+        The bias is upward, so a dense family makes the gate reject more lines.
         """
         rng = np.random.default_rng(SEED)
         truth = flat_floor(10.0)
@@ -160,13 +140,10 @@ class TestLocalNoiseFloor:
         assert np.percentile(np.abs(inner), 95) < 2.5
 
     def test_floor_is_not_pulled_down_at_the_band_edges(self):
-        """Regression: scipy.signal.medfilt zero-pads, and that fabricates peaks.
+        """The floor is not pulled down at the band edges, as with medfilt.
 
-        Within +/-width//2 bins of an edge the implicit zeros displace real
-        samples out of the lower half of the median window, so the statistic
-        slides from the local median toward the local minimum.  Measured on the
-        real corpus this reported a floor of 5.68 where the truth was 39.4,
-        making an ordinary ripple bin at 1999 Hz look like a 16 dB line.
+        scipy.signal.medfilt zero-pads, so near an edge its median slides
+        toward the local minimum. See CONTRIBUTING.md, "E12.3".
         """
         half = pk.FLOOR_MEDIAN_WIDTH_BINS // 2
         edge = np.r_[0:half, NBINS - half:NBINS]
@@ -250,7 +227,7 @@ class TestPeakDistance:
             assert null / over == pytest.approx(expected, abs=0.05), name
 
     def test_boxcar_lines_three_bins_apart_are_both_reported(self):
-        """The old hardcoded distance=5 over-merged boxcar, whose null is +/-1 bin."""
+        """Boxcar lines 3 bins apart are both reported; distance=5 merges them."""
         n, fs = 1024, 1024.0
         t = np.arange(n) / fs
         sig = np.sin(2 * np.pi * 200 * t) + np.sin(2 * np.pi * 203 * t)
@@ -289,11 +266,10 @@ class TestSelectPeaksGroundTruth:
         assert len(false_positives) <= 5, sorted(false_positives)
 
     def test_tones_on_the_loud_part_of_a_non_flat_floor_are_still_found(self):
-        """The case absolute-amplitude ranking gets wrong, in both directions.
+        """Tones 20 dB above a quiet and a loud floor are both found.
 
-        A quiet tone standing 20 dB out of a quiet floor and a loud tone
-        standing 20 dB out of a loud floor are equally real.  A tiny ripple on
-        the loud floor is not, even though it is far louder than the quiet tone.
+        Noise on the loud floor is not reported, although it is louder than
+        the quiet tone.
         """
         rng = np.random.default_rng(SEED)
         truth = sloped_floor()
@@ -313,11 +289,10 @@ class TestSelectPeaksGroundTruth:
         assert not set(loud_noise.tolist()) & set(found.tolist())
 
     def test_a_shoulder_on_a_broad_hump_is_rejected(self):
-        """What prominence buys over height alone.
+        """A shoulder on a broad hump is not reported; a real line is.
 
-        Every sample of a broad hump clears a floor-relative height threshold,
-        so height alone happily reports the ripple riding on it.  Prominence
-        asks how far the trace must descend before it can climb higher.
+        Every sample of the hump clears the height threshold. Prominence rejects
+        the shoulder.
         """
         n = 1201
         base = np.full(n, 5.0)
@@ -329,20 +304,15 @@ class TestSelectPeaksGroundTruth:
         found = pk.select_peaks(spec).tolist()
         assert 300 in found
         assert 640 not in found
-        # The hump's own apex is also rejected, and that is intended rather
-        # than incidental: with wlen=41 its prominence is 7.05 against a
-        # requirement of 144, because a 40-bin-sigma bump is not a spectral
-        # line.  The cost is real and worth stating -- a genuinely broad
-        # resonance will not appear in the peak table, only in the plot.
+        # The hump apex is also rejected (prominence 7.05 against 144 at
+        # wlen=41). A broad resonance shows in the plot, not in the peak table.
         assert 600 not in found
 
     def test_a_tiny_line_on_a_very_quiet_floor_is_rejected(self):
-        """The absolute -40 dB gate.
+        """A line more than 40 dB below the largest bin is not reported.
 
-        Highpass roll-off residue sits on a near-zero floor, so pure
-        floor-relative significance ranks it among the top lines in the
-        spectrum.  On blower 4 ch2 that promoted the 1 Hz bin (0.21 mV) and the
-        14 Hz bin (2.67 mV) to SNR ranks 9 and 6.
+        High-pass roll-off residue sits on a near-zero floor, so a
+        floor-relative gate alone would report it.
         """
         rng = np.random.default_rng(SEED)
         truth = flat_floor(10.0)
@@ -382,10 +352,9 @@ class TestSelectPeaksGroundTruth:
 class TestFalseAlarmRate:
 
     def test_false_alarm_rate_on_pure_noise_is_under_one_per_spectrum(self):
-        """With no lines present at all, the gate must stay quiet.
+        """On pure noise the gate reports fewer than 2 peaks per spectrum on average.
 
-        Measured over 60 realisations of 2001 bins of pure exponential noise:
-        mean 0.73 reported maxima per spectrum, median 1, max 3.
+        Measured: mean 0.73 per 2001 bins (60 realisations), maximum 3.
         """
         counts = [len(pk.select_peaks(noise(flat_floor(10.0),
                                             np.random.default_rng(1000 + s))))
@@ -394,9 +363,9 @@ class TestFalseAlarmRate:
         assert max(counts) <= 5
 
     def test_the_default_threshold_sits_above_the_false_alarm_knee(self):
-        """Why 9.5 dB and not 6 dB.
+        """The 9.5 dB default is above the false-alarm cliff; 6 dB is below it.
 
-        On pure noise the reported count per 2001 bins is a cliff, not a slope:
+        Mean false alarms per 2001 bins of pure noise:
 
             threshold   mean false alarms
               6.0 dB        37.9
@@ -480,13 +449,10 @@ class TestSelectPeaksDegenerate:
 class TestProminenceWindow:
 
     def test_prominence_is_measured_locally_not_across_the_whole_band(self):
-        """Why wlen is mandatory whenever prominence is used.
+        """Prominence is measured within wlen bins, not across the whole band.
 
-        Unbounded, find_peaks walks outward from a candidate until it meets a
-        taller sample, and on a 2000-bin spectrum with a monotone background
-        that walk can run most of the band before it stops.  The prominence it
-        then reports is the drop to an unrelated part of the machine, not to
-        the candidate's own base.
+        Unbounded, find_peaks measures the drop to a distant part of the
+        spectrum, not to the base of the candidate line.
         """
         n = 2001
         # A single broad hump spanning the band: 500-bin sigma, no lines at all.
@@ -543,34 +509,22 @@ def blower4_ch2():
 class TestOldCastleRegression:
 
     def test_bearing_sideband_family_survives_selection(self, blower4_ch2):
-        """1034 / 1059 / 1088 Hz are the fault signature: +/-25/29 Hz sidebands.
-
-        Under top-N-by-amplitude they ranked 10th, 1st and 4th, so the default
-        6-row table broke the family up and dropped 1034 Hz entirely.
-        """
+        """The 1034/1059/1088 Hz bearing sideband family is reported."""
         freq, found = blower4_ch2.freq, blower4_ch2.peaks
         reported = {int(round(freq[i])) for i in found}
         assert {1034, 1059, 1088} <= reported
 
     def test_top_of_band_ripple_is_excluded(self, blower4_ch2):
-        """1947 / 1967 / 1982 Hz are ripple on a 39 mV floor, not lines.
-
-        They reached the old top 12 purely because that stretch of the band is
-        loud: they stand only 4.0-7.3 dB out of their own neighbourhood.
-        """
+        """1947/1967/1982 Hz are not reported: 4.0 to 7.3 dB above a 39 mV floor."""
         freq, found = blower4_ch2.freq, blower4_ch2.peaks
         reported = {int(round(freq[i])) for i in found}
         assert not ({1947, 1967, 1982} & reported)
 
     def test_leading_peaks_match_the_reviewed_list(self, blower4_ch2):
-        """The list a reviewer signed off on, in amplitude order.
+        """The first 9 peaks match the reviewed list, in amplitude order.
 
-        1999 Hz appeared in the original review at position 6.  It is not here,
-        and that is deliberate: it was admitted only because the zero-padded
-        median filter under-read the floor beneath it (14.9 mV against a true
-        88.3 mV).  With the band-edge fix its true significance is 0.73 dB —
-        indistinguishable from its own neighbourhood.  See
-        test_floor_is_not_pulled_down_at_the_band_edges.
+        1999 Hz is not in the list: its significance is 0.73 dB above its
+        truncated-window floor (CONTRIBUTING.md, "E12.3").
         """
         freq, found = blower4_ch2.freq, blower4_ch2.peaks
         leading = [int(round(freq[i])) for i in found[:9]]
@@ -610,10 +564,9 @@ class TestOldCastleCorpusWide:
         assert 25 <= np.median(counts) <= 55
 
     def test_selection_beats_amplitude_ranking_on_local_significance(self, spectra):
-        """The headline claim, measured: fewer reported peaks sit in their own noise.
+        """No reported peak is less than 2x above its local floor.
 
-        Old rule, top 10 by absolute amplitude: 6.67% of reported peaks stand
-        less than 2x above their local floor.  The gate cannot admit any.
+        Top-10-by-amplitude reports 6.67 % such peaks on the corpus.
         """
         old_bad, new_bad = [], []
         for r in spectra:
@@ -631,21 +584,13 @@ class TestOldCastleCorpusWide:
 # _running_median — vectorisation equality
 # ---------------------------------------------------------------------------
 #
-# The edge handling was a Python loop of np.median calls, one per edge bin. It
-# measured 1.161 ms of _running_median's 1.274 ms on a 1001-bin spectrum at
-# width 65 (the interior median_filter is only 0.047 ms), so at 8 channels it
-# was ~10 ms of main-thread work per frame. It is now a NaN-padded sliding
-# window plus one nanmedian.
-#
-# That is a speed change on a measurement path, and the measured error table in
-# _running_median's docstring — the whole reason truncation was chosen over
-# zero-padding, reflection or replication — is only still true if the statistic
-# is unchanged. So the bar here is not "close": it is bit-identical to the loop
-# it replaced, which is reproduced below rather than described.
+# The vectorised edge handling must be bit-identical to the loop below. The
+# edge error table in CONTRIBUTING.md, "E12.3", holds only if the statistic is
+# unchanged.
 
 
 def _running_median_reference(values, width):
-    """The pre-vectorisation implementation, verbatim, as the oracle."""
+    """The loop implementation of the edge median, used as the oracle."""
     values = np.asarray(values, dtype=float)
     n = len(values)
     half = width // 2
@@ -663,19 +608,13 @@ def _running_median_reference(values, width):
 @pytest.mark.parametrize('n', [0, 1, 2, 5, 17, 64, 65, 66, 200, 1001, 2049])
 @pytest.mark.parametrize('width', [1, 2, 3, 4, 5, 33, 64, 65, 129, 501])
 def test_running_median_bit_identical_to_the_loop(n, width):
-    """Every length x width combination, including even widths and n < width.
+    """Bit-identical for every length and width, also even widths and n < width.
 
-    Even widths are included deliberately. local_noise_floor forces an odd
-    window, so they are unreachable in production today — but the window the
-    edge bins take is [i-half, i+half] INCLUSIVE, i.e. 2*half+1 samples
-    regardless of parity, and sizing the sliding window by `width` instead
-    would shorten every even-width window by one sample without any shipped
-    caller noticing.
+    local_noise_floor uses odd widths only, but the edge window is 2*half+1
+    samples for any parity. A window sized by `width` would be one sample short.
     """
     rng = np.random.default_rng(1000 * width + n)
-    # Exponential, because that is what a single-segment Welch noise bin
-    # actually is — and it is the heavy tail that makes a median rather than a
-    # mean the right statistic here in the first place.
+    # Exponential: the distribution of a single-segment Welch noise bin.
     values = rng.exponential(1.0, n)
 
     got = pk._running_median(values, width)
@@ -688,13 +627,9 @@ def test_running_median_bit_identical_to_the_loop(n, width):
 
 
 def test_running_median_unaffected_by_a_line_at_the_band_edge():
-    """The edge-truncation property the docstring's error table depends on.
+    """A strong line near the band edge is not mirrored back onto itself.
 
-    A strong line in the last half-window must not be mirrored back across the
-    edge onto itself — the failure mode that made reflection the runner-up
-    rather than the winner. Pinned separately from the equality test above so
-    that a future rewrite which changes the statistic deliberately still has to
-    confront this case.
+    The edge error table in CONTRIBUTING.md, "E12.3", depends on this property.
     """
     rng = np.random.default_rng(4)
     values = rng.exponential(1.0, 500)

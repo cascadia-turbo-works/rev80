@@ -1,3 +1,8 @@
+"""Integration, unit conversion and amplitude modes, with on-bin tones.
+
+These tones are bin-centred on purpose. Do not add amplitude assertions here;
+put them in test_measurement_validity.py, which uses off-bin tones.
+"""
 import pytest
 import numpy as np
 import rev80 as vc
@@ -5,7 +10,7 @@ from rev80.scope_sensor import ScopeSensor
 
 tone_step = 500
 tol = 1e-4
-overall_tol = 0.01   # 1% relative — tight enough to catch the ~22% excess, loose enough for Welch window error
+overall_tol = 0.01   # 1 % relative tolerance on the overall of a pure tone
 
 
 def _peak_amp_at(result: vc.ChannelResult, freq_hz: float) -> float:
@@ -156,13 +161,9 @@ def test_differentiation_vel_to_acc(freq):
     assert result is not None
     expected_acc = vel_ampl * (2 * np.pi * freq)
 
-    # This tone is generated at the raw acquisition rate and decimated down
-    # to the display rate before differentiation (see
-    # collector.decimate_to_rate) -- unlike the rest of this file's `tol`,
-    # which assumes a bit-exact tone, the Kaiser-windowed resample filter
-    # has a small nonzero passband deviation, and (2*pi*f) differentiation
-    # gain amplifies it. Relative, not absolute: this scales with frequency
-    # the same way the underlying filter's passband droop does.
+    # The tone is decimated from the raw rate to the display rate first. The
+    # resample filter has a small passband deviation, and the (2*pi*f) gain
+    # amplifies it, so this tolerance is relative, not the absolute `tol`.
     actual = _peak_amp_at(result, freq)
     rel_tol = 2e-3
     assert np.abs(actual - expected_acc) < rel_tol * expected_acc, \
@@ -302,27 +303,17 @@ def test_cross_modality_time_series(freq):
         f'Time peak {peak_time:.4f} too small (expected ~{expected_vel:.2f})'
 
 
-# ── Regression: highpass + integration must not blow up near-DC bins ──
+# ── Integration zeroes bins 0 and 1, with or without the high-pass ──
 
 @pytest.mark.parametrize('highpass_enabled', [True, False])
 @pytest.mark.parametrize('freq', [500, 1000])
 def test_integration_zeroes_bin1(freq, highpass_enabled):
-    """Integration (accel->vel) must hard-zero bin 1 (1x binsize), the
-    field-reported ~1-2 Hz blowup, unconditionally -- not just when
-    highpass is enabled.
+    """Integration (acceleration to velocity) sets bins 0 and 1 to exactly zero.
 
-    A prior fix attempt weighted the integration transfer function by the
-    highpass filter's frequency response (scipy.signal.sosfreqz). That
-    suppressed bin 1 in the spectrum but, because it's a smooth multiply
-    across many bins rather than an exact single-bin removal, it behaves
-    as a wide symmetric (zero-phase-equivalent) kernel applied via
-    circular convolution (frequency-domain multiply + irfft) -- confirmed
-    on real hardware data to badly distort the displayed time-domain
-    signal at both block edges ("wobble"), even though bin 1 itself
-    dropped by ~50,000x. Hard-zeroing bin 1 directly removes exactly one
-    Fourier basis component (an integer number of cycles across the
-    block) with zero effect on any other bin and no boundary sensitivity
-    -- the same property that already made zeroing bin 0 (DC) safe.
+    This prevents a large 1 to 2 Hz value, with or without the high-pass.
+    Zeroing one bin removes one Fourier component and changes no other bin.
+    A smooth weighting by the high-pass response was rejected: on hardware
+    data it distorted the waveform at both block edges.
     """
     acc_ampl = 1.0
 
@@ -350,9 +341,8 @@ def test_integration_zeroes_bin1(freq, highpass_enabled):
 
 @pytest.mark.parametrize('highpass_enabled', [True, False])
 def test_differentiation_does_not_zero_bin1(highpass_enabled):
-    """Differentiation (positive order) must NOT zero bin1 -- multiplying by
-    omega already suppresses low frequencies further, so there's no blow-up
-    risk, and zeroing it would needlessly discard real low-frequency content.
+    """Differentiation does not zero bin 1: multiplication by omega already
+    attenuates low frequencies.
     """
     freq = 500
     vel_ampl = 1.0
@@ -369,14 +359,12 @@ def test_differentiation_does_not_zero_bin1(highpass_enabled):
     dc_local.disconnect_sensor()
 
     assert result is not None
-    # bin1 isn't forced to zero for differentiation (no assertion that it's
-    # nonzero either -- for a clean synthetic tone it may happen to be ~0
-    # anyway; the point is the code path doesn't touch it).
+    # No assertion on bin 1: for a clean synthetic tone it can be about 0.
+    # The test checks that this path runs.
 
 
 def test_passthrough_does_not_zero_bin1():
-    """n_steps == 0 (no modality change) must NOT zero bin1 -- it's plain
-    passthrough, unrelated to the integration blow-up guard."""
+    """Passthrough (n_steps == 0) does not zero bin 1."""
     freq = 500
     acc_ampl = 1.0
 
@@ -396,15 +384,11 @@ def test_passthrough_does_not_zero_bin1():
 
 
 def test_causal_highpass_no_severe_edge_overshoot():
-    """Regression for the real bug behind the reported 'wobble': switching
-    the highpass filter to zero-phase (sosfiltfilt) in an earlier attempt
-    effectively doubled the filter order (forward+backward pass), which
-    overshot the raw signal by 35-45% at both block edges for a low cutoff
-    over a short block (confirmed on DEVDATA/hpf-10hz.h5: 10 Hz cutoff over
-    a 1s/4096-sample block) -- regardless of sosfiltfilt padtype/padlen.
-    Causal sosfilt only shows a normal ~8-10% startup transient. This just
-    asserts the causal filter is in use and doesn't blow up a real-ish
-    synthetic capture the same way.
+    """The causal high-pass gives no large overshoot at the block edges.
+
+    Zero-phase sosfiltfilt was rejected: it doubles the filter order and
+    overshot both block edges by 35 to 45 % (CONTRIBUTING.md, "E8.1. Stateful
+    filter"). The bound here is 2x the expected peak.
     """
     freq = 78
     acc_ampl = 2 * np.pi * freq  # -> ~1.0 in/s-scale velocity peak, arbitrary units here
@@ -422,9 +406,8 @@ def test_causal_highpass_no_severe_edge_overshoot():
 
     assert result is not None
     expected = acc_ampl / (2 * np.pi * freq)  # == 1.0
-    # Generous bound -- real hardware showed ~55%/31% residual edge overshoot
-    # after this fix (vs. 350%/246% before it); this just guards against a
-    # future regression back toward the old severe (zero-phase) blow-up.
+    # Wide bound: hardware data showed 55 % and 31 % edge overshoot with the
+    # causal filter, against 350 % and 246 % before the change to it.
     assert np.abs(result.time_data).max() < expected * 2.0, (
         f'time_data max {np.abs(result.time_data).max():.4f} far exceeds '
         f'expected ~{expected:.4f} -- possible regression to severe edge overshoot'
