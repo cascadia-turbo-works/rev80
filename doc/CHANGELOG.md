@@ -74,6 +74,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **The draft-release job also runs on a manual dispatch.** It downloads the
   artifacts and checks that there are exactly 7 files, then stops before
   `gh release create`. Before, a dispatch did not test the download step.
+- **Artifacts expire after 7 days** (`retention-days: 7`, was the default
+  of 90 days). The repository is public, and any signed-in GitHub user can
+  download a development build while its artifacts exist.
 
 ### build — installer identity and shortcut icon (2026-09-30)
 

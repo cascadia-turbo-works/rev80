@@ -2300,7 +2300,10 @@ the `release` job downloads and counts the files, then stops before
 Each product is its own artifact, uploaded with `archive: false`, so it
 downloads as the file and not as a zip: `Rev80Setup-<version>.exe`, the
 wheel (`.whl`), the sdist (`.tar.gz`) and the four PDFs. The artifact name
-is the file name.
+is the file name. GitHub keeps each artifact for 7 days (`retention-days`). The
+repository is public, so any signed-in GitHub user can download an artifact
+during that time. A draft release is visible only to users with write access
+until you publish it.
 
 Five facts about the workflow:
 
