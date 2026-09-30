@@ -1,12 +1,9 @@
 """HDF5 persistence for tachometer channels (measurement file v5).
 
-Decision D-2: a tach channel stores its **edge times**, not its waveform.
-~30 float64 per second against 41666 is a factor of ~1400, which matters most
-on exactly the long unattended sessions where the tach channel would otherwise
-dominate the file. What is given up is re-thresholding after capture; what is
-kept is everything that makes RPM a *view* on stored data -- pulses_per_rev is
-a post-hoc divisor on the intervals, and a shaft-angle vector, if ever wanted,
-is an interpolation of those same edge times.
+A tachometer channel stores edge times, not the waveform: about 30 float64 per
+second against 25600 samples per second at 1 ppr and 30 Hz (a factor of about
+850). Re-thresholding after capture is not possible. RPM stays a view on stored
+data, because pulses_per_rev is a divisor applied to the stored intervals.
 """
 
 import h5py
@@ -72,7 +69,10 @@ def test_measurement_file_is_version_5(tmp_path):
 
 
 def test_tach_channel_stores_edge_times_not_a_waveform(tmp_path):
-    """The whole point of D-2. A waveform here would be ~1400x larger."""
+    """The tach channel group has edge_times and no 'data' dataset.
+
+    Here a 2 s block is 51200 samples against about 59 edge times.
+    """
     _, path = _saved(tmp_path)
     with h5py.File(path, 'r') as f:
         cg = f['frames/0/1']
@@ -108,7 +108,7 @@ def test_rpm_trend_is_persisted(tmp_path):
 # --- round trip ----------------------------------------------------------
 
 def test_reloaded_rpm_matches_what_was_stored(tmp_path):
-    """Replay must reproduce what the live display showed."""
+    """The reloaded rpm equals the live rpm, so replay shows what the live display showed."""
     dc, path = _saved(tmp_path)
     live = dc.current_rpm()
 
@@ -126,8 +126,9 @@ def test_role_survives_the_round_trip(tmp_path):
 
 
 def test_rpm_recomputes_when_pulses_per_rev_changes_after_load(tmp_path):
-    """RPM is a view on stored data, not a value baked in at capture -- and
-    edge times are enough to prove it, because ppr is a post-hoc divisor.
+    """After load, a new pulses_per_rev changes the rpm by that factor.
+
+    RPM is a view on the stored edge times, not a value fixed at capture.
     """
     _, path = _saved(tmp_path)
     dc2 = vc.DataCollector(config=vc.AcquisitionSettings())
@@ -138,13 +139,10 @@ def test_rpm_recomputes_when_pulses_per_rev_changes_after_load(tmp_path):
 
 
 def test_reinterpreting_at_a_ppr_the_block_cannot_support_withholds_the_rate(tmp_path):
-    """The other half of "RPM is a view": a view the data cannot support must
-    be refused, not rendered.
+    """A ppr that the stored edges cannot support gives rpm None.
 
-    These frames were captured at 1 ppr and hold ~59 edges in a 2 s block.
-    Reinterpreted as a 60-line encoder those same edges are 0.97 of a
-    revolution -- under MIN_REVS -- and the old fixed three-edge gate would
-    have divided them anyway and reported ~29 RPM for a 1762 RPM shaft.
+    The frames hold about 59 edges in a 2 s block at 1 ppr. As a 60-line
+    encoder, those edges are 0.97 of a revolution, which is under MIN_REVS.
     """
     _, path = _saved(tmp_path)
     dc2 = vc.DataCollector(config=vc.AcquisitionSettings())
@@ -163,7 +161,7 @@ def test_reloaded_tach_trend_is_restored(tmp_path):
 
 
 def test_a_file_with_no_tach_still_round_trips(tmp_path):
-    """The overwhelming majority of files. Nothing above may disturb them."""
+    """A file with no tachometer channel round-trips unchanged."""
     cfg = vc.AcquisitionSettings()
     cfg.maxfreq, cfg.binsize = 1000.0, 0.5
     cfg.enabled_channels = [0]
@@ -186,8 +184,10 @@ def test_a_file_with_no_tach_still_round_trips(tmp_path):
 # --- version handling ----------------------------------------------------
 
 def test_a_v4_file_loads_with_every_channel_as_vibration(tmp_path):
-    """Files written before roles existed carry none, which is correct: they
-    contain no tachometer channels."""
+    """A v4 file has no role attribute, so every channel loads as 'vibration'.
+
+    v4 files contain no tachometer channels.
+    """
     _, path = _saved(tmp_path)
     with h5py.File(path, 'r+') as f:
         f['metadata'].attrs['version'] = 4
@@ -200,9 +200,10 @@ def test_a_v4_file_loads_with_every_channel_as_vibration(tmp_path):
 
 
 def test_a_newer_file_version_warns_rather_than_misreading(tmp_path, caplog):
-    """An older build reading a v5 file took the `version >= 4` branch and
-    restored the tach as a vibration channel -- computing a bogus overall on a
-    square wave and trending it. The guard is worth having on its own.
+    """A file version newer than this build logs a warning.
+
+    A build that misreads a newer layout could, for example, restore a tach
+    channel as a vibration channel and compute an overall on a square wave.
     """
     _, path = _saved(tmp_path)
     with h5py.File(path, 'r+') as f:
@@ -213,12 +214,13 @@ def test_a_newer_file_version_warns_rather_than_misreading(tmp_path, caplog):
     assert any('version' in r.message.lower() for r in caplog.records)
 
 
-# --- duty cycle (R46 prerequisite, rolled into v5) ------------------------
+# --- duty cycle ----------------------------------------------------------
 
 def test_pulse_widths_and_duty_are_persisted(tmp_path):
-    """Duty turns a reflector's physical size into a shaft diameter, and hence
-    a surface velocity (R46). Rolled into v5 rather than a new version: the
-    format has not shipped and no real-world file contains a TachResult yet.
+    """The tach group stores pulse_widths and a duty_cycle attribute.
+
+    Surface velocity from reflector size and duty is tracked as R46 in
+    doc/PROGRESS.md.
     """
     import h5py as _h5
     _, path = _saved(tmp_path)

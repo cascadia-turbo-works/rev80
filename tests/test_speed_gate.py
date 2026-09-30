@@ -1,18 +1,10 @@
 """Speed gating: a frame measured at the wrong shaft speed is not comparable.
 
-For a rigid rotor below its first critical, unbalance response goes as omega^2
-in displacement and so the 1x *velocity* goes as omega^3. A 3.2% speed change
-alone moves the overall by 10%, which is the shipped RmsThresholdHook default:
-on any VFD or load-following machine the anomaly detector was measuring load
-rather than condition.
-
-The gate lives in monitor/anomaly.valid_results() and nowhere else. That seam
-already exists to answer exactly this question -- "is this frame a measurement
-I should act on?" -- and is already called by every hook and by both baseline
-adaptation paths. Putting it there also keeps _build_anomaly_hook byte-identical
-between gui.py and headless.py, which audit H-01 requires: those two copies have
-already diverged once, and a gate added as a hook parameter would be two bugs
-instead of one.
+For a rigid rotor below its first critical speed, the 1x velocity changes as
+omega^3, so a 3.2 % shaft-speed change alone moves the overall by 10 %. The
+gate is evaluated in DataCollector.speed_ok() and applied only in
+monitor/anomaly.valid_results(), which every hook and both baseline paths call.
+Thus the gate is not in _build_anomaly_hook, which gui.py and headless.py copy.
 """
 
 import numpy as np
@@ -48,8 +40,8 @@ def _collector(gate=False, ref=None, tol=3.0):
 # --- ChannelResult carries the reading -----------------------------------
 
 def test_channel_result_defaults_keep_every_existing_construction_valid():
-    """speed_ok defaults True and rpm None, so every existing construction
-    site, fixture and reconstructed result is unaffected."""
+    """ChannelResult defaults speed_ok to True and rpm to None, so a caller
+    that does not pass them gets a result that the gate accepts."""
     r = vc.ChannelResult(
         channel=0, unit='g', overflow=False, degraded=False,
         time_data=np.zeros(4), time_vec=np.zeros(4), samplerate=100.0,
@@ -62,8 +54,7 @@ def test_channel_result_defaults_keep_every_existing_construction_valid():
 # --- the gate itself ------------------------------------------------------
 
 def test_gate_off_accepts_everything():
-    """With no tachometer fitted there is no reference, so the gate must be
-    inert rather than rejecting every frame."""
+    """With the gate off (no tachometer, no reference), every frame passes."""
     dc = _collector(gate=False)
     assert dc.speed_ok(1800.0) is True
     assert dc.speed_ok(None) is True
@@ -83,10 +74,10 @@ def test_gate_accepts_only_inside_the_declared_window(rpm, expected):
 
 
 def test_gate_fails_closed_when_there_is_no_reading():
-    """If the tach dies mid-session -- cable pulled, tape peeled, LED aged out
-    -- treating "no speed reading" as "speed is fine" leaves an unattended
-    monitor alarming on load swings it can no longer see, which is the exact
-    false-alarm mechanism the gate exists to remove.
+    """With the gate on, a missing reading (rpm None) fails the gate.
+
+    If the tach signal is lost during a session (cable, reflector tape, LED),
+    passing those frames would let load changes raise alarms again.
     """
     dc = _collector(gate=True, ref=1800.0)
     assert dc.speed_ok(None) is False
@@ -115,13 +106,13 @@ def test_valid_results_drops_out_of_window_frames():
 
 
 def test_valid_results_still_drops_overflow_and_degraded():
-    """The existing behaviour must be untouched."""
+    """valid_results() still drops overflow and degraded frames."""
     assert valid_results([_result(overflow=True)]) == []
     assert valid_results([_result(degraded=True)]) == []
 
 
 def test_valid_results_accepts_results_that_predate_the_field():
-    """getattr defaults keep synthetic and reconstructed results working."""
+    """A result with no rpm/speed_ok attributes passes (getattr defaults)."""
     class Bare:
         overflow = False
         degraded = False
@@ -129,8 +120,10 @@ def test_valid_results_accepts_results_that_predate_the_field():
 
 
 def test_an_out_of_window_frame_is_still_measured_and_displayed():
-    """Excluded from alarming, not from the screen. The amplitude is correct;
-    it is simply not comparable to the rest of the trend."""
+    """A frame outside the window keeps its overall and rpm for display.
+
+    Its amplitude is correct, but it is not comparable with the trend.
+    """
     r = _result(speed_ok=False)
     assert r.overall == 1.0
     assert r.rpm == 1800.0

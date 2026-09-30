@@ -236,7 +236,7 @@ class TestCooldownGating:
 
 
 # ---------------------------------------------------------------------------
-# Interval capture — HDF5 layout v5
+# Interval capture — session.h5 layout v6
 # ---------------------------------------------------------------------------
 
 class TestIntervalCapture:
@@ -272,7 +272,7 @@ class TestIntervalCapture:
             assert len(f['monitor']) >= 1
 
     def test_h5_file_has_frame_and_channel_groups(self, tmp_path):
-        """HDF5 layout v5: /metadata with file_version=5, /monitor/0/0/data."""
+        """session.h5 has /metadata with file_version=6 and /monitor/0/0/data."""
         ctrl = MonitorController()
         session = _make_session(tmp_path, interval_s=0.05)
         ctrl.start(session)
@@ -283,9 +283,8 @@ class TestIntervalCapture:
         assert session.session_h5.exists()
         with h5py.File(session.session_h5, 'r') as f:
             assert 'metadata' in f
-            # v6 adds per-capture rpm/speed_ok. Literal rather than the
-            # module constant, so a version bump has to be a deliberate edit
-            # here rather than passing silently.
+            # A literal, not the module constant, so a version change
+            # needs an edit here.
             assert f['metadata'].attrs['file_version'] == 6
             assert 'monitor' in f
             assert '0' in f['monitor']

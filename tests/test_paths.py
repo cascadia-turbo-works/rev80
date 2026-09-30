@@ -1,10 +1,7 @@
-"""log_dir() must not depend on the current working directory.
+"""log_dir() is ~/Documents/Rev80/logs and does not depend on the working directory.
 
-It used to return the relative Path('log') in every non-frozen install. A
-desktop entry after `pip install --user .` then logged to ~/log/, and
-`rev80-headless` under systemd with no WorkingDirectory= ran mkdir('/log') and
-raised PermissionError before logging started. Every install now logs to the
-user directory, as data_dir() already did.
+A relative log path writes to ~/log/ from a desktop entry, and to /log (a
+PermissionError) under systemd with no WorkingDirectory=.
 """
 
 from pathlib import Path

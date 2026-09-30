@@ -1,10 +1,8 @@
-"""A manual burst must keep its per-frame results parallel to its frames.
+"""A manual burst keeps its per-frame results parallel to its frames.
 
 _flush_burst writes all_results[k] beside frames[k], and the burst cap trims
-the two lists together. If the lists start at different lengths, every
-overall is written beside the wrong waveform and the last frame has none.
-The anomaly path pads the trigger frame with its own results; the manual
-path must do the same.
+both lists together. The manual path pads the trigger frame with its results,
+as the anomaly path does, so every overall stays beside its own waveform.
 """
 
 from collections import deque

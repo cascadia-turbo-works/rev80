@@ -1,10 +1,8 @@
 """The monitor records only live frames, and a recording locks file access.
 
-A file load or a cache browse during a recording puts frames that are not
-live measurements through _display_frame. They must not go into the
-session. File load (button and Ctrl+O), session browse and clear-cache are
-refused while a recording runs. These tests use a GUI shell with no DPG
-context.
+A loaded file or a browsed cache frame does not go into the session. File load
+(button and Ctrl+O), session browse and clear-cache are refused while a
+recording runs. The tests use a GUI shell with no DPG context.
 """
 
 import inspect

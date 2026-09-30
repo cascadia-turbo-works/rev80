@@ -1,13 +1,9 @@
 """Role plumbing: what a tachometer channel must and must not reach.
 
-Almost everything downstream of receive_data assumes a channel has a
-ScopeSensor, an engineering unit, a spectrum and an overall. A tachometer has
-none of those, and feeding a pulse train through the vibration path does not
-raise -- it returns a plausible wrong answer. Measured on a 5% duty square
-wave through the real process_sample: overall 1515 mV, crest 5.00, kurtosis
-15.94 and 63 "peaks", which reads as a severely failing bearing.
-
-These tests are the fence around that.
+Code after receive_data assumes a channel has a ScopeSensor, an engineering
+unit, a spectrum and an overall. A pulse train through the vibration path does
+not raise: a 5 % duty square wave through process_sample gives overall 1515 mV,
+crest 5.00, kurtosis 15.94 and 63 "peaks", which reads as a failing bearing.
 """
 
 from datetime import datetime
@@ -64,9 +60,10 @@ def _feed(dc, seed=5, severity=1.0):
 # --- receive_data ---------------------------------------------------------
 
 def test_tach_channel_is_not_highpass_filtered():
-    """Measured: the high-pass overshoot on each falling edge re-crosses the
-    threshold, turning 31 edges into 108 at 15% duty -- an 1800 RPM shaft
-    reads 6270. The bypass is not an optimisation.
+    """A tachometer channel is not high-pass filtered.
+
+    The filter overshoot on each falling edge crosses the threshold again: 31
+    edges become 108 at 15 % duty, and an 1800 RPM shaft reads 6270 RPM.
     """
     dc = _collector()
     frame = _feed(dc)
@@ -83,8 +80,11 @@ def test_tach_result_is_computed_at_ingestion_and_cached_on_the_sample():
 
 
 def test_tach_uses_the_samples_own_rate_not_the_display_rate():
-    """The display rate is maxfreq-driven and much lower; using it would scale
-    every RPM reading by the decimation ratio."""
+    """The tach result uses the raw rate, not the display rate.
+
+    The display rate follows maxfreq; using it would scale every RPM reading
+    by the decimation ratio.
+    """
     dc = _collector()
     frame = _feed(dc)
     assert frame[1].tach.samplerate == dc.config.raw_samplerate
@@ -164,8 +164,11 @@ def test_rpm_is_trended_separately():
 # --- the assumptions a tach breaks ---------------------------------------
 
 def test_eu_scaled_raw_refuses_a_tach_channel():
-    """It would silently divide a pulse train by sensitivity 1.0 and return mV
-    labelled as engineering units -- the classic field error."""
+    """eu_scaled_raw() raises ValueError for a tachometer channel.
+
+    Otherwise it would divide a pulse train by sensitivity 1.0 and label mV
+    as engineering units.
+    """
     dc = _collector()
     frame = _feed(dc)
     with pytest.raises(ValueError):

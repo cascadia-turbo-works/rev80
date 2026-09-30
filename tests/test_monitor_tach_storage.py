@@ -1,19 +1,8 @@
-"""A monitor session must store a tachometer channel's edge times (D-2).
+"""A monitor session stores a tachometer channel's edge times, not the waveform.
 
-`_write_channel_group` is the single channel writer, shared by
-`DataCollector.save_data` and `MonitorWriterThread`. It takes a `role=`
-parameter and **defaults it to `'vibration'`**. `save_data` passed it; the
-monitor writer did not, at either of its two call sites.
-
-So every monitor session -- GUI or headless -- stored the tach channel's full
-waveform: 25600 samples where 60 edge times would do, measured, on the one
-code path that runs unattended for hours. It also lost the per-frame rpm,
-quality and edge times that make the shaft speed a view on stored data, and
-left the channel indistinguishable from a vibration one on load.
-
-Decision D-2 held in measurement files and nowhere else. This file is the
-regression: it drives a real `MonitorController` with a coherent
-vibration + tachometer pair and reads the session back off disk.
+`_write_channel_group` defaults `role=` to 'vibration', so the monitor writer
+passes `role_of_sample(sample)` at both call sites. These tests drive a real
+MonitorController with a vibration + tachometer pair and read session.h5 back.
 """
 
 import time
@@ -34,10 +23,8 @@ RPM = RUNNING_RATE_HZ * 60.0
 def _session_h5(tmp_path):
     """Record a short monitor session from a coherent vibration+tach pair.
 
-    The channel snapshot is written out by hand here rather than built by
-    `monitor.session.channel_snapshot_for`: what is on trial is the writer's
-    channel-group layout, and the test should not fail for a reason that
-    lives in the snapshot builder.
+    The channel snapshot is written by hand, not by `channel_snapshot_for`,
+    so only the writer's channel-group layout is under test.
     """
     cfg = vc.AcquisitionSettings()
     cfg.maxfreq, cfg.binsize = 1000.0, 2.0
@@ -90,9 +77,10 @@ def test_a_tach_channel_stores_edge_times_not_a_waveform(tmp_path):
 
 
 def test_the_stored_tach_group_carries_the_per_frame_reading(tmp_path):
-    """What the waveform layout silently dropped. Without these a session's
-    shaft speed cannot be re-derived at a different pulses/rev, which is the
-    whole justification for storing edges rather than samples.
+    """The tach group stores rpm, quality, n_edges and pulses_per_rev.
+
+    With the edge times, these let a session re-derive the shaft speed at a
+    different pulses/rev.
     """
     with h5py.File(_session_h5(tmp_path), 'r') as f:
         cap = f[f'monitor/{sorted(f["monitor"], key=int)[0]}']
@@ -104,8 +92,9 @@ def test_the_stored_tach_group_carries_the_per_frame_reading(tmp_path):
 
 
 def test_the_tach_group_is_orders_of_magnitude_smaller(tmp_path):
-    """The size argument D-2 rests on, measured rather than asserted in the
-    abstract: a 1 s block at the raw rate is 25600 samples against ~60 edges.
+    """The vibration waveform is more than 100 x the size of the edge times.
+
+    Here a 0.5 s block is 12800 samples against 15 edge times (30 Hz, 1 ppr).
     """
     with h5py.File(_session_h5(tmp_path), 'r') as f:
         cap = f[f'monitor/{sorted(f["monitor"], key=int)[0]}']
@@ -113,11 +102,10 @@ def test_the_tach_group_is_orders_of_magnitude_smaller(tmp_path):
 
 
 def test_role_of_sample_reads_the_role_off_the_sample_itself():
-    """`MonitorWriterThread` runs off a queue and holds samples, not an
-    `AcquisitionSettings`, so it cannot ask `config.role_for` the way
-    `save_data` does. `receive_data` populates `sample.tach` for tach-role
-    channels and nothing else, so the sample carries its own role --
-    `monitor/controller.py` already relied on exactly this test.
+    """role_of_sample() gives the role from the sample alone.
+
+    The writer thread has samples but no AcquisitionSettings. `receive_data`
+    sets `sample.tach` only for tach-role channels.
     """
     from rev80.collector import role_of_sample
 

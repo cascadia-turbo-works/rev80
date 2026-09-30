@@ -1,4 +1,4 @@
-"""Tests for Phase 2 anomaly detection hooks in rev80.monitor.anomaly."""
+"""Tests for the anomaly hooks in rev80.monitor.anomaly."""
 import logging
 import time
 from datetime import datetime, timedelta, timezone
@@ -86,7 +86,7 @@ class TestRmsThresholdHook:
             hook.on_results(results_normal, None)
 
         # Send N-1 above-threshold frames — should NOT fire yet
-        high_val = baseline_val * 2.0  # 100 % above — well over 10 % threshold
+        high_val = baseline_val * 2.0  # 100 % above the 10 % threshold
         results_high = [_make_result(channel=0, overall=high_val)]
         for i in range(consecutive_n - 1):
             event = hook.on_results(results_high, None)
@@ -571,28 +571,14 @@ class TestFixedThresholdHook:
 
 
 # ---------------------------------------------------------------------------
-# Default RMS threshold (decision D-1)
+# The RMS threshold default is 50 %
 # ---------------------------------------------------------------------------
 
 def test_rms_threshold_default_is_50_percent():
-    """10% is crossed by a 3.2% speed change alone.
+    """RmsThresholdHook defaults rms_threshold_pct to 50 %.
 
-    For a rigid rotor below its first critical the 1x velocity goes as
-    omega^3, so:
-
-        speed deviation   1x velocity change
-             0.5 %              +1.5 %
-             1.0 %              +3.0 %
-             2.0 %              +6.1 %
-             3.2 %             +10.0 %   <- the old default
-             5.0 %             +15.8 %
-
-    A typical induction motor's no-load-to-full-load slip swing is ~2%, a +6%
-    apparent rise on a machine whose condition has not changed. At 10% the
-    detector was measuring load. 50% is the level at which a broadband RMS
-    rise means something without a speed reference -- and where a tachometer
-    *is* fitted, the speed gate is the more certain trigger and this can be
-    tightened per installation.
+    A 3.2 % shaft-speed change alone moves the 1x velocity by 10 %. Evidence:
+    CONTRIBUTING.md, "E16. Anomaly thresholds".
     """
     from rev80.monitor.anomaly import RmsThresholdHook
     import inspect
@@ -601,7 +587,6 @@ def test_rms_threshold_default_is_50_percent():
 
 
 def test_config_template_matches_the_hook_default():
-    """A template that disagrees with the code default means the shipped
-    behaviour depends on whether a config file happens to exist."""
+    """The config template rms_pct equals the RmsThresholdHook default."""
     from rev80.config import _BUILTIN_ACQ
     assert _BUILTIN_ACQ['monitor']['anomaly']['rms_pct'] == 50.0

@@ -75,19 +75,19 @@ class TestBurstMode:
     def test_retrigger_extends_burst(self):
         g = _gate(3600.0, start=0.0)
         g.enter_burst(5.0, now=0.0)
-        # Retrigger at t=3: extends to 3+5=8, capped at now+max_burst=3+600
+        # Retrigger at t=3 adds 5 s to the end: 0+5+5 = 10, cap is start+600
         g.enter_burst(5.0, now=3.0, max_burst_s=600.0)
         assert g.should_capture(7.9)
-        assert not g.should_capture(10.0)  # burst_end = 0+5+5 = 10, but should_capture checks now < burst_end
+        assert not g.should_capture(10.0)  # burst_end = 10; should_capture checks now < burst_end
 
     def test_retrigger_respects_max_burst(self):
         g = _gate(3600.0, start=0.0)
         g.enter_burst(5.0, now=0.0)
-        # Retrigger many times — should never exceed now + max_burst_s
+        # Retrigger many times: the end never passes burst start + max_burst_s
         for _ in range(20):
             g.enter_burst(5.0, now=1.0, max_burst_s=10.0)
         assert g.in_burst
-        # burst_end must not exceed 1.0 + 10.0 = 11.0
+        # burst_end is at most 0.0 + 10.0 = 10.0
         assert not g.should_capture(11.0)
 
     def test_exit_burst_resumes_interval(self):
