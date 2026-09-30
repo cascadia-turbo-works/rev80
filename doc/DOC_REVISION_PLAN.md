@@ -1391,6 +1391,40 @@ runs in two parts:
 
 W1-T2 also owns the test files that FIX-S adds.
 
+### 14.2 Coordinator notes for later packages (2026-09-29/30)
+
+Owner answers:
+- X-01: Fixed. The prompt before a sensor is added from an opened file is a note, not an open item.
+- ISO 20816-3: cite it for the 10-1000 Hz and 2-1000 Hz bands. Do NOT state a speed limit (for example "below 600 r/min") in reference docs. Tell the reader to check the standard.
+- E1 "Measured on": 4424A, August 2026 (serial not recorded).
+- The 55 %/31 % against 350 %/246 % overshoot figures are removed (`ede37e7`). Do not restore them.
+- "Standing assumption" examples in `.claude/agents/technical-writer.md` stay (agent context).
+- Envelope band limit (`gui.py` `suggest_band(..., fmax=samplerate / 2.0)`): a code fix (FIX-E) runs after W1-C6 merges.
+
+Code fixes merged: FIX-S (`81441a5`, `910fedc`), FIX-R (`6d5e17e`, reprocess skips tachometer channels).
+
+For W2-A (Design evidence):
+- `tests/test_peak_selection.py` holds two tables that exist nowhere else: the floor-lift table for dense lines (11/22/44/88-bin gaps) and the false-alarm table (6.0/9.5/12/15.5 dB). Copy them into E12, then cut the test docstrings to the property.
+- E9 must hold the untapered-mask figures (-22 dB / +2.7 % against -84 dB) from `tests/test_measurement_validity.py`.
+- E2: `picoscope.py` gives -60.0 dB for the scipy Hamming kernel; the audit gives -55.5 dB worst case. State which measurement each is.
+- Merge "E20 (part from sample.py)" with the E20 text from W1-C5, and the two E19 parts.
+- Titles already used in pointers: "E8.1. Stateful filter", "E8.2. Seed from the block mean", "E8.3. Knee below the band edge", "E12.1. Method", "E12.2. Floor width", "E12.3. Edge handling", "E12.4. Window nulls", "E13. Envelope band search", "E14.1. No high-pass on a tachometer channel", "E14.3. Interpolation", "E15. Simulation model constants", "E16. Anomaly thresholds", "E19. GUI render cost", "E20. Speed gate".
+- `_dsp.band_rms` has no caller. E10 stays; it records why the overall does not use Parseval.
+
+For W2-CL (CLAUDE.md), stale claims:
+- `VibeSensor._callback` does not scale ADC counts for hardware; `PicoScopeStream._adc_to_mv` does, and the callback is `DataCollector.receive_data`.
+- The collector high-pass is causal `sosfilt` with state carried; there is no zero-phase path.
+- `test_measurement_validity.py` is not high-pass-enabled by construction; it is off-bin where a test checks leakage.
+- `_dsp.py`, `simulation.py`: the tables moved to CONTRIBUTING.
+- Tach storage ratio is about 850 at 25600 Hz, not 1400.
+- `_dsp.band_rms` has no caller.
+
+For the LOG packages (CHANGELOG):
+- Near the hotfix/RAW_SAMPLERATE entry: "every preset combination is 5-smooth" is false (10 of 54 are not); "24 combinations now exact" may be from an older state (43 now). Add a correction note; do not rewrite the history numbers.
+- fix/measurement-validity gives 8333.25 Hz; the audit gives 8333.33 Hz. Both are in E5.
+
+For W1-PR (PROGRESS): R50 and up, in this order, from the audit file: S-08, S-10 (part), S-11, X-02 (part), X-03, X-04 (part), X-05, X-07, H-01 (part), H-02, H-05 (part), H-07 (part), H-08 (part). Then add: Ctrl+K can stop the stream during a recording; `trigger_burst` does not set `_max_burst_frames`; `_dsp.band_rms` has no caller. R34 text: cite ISO 20816-3 without the speed limit.
+
 ---
 
 ## 15. Not verifiable here
