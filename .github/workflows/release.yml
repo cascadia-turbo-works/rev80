@@ -105,12 +105,19 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/upload-artifact@v6
+      # archive: false uploads the file itself, not a zip, so the artifact
+      # downloads as the file. It takes one file, and the file name is the
+      # artifact name (`name:` is ignored). Thus one step for each file.
+      - uses: actions/upload-artifact@v7
         with:
-          name: wheel
-          path: |
-            dist/*.whl
-            dist/*.tar.gz
+          path: dist/*.whl
+          archive: false
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v7
+        with:
+          path: dist/*.tar.gz
+          archive: false
           if-no-files-found: error
 
   installer:
@@ -240,10 +247,13 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/upload-artifact@v6
+      # archive: false uploads the file itself, not a zip, so the artifact
+      # downloads as the file. It takes one file, and the file name is the
+      # artifact name (`name:` is ignored). Thus one step for each file.
+      - uses: actions/upload-artifact@v7
         with:
-          name: installer
           path: installer/Output/Rev80Setup-*.exe
+          archive: false
           if-no-files-found: error
 
   docs:
@@ -278,23 +288,44 @@ jobs:
       - name: Render
         run: ./scripts/render_docs.sh
 
-      - uses: actions/upload-artifact@v6
+      # archive: false uploads the file itself, not a zip, so the artifact
+      # downloads as the file. It takes one file, and the file name is the
+      # artifact name (`name:` is ignored). Thus one step for each file.
+      - uses: actions/upload-artifact@v7
         with:
-          name: docs
-          path: doc/*.pdf
+          path: doc/README.pdf
+          archive: false
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v7
+        with:
+          path: doc/CONTRIBUTING.pdf
+          archive: false
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v7
+        with:
+          path: doc/PROGRESS.pdf
+          archive: false
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v7
+        with:
+          path: doc/CHANGELOG.pdf
+          archive: false
           if-no-files-found: error
 
   release:
     name: Draft release
     needs: [wheel, installer, docs]
     runs-on: ubuntu-latest
-    # Tags only. A branch push or a manual dispatch still builds and uploads
-    # artifacts -- which is the point of testing -- but must never publish a
-    # draft release named after a branch.
-    if: startsWith(github.ref, 'refs/tags/')
+    # This job runs on a manual dispatch too, so a dispatch tests the download
+    # and the file list. Only a tag creates the draft release: a dispatch must
+    # never publish a release named after a branch.
     steps:
-      # No `name:` -- downloads every artifact, each into its own directory.
-      - uses: actions/download-artifact@v7
+      # No `name:` -- downloads every artifact. v8 reads the unzipped
+      # artifacts that upload-artifact@v7 makes with archive: false.
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
 
@@ -303,17 +334,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           ls -R artifacts/
-          # Collected by find rather than a path glob. This job only ever runs
-          # on a tag, so a branch test never exercises it -- which makes it the
-          # one step where a change in how download-artifact lays out its
-          # output would go unnoticed until a real release. find does not care
-          # how deeply it nests.
+          # Collected by find rather than a path glob: find does not care how
+          # deeply download-artifact nests its output. Expect 7 files: the
+          # installer, the wheel, the sdist and 4 PDFs.
           mapfile -t FILES < <(find artifacts -type f \
             \( -name '*.exe' -o -name '*.whl' -o -name '*.tar.gz' -o -name '*.pdf' \) | sort)
           printf 'attaching: %s\n' "${FILES[@]}"
-          if [ ${#FILES[@]} -eq 0 ]; then
-            echo "::error::No artifacts found to attach."
+          if [ ${#FILES[@]} -ne 7 ]; then
+            echo "::error::Expected 7 files to attach, found ${#FILES[@]}."
             exit 1
+          fi
+          if [[ "$GITHUB_REF" != refs/tags/* ]]; then
+            echo "Not a tag ($GITHUB_REF): no draft release."
+            exit 0
           fi
           gh release create "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \

@@ -63,6 +63,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Measured values whose source is not known say "not recorded". The drift
   limit of the tachometer is tracked as R63.
 
+### ci/plain-artifacts — release artifacts are plain files (2026-09-30)
+
+#### Changed
+- **Each release product is its own artifact, not a zip.** The workflow uses
+  `actions/upload-artifact@v7` with `archive: false`, one step for each file:
+  the installer `.exe`, the wheel `.whl`, the sdist `.tar.gz` and the four
+  PDFs. The draft-release job uses `actions/download-artifact@v8`, which
+  reads these artifacts.
+- **The draft-release job also runs on a manual dispatch.** It downloads the
+  artifacts and checks that there are exactly 7 files, then stops before
+  `gh release create`. Before, a dispatch did not test the download step.
+
 ### build — installer identity and shortcut icon (2026-09-30)
 
 #### Fixed
