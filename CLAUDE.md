@@ -49,7 +49,7 @@ python -m pytest tests/ -k "stream" --ignore=tests/test_picoscope_hw.py
 - **Do not start the GUI** or make a dearpygui viewport from an automated
   session. It crashed the user's desktop session once. The tests make a
   dearpygui context but never a viewport.
-- `python -m pytest tests/ -q` also runs the 27 tests in
+- `python -m pytest tests/ -q` also runs the tests in
   `tests/test_picoscope_hw.py` when a scope is connected (AWG loopback on
   channel A). Without a scope they skip.
 - **Do not run two pytest processes at the same time with a scope

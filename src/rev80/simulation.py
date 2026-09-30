@@ -152,8 +152,9 @@ def GenerateBearingVibration(config: AcquisitionSettings,
     """One block of accelerometer signal from a machine with a bearing defect.
 
     `severity=0.0` is the healthy negative control: shaft harmonics and noise,
-    no impulses, kurtosis 3 or less. `severity=1.0` is a developed fault. `seed`
-    makes the block reproducible. `shaft_phase` fixes the angular reference
+    no impulses, kurtosis about 3 (1.54 to 3.04 over 40 seeds; 3.86 to 6.12
+    at `severity=1.0`). `severity=1.0` is a developed fault. `seed` makes the
+    block reproducible. `shaft_phase` fixes the angular reference
     (see GenerateMachineWithTach).
     """
     rng = np.random.default_rng(seed)

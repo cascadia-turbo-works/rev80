@@ -2043,13 +2043,7 @@ python -m pytest tests/test_monitor_session_load.py
 python -m pytest tests/test_vibechecker.py::test_save_load_roundtrip
 python -m pytest tests/ -k "stream"
 
-# Count the tests
-python -m pytest --collect-only -q | tail -1
 ```
-
-On 2026-09-30, 1223 tests were collected. 27 of them are in
-`tests/test_picoscope_hw.py`. A run without the hardware file took 79 s on the
-development machine (1188 passed, 8 skipped).
 
 > **Caution:** Do not run two pytest processes at the same time with a scope
 > connected. Both open the scope, and the hardware tests then fail.
@@ -2090,22 +2084,14 @@ FFT wrap error zero and hides integration and leakage defects.
 
 `tests/test_picoscope_hw.py` skips itself when no PicoScope is connected.
 With a PicoScope 4000A connected and the AWG output looped back to channel A,
-its 27 tests check the chain electrically. Use this run to close out a
+its tests check the chain electrically. Use this run to close out a
 change to the measurement chain.
 
 ### 6.3 Test files
 
-| Area | Files |
-|---|---|
-| Settings and rates | `test_acquisition_settings.py`, `test_display_rate.py`, `test_config.py`, `test_config_contract.py` |
-| Measurement accuracy | `test_measurement_validity.py`, `test_declared_band.py`, `test_spectral_averaging.py`, `test_diagnostic_scalars.py`, `test_sample.py` (on-bin) |
-| Acquisition | `test_antialias.py`, `test_adc_conversion.py`, `test_picoscope.py` (mocked driver), `test_picoscope_hw.py` (hardware) |
-| Peaks, envelope, simulation | `test_peak_selection.py`, `test_envelope.py`, `test_bearing_oracle.py`, `test_simulation_tach.py` |
-| Collector and files | `test_vibechecker.py`, `test_multichannel.py`, `test_scope_sensor.py`, `test_sensor_library_integrity.py`, `test_file_version_check.py`, `test_paths.py` |
-| Tachometer and speed | `test_tach.py`, `test_tach_claim.py`, `test_tach_pipeline.py`, `test_tach_persistence.py`, `test_speed_gate.py`, `test_one_x.py`, `test_rotation_units.py`, `test_headless_tach.py` |
-| Monitor Mode | `test_monitor_gate.py`, `test_monitor_anomaly.py`, `test_monitor_controller.py`, `test_monitor_session_load.py`, `test_monitor_pretrigger_scaling.py`, `test_monitor_tach_storage.py`, `test_monitor_live_only.py`, `test_manual_burst_alignment.py`, `test_reprocess_session_tach.py`, `test_session_from.py`, `test_anomaly_hook_build.py` |
-| Lifecycle and resources | `test_app_lifecycle.py`, `test_bounded_resources.py`, `test_crash_evidence.py` |
-| GUI and small items | `test_gui_save_config.py`, `test_icons.py`, `test_util_small_defects.py` |
+Each file is named for the area that it tests: `tests/test_<area>.py`. Put a
+new test in the file for its area. Put a new amplitude assertion in
+`tests/test_measurement_validity.py` (6.1).
 
 The GUI tests create a dearpygui context, but never a viewport.
 
@@ -2408,3 +2394,33 @@ manual run does not test it.
   description, active voice, a unit on every number (also shaft speed), and
   the measurement method for every measured value (hardware model, AWG
   loopback, or `SimulatedSensor`).
+
+### 12.1 Terminology
+
+Use one term for one thing.
+
+| Use | Do not use | Meaning |
+|---|---|---|
+| raw rate | acquisition rate, hardware rate, fixed rate | `raw_samplerate`, nominal 25600 Hz, achieved about 25591.8 Hz on a 4824A |
+| display rate | spectrum rate, analysis rate | `samplerate` = 2.56 x `maxfreq` |
+| achieved rate | true rate, actual rate, real rate | the rate that the driver reports back |
+| block | chunk, buffer (for this meaning) | the samples of one channel for one frame |
+| frame | capture (for this meaning) | one block from each enabled channel, same time window |
+| capture | snapshot | a frame that Monitor Mode stores on the interval |
+| burst | event capture | consecutive frames that Monitor Mode stores after a trigger |
+| declared band | measurement band, analysis band | `band_fmin` to `band_fmax` |
+| band edge | cutoff (for `highpass_fc`) | the frequency where the response is still inside tolerance |
+| knee | cutoff, corner | the -3 dB frequency of the Butterworth design |
+| tachometer channel | tach input, speed channel | a channel with role `'tachometer'` |
+| shaft speed | RPM (as a noun), running rate | the value; write the unit separately |
+| no signal | stopped (for a missing reading) | the tachometer block has no usable pulses |
+| stopped | no signal | the shaft does not turn (not detectable now, R45) |
+| overall | overall level, broadband value | the band amplitude of one channel |
+| finding | issue, defect ID | one numbered item of the audit |
+
+### 12.2 Plans
+
+Keep each plan draft in `.claude/plans/` as `YYYY-MM-DD-<topic>.md`, and
+commit it with the work. `.claude/settings.json` sets plan mode to write
+there. A commit or a document that cites a plan ID must name a plan that is
+in that directory.

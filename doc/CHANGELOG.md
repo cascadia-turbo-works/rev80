@@ -53,10 +53,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `doc/*.pdf` are build artifacts. `scripts/render_docs.sh` renders them in
   the release workflow. `doc/audit-202608.md` is not rendered and is not a
   release asset (owner decision).
-- The work is in more than one commit on `doc/revision`. When this entry was
-  written, the "Design evidence" subsections had their headings only,
-  `CLAUDE.md` still had its old IDs, and only `[Unreleased]` and `[0.1.3]` of
-  this file were revised. Later commits on the same branch do the rest.
+- Plan drafts are now in `.claude/plans/`, under version control
+  (`.claude/settings.json` sets `plansDirectory`). The plan for this revision
+  is `.claude/plans/2026-09-29-doc-revision.md`. Earlier plans were only in
+  the home directory of one machine; that is how the definitions of the
+  F-numbers and D-numbers were lost.
+- CONTRIBUTING does not give a test count or a list of test files. Both
+  change too often, and `tests/` shows them.
+- Measured values whose source is not known say "not recorded". The drift
+  limit of the tachometer is tracked as R63.
 
 ### build — installer identity and shortcut icon (2026-09-30)
 
@@ -1582,6 +1587,19 @@ before you trust a release.
 First tagged release. Each section below records one branch that this
 release contains. The sections were written during development, one for
 each branch.
+
+### release fix — version tag parsing (2026-09-01)
+
+#### Fixed
+- **`setuptools_scm` could not parse a `vX.Y.Z` tag** (`a332aeb`). The custom
+  `tag_regex` in `pyproject.toml` was written for the old `rc0.2` tags. An
+  uncommitted attempt to widen it read `v0.1.0` as version `1.0`. The custom
+  pattern is removed; the default regex of `setuptools_scm` parses `vX.Y.Z`.
+
+#### Notes for the next person
+- A rehearsal tag must be a valid version. `setuptools_scm` 10.3.4 stops on
+  `v0.0.1rcx`, so the rehearsal in CONTRIBUTING.md, "11. Automated releases",
+  uses `v0.0.1rc1`.
 
 ### feature/raw-stream-retention (2026-08-31)
 
