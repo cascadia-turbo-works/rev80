@@ -9,19 +9,68 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### doc/revision — documentation split, audit record and design evidence (2026-09-30)
+
+#### Added
+- **`doc/audit-202608.md`, the record of the August 2026 audit.** It has one
+  section for each finding, with the status and the commits that fixed it.
+  Each heading is the bare finding ID, so a link such as
+  `[S-02](audit-202608.md#s-02)` goes to the finding. This CHANGELOG and
+  `doc/PROGRESS.md` refer to a finding only by such a link.
+- **`CONTRIBUTING.md`, section "Design evidence".** It has one subsection for
+  each design decision, E1 to E20. A subsection holds the value, the measured
+  table, a "Measured on" line and the rejected alternatives. A comment beside a
+  constant gives one line with the key number and the section title, for
+  example `CONTRIBUTING.md, "E2. Anti-alias kernel"`.
+- **`CONTRIBUTING.md`, section "Documentation rules".** It gives the place for
+  each kind of text.
+
+#### Changed
+- **The documents have separate readers.** `README.md` is the operator manual
+  and the vibration-engineering configuration. `CONTRIBUTING.md` is the
+  developer guide: environment, layout, architecture, build, release, tests and
+  design evidence. `CLAUDE.md` gives the invariants and the known-bad areas.
+  This CHANGELOG and `doc/PROGRESS.md` hold the history.
+- **Code, tests, README and CONTRIBUTING do not contain audit IDs or
+  decision IDs.** A rule that is still true is written in plain words.
+  `CLAUDE.md` gets the same change.
+- **Docstrings and comments state the contract.** The measured tables moved to
+  CONTRIBUTING, "Design evidence". The history of fixed defects moved to this
+  file and to the audit record.
+- **`doc/PROGRESS.md`**: the Requirements Tracker is the single status
+  source. The open audit findings are tracked as R50 to R62.
+- **This file**: each audit ID is a link to the audit record. The numbers of
+  the vibration-engineering reviewer are replaced by the M-number of the same
+  finding. The tachometer decision numbers are replaced by plain words,
+  because no file defines them: "one pulse per revolution is the default and
+  the recommended configuration", "a tachometer channel stores edge times,
+  not the waveform", and "the RMS threshold default is 50 %". The text is in
+  ASD-STE100 Simplified Technical English. No number, date or commit hash in
+  the history changed. Where a figure is not correct for the current code, a
+  dated correction line follows it.
+
+#### Notes for the next person
+- `doc/*.pdf` are build artifacts. `scripts/render_docs.sh` renders them in
+  the release workflow. `doc/audit-202608.md` is not rendered and is not a
+  release asset (owner decision).
+- The work is in more than one commit on `doc/revision`. When this entry was
+  written, the "Design evidence" subsections had their headings only,
+  `CLAUDE.md` still had its old IDs, and only `[Unreleased]` and `[0.1.3]` of
+  this file were revised. Later commits on the same branch do the rest.
+
 ### fix/tach — unusable tach readings, GUI compression level (2026-09-30)
 
 #### Fixed
 - **An unusable tach reading counts as no reading.** A reading with quality
   `unsteady` or `inconsistent` has an rpm, but `TachResult.is_usable` is
   False. No code used `is_usable`. Thus such a reading could pass the speed
-  gate, latch the gate reference, and go into the RPM trend. Now
+  gate, latch the gate reference and go into the RPM trend. Now
   `DataCollector.speed_ok()` gets only a usable reading, so the gate fails
   closed on an unusable one: the frame is not trended, not used for a
   baseline and cannot raise an alarm. The RPM trend does not record it. The
   frame is still displayed and stored, and `ChannelResult.rpm` still shows
   the value. `tests/test_tach_usable.py` keeps this. Without the gate part,
-  3 of its 4 tests fail; without the trend part, 2 fail.
+  3 of its 4 tests fail. Without the trend part, 2 fail.
 - **A GUI monitor session uses `monitor.compression_level`.** The GUI used
   gzip level 4 for each session. Now `_monitor_session_params()` reads the
   level from `acquisition.yaml`, as headless does.
@@ -30,11 +79,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 #### Removed
 - **`_dsp.band_rms`.** No code called it. The overall uses the Hann-tapered
-  path; CONTRIBUTING.md, "E10. Band RMS", records why.
+  path. CONTRIBUTING.md, "E10. Band RMS", records why.
 
 #### Changed
 - Comments: the `compression_level` seed in `config.py` and the
-  `AnomalyEvent` fields. `trigger_time` is the onset; the burst t = 0 is the
+  `AnomalyEvent` fields. `trigger_time` is the onset. The burst t = 0 is the
   confirming frame. The controller does not use `trigger_rel_time`.
 - README, "Storage": the estimate text agrees with
   `gui.monitor_storage_estimate` (decimal units, vibration channels only,
@@ -60,21 +109,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   session stopped. Now the writer writes uncompressed data for `'none'`.
 - **The resource trail logs the capture count.** It always logged
   `captures -1`.
-- **Headless reads `monitor.compression_level`.** Before, headless sessions
-  always used gzip level 4. The GUI reads it too since fix/tach (2026-09-30).
-- **The headless session id uses local time** ([S-10](audit-202608.md#s-10)).
-  Before, headless made the id from UTC. The GUI and `start_time` use local
-  time.
+- **Headless reads `monitor.compression_level`.** Before this change, headless
+  sessions always used gzip level 4. The GUI also reads it since fix/tach
+  (2026-09-30).
+- **The headless session ID uses local time** ([S-10](audit-202608.md#s-10)).
+  Before this change, headless made the ID from UTC. The GUI and `start_time`
+  use local time.
 - **The headless shutdown message is correct.** It said "after current
-  interval". The loop stops within about 1 s.
+  interval". The loop stops within approximately 1 s.
 - **The headless tachometer full-accuracy limit uses the achieved rate.** The
   summary prints before the stream starts, so it uses the nominal rate and
   says so. After the first frame, headless logs the limit again at the
   achieved rate.
-- **An anomaly burst's trigger time describes its t = 0 frame.** The frame at
-  `n_pretrigger` is the frame that confirms the anomaly. Before, the burst
-  recorded the onset from the hook as its trigger time, and the onset
-  `rel_time` was on the collector clock. Now `trigger_timestamp` and
+- **The trigger time of an anomaly burst describes its t = 0 frame.** The
+  frame at `n_pretrigger` is the frame that confirms the anomaly. Before this
+  change, the burst recorded the onset from the hook as its trigger time, and
+  the onset `rel_time` was on the collector clock. Now `trigger_timestamp` and
   `trigger_rel_time` describe the stored t = 0 frame, on the session clock.
   The onset is in the new `onset_timestamp` attribute (anomaly bursts only).
 
@@ -91,18 +141,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **A config dialog close keeps the monitor block of `acquisition.yaml`.**
   Before this change, only an open of the Monitor tab loaded the config into
   the Monitor widgets. Each dialog close saves those widgets. Thus a close on
-  any other tab wrote the widget construction defaults (interval 1 h,
-  pre-trigger 60 s, burst 60 s, anomaly off, RMS threshold 10 %, warm-up 30)
-  over the user's monitor block. A recording started without an open of the
-  Monitor tab also used those defaults. Now `GUI.initialize` loads the config
-  into the widgets at startup. The save keeps the keys that have no widget
-  (`max_burst_s`, `compression_level`, `rms_alpha`, `spec_alpha`), keeps a
-  stored interval that is not a preset, and does not add an EWMA time that
-  the config does not have (headless uses an EWMA time before an alpha). All
-  monitor fallbacks in `gui.py` are now the `config.py` seed values; before,
-  `_start_recording` used 60 s / 60 s, and the dialog 30 s / 120 s.
-  `tests/test_gui_monitor_config.py` keeps this. Without the startup load,
-  5 of its 11 tests fail.
+  any other tab wrote the widget construction defaults over the monitor block
+  of the user: interval 1 h, pre-trigger 60 s, burst 60 s, anomaly off, RMS
+  threshold 10 %, warm-up 30 frames. A recording started without an open of
+  the Monitor tab also used those defaults. Now `GUI.initialize` loads the
+  config into the widgets at startup. The save:
+  - keeps the keys that have no widget (`max_burst_s`, `compression_level`,
+    `rms_alpha`, `spec_alpha`);
+  - keeps a stored interval that is not a preset;
+  - does not add an EWMA time that the config does not have (headless uses an
+    EWMA time before an alpha).
+
+  All monitor fallbacks in `gui.py` are now the `config.py` seed values.
+  Before this change, `_start_recording` used 60 s / 60 s, and the dialog
+  30 s / 120 s. `tests/test_gui_monitor_config.py` keeps this. Without the
+  startup load, 5 of its 11 tests fail.
 - **The automatic envelope band stays in the protected band.** The GUI
   searched for a demodulation band up to the raw Nyquist frequency (12.8 kHz
   at 25600 Hz). Above 10 kHz, the anti-alias filter attenuates the signal.
@@ -113,10 +166,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   it compares with the nominal raw rate, for example "25000/25600 Hz".
 - **The monitor storage estimate has correct units.** It divided by 10^9 and
   10^6, but showed "GiB" and "MiB". Now it shows "GB", "MB" and "kB". It
-  also counted a tachometer channel as a full waveform; a session stores
-  only its edge times, so now the estimate does not count it. The estimate
-  still assumes that gzip halves the data; its new tooltip says that this
-  is an assumption. `tests/test_gui_small_defects.py` keeps these three
+  also counted a tachometer channel as a full waveform. A session stores only
+  the edge times of that channel, so now the estimate does not count it. The
+  estimate still assumes that gzip halves the data. Its new tooltip says that
+  this is an assumption. `tests/test_gui_small_defects.py` keeps these three
   fixes. Without them, 5 of its 8 tests fail.
 - **A recording refuses a stream stop.** Ctrl+K, the Acquisition button and
   the Tachometer tab button could stop the stream while a recording ran. The
@@ -125,7 +178,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `tests/test_gui_stream_stop_lock.py` keeps this. Without the fix, 3 of its
   6 tests fail.
 - **The Welch Overlap tooltip is correct.** It said that a higher overlap
-  smooths the spectrum. Welch uses one segment per frame
+  smooths the spectrum. Welch uses one segment for each frame
   (`nperseg == blocksize`), so the overlap has no effect. Now the tooltip
   says this and refers to Average spectrum. `tests/test_welch_overlap_tip.py`
   shows that the spectrum is bit-identical at 0 % and 90 % overlap, at six
@@ -188,24 +241,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `_restore_metadata`, which compared all files with 5. Thus each load of a
   current session logged "File version 6 is newer than this build supports (5)".
   Now `_restore_metadata` takes the limit for the file type. The session
-  loaders give the limit of the session writer. The limit comes from the writer
-  constant, not from a literal.
+  loaders give the limit of the session writer. The limit comes from the
+  writer constant, not from a literal.
 
 #### Notes for the next person
 - **The warning continues to operate for a file that is really newer.** A
   version 7 session and a version 6 measurement file both give the warning.
   `tests/test_file_version_check.py` makes sure of the two cases and of the
   case without a warning.
-- `collector.py` imports the writer constant inside a function. A module-level
-  import is circular, because `monitor/writer.py` imports `collector.py`.
+- `collector.py` imports the writer constant inside a function. A
+  module-level import is circular, because `monitor/writer.py` imports
+  `collector.py`.
 
 ### fix/paths — logs go to the user directory in every install (2026-09-29)
 
 #### Fixed
-- **The log directory does not change with the working directory.** Before this
-  change, `_paths.log_dir()` used `~/Documents/Rev80/logs/` only in a frozen build.
-  All other installs used the relative directory `log/` in the current working
-  directory:
+- **The log directory does not change with the working directory.** Before
+  this change, `_paths.log_dir()` used `~/Documents/Rev80/logs/` only in a
+  frozen build. All other installs used the relative directory `log/` in the
+  current working directory:
   - A desktop launcher after `pip install --user .` starts with the working
     directory `$HOME`. The logs went to `~/log/`.
   - `rev80-headless` under systemd without `WorkingDirectory=` starts with the
@@ -218,516 +272,589 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 #### Notes for the next person
 - **An editable checkout does not write to `./log/` now.** Look in
-  `~/Documents/Rev80/logs/`. The `log/` entry in `.gitignore` stays, because old
-  checkouts can still have that directory.
+  `~/Documents/Rev80/logs/`. The `log/` entry in `.gitignore` stays, because
+  old checkouts can still have that directory.
 - `tests/test_paths.py` makes sure that `log_dir()` is absolute and does not
   change when the working directory changes.
 
 ### build/ci — rendered docs are release artifacts, not commits (2026-09-28)
 
-`doc/*.pdf` were re-rendered by the pre-commit hook and committed alongside their
-Markdown. Measured before changing it: **10.3 MB of PDF blobs across 34 commits,
-against 13.4 MB for every version of every source file** — ~300 KB per doc-touching
-commit, and PDF is already compressed, so none of it deltas. Rendered copies of files
-already in the repo were approaching half its storage and were its dominant growth
-term. It also made pandoc and WeasyPrint (with WeasyPrint's native Pango stack) a
-prerequisite for *making a commit*. And nothing consumed them: not the installer, not
-the wheel, not CI.
+The pre-commit hook rendered `doc/*.pdf` again at each commit, and the PDFs
+were committed with their Markdown. Measured before the change: **10.3 MB of
+PDF blobs across 34 commits, against 13.4 MB for every version of every
+source file**. Each commit that touched a document added approximately
+300 KB. PDF is already compressed, so git cannot delta it. Rendered copies of
+files in the repository were near half of its storage and were its largest
+growth term. The hook also made pandoc and WeasyPrint (with the native Pango
+stack of WeasyPrint) necessary to make a commit. No consumer used the PDFs:
+not the installer, not the wheel, not CI.
 
 #### Changed
-- **`doc/*.pdf` are gitignored build artifacts.** Untracked, and rendered instead by
-  a new `docs` job in `release.yml` — the only place the toolchain is installed —
-  whose output the draft-release job attaches alongside the installer and wheel. A
-  PDF handed to a client is now pinned to a release, rather than being whatever the
-  last commit happened to render.
-- **The pre-commit hook is ruff only.** The blocking lint gate, which matches CI's
-  invocation exactly, stays.
-- **WeasyPrint is pinned (`==69.0`) in the workflow**, the version these documents
-  were last checked against, so a WeasyPrint release cannot silently change the
-  layout of a client document between two tags.
+- **`doc/*.pdf` are gitignored build artifacts.** They are not tracked. A new
+  `docs` job in `release.yml` renders them. It is the only place where the
+  toolchain is installed. The draft-release job attaches its output with the
+  installer and the wheel. Thus a PDF given to a client is pinned to a
+  release, not to the last commit that rendered it.
+- **The pre-commit hook runs ruff only.** The blocking lint gate stays. It
+  uses the same invocation as CI.
+- **WeasyPrint is pinned (`==69.0`) in the workflow.** This is the version
+  that these documents were last checked against. Thus a WeasyPrint release
+  cannot change the layout of a client document between two tags without a
+  notice.
 
 #### Added
-- **`scripts/render_docs.sh`** — renders all four published docs. The document list
-  used to live inside the hook; it lives here now, and the workflow runs this script
-  rather than repeating the list.
+- **`scripts/render_docs.sh`** renders all four published documents. The
+  document list was in the hook. Now it is in this script, and the workflow
+  runs the script. The list is not repeated.
 
 #### Fixed
-- **Every PDF rendered since the August rebrand said "vibechecker"** in the top-right
-  page header — hardcoded in `render_md.sh`'s CSS. Now "Rev80".
+- **Each PDF rendered after the August rebrand said "vibechecker"** in the
+  page header at the top right. The name was hardcoded in the CSS of
+  `render_md.sh`. Now it is "Rev80".
 
 #### Notes for the next person
-- **Moving rendering into `build.sh` was considered and rejected.** `build.sh` runs
-  under Git Bash on Windows for the installer targets, and WeasyPrint on Windows needs
-  GTK; that would have put the heaviest form of the dependency on the platform where
-  the build already has the most moving parts, and the output would still have been
-  committed.
-- **History was not rewritten** to reclaim the 10.3 MB. The GitHub remote is live;
-  a force-push to save ten megabytes is a bad trade. `git gc` repacks the loose
-  objects for most of the practical win.
-- **The `docs` job is not tag-guarded** — only the release job is — so a
-  `workflow_dispatch` run exercises the render before a real tag depends on it.
+- **Rendering in `build.sh` was considered and rejected.** `build.sh` runs
+  under Git Bash on Windows for the installer targets, and WeasyPrint on
+  Windows needs GTK. That puts the heaviest form of the dependency on the
+  platform where the build already has the most parts. Also, the output would
+  still be committed.
+- **The history was not rewritten** to recover the 10.3 MB. The GitHub remote
+  is live, and a force-push to save ten megabytes is a bad trade. `git gc`
+  repacks the loose objects and gives most of the practical gain.
+- **The `docs` job has no tag guard.** Only the release job has one. Thus a
+  `workflow_dispatch` run tests the render before a real tag depends on it.
 
+### feature/tachometer — one session factory, and two defects it hid (2026-09-21)
 
-### feature/tachometer — one session factory, and two bugs it was hiding (2026-09-21)
-
-Follow-on from R44: an inventory of what still differed between `gui.py` and
-`headless.py`. `MonitorSession` was constructed field-by-field in both, fourteen
-arguments each, and two of those fields had drifted or died.
+This follows R44. It lists what was still different between `gui.py` and
+`headless.py`. Both front ends made a `MonitorSession` field by field, with
+fourteen arguments each. Two of those fields had drifted or had no effect.
 
 #### Fixed
-- **Headless kept one fewer pre-trigger frame than asked for.** The GUI sized
-  the frame cache to `pre_buffer_n + 1`, headless to `pre_buffer_frames`. The
-  `+ 1` is what the GUI's own comment says it is for: `MonitorController`
-  slices `frame_cache[-n:]` and the trigger frame then becomes
-  `burst_frames[n]`, so a cache of exactly n yields n-1 true pre-trigger
-  frames — the trigger frame has taken a slot. Nothing reports the achieved
-  count, so every unattended burst was silently one frame short of its
-  configured lead-in. Now `monitor.session.required_cache_frames()`, called
-  from both.
-- **`max_burst_s` was a setting that did nothing.** Seeded in
-  `acquisition.yaml` by `config.py`, printed in the headless session summary,
-  and **never read**: both front ends passed a hardcoded `600.0` to
-  `MonitorSession`, and the GUI's config save wrote `600.0` back as a literal,
-  undoing any hand edit the next time anyone touched the monitor dialog. So
-  `max_burst_s: 120` printed "max 120s", enforced 600, and reverted itself.
-  It is the bound that stops an unattended burst growing until the OOM killer
-  takes the process (audit S-02, measured at ~2.26 MB/s / ~8.1 GB/h on four
-  channels), which makes a cap nobody can change the wrong kind of defect to
-  leave in place. Both front ends now read it; the GUI preserves it on save
-  rather than rewriting it. There is still no widget for it — it is an
-  `acquisition.yaml`-only setting, and now genuinely is one.
+- **Headless kept one pre-trigger frame less than configured.** The GUI set
+  the frame cache to `pre_buffer_n + 1` frames, and headless to
+  `pre_buffer_frames`. The comment in the GUI gives the reason for the
+  `+ 1`: `MonitorController` slices `frame_cache[-n:]`, and the trigger frame
+  then becomes `burst_frames[n]`. Thus a cache of exactly n gives n-1 true
+  pre-trigger frames, because the trigger frame uses one slot. No code reports
+  the achieved count, so each unattended burst had one frame less lead-in
+  than configured, without a notice. Now both front ends call
+  `monitor.session.required_cache_frames()`.
+- **The setting `max_burst_s` had no effect.** `config.py` seeded it in
+  `acquisition.yaml`, and the headless session summary printed it, but **no
+  code read it**. Both front ends gave a hardcoded `600.0` to
+  `MonitorSession`. The config save of the GUI wrote `600.0` back as a
+  literal, so the next use of the monitor dialog removed a manual edit. Thus
+  `max_burst_s: 120` printed "max 120s", applied 600, and changed itself back.
+  This setting is the limit that stops an unattended burst before it grows
+  until the OOM killer stops the process ([S-02](audit-202608.md#s-02),
+  measured at ~2.26 MB/s / ~8.1 GB/h on four channels). A limit that no one
+  can change is not an acceptable defect to keep. Now both front ends read
+  it, and the GUI keeps it on save and does not write it again. It still has
+  no widget. It is a setting in `acquisition.yaml` only, and now it has an
+  effect.
 
 #### Added
-- **`monitor.session.session_from()`** — the single `MonitorSession`
-  constructor, keyword-only, because fourteen positional fields is how the two
-  copies drifted without anyone noticing. With it, `sensor_snapshot_for()`
-  (the deduplicate-by-id loop both front ends had their own copy of) and
-  `pre_buffer_frames_for()` (the same formula with the divide-by-zero guard
-  placed differently in each).
-- Tests asserting by source inspection that neither front end constructs
-  `MonitorSession` directly, sizes the cache itself, or pins the burst cap to
-  a literal — the same technique `tests/test_anomaly_hook_build.py` uses on
-  the one copy that remains.
+- **`monitor.session.session_from()`**, the single `MonitorSession`
+  constructor. It is keyword-only, because fourteen positional fields let the
+  two copies drift without a notice. With it come `sensor_snapshot_for()`
+  (the loop that removes duplicate sensors by ID; each front end had its own
+  copy) and `pre_buffer_frames_for()` (the same formula, with the
+  divide-by-zero guard in a different place in each copy).
+- Tests that read the source and assert that neither front end makes a
+  `MonitorSession` directly, sets the cache size itself, or pins the burst cap
+  to a literal. `tests/test_anomaly_hook_build.py` uses the same method on the
+  one copy that remains.
 
 #### Notes for the next person
-- **`_build_anomaly_hook` is now the last duplicated pair.** It is the harder
-  one: the two copies read from genuinely different sources (DPG widgets vs a
-  config dict) and would need a parameter object between them, rather than the
-  straight extraction the other three took.
+- **`_build_anomaly_hook` is now the last duplicated pair.** It is the
+  hardest: the two copies read from different sources (DPG widgets and a
+  config dict). They need a parameter object between them, not the direct
+  extraction that the other three pairs got.
 
 ### feature/tachometer — headless runs a tachometer (R44) (2026-09-21)
 
-`rev80-headless` used to *refuse* tach-role channels: it reads the same
-`devices/*.yaml` the GUI writes, and a tach fed through the vibration path
-measures overall 1514.9 mV, crest 5.00, kurtosis 15.94 and 63 spectral peaks
-on a 5% duty 1800 RPM square — an analyst reviewing that session concludes a
-bearing is failing badly. Out of scope had to mean "does not do it".
+Before this change, `rev80-headless` refused tachometer channels. It reads
+the same `devices/*.yaml` that the GUI writes. A tachometer channel through
+the vibration path gives overall 1514.9 mV, crest 5.00, kurtosis 15.94 and 63
+spectral peaks on a 5% duty 1800 RPM square wave. An analyst who reads that
+session concludes that a bearing is badly damaged. Thus "out of scope" had to
+mean "does not do it".
 
-It now runs one. The pipeline below `receive_data` was already role-aware, so
-most of this is wiring — but the survey that said so was wrong in three
-places, and those are the substance of this change.
+Now headless runs a tachometer. The pipeline below `receive_data` already
+knew the channel role, so most of this change connects existing parts. But
+the survey that said so was wrong in three places, and these three places
+are the important part of this change.
 
 #### Added
-- **`config.channel_role_state()`** — the single decision for what a
+- **`config.channel_role_state()`**, the single decision for what a
   `channels/{ch}` block means: role, tach calibration, enabled. The GUI and
-  headless each had their own copy and had **already drifted** (the GUI
-  defaulted a missing `enabled` to True, headless to False). Also hardens the
-  loader: an unrecognised role reads as vibration with a warning rather than
-  propagating, because raising out of a config loader is how the sensor
-  library was once erased (audit X-01).
-- **`monitor.session.channel_snapshot_for()`** — same story for the
-  per-channel snapshot embedded in `session.h5`. Both copies omitted the
-  channel `role`, so a loaded session could only infer it from the absence of
-  a `data` dataset. Tach channels now also carry their calibration, keeping
-  the shaft speed re-derivable at a different `pulses_per_rev`.
-- **`sensor._simulate_tach_sources()`** — nothing in the package ever set
-  `SimulatedSensor.channel_sources`; only tests did. A simulated tach channel
-  therefore received the same accelerometer waveform as the vibration input
-  and read `no_signal`, which meant **neither front end could be dry-run
-  against a tachometer offline**. Uses `machine_with_tach_sources` so the
-  pulse train stays locked to the vibration channel's own shaft rate.
-- **Tachometer block in the headless session summary** — channel, threshold
-  mode, polarity, pulses/rev, and both limits a non-unity ppr runs into: the
-  slowest measurable shaft (`slowest_rpm_for`) and the
+  headless each had their own copy, and the copies **had already drifted**:
+  the GUI set a missing `enabled` to True, headless to False. The loader is
+  also safer now: an unknown role reads as vibration, with a warning, and
+  does not propagate. A config loader that raises once erased the sensor
+  library ([X-01](audit-202608.md#x-01)).
+- **`monitor.session.channel_snapshot_for()`**, for the same reason, for the
+  channel snapshot in `session.h5`. Both copies omitted the channel `role`, so
+  a loaded session could only infer it from a missing `data` dataset.
+  Tachometer channels now also carry their calibration, so the shaft speed can
+  be calculated again at a different `pulses_per_rev`.
+- **`sensor._simulate_tach_sources()`.** No code in the package set
+  `SimulatedSensor.channel_sources`; only tests did. Thus a simulated
+  tachometer channel got the same accelerometer waveform as the vibration
+  input and read `no_signal`. As a result, **neither front end could run
+  offline against a tachometer**. The function uses
+  `machine_with_tach_sources`, so the pulse train stays locked to the shaft
+  rate of the vibration channel.
+- **A tachometer block in the headless session summary**: channel, threshold
+  mode, polarity, pulses/rev, and the two limits that a ppr above 1 meets:
+  the slowest shaft that can be measured (`slowest_rpm_for`) and the
   `MIN_SAMPLES_PER_PULSE` accuracy ceiling. An unattended run has no
-  Tachometer tab to show these live, and neither is recoverable from the
-  session file afterwards.
-- **Shaft speed on the headless status line**, `--` and never `0` when there
-  is no reading (R45), with an `[off-speed]` tag when the gate excludes a
+  Tachometer tab to show these values, and the session file does not hold
+  them.
+- **Shaft speed on the headless status line.** It shows `--`, never `0`, when
+  there is no reading (R45), and an `[off-speed]` tag when the gate excludes a
   frame.
 
 #### Fixed
-- **Every monitor session stored a tachometer channel's full waveform.**
-  `_write_channel_group` takes `role=` and defaults it to `'vibration'`;
-  `DataCollector.save_data` passed it and `MonitorWriterThread` never did, on
-  either of its two call sites. That is ~427x the stored size per frame
-  (25600 samples against 60 edge times, measured) on the one code path that
-  runs unattended for hours, and it lost the per-frame rpm, quality and edge
-  times with it — decision D-2 held in measurement files and nowhere else.
-  Now derived from the sample itself via `collector.role_of_sample`, which is
-  the test `monitor/controller.py` already used for the pre-trigger overall.
-- **`_apply_overrides` was dead code.** Nothing called it: `run()` inlined its
-  own maxfreq/binsize copy and handled `--channels` separately, by editing
-  the device file's `enabled` flags. It has been unreachable since the Rev80
-  rebrand (`62dd2c2`). `run()` now calls it, and `--channels` reconciles
-  against the roles: dropping the tachometer is honoured — it is an explicit
-  instruction — but never silent, because the session would otherwise record
-  `rpm=NaN` on every capture with the speed gate failing closed, excluding
-  every frame from trending and alarming with nothing saying why.
-- **`--channels` no longer writes `enabled: false` onto a tach channel.** That
-  flag is owned by the role (`channel_role_state` forces a claimed channel on,
-  since `tach_channels` filters by `enabled_channels`), so persisting it wrote
-  a flag every loader then ignores. The run-scoped exclusion belongs in
-  `_apply_overrides`, and that is where it now happens.
+- **Each monitor session stored the full waveform of a tachometer channel.**
+  `_write_channel_group` takes `role=` and sets it to `'vibration'` by
+  default. `DataCollector.save_data` gave it, and `MonitorWriterThread` did
+  not, at either of its two call sites. That is ~427x the stored size per
+  frame (25600 samples against 60 edge times, measured), on the one code path
+  that runs unattended for hours. It also lost the rpm, quality and edge times
+  of each frame. Thus the rule "a tachometer channel stores edge times, not
+  the waveform" held in measurement files only. Now the writer gets the role
+  from the sample itself through `collector.role_of_sample`.
+  `monitor/controller.py` already used this test for the pre-trigger overall.
+- **`_apply_overrides` was dead code.** No code called it: `run()` had its own
+  copy of the maxfreq/binsize overrides and handled `--channels` separately,
+  by a change to the `enabled` flags in the device file. It was unreachable
+  from the Rev80 rebrand (`62dd2c2`). Now `run()` calls it, and `--channels`
+  agrees with the roles. If `--channels` omits the tachometer, headless obeys,
+  because it is an explicit instruction. But it tells the operator, because
+  otherwise the session records `rpm=NaN` on each capture, the speed gate
+  fails closed, and each frame is excluded from trend and alarm with no
+  reason given.
+- **`--channels` does not write `enabled: false` on a tachometer channel.**
+  The role owns that flag: `channel_role_state` sets a claimed channel on,
+  because `tach_channels` filters by `enabled_channels`. Thus the stored flag
+  was one that each loader ignores. The exclusion for one run belongs in
+  `_apply_overrides`, and it is there now.
 
 #### Notes for the next person
-- **The R44 survey's premise was right and three of its facts were wrong.**
-  It read `monitor/controller.py`'s `if sample.tach is not None: continue` as
-  "the monitor stores a tach as edge times"; that branch only keeps the tach
-  out of the pre-trigger overall. Reading a guard as evidence of a feature is
-  how all three of these survived.
-- **Verified end to end offline**, which was not possible before
-  `_simulate_tach_sources`: `rev80-headless --device sim` against a device
-  file with a tach-role channel reads 3600 RPM on a 60 Hz simulated shaft,
-  writes `edge_times`/`pulse_widths` and no `data` for that channel, records
-  `rpm`/`speed_ok` on every capture, and carries the roles in
+- **The premise of the R44 survey was correct, and three of its facts were
+  wrong.** It read `if sample.tach is not None: continue` in
+  `monitor/controller.py` as "the monitor stores a tach as edge times". That
+  branch only keeps the tach out of the pre-trigger overall. All three
+  defects survived because a guard was read as evidence of a feature.
+- **Verified end to end offline.** This was not possible before
+  `_simulate_tach_sources`. `rev80-headless --device sim`, with a device file
+  that has a tachometer channel, reads 3600 RPM on a 60 Hz simulated shaft.
+  For that channel it writes `edge_times`/`pulse_widths` and no `data`. It
+  records `rpm`/`speed_ok` on each capture, and stores the roles in
   `/metadata/channels`.
-
 
 ### feature/tachometer — configurable pulses/rev, gated on revolutions (2026-09-18)
 
-`pulses_per_rev` becomes a user-facing control, and the minimum-data gate it
-depends on changes from a fixed edge count to whole shaft revolutions.
+`pulses_per_rev` becomes a control for the user. The minimum-data gate that
+it depends on changes from a fixed edge count to whole shaft revolutions.
 
-D-6 has not been repealed: 1 ppr is still the default and still the accurate
-configuration, for the reason it always was. What changed is the recognition
-that a keyphasor or an encoder already bolted to a machine is not something the
-operator can choose away, and that refusing to divide by it means refusing the
-machine.
+One pulse per revolution is still the default and the recommended
+configuration, for the same reason as before. The change is this: an operator
+cannot remove a keyphasor or an encoder that is already installed on a
+machine. A refusal to divide by its pulse count is a refusal of the machine.
 
 #### Changed
 - **`MIN_EDGES = 3` → `MIN_REVS = 2.0` plus `min_edges_for(ppr)`.** The two
-  agree exactly at 1 ppr — three edges, two intervals, two whole turns — and
-  nowhere else: three edges of a 60-line encoder is 0.033 of a revolution.
-  `test_three_edges_is_two_whole_revolutions_at_one_ppr` pins the equivalence.
-- **A block under `MIN_REVS` now reports no rate.** Measured through the real
-  `tach_result`: a 6 ppr block holding 1.5 revolutions has 10 rising edges,
-  three times the old gate, and passed it — returning `quality='ok'` and
-  1800.0 RPM computed from a fraction of a turn, where division error and
-  once-per-rev modulation have not yet cancelled (0.580% mean / 1.898% worst at
-  0.05 rev, against 0.091% from one full turn). Revert-checked: restoring the
-  fixed gate makes `test_high_ppr_block_under_min_revs_reports_no_reading` fail
-  with `rpm=1799.9999999999998` where it wants `None`.
-- **The quality string stays `'too_few_edges'`** though the constraint is now
-  revolutions. The test is still on the edge count, and the string is written
-  into every stored HDF5 tach group — renaming it would strand files for a
-  wording improvement.
-- **`TachSettings.from_dict` no longer warns on ppr != 1.** It is a supported
-  setting with a control of its own. The warning now fires on what is actually
-  wrong — a zero, negative or fractional ppr, which is a corrupt file rather
-  than a configuration, and whose fallback to 1 changes the reported speed.
+  agree exactly at 1 ppr (three edges, two intervals, two whole turns), and
+  at no other value. Three edges of a 60-line encoder are 0.033 of a
+  revolution. `test_three_edges_is_two_whole_revolutions_at_one_ppr` pins the
+  equivalence.
+- **A block with less than `MIN_REVS` revolutions reports no rate.** Measured
+  through the real `tach_result`: a 6 ppr block with 1.5 revolutions has 10
+  rising edges, three times the old gate, and passed it. It returned
+  `quality='ok'` and 1800.0 RPM, calculated from a fraction of a turn. There,
+  division error and once-per-rev modulation have not cancelled yet (0.580%
+  mean / 1.898% worst at 0.05 rev, against 0.091% from one full turn).
+  Revert-checked: with the fixed gate restored,
+  `test_high_ppr_block_under_min_revs_reports_no_reading` fails with
+  `rpm=1799.9999999999998` where it expects `None`.
+- **The quality string stays `'too_few_edges'`**, although the limit is now in
+  revolutions. The test still counts edges, and each stored HDF5 tach group
+  contains the string. A new name would make old files unreadable for a
+  better word.
+- **`TachSettings.from_dict` does not warn on ppr != 1.** It is a supported
+  setting with its own control. The warning now fires on a real fault: a
+  zero, negative or fractional ppr. That is a corrupt file, not a
+  configuration, and its fallback to 1 changes the reported speed.
 
 #### Added
-- **Pulses/rev in the Tachometer tab**, with the D-6 rationale in its tooltip.
-- **`slowest_rpm_for(block_s, ppr)`**, replacing an open-coded
-  `MIN_EDGES * 60 / t_block` in `gui.py`, and carrying the binsize table that
-  the module docstring used to hold loose. The docstring table is now derived
-  from the function, with a test asserting they agree.
-- **`MIN_SAMPLES_PER_PULSE = 70` and a live caution in the tab** when the
-  configured ppr pushes the pulse rate past what edge interpolation can
+- **Pulses/rev in the Tachometer tab.** Its tooltip gives the reason why one
+  pulse per revolution is the default and the recommended configuration.
+- **`slowest_rpm_for(block_s, ppr)`.** It replaces an inline
+  `MIN_EDGES * 60 / t_block` in `gui.py`. It carries the binsize table that
+  was loose in the module docstring. The docstring table now comes from the
+  function, and a test asserts that they agree.
+- **`MIN_SAMPLES_PER_PULSE = 70`, and a live caution in the tab** when the
+  configured ppr makes the pulse rate higher than edge interpolation can
   resolve (~0.8% error below it, measured; 6000 RPM at 6 ppr, 600 at 60). It
-  is a caution and not a gate: a degraded reading is still a reading.
+  is a caution, not a gate: a degraded reading is still a reading.
+  - Correction (2026-09-30): 6000 RPM and 600 RPM are correct at a raw rate of
+    41666.5 Hz. At 25600 Hz, 70 samples per pulse gives approximately
+    3657 RPM at 6 ppr and 366 RPM at 60 ppr. These values are calculated, not
+    measured at 25600 Hz. The caution uses the achieved rate of the stream.
 
 #### Fixed
-- **The tach preview plot's x-axis used the shaft period where it meant the
-  pulse period.** Invisible at 1 ppr, where they are the same number; at 6 ppr
-  the window is six times too wide and the trace collapses to a stripe.
-
-#### Verified electrically
-Closed out on a 4424A (AWG loopback, channel A), 27 hardware tests passing:
-- **ppr divides the hardware rate exactly once**, at 1, 2 and 6 pulses/rev
-  against a 60 Hz square — 3600, 1800 and 600 RPM within the published
-  ±0.2% of reading.
-- **The gate withholds on real edges.** 5 Hz in a 1 s block is ~5 rising
-  edges: 300 RPM at 1 ppr, and at 6 ppr it is 0.8 of a revolution, which used
-  to return 50 RPM with `quality='ok'` and now returns `None`.
+- **The x-axis of the tach preview plot used the shaft period in place of the
+  pulse period.** At 1 ppr they are the same number, so the defect was not
+  visible. At 6 ppr the window was six times too wide, and the trace became a
+  stripe.
 
 #### Notes for the next person
-- **A finer encoder does not read a slower shaft, and the UI must keep saying
-  so.** The gate is two revolutions either way; all a higher ppr recovers is the
-  one pulse period of phase-safety margin, which is a whole revolution at 1 ppr
-  and 1/60th of one at 60. The floor goes 180 → 121 RPM at a 1 s block — a
-  third, not sixtyfold. The way to read a slower shaft is a longer block.
-- **`MIN_REVS = 2.0` and not the 1.0 the error table alone justifies**, because
-  the statistical floor binds harder at 1 ppr: one revolution there is a single
-  interval, with no spread. 2.0 also makes each half-block span one revolution,
-  so `_MIN_EDGES_FOR_DRIFT` needs no revolution-based companion — at 1.0 a
-  steady shaft with a load zone would read as 'unsteady'.
-- **Replay inherits the gate, which is the point.** A file captured at 1 ppr and
-  reinterpreted as a 60-line encoder now withholds the rate rather than dividing
-  0.97 of a revolution by 60 and reporting 29 RPM for a 1762 RPM shaft.
+- **Verified electrically** on a 4424A (AWG loopback, channel A), 27 hardware
+  tests pass:
+  - **The ppr divides the hardware rate exactly once**, at 1, 2 and 6
+    pulses/rev against a 60 Hz square wave: 3600, 1800 and 600 RPM, within
+    the published ±0.2% of reading.
+  - **The gate holds back a reading on real edges.** 5 Hz in a 1 s block is
+    ~5 rising edges: 300 RPM at 1 ppr. At 6 ppr it is 0.8 of a revolution.
+    Before this change it returned 50 RPM with `quality='ok'`. Now it returns
+    `None`.
+- **A finer encoder does not read a slower shaft, and the UI must continue to
+  say so.** The gate is two revolutions in both cases. A higher ppr recovers
+  only one pulse period of phase margin: a whole revolution at 1 ppr, and 1/60
+  of one at 60. At a 1 s block the floor goes from 180 → 121 RPM, a third,
+  not sixtyfold. To read a slower shaft, use a longer block.
+- **`MIN_REVS = 2.0`, not the 1.0 that the error table alone supports.** The
+  statistical floor is stricter at 1 ppr, where one revolution is a single
+  interval with no spread. 2.0 also makes each half-block span one
+  revolution, so `_MIN_EDGES_FOR_DRIFT` needs no companion in revolutions. At
+  1.0, a steady shaft with a load zone reads as 'unsteady'.
+- **Replay uses the same gate, and that is intentional.** A file captured at
+  1 ppr and read again as a 60-line encoder now holds back the rate. It does
+  not divide 0.97 of a revolution by 60 and report 29 RPM for a 1762 RPM
+  shaft.
 
 ## [0.1.3] - 2026-09-17
 
+Tag v0.1.2 was not released: its build failed on the Windows runner. 0.1.3
+contains the same content and the CI fix that installs PicoSDK on the Windows
+runner (`951ff47`).
 
 ### fix/stability-cluster (2026-08-30, merged 2026-09-11)
 
-The four audit findings about the app *staying up* rather than measuring
-correctly: two criticals (S-01, S-02) plus the two that decide whether a crash
-leaves anything to read (H-07, H-03). Written against develop at 2026-08-30 and
-merged unchanged after the tachometer and raw-rate work landed; every defect
-below was still live at merge, and the merge needed no conflict resolution.
-**927 unit tests and all 23 hardware tests pass on the merged result** (4424A,
-AWG loopback).
+This branch fixes the four audit findings about whether the app *stays up*,
+not whether it measures correctly. Two are critical:
+[S-01](audit-202608.md#s-01) and [S-02](audit-202608.md#s-02). The other two
+decide whether a crash leaves evidence to read: [H-07](audit-202608.md#h-07)
+and [H-03](audit-202608.md#h-03). The branch was written against develop at
+2026-08-30 and merged unchanged after the tachometer and raw-rate work. Each
+defect below was still present at the merge, and the merge had no conflicts.
+**927 unit tests and all 23 hardware tests pass on the merged result**
+(4424A, AWG loopback).
 
-Ordered deliberately: evidence first, because fixing S-01 and S-02 blind would
-mean that if the app still died there would still be nothing to read.
+The order is intentional: evidence first. Without it, if the app still
+stopped after the fixes to [S-01](audit-202608.md#s-01) and
+[S-02](audit-202608.md#s-02), there would still be nothing to
+read.
 
 #### Added
-- **`logger.install_excepthooks()`** (idempotent, replaces the bare
-  `sys.excepthook = ...` line in both front ends) — three crash routes, each
-  previously leaving a different amount of nothing.
+- **`logger.install_excepthooks()`** (idempotent). It replaces the bare
+  `sys.excepthook = ...` line in both front ends. It covers three crash
+  routes. Before this change, each route left a different amount of nothing.
   - **`threading.excepthook`.** `sys.excepthook` covers only the main thread,
-    and everything interesting runs off it: the PicoScope poll thread, the
-    simulation generator, the monitor writer, the autoconnect and reprocess
-    workers. Those deaths went to stderr — nowhere, when launched from a
-    desktop entry. Now routed to the rotating log, naming the thread and noting
-    that anything waiting on it will hang rather than fail. Verified end to
-    end: a raising worker writes a full traceback to `error.log`.
-  - **`faulthandler`** → `log/faulthandler.log`, the only evidence that
-    survives a SIGSEGV and what distinguishes a driver-level crash (X-05) from
-    an OOM kill, which leaves nothing at all. Verified by deliberately
-    dereferencing NULL: the file names the exact frame and lists the loaded
-    extension modules.
-  - **A periodic resource line** (`MonitorController`, every 5 minutes during a
-    session): RSS, thread count, burst frame retention, writer queue depth.
-    SIGKILL cannot be trapped, so the only possible evidence predates it — this
-    turns an unexplained disappearance into a readable ramp, and it is exactly
-    the ramp S-02 produces. It never raises: a diagnostic that takes down the
-    session it is diagnosing is worse than no diagnostic.
+    and most of the work runs on other threads: the PicoScope poll thread,
+    the simulation generator, the monitor writer, the autoconnect and
+    reprocess workers. Their deaths went to stderr, which goes nowhere when a
+    desktop entry starts the app. Now they go to the rotating log. The entry
+    names the thread and notes that anything that waits on it will hang, not
+    fail. Verified end to end: a worker that raises writes a full traceback to
+    `error.log`.
+  - **`faulthandler`** → `log/faulthandler.log`. This file is the only
+    evidence that survives a SIGSEGV. It tells a driver-level crash
+    ([X-05](audit-202608.md#x-05)) from an OOM kill, which leaves nothing at
+    all. Verified with a deliberate NULL dereference: the file names the exact
+    frame and lists the loaded extension modules. (fix/paths, 2026-09-29,
+    moved the file to `~/Documents/Rev80/logs/`.)
+  - **A periodic resource line** (`MonitorController`, every 5 minutes during
+    a session): RSS, thread count, burst frame retention, writer queue depth.
+    SIGKILL cannot be trapped, so the only possible evidence comes before it.
+    This line turns an unexplained disappearance into a readable ramp, and
+    [S-02](audit-202608.md#s-02) makes exactly that ramp. It never raises: a diagnostic that stops the
+    session it diagnoses is worse than no diagnostic.
 - **`tests/test_app_lifecycle.py`** (177), **`tests/test_bounded_resources.py`**
   (233), **`tests/test_crash_evidence.py`** (150).
 
 #### Fixed
-- **S-01 (critical) — shutdown was skippable, and skipping it stranded the
-  device.** Two defects that compound, and together explain both halves of the
-  reported symptom: *"I came back and the session was truncated, and then the
-  scope wouldn't connect until I replugged it."*
-  - `GUI.cleanup()` never called `self._monitor.stop()`, and the writer is a
-    **daemon** thread, so the interpreter killed it without unwinding —
-    possibly mid-`h5py.File(…, 'a')` — with captures still queued.
-    `MonitorController.stop()` already flushed the partial burst and drained the
-    writer correctly; it was simply never reached on app close. `cleanup()` now
+- **[S-01](audit-202608.md#s-01) (critical): the app could skip shutdown, and
+  then the device stayed open.** Two defects combine. Together they explain
+  both halves of the reported symptom: *"I came back and the session was
+  truncated, and then the scope wouldn't connect until I replugged it."*
+  - `GUI.cleanup()` never called `self._monitor.stop()`. The writer is a
+    **daemon** thread, so the interpreter stopped it without unwinding,
+    possibly inside `h5py.File(…, 'a')`, with captures still in the queue.
+    `MonitorController.stop()` already flushed the partial burst and drained
+    the writer correctly, but app close never called it. Now `cleanup()`
     stops the monitor **first**, then closes the device, then destroys the DPG
-    context, each step individually guarded — a wedged writer must not prevent
-    `ps4000aCloseUnit`, because a device left open is what makes the next launch
-    fail with `PICO_NOT_FOUND`.
-  - `GUI.run()`'s loop body had no `try/except` and `__main__.main()` had no
-    `try/finally`, so any exception in the render path skipped `cleanup()`
-    entirely. `main()` now wraps `run()` in `try/finally` and `cleanup()` is
-    idempotent, so the loop's own guarded exit is harmless. This also downgrades
-    **X-02** — a shared `.h5` with `binsize=0` raising `ZeroDivisionError` in the
-    render path — from a process-ending crash that strands the device to a
-    logged error.
-  - Render-loop policy, as chosen: log once per exception **type**, keep
-    rendering, and give up after `MAX_CONSECUTIVE_RENDER_ERRORS` (30) consecutive
-    failures by breaking the loop so shutdown still runs *through* `cleanup()`.
-    Deduplication matters because a persistent fault would otherwise write a
-    traceback at frame rate and roll every other diagnostic out of the rotating
-    log — exactly the **S-09** failure mode. A successful frame clears the
-    streak, so occasional bad frames over a long run cannot accumulate into a
-    shutdown; per-type totals are logged once on exit.
-  - `cleanup()` reads `_render_errors` through `getattr`: it runs from `main()`'s
-    `finally` and must survive a GUI that failed partway through construction. It
-    is the one method that cannot be allowed to raise, because it is what closes
-    the device.
-- **S-02 (critical) — every resource an unattended run can grow is now bounded.**
-  Three defects compounding into the most likely way an overnight session dies,
-  and the one leaving the least evidence: an OOM kill is SIGKILL — no traceback,
-  no `atexit`, no log line. The app simply vanishes.
-  - **(a) Burst retention had no cap at all**, holding every frame *and* every
-    `ChannelResult` until the single flush. Now capped by `burst_frame_cap()`,
-    derived from `max_burst_s` and the acquisition period rather than a magic
-    number, with a floor so a pathological period cannot produce a zero-length
-    burst. `_burst_frames` and `_burst_all_results` are trimmed **together**,
-    because `_flush_burst` indexes them in parallel — trimming one alone would
-    put every overall against the wrong waveform. Hitting the cap warns once.
-  - **(b) `max_burst_s` was inert on the path that fires unattended.** It was
-    enforced only inside `IntervalGate.enter_burst()`, which only the *manual*
-    path calls; the anomaly path set `_burst_end_mono` directly. Both now go
-    through a shared `capped_burst_end()`; 0/`None` still means unset rather than
-    zero-length. `IntervalGate._burst_start` is also initialised in `__init__` —
-    the retrigger branch reads it, and it was one refactor from an
-    `AttributeError` in the monitor's hot path.
-  - **(c) The writer queue was `queue.Queue()` with no maxsize**, so its
-    `except queue.Full` branch was unreachable dead code and `enqueue()` always
-    returned True. That return gates the capture counter, so **the UI reported
-    successes that were never written to disk.** The queue is now bounded; on
-    full it drops rather than blocks — back-pressure there would reach the render
-    loop and stall acquisition behind the disk — and the drops are counted,
-    logged with the queue depth, and surfaced in `status_snapshot()` as
-    `dropped_captures`. A loss nobody can see is the same defect in a new place.
-- **H-03 — a field log could not be tied to a build.** `__version__` now resolves
-  from `git describe` in a source checkout, falling back to the stamped
-  `_version.py` in an installed or frozen build. The stamp comes from a
-  pre-commit hook that is **not** installed automatically, and was observed 100
-  commits stale.
+    context. Each step has its own guard. A wedged writer must not prevent
+    `ps4000aCloseUnit`, because a device left open makes the next launch fail
+    with `PICO_NOT_FOUND`.
+  - The loop body of `GUI.run()` had no `try/except`, and `__main__.main()`
+    had no `try/finally`. Thus an exception in the render path skipped
+    `cleanup()`. Now `main()` wraps `run()` in `try/finally`, and `cleanup()`
+    is idempotent, so the guarded exit of the loop is harmless. This also
+    makes [X-02](audit-202608.md#x-02) less severe. A shared `.h5` with
+    `binsize=0` raises `ZeroDivisionError` in the render path. Before, that
+    ended the process and left the device open. Now it is a logged error.
+  - Render-loop policy: log once for each exception **type**, continue to
+    render, and stop after `MAX_CONSECUTIVE_RENDER_ERRORS` (30) consecutive
+    failures. The loop stops with a break, so shutdown still goes *through*
+    `cleanup()`. Deduplication is necessary: without it, a persistent fault
+    writes a traceback at frame rate and rolls all other diagnostics out of
+    the rotating log. That is the failure of
+    [S-09](audit-202608.md#s-09). A successful frame clears the count, so
+    occasional bad frames in a long run cannot add up to a shutdown. The
+    totals for each type are logged once at exit.
+  - `cleanup()` reads `_render_errors` through `getattr`. It runs from the
+    `finally` of `main()` and must survive a GUI whose construction failed
+    part of the way. It is the one method that must not raise, because it
+    closes the device.
+- **[S-02](audit-202608.md#s-02) (critical): each resource that an
+  unattended run can grow now has a limit.** Three defects combine into the
+  most probable way for an overnight session to stop, and the way that leaves
+  the least evidence. An OOM kill is SIGKILL: no traceback, no `atexit`, no
+  log line. The app disappears.
+  - **(a) Burst retention had no cap.** It held every frame *and* every
+    `ChannelResult` until the single flush. Now `burst_frame_cap()` sets the
+    cap from `max_burst_s` and the acquisition period, not from a magic
+    number. A floor prevents a zero-length burst when the period is not
+    valid. `_burst_frames` and `_burst_all_results` are trimmed **together**,
+    because `_flush_burst` indexes them in parallel: a trim of one list only
+    puts each overall against the wrong waveform. The cap gives one warning
+    when it is reached.
+  - **(b) `max_burst_s` had no effect on the path that fires unattended.**
+    Only `IntervalGate.enter_burst()` applied it, and only the *manual* path
+    calls that. The anomaly path set `_burst_end_mono` directly. Now both
+    paths use a shared `capped_burst_end()`. 0 or `None` still means "not
+    set", not "zero length". `IntervalGate._burst_start` is now set in
+    `__init__`. The retrigger branch reads it, and one refactor could have
+    caused an `AttributeError` in the hot path of the monitor.
+  - **(c) The writer queue was `queue.Queue()` with no maxsize.** Thus its
+    `except queue.Full` branch was dead code, and `enqueue()` always returned
+    True. That return value controls the capture counter, so **the UI
+    reported captures that were never written to disk.** Now the queue has a
+    limit. When it is full, it drops the item and does not block: back-pressure
+    there would reach the render loop and stop acquisition behind the disk.
+    The drops are counted, logged with the queue depth, and shown in
+    `status_snapshot()` as `dropped_captures`. A loss that no one can see is
+    the same defect in a new place.
+  - **Measured: burst retention costs 2.76x the raw block.** Measured on 4
+    channels through the real pipeline at `RAW_SAMPLERATE_HZ` = 25600 (deep
+    ndarray bytes that one retained frame and its `ChannelResults` reach):
 
-#### Measured
-- **Burst retention costs 2.76x the raw block**, measured on 4 channels through
-  the real pipeline at `RAW_SAMPLERATE_HZ` = 25600 (deep ndarray bytes reachable
-  from one retained frame plus its `ChannelResults`):
+    | binsize | acq. period | raw block | retained | multiple |
+    |---|---|---|---|---|
+    | 0.5 Hz | 2.000 s | 1.638 MB | 4.517 MB | 2.76x |
+    | 1.0 Hz | 1.000 s | 0.819 MB | 2.259 MB | 2.76x |
+    | 2.0 Hz | 0.500 s | 0.410 MB | 1.130 MB | 2.76x |
 
-  | binsize | acq. period | raw block | retained | multiple |
-  |---|---|---|---|---|
-  | 0.5 Hz | 2.000 s | 1.638 MB | 4.517 MB | 2.76x |
-  | 1.0 Hz | 1.000 s | 0.819 MB | 2.259 MB | 2.76x |
-  | 2.0 Hz | 0.500 s | 0.410 MB | 1.130 MB | 2.76x |
+    Thus growth without a cap is **2.26 MB/s on 4 channels, ~8.1 GB/h,
+    independent of F_max and binsize**. Since the raw/display split, stored
+    frames are the capture at the raw rate. A low F_max does not give margin
+    here, as it did when this defect was first written up (the original note
+    gave ~2 GB at an F_max 50 kHz preset that does not exist now). At the
+    shipped `max_burst_s` default of 600 s, the cap holds one burst to
+    ~1.36 GB. The docstring carries this table.
+- **[H-03](audit-202608.md#h-03): a field log could not be tied to a
+  build.** `__version__` now comes from `git describe` in a source checkout.
+  In an installed or frozen build it comes from the stamped `_version.py`.
+  The stamp comes from a pre-commit hook that is **not** installed
+  automatically, and it was seen 100 commits stale.
+  - Correction: `setuptools_scm` generates `_version.py` at build or install
+    time. The pre-commit hook does not stamp it. build/ci — release
+    automation (2026-09-17) corrects the same claim in `CLAUDE.md`.
 
-  Uncapped growth is therefore **2.26 MB/s on 4 channels, ~8.1 GB/h,
-  independent of both F_max and binsize** — since the raw/display split, stored
-  frames are the fixed-rate capture, so a low F_max no longer buys headroom here
-  the way it did when this defect was first written up (the original note cited
-  ~2 GB at an F_max 50 kHz preset that no longer exists). At the shipped
-  `max_burst_s` default of 600 s the cap holds one burst to ~1.36 GB. The
-  docstring carries this table.
-
-#### Notes
-- All three fixes revert-checked — removing the monitor stop, the render-error
-  deduplication, or `cleanup()`'s idempotence each makes tests fail.
-- **The first revert-check pass found a hole worth recording:** reverting the
-  writer queue to unbounded still passed all 15 tests, because the helper built
-  its own queue with an explicit `maxsize` and nothing exercised
-  `MonitorWriterThread`'s real `__init__`. Same shape as the power-vs-amplitude
-  gap in feature/spectral-averaging. Tests that drive the real constructor were
-  added; the revert now fails as it should.
-- **H-01 is not addressed** — `_build_anomaly_hook` is still copy-pasted between
-  `gui.py` and `headless.py`.
+#### Notes for the next person
+- All three fixes are revert-checked. Removal of the monitor stop, of the
+  render-error deduplication, or of the idempotence of `cleanup()` makes tests
+  fail.
+- **The first revert-check found a gap.** With the writer queue changed back
+  to unbounded, all 15 tests still passed. The helper made its own queue with
+  an explicit `maxsize`, and no test used the real `__init__` of
+  `MonitorWriterThread`. This is the same type of gap as the power-against-
+  amplitude gap in feature/spectral-averaging. Tests that use the real
+  constructor were added, and the revert now fails as it must.
+- **[H-01](audit-202608.md#h-01) is not addressed.** `_build_anomaly_hook` is
+  still copied between `gui.py` and `headless.py`.
 
 ---
 
 ### feature/tachometer (R43) (2026-09-01)
 
 #### Added
-- **`rev80.tach`** — tachometer edge detection and shaft-speed estimation.
-  Pure functions plus two frozen dataclasses (`TachSettings`, `TachResult`),
-  free of dearpygui / h5py / `DataCollector` imports. Nothing wires it in yet;
+- **`rev80.tach`**: tachometer edge detection and shaft-speed estimation.
+  Pure functions and two frozen dataclasses (`TachSettings`, `TachResult`),
+  with no dearpygui, h5py or `DataCollector` imports. No code uses it yet:
   this is step 1 of the tachometer feature.
-  - `detect_edges()` — vectorised Schmitt trigger with sub-sample interpolation
-    of the crossing instant. The vectorised form is not just 68x faster than
-    the obvious loop (0.090 ms vs 6.1 ms on a 1.0 s block) but more correct:
-    it requires a real crossing, where the loop reports a phantom edge at
-    sample 1 whenever a block opens part-way through a pulse.
-  - `estimate_rpm()` — **median of intervals**, not first-to-last. Measured at
-    1800 RPM over 200 reps, one dropped edge costs first-to-last 62.09 RPM and
-    the median 0.15 RPM. Robustness to a miscount is worth more than tightness
-    under jitter, because jitter shows up in `interval_spread` and a miscount
-    does not.
-  - Quality is classified, not collapsed: `ok` / `no_signal` /
-    `too_few_edges` / `inconsistent` / `unsteady`. **`rpm` is `None` when there
-    is no usable reading and never `0.0`** — "I cannot see a tach signal" and
-    "the shaft is stopped" send an analyst to different places.
+  - `detect_edges()`: a vectorised Schmitt trigger with sub-sample
+    interpolation of the crossing instant. The vectorised form is 68x faster
+    than the obvious loop (0.090 ms against 6.1 ms on a 1.0 s block), and it
+    is also more correct. It requires a real crossing. The loop reports a
+    phantom edge at sample 1 each time a block starts inside a pulse.
+  - `estimate_rpm()`: **median of intervals**, not first-to-last. Measured at
+    1800 RPM over 200 repetitions: one dropped edge costs first-to-last
+    62.09 RPM and the median 0.15 RPM. Tolerance of a miscount is more
+    important than a tight result under jitter, because jitter shows in
+    `interval_spread` and a miscount does not.
+  - The quality has classes: `ok` / `no_signal` / `too_few_edges` /
+    `inconsistent` / `unsteady`. **`rpm` is `None` when there is no usable
+    reading, never `0.0`.** "I cannot see a tach signal" and "the shaft is
+    stopped" send an analyst to different places.
 
-- **Channel roles and the speed gate** (`AcquisitionSettings`) — step 2, still
-  unconsumed. `channel_roles` (`{ch: 'vibration'|'tachometer'}`) with
+- **Channel roles and the speed gate** (`AcquisitionSettings`): step 2, not
+  used yet. `channel_roles` (`{ch: 'vibration'|'tachometer'}`) with
   `role_for()`, and the derived `tach_channels` / `vibration_channels`
-  partitions that `process_samples` will iterate. An unrecognised role string
-  falls back to `vibration` rather than propagating, so a hand-edited YAML
-  cannot invent a third channel kind that every downstream branch then fails to
-  handle; and the partitions filter by *enabled* channels, so a tach role left
-  on a switched-off input does not have the collector hunting for a pulse train
-  nobody is sampling.
-- **`speed_gate_enabled` / `speed_gate_rpm` / `speed_gate_tolerance_pct`** —
-  off by default, since with no tachometer fitted there is no reference to gate
-  against. `speed_gate_rpm = None` means "latch from the first valid frame" and
-  survives the config round trip, for the same reason `band_fmin`/`band_fmax`
-  do: writing a resolved value back would freeze one session's running speed
-  into the config.
+  partitions that `process_samples` will iterate. An unknown role string
+  falls back to `vibration` and does not propagate. Thus a hand-edited YAML
+  cannot make a third channel type that each downstream branch then fails to
+  handle. The partitions filter by *enabled* channels, so a tach role on a
+  disabled input does not make the collector look for a pulse train that no
+  one samples.
+- **`speed_gate_enabled` / `speed_gate_rpm` / `speed_gate_tolerance_pct`.**
+  Off by default: with no tachometer, there is no reference for the gate.
+  `speed_gate_rpm = None` means "latch from the first valid frame", and it
+  survives the config round trip, for the same reason as
+  `band_fmin`/`band_fmax`: a resolved value written back would freeze the
+  running speed of one session into the config.
 - `role` and a nested `tach` block in `_BUILTIN_CHANNEL_TEMPLATE`, and the
-  three `speed_gate_*` keys in `_BUILTIN_ACQ`, so every device and acquisition
-  YAML written before R43 upgrades silently through the existing merge.
+  three `speed_gate_*` keys in `_BUILTIN_ACQ`. Thus each device and
+  acquisition YAML written before R43 upgrades through the existing merge,
+  with no notice.
 
-- **Hardware close-out on the 4424A** — 14 new self-skipping tests in
-  `tests/test_picoscope_hw.py`, all through the real acquisition path
-  (`PicoScopeStream` → `antialias_decimate` → `receive_data` → `tach_result`) rather
-  than handing synthetic arrays to the detector. **23 hardware tests pass.**
-  - AWG sweep 300–10200 RPM, every point within the published ±0.2% of reading.
-  - The reported rate is asserted to be 41666.5 Hz and *not* `RAW_SAMPLERATE_HZ` — the
-    4.166% trap that is exactly right in CI and wrong on hardware.
-  - The AC-coupling failure reproduced electrically with a 70%-duty arbitrary waveform:
-    a fixed threshold returns no reading while adaptive tracks the shaft.
-  - Duty cycle measured against the generator's known 50%.
-  - A tach channel confirmed to produce no `ChannelResult` on real hardware.
-  - Four channels with a tach streaming 8 s with zero overflow and zero
-    rate-degradation events.
-  - One test was written wrong and corrected: a fixed threshold at **50% duty** is the
-    one case where fixed and adaptive coincide, and whether a 1000 mV level lands inside
-    the AC-coupled swing was observed both ways across runs. Pinning either outcome would
-    have pinned a coin-flip, so the assertion now covers only the regime where the
-    difference is real and repeatable.
+- **Hardware close-out on the 4424A**: 14 new self-skipping tests in
+  `tests/test_picoscope_hw.py`. All go through the real acquisition path
+  (`PicoScopeStream` → `antialias_decimate` → `receive_data` → `tach_result`)
+  and do not give synthetic arrays to the detector. **23 hardware tests
+  pass.**
+  - AWG sweep 300–10200 RPM: each point is within the published ±0.2% of
+    reading.
+  - The test asserts that the reported rate is 41666.5 Hz and *not*
+    `RAW_SAMPLERATE_HZ`. This is the 4.166% trap that is exactly correct in
+    CI and wrong on hardware.
+  - The AC-coupling failure is reproduced electrically with a 70%-duty
+    arbitrary waveform: a fixed threshold returns no reading, and the
+    adaptive threshold follows the shaft.
+  - Duty cycle is measured against the 50% that the generator gives.
+  - A tachometer channel gives no `ChannelResult` on real hardware.
+  - Four channels with a tachometer stream for 8 s with zero overflow and
+    zero rate-degradation events.
+  - One test was wrong and was corrected. A fixed threshold at **50% duty** is
+    the one case where fixed and adaptive give the same result. Whether a
+    1000 mV level is inside the AC-coupled swing was seen both ways in
+    different runs. An assertion on either result would pin a coin toss. Thus
+    the assertion now covers only the regime where the difference is real and
+    repeatable.
+  - **Measured values for the module constants.** The constants carry the
+    table that justifies them. Verified on a PicoScope 4424A (serial
+    12462/0067) with AWG loopback on channel A:
+    - **The reported sample rate is 41666.5 Hz, not `RAW_SAMPLERATE_HZ`
+      (40000).** The driver rounds the sample interval to 12 us, so the true
+      rate is 83333/2 Hz. An RPM calculated from the constant reads **4.166%
+      high on hardware and exactly correct in CI**. That is the worst
+      combination for a defect. `tach` takes the rate from the sample, and a
+      test pins it.
+    - **`MIN_PULSE_AMPLITUDE_MV = 1000.0`.** Front-end noise measured with the
+      AWG idle: 0.37 mV RMS at +/-1 V, up to 5.09 mV RMS at +/-20 V; worst
+      block span 42.5 mV. The gate is 23.5x above that, and still a factor of
+      two below a real logic-level swing. Without it, an adaptive threshold on
+      noise only returns ~9100 edges/block: 547752 RPM.
+    - **Adaptive thresholding is the default, and the reason is electrical.**
+      AC coupling removes the mean, and on a pulse train the mean is the duty
+      cycle. On the bench at 30 Hz, a fixed threshold at the correct DC
+      midpoint detected nothing above ~55% duty (the AC-coupled signal
+      maximum falls to 980 mV at 70% duty, 750 mV at 85%). Adaptive returned
+      1801.7 RPM in all ten duty/coupling combinations. The fixed-threshold
+      failure gives no error and reads as a stopped machine.
+    - **RPM accuracy: +/-0.2% of reading**, 300 to 10200 RPM at 1 pulse/rev
+      (worst case 0.164% at 300 RPM, 0.040% at 10200). The earlier simulated
+      claim of a fixed +/-0.2 RPM is not true on hardware: the error
+      increases with speed.
+    - **`SPEED_DRIFT_MAX_PCT = 1.0`**: the speed change in one block above
+      which a frame is `unsteady`. Bearing analysis is done at steady state,
+      so a smeared spectrum is rejected, not corrected. This replaces an
+      order-resampling path. It is the only constant in the module that is
+      still set from simulation, not from the bench.
 
-- **Tachometer tab, and selectable rotation-rate units** — step 9.
-  - A **Tachometer tab** in the config dialog, which *owns* the tach role: channel claim,
-    polarity, threshold mode and level, minimum amplitude, reflector size, rate units, a
-    live waveform with the threshold drawn and detected edges marked, and RPM / quality /
-    duty / span readouts. Tach setup is a commissioning activity done once per
-    installation, so the diagnostic view belongs where the settings are — adjust, watch
-    the edges move, confirm the rate, all on one screen. Closing the dialog leaves only
-    the derivatives, which solves "hide the waveform once it works" structurally rather
-    than with a toggle the operator has to manage. (Verified first that a dearpygui modal
-    does not block the render loop: 60/60 frames advanced with a modal shown.)
-  - The waveform is **aligned so the first detected pulse sits at t = 0**. A free-running
-    trace jitters by up to a whole period between frames; aligned, successive frames
-    overlay and a threshold adjustment is legible. X limits span two periods either side.
-  - The **Channels tab no longer has a role control.** A claimed channel is shown
-    read-only in its summary line — its settings there are meaningless, since a pulse
-    train has no sensor, engineering unit or amplitude mode, and two screens able to set
-    the role could disagree.
-  - **Rotation-rate units**: RPM, Hz, rad/s (ω), deg/s — `rad/s` *is* angular frequency,
-    so it is one option labelled with both names, not two. The unit is rendered wherever
-    a rate appears: 30 is a plausible RPM, a plausible Hz and a plausible rad/s, and they
-    differ by factors of 60 and 6.28. It is a **display preference only** — `TachResult`
-    and every stored file stay in RPM, because a number whose meaning depends on a
-    setting is the class of defect this codebase keeps finding.
-  - The slowest measurable shaft for the current bin size is shown as **information, not
-    validation**: an operator must be able to configure the tach against a machine that
-    is not running, using their best guess.
+- **Tachometer tab, and selectable rotation-rate units**: step 9.
+  - A **Tachometer tab** in the config dialog. It *owns* the tach role:
+    channel claim, polarity, threshold mode and level, minimum amplitude,
+    reflector size, rate units, a live waveform with the threshold and the
+    detected edges, and RPM / quality / duty / span readouts. Tach setup is
+    done once for each installation, at commissioning. Thus the diagnostic
+    view belongs with the settings: adjust, watch the edges move and confirm
+    the rate on one screen. When the dialog closes, only the derived values
+    stay. This removes the need to "hide the waveform once it works" by the
+    structure, not by a toggle that the operator must manage. (Verified first
+    that a dearpygui modal does not block the render loop: 60/60 frames
+    advanced with a modal shown.)
+  - The waveform is **aligned so that the first detected pulse is at
+    t = 0**. A free-running trace jitters by up to a whole period between
+    frames. Aligned, successive frames overlay, and the effect of a threshold
+    change is clear. The X limits span two periods on each side.
+  - The **Channels tab has no role control now.** A claimed channel shows
+    read-only in its summary line. Its settings there have no meaning: a pulse
+    train has no sensor, engineering unit or amplitude mode. Two screens that
+    can both set the role could disagree.
+  - **Rotation-rate units**: RPM, Hz, rad/s (ω), deg/s. `rad/s` *is* angular
+    frequency, so it is one option with both names, not two. The unit shows
+    wherever a rate shows: 30 is a plausible RPM, Hz and rad/s, and they
+    differ by factors of 60 and 6.28. It is a **display preference only**.
+    `TachResult` and each stored file stay in RPM, because a number whose
+    meaning depends on a setting is the class of defect that this codebase
+    finds again and again.
+  - The slowest shaft that can be measured at the current bin size shows as
+    **information, not validation**. An operator must be able to configure
+    the tach on a machine that is not running, with a best estimate.
 
-- **1× shaft-rate marker and level** — the first consumer of shaft speed in the display,
-  and deliberately the simplest: a vertical line on the spectrum at 1×, and the level
-  beside it on each channel result card above the peaks table. No resampling, no
-  interpolation, no second axis type.
-  - A line's frequency is only diagnostic relative to 1×: unbalance sits on it,
-    misalignment on 2×, and a bearing tone characteristically *between* orders.
-  - `ChannelResult.one_x_hz` / `.one_x_amplitude`. 1× rarely lands on a bin centre, so the
-    level is the **larger of the two bins straddling it** — which recovers most of what a
-    strictly-nearest-bin reading loses to the offset, and keeps the rule consistent with
-    how peaks are already reported.
-  - Both are **hidden, not zeroed**, when there is no tachometer reading, and the
-    amplitude is `None` when 1× falls outside the displayed band: F_max can sit below the
-    shaft rate on a fast machine, and reporting the edge bin would be a wrong number
-    rather than a missing one.
+- **1× shaft-rate marker and level**: the first use of shaft speed in the
+  display, and intentionally the simplest: a vertical line on the spectrum at
+  1×, and the level beside it on each channel result card, above the peaks
+  table. No resampling, no interpolation, no second axis type.
+  - The frequency of a line is diagnostic only relative to 1×: unbalance is
+    on it, misalignment on 2×, and a bearing tone typically *between* orders.
+  - `ChannelResult.one_x_hz` / `.one_x_amplitude`. 1× is rarely at a bin
+    centre, so the level is the **larger of the two bins on each side of
+    it**. This recovers most of what a strict nearest-bin reading loses to
+    the offset, and agrees with how peaks are reported.
+  - Both are **hidden, not zeroed**, when there is no tachometer reading. The
+    amplitude is `None` when 1× is outside the displayed band: F_max can be
+    below the shaft rate on a fast machine, and the edge bin would be a wrong
+    number, not a missing one.
 
-- **Duty cycle and pulse widths** on `TachResult`, persisted in v5. `detect_edges` found
-  only the active edge, so pulse width — and therefore duty — was not captured at all.
-  `detect_pulses()` now returns both edges from the same Schmitt state, so the two can
-  never disagree about where the signal was high, and `pulse_widths()` pairs them.
-  - A pulse straddling either block boundary is **dropped, not truncated**: its remainder
-    is a function of where the block happened to start, so including it would bias duty
-    by something that has nothing to do with the reflector.
-  - Duty is measured against the *pulse* period rather than the shaft period, because a
-    reflector subtends a fraction of the interval between pulses whenever there is more
-    than one per turn.
-  - Under `falling` polarity it measures the notch, which is what a keyphasor's key
-    actually subtends.
-  - This is the prerequisite for surface velocity (R46): the reflector subtends `duty` of
-    a revolution, so circumference is `L/duty` and `v = f·L/duty` — the tape doubles as a
-    shaft-diameter measurement. Rolled into v5 rather than a new file version, since the
-    format has not shipped and no real-world file contains a `TachResult` yet.
+- **Duty cycle and pulse widths** on `TachResult`, stored in v5.
+  `detect_edges` found only the active edge, so it did not capture pulse
+  width, and thus not duty. Now `detect_pulses()` returns both edges from the
+  same Schmitt state, so the two cannot disagree about where the signal was
+  high. `pulse_widths()` pairs them.
+  - A pulse across either block boundary is **dropped, not truncated**. Its
+    remainder depends on where the block started, so it would bias duty by an
+    amount that has no relation to the reflector.
+  - Duty is measured against the *pulse* period, not the shaft period: with
+    more than one pulse per turn, a reflector covers a fraction of the
+    interval between pulses.
+  - With `falling` polarity it measures the notch, which is what the key of a
+    keyphasor covers.
+  - This is necessary for surface velocity (R46). The reflector covers `duty`
+    of a revolution, so the circumference is `L/duty` and `v = f·L/duty`: the
+    tape also measures the shaft diameter. Added to v5, not to a new file
+    version, because the format has not shipped and no real file contains a
+    `TachResult` yet.
 
-- **`RmsThresholdHook` default 10% → 50%** (decision D-1). Not a tachometer change — a
-  correction to a shipped default that the speed analysis exposed. For a rigid rotor
-  below its first critical the 1× velocity goes as ω³:
+- **`RmsThresholdHook` default 10% → 50%.** This is not a tachometer change.
+  It corrects a shipped default that the speed analysis showed to be wrong.
+  For a rigid rotor below its first critical speed, the 1× velocity goes as
+  ω³:
 
   | speed deviation | 1× velocity change |
   |---|---|
@@ -738,387 +865,403 @@ mean that if the app still died there would still be nothing to read.
   | 5.0% | +15.8% |
   | 10.0% | +33.1% |
 
-  A 3.2% speed change crossed the threshold on its own, and a typical induction motor's
-  ~2% no-load-to-full-load slip swing shows up as a +6% rise on a machine whose condition
-  has not changed. On any VFD or load-following machine the detector was measuring load.
-  50% is the level at which a broadband RMS rise means something without a speed
-  reference. Where a tachometer is fitted the speed gate is the more certain
-  discriminator and this can be tightened per installation; where one is not — common,
-  and often impractical to retrofit — detection has to come from envelope techniques or
-  fixed thresholds instead. Changed in all five places that carried it (the hook, the
-  config template, and both `_build_anomaly_hook` copies plus the headless summary), so
+  A 3.2% speed change alone crossed the threshold. The ~2% no-load-to-full-load
+  slip change of a typical induction motor shows as a +6% rise on a machine
+  whose condition did not change. On each VFD or load-following machine, the
+  detector measured load. At 50%, a broadband RMS rise has a meaning without
+  a speed reference. Where a tachometer is fitted, the speed gate is the more
+  certain discriminator, and the threshold can be tighter for that
+  installation. Where there is none (common, and often not practical to
+  retrofit), detection must come from envelope techniques or fixed
+  thresholds. Changed in all five places that had it: the hook, the config
+  template, both `_build_anomaly_hook` copies and the headless summary. Thus
   `tests/test_anomaly_hook_build.py` still passes.
 
-- **Monitor sessions record shaft speed, `session.h5` `_FILE_VERSION` 5 → 6** — step 8.
-  Every interval capture and burst now carries `rpm` and `speed_ok`. Without it a monitor
-  trend point cannot be compared with another taken at a different load — the same
-  argument the declared band already makes for the overall, and the prerequisite for any
-  later order analysis.
-  - A **scalar**, not a `{ch: rpm}` map: this instrument supports one tachometer on one
-    shaft (multi-shaft needs order ratios and a machine-train model, a different
-    feature), so every result in a frame carries the same reading. NaN means no reading,
-    never 0.0.
-  - `MonitorController._compute_pretrigger_overalls()` now **skips tachometer channels**.
-    It reads `overall_ampl_by_integration_order`, which is never populated on a channel
-    `process_sample` never runs on — so a tach was contributing a literal `0.0`, and
-    `load_monitor_session()` then rebuilt a trend line pinned at zero for it.
+- **Monitor sessions record shaft speed; `session.h5` `_FILE_VERSION` 5 → 6**:
+  step 8. Each interval capture and burst now has `rpm` and `speed_ok`.
+  Without them, a monitor trend point cannot be compared with another point
+  at a different load. The declared band uses the same argument for the
+  overall. It is also necessary for a later order analysis.
+  - A **scalar**, not a `{ch: rpm}` map. This instrument supports one
+    tachometer on one shaft (more shafts need order ratios and a
+    machine-train model, which is a different feature). Thus each result in a
+    frame has the same reading. NaN means no reading, never 0.0.
+  - `MonitorController._compute_pretrigger_overalls()` now **skips
+    tachometer channels**. It reads `overall_ampl_by_integration_order`,
+    which is never set on a channel that `process_sample` does not process.
+    Thus a tachometer gave a literal `0.0`, and `load_monitor_session()` then
+    made a trend line at zero for it.
 
-- **`rev80-headless` refuses tachometer-role channels** — step 7. Tachometry is out of
-  scope there (tracked as R44), but out of scope has to mean "does not do it" rather than
-  "does it wrong". Headless reads the same `devices/*.yaml` the GUI writes, so a channel
-  the operator configured as a tachometer would otherwise be enabled, high-passed, given
-  an overall, trended and fed to the anomaly hooks as vibration. Measured on a 5% duty
-  pulse train at 1800 RPM through the real `process_sample`: overall 1514.9 mV, crest
-  5.00, **kurtosis 15.94** and 63 spectral peaks — an analyst reviewing that unattended
-  session concludes a bearing is failing badly. It also drifts on nothing: a tach LED
-  ageing from 5.0 V to 4.5 V moves that channel's overall by exactly −10%, the shipped
-  `RmsThresholdHook` threshold, on three consecutive frames. The refusal logs at INFO
-  rather than passing silently. The per-channel config loading moved out of `run()` into
-  `_apply_channel_config()` in the process.
+- **`rev80-headless` refuses tachometer channels**: step 7. Tachometry is out
+  of scope there (tracked as R44), but "out of scope" must mean "does not do
+  it", not "does it wrong". Headless reads the same `devices/*.yaml` that the
+  GUI writes. Without the refusal, a channel that the operator configured as
+  a tachometer would be enabled, high-passed, given an overall, trended and
+  given to the anomaly hooks as vibration. Measured on a 5% duty pulse train
+  at 1800 RPM through the real `process_sample`: overall 1514.9 mV, crest
+  5.00, **kurtosis 15.94** and 63 spectral peaks. An analyst who reads that
+  unattended session concludes that a bearing is badly damaged. The value
+  also drifts with no cause on the machine: a tach LED that ages from 5.0 V
+  to 4.5 V moves the overall of that channel by exactly −10%, the shipped
+  `RmsThresholdHook` threshold, on three consecutive frames. The refusal logs
+  at INFO and is not silent. The per-channel config load moved out of `run()`
+  into `_apply_channel_config()`.
+  - Superseded by feature/tachometer — headless runs a tachometer (R44)
+    (2026-09-21).
 
-- **Speed gating** — step 6. A frame captured outside a declared shaft-speed window is
-  still measured, displayed and stored, but is excluded from trending, baseline
-  adaptation and alarm evaluation, because its amplitude is *correct* and simply not
-  comparable. For a rigid rotor below its first critical the 1× velocity goes as ω³, so a
-  **3.2% speed change alone moves the overall 10%** — the shipped `RmsThresholdHook`
-  default. On any VFD or load-following machine the anomaly detector has been measuring
-  load rather than condition.
-  - `ChannelResult.rpm` / `.speed_ok`; `speed_ok` defaults `True` so every existing
-    construction site, fixture and reconstructed result is untouched.
-  - `DataCollector.speed_ok()` is the single place the gate is evaluated, and
-    `monitor/anomaly.valid_results()` the single place it is applied — a seam that
-    already existed to answer exactly this question and is already called by every hook
-    and both baseline-adaptation paths.
-  - **Fails closed** on a missing reading: if the tach dies mid-session (cable pulled,
-    tape peeled, LED aged out), treating "no speed reading" as "speed is fine" would
-    leave an unattended monitor alarming on load swings it can no longer see — the exact
-    false-alarm mechanism the gate exists to remove.
-  - `speed_gate_rpm = None` latches the reference from the first frame that actually has
-    one; an unreadable frame cannot latch.
-  - **`_build_anomaly_hook` is untouched in both copies** and
-    `tests/test_anomaly_hook_build.py` passes unmodified. That is the check that the seam
-    was chosen correctly: adding the gate as a hook parameter would have meant editing
-    both copies, which is what audit H-01 exists to prevent.
+- **Speed gate**: step 6. A frame captured outside a declared shaft-speed
+  window is still measured, displayed and stored. It is excluded from trend,
+  baseline adaptation and alarm evaluation, because its amplitude is
+  *correct* but not comparable. For a rigid rotor below its first critical
+  speed, the 1× velocity goes as ω³, so a **3.2% speed change alone moves the
+  overall by 10%**: the shipped `RmsThresholdHook` default. On each VFD or
+  load-following machine, the anomaly detector measured load, not condition.
+  - `ChannelResult.rpm` / `.speed_ok`. `speed_ok` is `True` by default, so no
+    existing construction site, fixture or reconstructed result changes.
+  - `DataCollector.speed_ok()` is the single place that evaluates the gate,
+    and `monitor/anomaly.valid_results()` the single place that applies it.
+    That function already existed to answer this question, and each hook and
+    both baseline-adaptation paths already call it.
+  - **Fails closed** on a missing reading. If the tach stops in a session
+    (cable pulled, tape off, LED aged), "no speed reading" treated as "speed
+    is correct" would make an unattended monitor alarm on load changes that
+    it cannot see. That is the false-alarm mechanism that the gate exists to
+    remove.
+  - `speed_gate_rpm = None` latches the reference from the first frame that
+    has a reading. A frame with no reading cannot latch.
+  - **`_build_anomaly_hook` is not changed in either copy**, and
+    `tests/test_anomaly_hook_build.py` passes with no change. That shows that
+    the right place was chosen: the gate as a hook parameter would need a
+    change to both copies, which is what [H-01](audit-202608.md#h-01) exists
+    to prevent.
 
-- **Tachometer persistence, measurement file `_FILE_VERSION` 4 → 5** — step 5.
-  - A tach channel stores **`edge_times`, not a `data` waveform** (decision D-2): ~30
-    float64 per second against 41666, a factor of ~1400, which matters most on the long
-    unattended sessions where a tach channel would otherwise dominate the file. What is
-    traded away is re-thresholding after capture; what is kept is everything that makes
-    RPM a *view* on stored data — `pulses_per_rev` is a post-hoc divisor on the
-    intervals, and a shaft-angle vector, if ever wanted, is an interpolation of the same
-    edge times. Readers must branch on the presence of `data` rather than assume it.
-  - `/metadata/channels/{ch}` gains `role` and the `tach_*` calibration that produced the
-    stored reading; `/frames/{i}/{ch}` gains `rpm`, `quality`, `n_edges`,
-    `interval_spread` and `speed_drift_pct` as a cross-check; `/tach_trend/{ch}` holds
-    the RPM history.
-  - **A newer file version now warns instead of being misread.** An older build reading a
-    v5 file takes its most permissive branch and restores a tach as an ordinary vibration
-    channel, computing a bogus overall on a square wave and trending it. The guard is
-    worth having independently of the tachometer.
-  - The frame cache stays homogeneous — every entry is still a `VibeSample`, carrying an
-    empty waveform and a populated `TachResult`, because dozens of consumers index it.
-  - `reprocess_session_trend()` skips tach channels, which would otherwise get a
-    fabricated amplitude trend pinned at zero (`overall_ampl_by_integration_order` is
-    never populated on a channel `process_sample` never runs on). Deferred here from
-    step 4 because it needs the role restored from file metadata to know what to skip.
+- **Tachometer persistence; measurement file `_FILE_VERSION` 4 → 5**: step 5.
+  - A tachometer channel stores **`edge_times`, not a `data` waveform**: ~30
+    float64 per second against 41666, a factor of ~1400. This is most
+    important in long unattended sessions, where a tachometer channel would
+    otherwise be most of the file. The cost is that the signal cannot be
+    thresholded again after capture. What stays is all that makes RPM a
+    *view* on stored data: `pulses_per_rev` is a divisor on the intervals
+    after capture, and a shaft-angle vector, if necessary, is an
+    interpolation of the same edge times. Readers must branch on the presence
+    of `data`, not assume it.
+    - Correction: 41666 is the raw rate of that time. At the 25600 Hz raw
+      rate the factor is approximately 850.
+  - `/metadata/channels/{ch}` gets `role` and the `tach_*` calibration that
+    made the stored reading. `/frames/{i}/{ch}` gets `rpm`, `quality`,
+    `n_edges`, `interval_spread` and `speed_drift_pct` as a cross-check.
+    `/tach_trend/{ch}` holds the RPM history.
+  - **A newer file version now gives a warning, not a wrong reading.** An
+    older build that reads a v5 file takes its most permissive branch and
+    restores a tachometer as a usual vibration channel. It then calculates a
+    false overall on a square wave and trends it. The guard is useful also
+    without the tachometer.
+  - The frame cache stays homogeneous. Each entry is still a `VibeSample`,
+    with an empty waveform and a populated `TachResult`, because many
+    consumers index it.
+  - `reprocess_session_trend()` skips tachometer channels. Otherwise they get
+    a false amplitude trend at zero (`overall_ampl_by_integration_order` is
+    never set on a channel that `process_sample` does not process). This
+    moved here from step 4, because it needs the role from the file metadata
+    to know what to skip.
 
-- **Tachometer channels wired into `DataCollector`** — step 4.
-  - `receive_data()` branches on role. A tachometer channel **skips the high-pass
-    entirely** and is edge-detected in its place. Measured: the filter's overshoot on
-    each falling edge re-crosses the threshold, turning 31 edges into 108 at 15% duty —
-    an 1800 RPM shaft reads 6270. Detection runs here for the same reason the filter
-    does: this is the one place a block arrives exactly once and in stream order.
-  - `tach_settings` / `set_tach_settings()` / `tach_settings_for()`, keyed like
-    `scope_sensors`; `tach_for()` recomputes when calibration changed after capture, so
-    RPM stays a *view* on stored data rather than a value baked in at capture time.
-  - `current_rpm()` — the displayed frame's shaft speed, or `None`. Never `0.0`.
-  - `process_samples()` now iterates `config.vibration_channels`. A tachometer produces
-    no `ChannelResult` at all, which is what stops kurtosis 15.94 appearing on a channel
-    card for a square wave.
-  - `tach_trend` / `get_rpm_trend()`, kept separate from `trend` because shaft speed must
-    never pass through `UNIT_TO_SI`, `amplitude_scale` or `integration_steps` — the same
-    reason crest factor sits beside `orders` rather than as a column of it.
-    `get_trend_for_display()` and `init_trend_channels()` are partitioned to match.
-  - `eu_scaled_raw()` **raises** on a tachometer channel. With no `ScopeSensor` it would
-    otherwise divide by a sensitivity of 1.0 and hand back raw mV labelled as engineering
-    units — the classic field error, and one that looks entirely reasonable on screen.
-  - `reset_channel_config()` prunes `channel_roles` and `tach_settings`, so moving from a
-    4-channel scope to a 2-channel one cannot leave channel 3's tach role attached to an
-    index the new device uses for vibration.
-  - `VibeSample.tach` / `_tach_config_key`, cached like `psd_mv` and `filtered_mv`.
+- **Tachometer channels connected to `DataCollector`**: step 4.
+  - `receive_data()` branches on the role. A tachometer channel **skips the
+    high-pass** and is edge-detected in its place. Measured: the filter
+    overshoot on each falling edge crosses the threshold again, which turns
+    31 edges into 108 at 15% duty, and an 1800 RPM shaft reads 6270.
+    Detection runs here for the same reason as the filter: this is the one
+    place where a block arrives exactly once and in stream order.
+  - `tach_settings` / `set_tach_settings()` / `tach_settings_for()`, keyed
+    like `scope_sensors`. `tach_for()` calculates again when the calibration
+    changed after capture, so RPM stays a *view* on stored data, not a value
+    fixed at capture.
+  - `current_rpm()`: the shaft speed of the displayed frame, or `None`. Never
+    `0.0`.
+  - `process_samples()` now iterates `config.vibration_channels`. A
+    tachometer gives no `ChannelResult`, so kurtosis 15.94 for a square wave
+    does not show on a channel card.
+  - `tach_trend` / `get_rpm_trend()`, separate from `trend`, because shaft
+    speed must never go through `UNIT_TO_SI`, `amplitude_scale` or
+    `integration_steps`. For the same reason, crest factor is beside `orders`
+    and not a column of it. `get_trend_for_display()` and
+    `init_trend_channels()` are partitioned to match.
+  - `eu_scaled_raw()` **raises** on a tachometer channel. With no
+    `ScopeSensor` it would divide by a sensitivity of 1.0 and return raw mV
+    with an engineering-unit label. That is the classic field error, and it
+    looks correct on screen.
+  - `reset_channel_config()` prunes `channel_roles` and `tach_settings`. Thus
+    a change from a 4-channel scope to a 2-channel scope cannot leave the
+    tach role of channel 3 on an index that the new device uses for
+    vibration.
+  - `VibeSample.tach` / `_tach_config_key`, cached like `psd_mv` and
+    `filtered_mv`.
 
-- **Simulated tachometer signals and per-channel simulation sources** — step 3.
-  `SimulatedSensor._sample()` previously tiled one generated signal across every
-  enabled channel, which made a simulated tachometer impossible: the tach input would
-  carry the same accelerometer waveform as the vibration input, so tach had no offline
-  CI at all.
-  - `SimulatedSensor.channel_sources` — `{ch: (fn, *args)}` per-channel overrides. Empty
-    keeps the tiled behaviour **byte-identical**, so no existing test or caller moves.
-  - `GenerateTachPulse()` — a pulse train in mV with a **finite rise** (1.5 samples by
-    default). An ideal rectangle is a degenerate stimulus: no sample lands in the
-    detector's hysteresis band and sub-sample interpolation has nothing to interpolate,
-    so generating one would have CI exercise a regime the instrument never sees. Real
-    edges arrive with about one intermediate sample, measured on a 4424A.
-  - `GenerateMachineWithTach()` — a vibration channel and a tach channel from the *same*
-    shaft, sharing `running_rate` and an explicit shaft phase so the tach edge marks the
-    angular position where the load zone peaks. The coherence is the whole point: a tach
-    not locked to the vibration's own shaft rate cannot validate anything, because a
-    broken tachometer and a correct one both return a plausible number against an
-    unrelated signal — the same argument this module already makes about pure cosines
-    being unable to validate envelope analysis. Pinned by a test asserting the measured
-    RPM matches the 1× peak found in the vibration channel's own spectrum.
-  - `machine_with_tach_sources()` — the streaming counterpart, so the two rates cannot be
-    set independently and drift apart.
-  - `GenerateBearingVibration()` gains an optional `shaft_phase`; when omitted it is drawn
-    from the same rng as before, leaving the existing draw order and output unchanged.
+- **Simulated tachometer signals and per-channel simulation sources**: step
+  3. Before this change, `SimulatedSensor._sample()` copied one generated
+  signal to each enabled channel. Thus a simulated tachometer was not
+  possible: the tach input had the same accelerometer waveform as the
+  vibration input, and the tachometer had no offline CI.
+  - `SimulatedSensor.channel_sources`: `{ch: (fn, *args)}` overrides for each
+    channel. When it is empty, the output is **byte-identical** to the copied
+    signal, so no existing test or caller changes.
+  - `GenerateTachPulse()`: a pulse train in mV with a **finite rise** (1.5
+    samples by default). An ideal rectangle is a degenerate stimulus: no
+    sample is in the hysteresis band of the detector, and sub-sample
+    interpolation has nothing to interpolate. CI would then test a regime that
+    the instrument never sees. Real edges have approximately one
+    intermediate sample, measured on a 4424A.
+  - `GenerateMachineWithTach()`: a vibration channel and a tach channel from
+    the *same* shaft. They share `running_rate` and an explicit shaft phase,
+    so the tach edge marks the angular position where the load zone is
+    maximum. This coherence is the purpose. A tach that is not locked to the
+    shaft rate of the vibration cannot validate anything: a broken tachometer
+    and a correct one both return a plausible number against an unrelated
+    signal. This module makes the same argument about pure cosines and
+    envelope analysis. A test asserts that the measured RPM agrees with the
+    1× peak in the spectrum of the vibration channel.
+  - `machine_with_tach_sources()`: the streaming counterpart, so the two
+    rates cannot be set independently and drift apart.
+  - `GenerateBearingVibration()` gets an optional `shaft_phase`. When it is
+    not given, it comes from the same rng as before, so the draw order and
+    the output do not change.
 
 #### Changed
-- **Tachometer support is specified around 1 pulse/rev** (decision D-6). The UI will
-  offer no pulses/rev control: one reflective tape or one keyway is not merely the
-  common installation but the accurate one. At 1 ppr every interval is exactly one
-  shaft revolution, so encoder division error and once-per-rev speed modulation cancel
-  *inside each interval by construction*; above 1 ppr they cancel only after a whole
-  revolution has been observed, and extra pulses buy nothing before that. Measured, a
-  60-line encoder with ±0.05° division error and 0.5% once-per-rev modulation over 40
-  random start phases: 0.580% error at 0.05 rev, 0.344% at 0.25 rev, **0.091% at 1.00
-  rev and flat thereafter out to 20 rev**. The same test at 1 ppr gives **0.0013%** from
-  three edges — 70× better than 60 ppr reaches at any window length.
-  - `pulses_per_rev` and the divide are retained so the capability can be restored, and
-    a value other than 1 is **honoured with a warning, never silently clamped** —
-    clamping would report an integer multiple of the true speed with nothing on screen
-    to say so.
-  - Consequently there is **no minimum-revolutions constant and no new user config**:
-    `MIN_EDGES = 3` already is two whole revolutions at 1 ppr.
-  - Rejected: inferring ppr from multi-modal pulse periods. Unequally spaced reflectors
-    are already flagged `inconsistent` by `interval_spread` once the two gaps differ by
-    more than ~90° of shaft rotation, and a near-evenly-spaced pair reads an exact
-    integer multiple — the most obvious possible error to a technician who knows the
-    machine.
-- The published slowest-measurable-shaft figures are **3× higher than first stated**.
-  Guaranteeing three rising edges regardless of start phase needs a block spanning three
-  periods, so the floor is `180/T_block` RPM: 45 RPM at 0.25 Hz bins, 180 at 1 Hz, and
-  **1800 at 10 Hz** — where nothing below 1800 RPM can be read at all. That is the one
-  case where a legitimate setup returns no reading, and the GUI must say so.
+- **Tachometer support is specified around 1 pulse/rev.** One pulse per
+  revolution is the default and the recommended configuration. The UI will
+  offer no pulses/rev control. One reflective tape or one keyway is the
+  common installation, and it is also the accurate one. At 1 ppr each
+  interval is exactly one shaft revolution, so encoder division error and
+  once-per-rev speed modulation cancel *inside each interval, by
+  construction*. Above 1 ppr they cancel only after a whole revolution, and
+  more pulses give nothing before that. Measured with a 60-line encoder with
+  ±0.05° division error and 0.5% once-per-rev modulation, over 40 random
+  start phases: 0.580% error at 0.05 rev, 0.344% at 0.25 rev, **0.091% at
+  1.00 rev and flat after that, to 20 rev**. The same test at 1 ppr gives
+  **0.0013%** from three edges: 70× better than 60 ppr gets at any window
+  length.
+  - `pulses_per_rev` and the divide stay, so the capability can come back. A
+    value other than 1 is **used, with a warning, and never clamped without a
+    notice**. A clamp would report an integer multiple of the true speed with
+    nothing on screen to show it.
+  - Thus there is **no minimum-revolutions constant and no new user
+    setting**: `MIN_EDGES = 3` already is two whole revolutions at 1 ppr.
+  - Rejected: to infer ppr from multi-modal pulse periods. `interval_spread`
+    already flags unequally spaced reflectors as `inconsistent` when the two
+    gaps differ by more than ~90° of shaft rotation. A pair that is almost
+    evenly spaced reads an exact integer multiple, which is the most obvious
+    error for a technician who knows the machine.
+  - Correction: feature/tachometer — configurable pulses/rev (2026-09-18)
+    adds a pulses/rev control and replaces `MIN_EDGES` with `MIN_REVS` and
+    `min_edges_for(ppr)`.
+- The published figures for the slowest shaft that can be measured are **3×
+  higher than first stated**. Three rising edges at any start phase need a
+  block that spans three periods, so the floor is `180/T_block` RPM: 45 RPM
+  at 0.25 Hz bins, 180 at 1 Hz, and **1800 at 10 Hz**. At 10 Hz no shaft
+  below 1800 RPM can be read. That is the one case where a correct setup
+  returns no reading, and the GUI must say so.
 
 #### Fixed
-- **`AcquisitionSettings.copy()` carries `channel_roles`.** The per-channel
-  dicts live in the `channels` config section, so unlike the scalars they are
-  outside the `to_dict`/`from_dict` round trip and are enumerated by name in an
-  explicit tuple. A sixth dict added without extending that tuple is **audit
-  H-08 again**, and for roles the silent result is a copy in which every
-  tachometer has reverted to vibration — the pipeline then high-passes a pulse
-  train and reports kurtosis ~16 on it. Pinned by a revert-checked test.
+- **`AcquisitionSettings.copy()` copies `channel_roles`.** The per-channel
+  dicts are in the `channels` config section. Thus, unlike the scalars, they
+  are outside the `to_dict`/`from_dict` round trip, and an explicit tuple
+  lists them by name. A sixth dict added without an edit of that tuple is
+  **[H-08](audit-202608.md#h-08) again**. For roles, the result is a copy in
+  which each tachometer is vibration again, with no notice. The pipeline then
+  high-passes a pulse train and reports kurtosis ~16 on it. A revert-checked
+  test pins it.
 
-#### Measured
-Constants carry the table that justifies them, per house convention. Verified
-on a PicoScope 4424A (serial 12462/0067) with AWG loopback on channel A.
-
-- **The reported sample rate is 41666.5 Hz, not `RAW_SAMPLERATE_HZ` (40000).**
-  The driver rounds the sample interval to 12 us, so the true rate is
-  83333/2 Hz. Any RPM computed from the constant reads **4.166% high on
-  hardware and is exactly right in CI** — the worst combination a defect can
-  have. `tach` takes the rate from the sample; a test pins it.
-- **`MIN_PULSE_AMPLITUDE_MV = 1000.0`** — measured front-end noise with the AWG
-  idle: 0.37 mV RMS at +/-1 V rising to 5.09 mV RMS at +/-20 V, worst block
-  span 42.5 mV. The gate clears that by 23.5x and still sits a factor of two
-  below any real logic-level swing. Without it an adaptive threshold on pure
-  noise returns ~9100 edges/block — 547752 RPM.
-- **Adaptive thresholding is the default, and the reason is electrical.** AC
-  coupling removes the mean, and on a pulse train the mean is the duty cycle.
-  On the bench at 30 Hz, a fixed threshold placed at the correct DC midpoint
-  detected nothing at all above ~55% duty (AC-coupled signal maximum falls to
-  980 mV at 70% duty, 750 mV at 85%), while adaptive returned 1801.7 RPM in
-  all ten duty/coupling combinations. The fixed-threshold failure is silent
-  and reads as a stopped machine.
-- **RPM accuracy: +/-0.2% of reading**, 300 to 10200 RPM at 1 pulse/rev
-  (worst case 0.164% at 300 RPM, 0.040% at 10200). The earlier simulated claim
-  of a fixed +/-0.2 RPM does not survive contact with hardware — error scales
-  with speed.
-- **`SPEED_DRIFT_MAX_PCT = 1.0`** — within-block speed change above which a
-  frame is flagged `unsteady`. Bearing analysis is performed at steady state,
-  so a smeared spectrum is rejected rather than corrected; this is what
-  replaces an order-resampling path. The only constant in the module still set
-  from simulation rather than the bench.
-
-#### Notes
-- Sub-sample interpolation only works on a **band-limited** edge. On an ideal
-  rectangle both straddling samples sit at the rails and the estimator
-  degenerates to nearest-sample quantisation. Real edges are band-limited by
-  the mandatory anti-alias filter upstream, which is why bench accuracy beats
-  what a synthetic square wave achieves — and why accuracy tests must push
-  their signals through `antialias_decimate`.
+#### Notes for the next person
+- Sub-sample interpolation works only on a **band-limited** edge. On an ideal
+  rectangle both samples on each side of the edge are at the rails, and the
+  estimator becomes nearest-sample quantisation. The mandatory anti-alias
+  filter upstream band-limits real edges. That is why bench accuracy is
+  better than the accuracy on a synthetic square wave, and why accuracy tests
+  must send their signals through `antialias_decimate`.
 - All 44 tests in `tests/test_tach.py` were revert-checked against 11
-  invariants. The first pass found **5 of them pinned by nothing** — the
+  invariants. The first pass found **5 of them pinned by nothing**: the
   min-span gate inside `detect_edges`, hysteresis, the Schmitt low-state
-  requirement, sub-sample interpolation, and polarity inversion could each be
-  deleted with the suite still green. All five were tests passing for the
-  wrong reason, and the cause was one shared assumption: an *ideal rectangle*
-  transitions in zero time, so no sample ever lands in the hysteresis band and
-  interpolation has nothing to interpolate, while rate alone is
-  polarity-invariant so comparing rates proves nothing about which end of the
-  pulse is being timed. Fixed by adding a band-limited pulse generator
-  (`make_ramped_pulses`) and asserting edge *instants* rather than only rates.
-  All 11 invariants are now pinned.
+  requirement, sub-sample interpolation and polarity inversion. Each could be
+  deleted and the suite stayed green. All five were tests that passed for the
+  wrong reason, and one shared assumption caused them. An *ideal rectangle*
+  changes state in zero time, so no sample is in the hysteresis band and
+  interpolation has nothing to interpolate. Also, the rate does not depend on
+  polarity, so a comparison of rates shows nothing about which end of the
+  pulse is timed. The fix: a band-limited pulse generator
+  (`make_ramped_pulses`), and assertions on edge *instants*, not only on
+  rates. All 11 invariants are now pinned.
 
 ### hotfix/RAW_SAMPLERATE (2026-09-09)
 
 #### Fixed
-- **The Acquisition dialog advertised a sample rate the instrument never produced.**
-  `RAW_SAMPLERATE_HZ` was lowered to relieve GUI lag while streaming 4 channels, which
-  exposed a latent defect in the display-rate derivation. `samplerate` was
-  `nextpow2(2.56 * maxfreq)` — rounding *up* to a power of two, so it overstated the
-  rate by up to 2x. That was invisible only while `raw_samplerate` was large enough to
-  absorb the overshoot. Measured, at the 10 kHz preset against 25.6 kHz of acquisition:
+- **The Acquisition dialog showed a sample rate that the instrument never
+  produced.** `RAW_SAMPLERATE_HZ` was made lower to decrease GUI lag with 4
+  channels streaming. This showed a latent defect in the display-rate
+  derivation. `samplerate` was `nextpow2(2.56 * maxfreq)`: it rounded *up* to
+  a power of two, so it overstated the rate by up to 2x. The defect was not
+  visible while `raw_samplerate` was large enough to absorb the overshoot.
+  Measured at the 10 kHz preset against 25.6 kHz of acquisition:
 
   | | dialog showed | pipeline delivered |
   |---|---|---|
   | sample rate | 32.8 kS/s | 25.6 kS/s |
   | lines | 10001 | computed from a rate that did not exist |
 
-  It failed silently because `decimate_to_rate` returns the block untouched when
-  `target_rate >= raw_rate`, so the overstated rate produced no error — just a readout
-  that disagreed with the data, and `n_fft_bins`/`binsize_actual` derived from the
-  fictitious rate.
+  It gave no error, because `decimate_to_rate` returns the block unchanged
+  when `target_rate >= raw_rate`. The result was a readout that disagreed
+  with the data, and `n_fft_bins`/`binsize_actual` derived from a rate that
+  did not exist.
 
   `samplerate` is now **exactly** `2.56 * maxfreq`. This cannot overshoot:
-  `maxfreq`'s setter already clamps to `raw_samplerate/2/1.28`, which *is* the condition
-  `2.56 * maxfreq <= raw_samplerate`. A power-of-two *rate* bought nothing — the FFT
-  length is `blocksize`, not the rate. Every preset rate is now 5-smooth and divides
-  `raw_samplerate` exactly, so raw→display decimation is an exact integer factor
-  (50/20/10/5/2/1) at all six presets.
+  the `maxfreq` setter already clamps to `raw_samplerate/2/1.28`, which *is*
+  the condition `2.56 * maxfreq <= raw_samplerate`. A power-of-two *rate*
+  gave nothing: the FFT length is `blocksize`, not the rate. Each preset rate
+  is now 5-smooth and divides `raw_samplerate` exactly, so raw→display
+  decimation is an exact integer factor (50/20/10/5/2/1) at all six presets.
 
-- **`blocksize` is now `ceil(samplerate / binsize)`** rather than `nextpow2(...)`.
-  With a power-of-two rate that divided exactly and a frame really was `1/binsize`
-  seconds; with an exact-2.56x rate `nextpow2` would have made frames up to 2x longer
-  than the dialog claims. Measured worst-case frame-length overshoot across the 54
-  preset combinations: **56.2% → 17.2%**, with 24 combinations now exact. The delivered
-  bin is still never coarser than the requested one. `blocksize` is no longer a power of
-  two, which does not matter: it is a Welch segment length, pocketfft is efficient for
-  any 5-smooth length, and every preset combination is one.
+- **`blocksize` is now `ceil(samplerate / binsize)`**, not `nextpow2(...)`.
+  With a power-of-two rate that divided exactly, a frame was really
+  `1/binsize` seconds. With an exact 2.56x rate, `nextpow2` would make frames
+  up to 2x longer than the dialog states. Measured worst-case frame-length
+  overshoot across the 54 preset combinations: **56.2% → 17.2%**, with 24
+  combinations now exact. The delivered bin is still never coarser than the
+  requested one. `blocksize` is not a power of two now, and that has no
+  effect: it is a Welch segment length, pocketfft is efficient for each
+  5-smooth length, and each preset combination is one.
+  - Correction (2026-09-30): at the current presets, 10 of the 54
+    combinations give a `blocksize` that is not 5-smooth, and 43 combinations
+    are exact. Calculated from `MAXFREQ_PRESETS` and `BINSIZE_PRESETS`.
 
-- **`RAW_SAMPLERATE_HZ` = 25600** (2.56 × the 10 kHz top preset), replacing a briefly-set
-  `10_000` that dropped the 2.56 factor. At 10 kHz raw the `maxfreq` setter silently
-  clamped to 3906 Hz — the 5 kHz and 10 kHz presets were unreachable — and envelope
-  bandwidth was halved. 25600 Hz gives osr=3 (76.8 kHz/channel at the ADC), which asks
-  *less* of the ADC than the 40000 Hz configuration measured clean on a 4424A.
-  **Validated on hardware 2026-09-09** (4424A s/n 12462/0067): `effective_osr=3`,
-  actual raw ADC rate 76923 Hz/channel against 76800 requested (+0.16%, the driver's
-  discrete timebase), **0 overflow and 0 rate-degradation transitions** over 45 s
-  sustained at both 3 and 4 simultaneous channels; all 9 AWG-loopback hardware tests
-  pass. The GUI-load problem that motivated lowering the rate is separate and still
-  open.
+- **`RAW_SAMPLERATE_HZ` = 25600** (2.56 × the 10 kHz top preset). It replaces
+  a value of `10_000` that was set for a short time and did not include the
+  2.56 factor. At 10 kHz raw, the `maxfreq` setter clamped to 3906 Hz with no
+  notice: the 5 kHz and 10 kHz presets were unreachable, and the envelope
+  bandwidth was half. 25600 Hz gives osr=3 (76.8 kHz/channel at the ADC),
+  which asks *less* of the ADC than the 40000 Hz configuration that was
+  measured clean on a 4424A. **Validated on hardware 2026-09-09** (4424A s/n
+  12462/0067): `effective_osr=3`, actual raw ADC rate 76923 Hz/channel
+  against 76800 requested (+0.16%, the discrete timebase of the driver),
+  **0 overflow and 0 rate-degradation transitions** over 45 s at 3 and at 4
+  simultaneous channels. All 9 AWG-loopback hardware tests pass. The GUI-load
+  problem that caused the lower rate is a separate problem and is still open.
 
-- **`tests/test_picoscope_hw.py` asserted a sample rate the stream never requested.**
-  `STREAM_SAMPLERATE = 50_000` predated the raw/display split: `PicoScopeStream`
-  acquires at `raw_samplerate`, so 50 kHz was never asked of the hardware. The
-  assertion allowed 40% deviation — wide enough to hide the rate being wrong by a
-  factor of 1.56 — and passed only while `raw_samplerate` happened to be 40 kHz, 20%
-  away. At 25600 Hz it failed at 48.7%. Separately, `test_stream_start_stop_cycle`
-  computed its sleep as `STREAM_BLOCKSIZE / STREAM_SAMPLERATE` = 1.0 s against a real
-  `acquisition_period` of 1.95 s, so no callback could arrive and it reported a
-  streaming failure that was its own. Both now derive from the config
-  (`raw_samplerate`, `acquisition_period`) and the rate tolerance is 5%, against a
-  measured quantisation error of 0.16%.
+- **`tests/test_picoscope_hw.py` asserted a sample rate that the stream never
+  requested.** `STREAM_SAMPLERATE = 50_000` was older than the raw/display
+  split. `PicoScopeStream` acquires at `raw_samplerate`, so the hardware never
+  got a 50 kHz request. The assertion allowed 40% deviation. That is wide
+  enough to hide a rate that is wrong by a factor of 1.56, and it passed only
+  while `raw_samplerate` was 40 kHz, 20% away. At 25600 Hz it failed at
+  48.7%. Also, `test_stream_start_stop_cycle` calculated its sleep as
+  `STREAM_BLOCKSIZE / STREAM_SAMPLERATE` = 1.0 s against a real
+  `acquisition_period` of 1.95 s. Thus no callback could arrive, and the test
+  reported a streaming failure that it caused itself. Both now come from the
+  config (`raw_samplerate`, `acquisition_period`), and the rate tolerance is
+  5%, against a measured quantisation error of 0.16%.
 
 #### Changed
 - `tests/test_acquisition_settings.py`: `test_samplerate_is_power_of_two` and
-  `test_blocksize_is_power_of_two` pinned the exact behaviour that was wrong. Replaced
-  with the invariants that matter — samplerate is exactly 2.56x maxfreq; the display rate
-  never exceeds the acquisition rate; the decimation ratio is an exact integer; no preset
-  is clamped; the delivered bin is never coarser than requested and a frame is never more
-  than one sample longer than `1/binsize`.
-- `tests/test_declared_band.py`: the out-of-band tone was 1500 Hz against `F_max`=1000,
-  which sat in the guard band only because `nextpow2` inflated fs/2 to 2048. At the
-  correct fs/2 = 1280 it is above Nyquist, where the decimation filter removes it
-  outright (−240 dB measured) — the test would have passed without the band mask doing
-  anything. Moved to 1100 Hz, measured to survive decimation at −0.7 dB, so the band
-  mask is the only thing that can exclude it. Revert-checked: patching out the
-  `band_fmax_resolved` clamp makes it fail by +123.6%.
+  `test_blocksize_is_power_of_two` pinned the wrong behaviour. They are
+  replaced with the important invariants: samplerate is exactly 2.56x
+  maxfreq; the display rate is never more than the acquisition rate; the
+  decimation ratio is an exact integer; no preset is clamped; the delivered
+  bin is never coarser than requested; and a frame is never more than one
+  sample longer than `1/binsize`.
+- `tests/test_declared_band.py`: the out-of-band tone was 1500 Hz against
+  `F_max`=1000. It was in the guard band only because `nextpow2` increased
+  fs/2 to 2048. At the correct fs/2 = 1280 it is above Nyquist, where the
+  decimation filter removes it fully (−240 dB measured). Thus the test would
+  pass with no effect from the band mask. The tone is now at 1100 Hz, which is
+  measured to survive decimation at −0.7 dB, so only the band mask can
+  exclude it. Revert-checked: with the `band_fmax_resolved` clamp removed, it
+  fails by +123.6%.
 
-- **Repo-relocation breakage (tooling only, no measurement impact).** The checkout has
-  moved three times (`~/CODE/reveng/vibegui` → `~/Documents/reveng/code/vibegui` →
-  `~/Documents/reveng/vibration/rev80`) and each move stranded absolute-path state that
-  fails *silently*:
-  - `core.hooksPath` still pointed at the previous clone's `.git/hooks`, a directory that
-    no longer exists. Git runs no hooks at all in that state, so the blocking
-    `ruff check src/ tests/` gate and the `doc/*.pdf` re-render had not run since the
-    move. Now set to the relative `.githooks`, which survives any future relocation.
-    The stale `gitflow.path.hooks` (pointing two moves back, at `~/PurpleDocs/...`) was
-    unset.
-  - The editable install's `.pth` pointed at the dead `.../code/vibegui/src`, so
-    `import rev80` raised `ModuleNotFoundError` and the `rev80` / `rev80-headless`
-    console scripts and the desktop launcher were all dead. Reinstalled editable.
-    A stale pre-rename `vibechecker` distribution — a separate dist that
-    `pip install -e .` does not touch — was uninstalled alongside it.
+- **Tooling defects after the repository moved (no effect on measurement).**
+  The checkout moved three times (`~/CODE/reveng/vibegui` →
+  `~/Documents/reveng/code/vibegui` → `~/Documents/reveng/vibration/rev80`).
+  Each move left absolute-path state that fails *with no error*:
+  - `core.hooksPath` still pointed at `.git/hooks` of the previous clone, a
+    directory that did not exist. In that state git runs no hooks. Thus the
+    blocking `ruff check src/ tests/` gate and the `doc/*.pdf` render had not
+    run since the move. Now it is set to the relative `.githooks`, which
+    survives each future move. The stale `gitflow.path.hooks` (which pointed
+    two moves back, at `~/PurpleDocs/...`) was unset.
+  - The `.pth` of the editable install pointed at the removed
+    `.../code/vibegui/src`. Thus `import rev80` raised `ModuleNotFoundError`,
+    and the `rev80` / `rev80-headless` console scripts and the desktop
+    launcher did not work. The editable install was done again. A stale
+    `vibechecker` distribution from before the rename (a separate dist that
+    `pip install -e .` does not touch) was uninstalled at the same time.
 
-  This went unnoticed because **`pytest` is immune to it**: `pyproject.toml` sets
-  `pythonpath = ["src"]`, resolved from rootdir, so all 737 tests collected and passed
-  against the source tree while every installed entry point was broken. Green CI does not
-  prove the app launches.
+  No one saw this, because **`pytest` is immune to it**: `pyproject.toml`
+  sets `pythonpath = ["src"]`, resolved from rootdir. Thus all 737 tests
+  collected and passed against the source tree while each installed entry
+  point was broken. Green CI does not prove that the app starts.
 
 - `.python-version`, `.vscode/` and `.ruff_cache/` are now gitignored (and
-  `.python-version` untracked) so each checkout owns its own dev environment. Consequence:
-  a relocated checkout no longer auto-selects the pyenv env, so the environment must be
-  selected *before* `pip install -e .` or the editable install lands in the wrong
-  interpreter. Documented in CONTRIBUTING.md's new **Moving the checkout** section, along
-  with the hooks fix above.
-- Removed two stale vendor datasheet PDFs from `doc/`.
+  `.python-version` is untracked), so each checkout owns its own development
+  environment. As a result, a moved checkout does not select the pyenv
+  environment automatically. Select the environment *before*
+  `pip install -e .`, or the editable install goes into the wrong
+  interpreter. CONTRIBUTING.md, in the new **Moving the checkout** section,
+  records this and the hooks fix above.
+- Two stale vendor datasheet PDFs were removed from `doc/`.
 
 ### experimental/profiling (2026-09-11)
 
-GUI responsiveness. Since the mandatory Kaiser anti-alias filter and
-oversampled streaming landed, the GUI stuttered on every processing call:
-bearable at 3 enabled channels, progressively worse to 8, on a 4824A. The
-bottleneck was not known -- USB transfer, DSP and dearpygui rendering were all
-plausible -- so this branch builds per-stage timing first and fixes what the
-measurements actually indict.
+This branch is about GUI response. After the mandatory Kaiser anti-alias
+filter and oversampled streaming were added, the GUI stuttered on each
+processing call on a 4824A. It was acceptable at 3 enabled channels and
+became worse up to 8. The bottleneck was not known: USB transfer, DSP and
+dearpygui rendering were all possible. Thus this branch first adds per-stage
+timing, and then fixes what the measurements show.
 
-**It was not a throughput problem, and that is why it was hard to find.**
-Processing never got ahead of acquisition and the frame queue never backed up.
-It could not: the 32-frame ring cache is *designed* to skip to the latest
-frame, so a main-thread overrun surfaces as latency and never as a backlog.
-Looking at queue depth found nothing because there was nothing there to find.
+**It was not a throughput problem, and that is why it was difficult to
+find.** Processing never fell behind acquisition, and the frame queue never
+grew. It could not: the 32-frame ring cache is *designed* to skip to the
+latest frame, so a main-thread overrun shows as latency, never as a backlog.
+A look at the queue depth found nothing, because there was nothing to find.
 
-Three independent causes, each **linear in enabled channel count** -- which is
-why the symptom alone could not separate them.
+There were three independent causes. Each is **linear in the number of
+enabled channels**, so the symptom alone could not separate them.
 
 #### Added
-- **`src/rev80/_profile.py`** -- per-stage timing for the whole pipeline, from
-  the driver callback to `render_dearpygui_frame()`. Thirteen named stages
-  grouped by *thread*, because which thread a cost lands on is the entire
-  question: main-thread time blocks the mouse, hardware-thread time steals the
-  GIL, and the two need completely different fixes. `gui.render` beside
-  `proc.total` is what makes that call unambiguous from now on.
-  Near-zero when off -- measured **442 ns/call disabled** (3015 ns enabled) net
-  of loop baseline, i.e. 0.27 ms per wall-second at the busiest call site, so
-  the instrumentation ships permanently rather than being compiled out. Bounded
-  by construction (fixed-length ring per stage): a diagnostic that becomes the
-  next S-02 is worse than no diagnostic.
-- **`rev80 --profile`** (and `REV80_PROFILE=1`, reachable from a desktop
-  launcher where a flag is not) -- logs the stage table on exit, from inside
-  `cleanup()`'s guarded ordering where it can never prevent `ps4000aCloseUnit`.
-- **`scripts/profile-pipeline`** -- channel-count sweep printing one stage table
-  per count, simulated or `--hardware`. Its `--raw-rate` **defaults to the
-  hardware-realistic clock, not the nominal one**, because the headline defect
-  below is invisible at exactly 25600 Hz.
+- **`src/rev80/_profile.py`**: per-stage timing for the whole pipeline, from
+  the driver callback to `render_dearpygui_frame()`. Thirteen named stages,
+  grouped by *thread*, because the thread that gets a cost is the whole
+  question. Main-thread time blocks the mouse. Hardware-thread time takes the
+  GIL. The two need different fixes. `gui.render` beside `proc.total` makes
+  that decision clear. The cost is almost zero when it is off: measured
+  **442 ns/call disabled** (3015 ns enabled), net of the loop baseline. That
+  is 0.27 ms per wall-second at the busiest call site, so the instrumentation
+  ships permanently and is not compiled out. It is bounded by construction (a
+  fixed-length ring for each stage): a diagnostic that causes the next
+  [S-02](audit-202608.md#s-02) is worse than no diagnostic.
+- **`rev80 --profile`** (and `REV80_PROFILE=1`, which a desktop launcher can
+  set when it cannot give a flag): logs the stage table at exit. It runs
+  inside the guarded order of `cleanup()`, where it cannot prevent
+  `ps4000aCloseUnit`.
+- **`scripts/profile-pipeline`**: a sweep over channel counts that prints one
+  stage table for each count, simulated or `--hardware`. Its `--raw-rate`
+  **defaults to the clock that hardware really gives, not the nominal one**,
+  because the main defect below is not visible at exactly 25600 Hz.
 - **`tests/test_adc_conversion.py`** (6 cases x 14 ranges),
   **`tests/test_display_rate.py`** (38), and a bit-exactness suite for
   `_running_median` in `tests/test_peak_selection.py` (110).
 
 #### Fixed
-- **Cause 1 -- `decimate_to_rate` designed a 512,821-tap FIR on every call, on
-  real hardware only.** `resample_poly` builds a `2*10*max(up,down)+1` tap
-  filter, so the ratio's denominator is a direct cost multiplier. It was
-  nominally bounded, but `limit_denominator` was applied to each rate
-  *separately before dividing* -- and both are integers there, so each reduced
-  to denominator 1 and the ratio was never bounded at all.
+- **Cause 1: `decimate_to_rate` designed a 512,821-tap FIR on each call, on
+  real hardware only.** `resample_poly` makes a `2*10*max(up,down)+1` tap
+  filter, so the denominator of the ratio multiplies the cost directly. The
+  ratio had a nominal bound, but `limit_denominator` was applied to each rate
+  *separately, before the division*. Both are integers there, so each reduced
+  to denominator 1, and the ratio had no bound.
 
-  Invisible offline, because `SimulatedSensor` reports exactly 25600 Hz, which
-  reduces against every display rate to a small integer factor. The driver did
-  not: the streaming interval was requested in whole **microseconds**, and
-  `int(1e6 / 76800)` truncated 13.02 to 13, giving 76923 Hz and a reported
-  25641. 5120 and 25641 are coprime. Measured, 12800-sample block:
+  The defect was not visible offline, because `SimulatedSensor` reports
+  exactly 25600 Hz, which reduces against each display rate to a small
+  integer factor. The driver did not. The streaming interval was requested in
+  whole **microseconds**, and `int(1e6 / 76800)` truncated 13.02 to 13. That
+  gave 76923 Hz and a reported 25641. 5120 and 25641 are coprime. Measured,
+  12800-sample block:
 
   | raw rate | up / down | taps | ms/call | out length |
   |---|---|---|---|---|
@@ -1126,25 +1269,25 @@ why the symptom alone could not separate them.
   | 25641.00 (hardware) | 5120 / 25641 | **512 821** | **73.62** | **2556** |
 
   At 8 channels that is 589 ms of main-thread work against a 500 ms frame.
-  **Green CI was not evidence here either** -- the whole test suite passed at
+  **Green CI was not evidence here either**: the whole test suite passed at
   0.64 ms while the instrument stalled at 73.6.
 
-  It was also a measurement defect, not only a speed one: 2556 < `nperseg`
-  silently tripped Welch's fallback, so the delivered bin width was not the one
-  the Spectrum tab stated.
+  It was also a measurement defect, not only a speed defect. 2556 is less
+  than `nperseg`, which started the Welch fallback with no notice. Thus the
+  delivered bin width was not the one that the Spectrum tab stated.
 
-  Fixed in two independent halves, either of which is sufficient:
+  The fix has two independent halves. Each is sufficient alone:
   - **The streaming interval is now requested in nanoseconds, snapped to the
-    device's clock grid.** This is a frequency-axis accuracy fix in its own
-    right -- every displayed line was 0.16% high, so a 1000 Hz line read
+    clock grid of the device.** This is also a fix for frequency-axis
+    accuracy: each displayed line was 0.16% high, so a 1000 Hz line read
     1001.6 Hz.
 
-    The naive version of this change (`round(1e9/76800)` = 13021 ns) was
-    measured on the 4824A and did *not* do what the arithmetic said. Probing
-    the driver with a range of intervals and reading back what it used shows
-    the reachable points are **12.5 ns apart** -- an 80 MHz timebase -- and
-    that the driver **floors** to the grid rather than rounding, so 13021
-    lands a whole grid point high:
+    The simple version of this change (`round(1e9/76800)` = 13021 ns) was
+    measured on the 4824A, and it did *not* do what the arithmetic said. A
+    probe of the driver with a range of intervals, with a readback of the
+    interval that it used, shows that the reachable points are **12.5 ns
+    apart** (an 80 MHz timebase). The driver **floors** to the grid, it does
+    not round, so 13021 lands one whole grid point high:
 
     | requested ns | returned ns | rate/ch Hz | /osr Hz | ppm vs 25600 |
     |---|---|---|---|---|
@@ -1152,49 +1295,50 @@ why the symptom alone could not separate them.
     | 13021 (naive round) | 13012 | 76852.14 | 25617.38 | **+679** |
     | 13025 (grid-snapped) | 13025 | 76775.43 | 25591.81 | **-320** |
 
-    8e7/1041 and 8e7/1042 straddle 76800 and 1042 is the nearer, so -320 ppm
-    is the best this hardware can reach. Rounding to nearest on the grid and
-    then ceil-ing into whole ns -- so the driver's floor lands where intended
-    -- gets there: **5x better than shipped, not the 100x the ns resolution
-    alone suggested.** Recorded here because the arithmetic and the hardware
-    disagreed, and the hardware won.
+    8e7/1041 and 8e7/1042 are on each side of 76800, and 1042 is nearer, so
+    -320 ppm is the best that this hardware can reach. The fix rounds to the
+    nearest grid point and then rounds up to whole ns, so that the floor of
+    the driver lands where intended. The result is **5x better than shipped,
+    not the 100x that the ns resolution alone suggested.** This is recorded
+    because the arithmetic and the hardware disagreed, and the hardware was
+    correct.
 
-    None of it is trusted blind. The driver still writes back the interval it
-    really used and that readback is what everything downstream believes, so a
+    Nothing in this depends on the snap. The driver still writes back the
+    interval that it used, and everything downstream uses that readback. A
     device with a different timebase floors to its own grid and reports it,
-    exactly as before. The snap is only ever an optimisation.
-  - **The ratio bound is applied to the ratio**, via the coarsest denominator
-    cap that lands within `_RESAMPLE_RATE_TOL`. Every shipped preset now
-    reduces to its exact integer factor; an off-preset F_max costs a few
-    thousand taps instead of half a million. Measured worst case under the cap
-    is **1.05 ms**, and at the real hardware rate **73.62 ms -> 0.42 ms**, with
-    the output length back to the declared 2560.
+    as before. The snap is only an optimisation.
+  - **The ratio bound is applied to the ratio**, through the coarsest
+    denominator cap that is within `_RESAMPLE_RATE_TOL`. Each shipped preset
+    now reduces to its exact integer factor. An F_max that is not a preset
+    costs a few thousand taps, not half a million. Measured worst case under
+    the cap: **1.05 ms**. At the real hardware rate: **73.62 ms -> 0.42 ms**,
+    with the output length back to the declared 2560.
 
-    These two halves are independent, and it is worth being clear about which
-    one does what: **the ratio bound is what makes it fast** (0.42 ms at either
-    clock), and **the grid snap is what makes it accurate**. Neither substitutes
-    for the other.
+    The two halves are independent, and each does a different thing: **the
+    ratio bound makes it fast** (0.42 ms at either clock), and **the grid
+    snap makes it accurate**. Neither replaces the other.
 
-  **The user-facing F_max preset is unchanged and stays a round number.** The
-  sub-Hz difference between requested and achieved display rate is internal,
-  where it belongs -- it is what the frequency axis is correct against -- and
-  is never surfaced as a fiddly number on a control. Same treatment
-  `highpass_fc` already gets: a declared edge, with the real value underneath.
+  **The F_max preset for the user does not change and stays a round
+  number.** The sub-Hz difference between the requested and the achieved
+  display rate is internal. The frequency axis is correct against it, and it
+  never shows as an odd number on a control. `highpass_fc` gets the same
+  treatment: a declared edge, with the real value below it.
 
-  Two consequences of a now-fractional raw rate were chased down: the HDF5 and
-  monitor-session readback paths did `int(samplerate)`, which would truncate
-  25599.67 to 25599 -- coprime again -- so **replay would have silently taken
-  the expensive path the live display no longer does**, violating the rule that
-  replay reproduces what the live display showed. Both are `float` now, as is
-  what `MonitorWriterThread` writes. `receive_data`'s missing-key fallback also
-  read `config.samplerate` (display) for what is a raw-rate block; unreachable
-  today, wrong if ever hit, now `raw_samplerate`.
+  A fractional raw rate had two more effects, and both were fixed. The
+  readback paths for HDF5 and monitor sessions did `int(samplerate)`, which
+  truncates 25599.67 to 25599, which is coprime again. Thus **replay would
+  take the expensive path that the live display does not take**, against the
+  rule that replay shows what the live display showed. Both are `float` now,
+  and so is the value that `MonitorWriterThread` writes. The missing-key
+  fallback of `receive_data` also read `config.samplerate` (display) for a
+  block at the raw rate. It is not reachable now, but it would be wrong if it
+  ran. It is now `raw_samplerate`.
 
-- **Cause 2 -- `picosdk.functions.adc2mV` is a per-sample Python loop, run
-  inside the driver callback holding the GIL.** It is literally
-  `[(np.int64(x) * vRange) / maxADC.value for x in bufferADC]`, boxing a numpy
-  scalar per sample, and its cost is therefore stolen directly from the GUI
-  thread. Replaced with a vectorised `_adc_to_mv()`:
+- **Cause 2: `picosdk.functions.adc2mV` is a per-sample Python loop, and it
+  runs inside the driver callback, which holds the GIL.** It is
+  `[(np.int64(x) * vRange) / maxADC.value for x in bufferADC]`, which boxes a
+  numpy scalar for each sample. Its cost comes directly from the GUI thread.
+  Replaced with a vectorised `_adc_to_mv()`:
 
   | samples/ch | `adc2mV` | vectorised | speedup |
   |---|---|---|---|
@@ -1202,47 +1346,50 @@ why the symptom alone could not separate them.
   | 19 200 | 19.86 ms | 0.052 ms | 382x |
   | 38 400 | 40.28 ms | 0.112 ms | 361x |
 
-  At ~1.03 us/sample and 76.9 kHz per channel that was 0.079 CPU-seconds per
-  wall-second per channel -- **0.634 s/s at 8 channels**. Measured effect on a
-  60 Hz-style main loop, p95 tick latency against a 0.5 ms target:
+  At ~1.03 us/sample and 76.9 kHz for each channel, that was 0.079
+  CPU-seconds per wall-second for each channel: **0.634 s/s at 8 channels**.
+  Measured effect on a main loop similar to 60 Hz, p95 tick latency against a
+  0.5 ms target:
 
   | channels | 1 | 3 | 4 | 8 |
   |---|---|---|---|---|
   | `adc2mV` | 1.42 ms | 4.67 ms | 5.75 ms | **5.76 ms** |
   | vectorised | 0.58 ms | 0.59 ms | 0.59 ms | **0.59 ms** |
 
-  The replacement is **bit-identical**, not merely close, over every voltage
-  range across the full int16 domain -- provided the operation order is kept:
+  The replacement is **bit-identical**, not only close, over each voltage
+  range across the full int16 domain, if the order of operations stays:
   `x * vRange / maxADC`, never `x * (vRange / maxADC)`, which rounds
   differently in the last bit. `tests/test_adc_conversion.py` asserts the
-  equality *and* that the tempting pre-divided form is not equivalent, so the
-  comment explaining it is backed by a test.
+  equality *and* that the pre-divided form is not equivalent, so a test backs
+  the comment that explains it.
 
-  This also explains an earlier workaround: `RAW_SAMPLERATE_HZ` was lowered
-  "to relieve GUI lag while streaming 4 channels" (hotfix/RAW_SAMPLERATE,
-  2026-09-09). Lowering the rate reduced the sample count through this loop.
-  That trade may now be reclaimable.
+  This also explains an earlier workaround. `RAW_SAMPLERATE_HZ` was made
+  lower "to relieve GUI lag while streaming 4 channels" (hotfix/RAW_SAMPLERATE,
+  2026-09-09). The lower rate decreased the number of samples through this
+  loop. That trade may now be possible to reverse.
 
-- **Cause 3 -- the per-channel peaks table was destroyed and rebuilt every
-  frame.** `_update_fft_peaks_table` deleted every column and row and built
-  them again, once per vibration channel per frame, from *both* branches of
-  `_update_freq_plot` -- so it ran even with zero peaks. `select_peaks` reports
-  a corpus median of 40 lines, so that was **~164 widget create/destroy
-  operations per channel per frame** plus a full dearpygui table layout pass:
-  ~1300 per frame at 8 channels, roughly 80% of all per-frame DPG traffic.
+- **Cause 3: the peaks table of each channel was destroyed and made again
+  on each frame.** `_update_fft_peaks_table` deleted each column and row and
+  made them again, once for each vibration channel in each frame, from *both*
+  branches of `_update_freq_plot`. Thus it ran also with zero peaks.
+  `select_peaks` reports a corpus median of 40 lines, so that was **~164
+  widget create/destroy operations for each channel in each frame**, plus a
+  full dearpygui table layout pass: ~1300 for each frame at 8 channels,
+  approximately 80% of all DPG traffic in a frame.
 
-  Columns and rows are now a persistent pool, created on demand, relabelled or
-  `set_value`'d thereafter, with surplus rows hidden rather than deleted; a
-  frame whose contents are unchanged pushes nothing at all. Every plot *series*
-  in this file was already updated that way -- this is the same idea applied to
-  a table. Self-healing if the table is ever rebuilt underneath it, in the
-  spirit of `_ensure_legends`.
+  Columns and rows are now a persistent pool. The pool creates them on
+  demand and after that changes their labels or uses `set_value`. It hides
+  surplus rows and does not delete them. A frame with unchanged contents
+  sends nothing. Each plot *series* in this file already worked that way;
+  this applies the same idea to a table. It repairs itself if the table is
+  made again under it, as `_ensure_legends` does.
 
 #### Changed
-- **`peaks._running_median`'s edge handling is vectorised.** It was a Python
-  loop of `np.median` calls, one per edge bin, and it was **91% of the
-  function's cost** -- the `scipy.ndimage.median_filter` over the interior is
-  only 0.047 ms of it, which is the opposite of where one would look.
+- **The edge handling of `peaks._running_median` is vectorised.** It was a
+  Python loop of `np.median` calls, one for each edge bin, and it was **91% of
+  the cost of the function**. The `scipy.ndimage.median_filter` over the
+  interior is only 0.047 ms of it, which is the opposite of where one would
+  look.
 
   | | before | after |
   |---|---|---|
@@ -1250,155 +1397,165 @@ why the symptom alone could not separate them.
   | edge bins | 1.161 ms | 0.408 ms |
   | `_running_median` total | **1.274 ms** | **0.563 ms** |
 
-  The statistic is unchanged and that is the entire constraint: the truncated
-  window and the measured error table that chose it over zero-padding,
-  reflection and replication are untouched, and the new code is asserted
-  **bit-identical** to the loop it replaces across 110 length x width
-  combinations. Even widths are covered deliberately -- unreachable today since
-  `local_noise_floor` forces an odd window, but the edge window is
-  `[i-half, i+half]` inclusive, i.e. `2*half+1` samples whatever the parity,
-  and sizing it by `width` would have quietly shortened every even case.
-- **The stale-frame watchdog no longer spawns a thread per frame.**
-  `_schedule_status_timeout` cancelled a `threading.Timer` and constructed a
-  new one on every displayed frame, then flipped a dearpygui widget *from that
-  timer thread*. Both halves were wrong -- the second more so than the first,
-  since no DPG call belongs off the render thread. It is now a deadline checked
-  in `_poll_new_frames`, which already runs every tick whether or not a frame
-  arrived, which is exactly when the check needs to happen.
-- **Envelope analysis is gated on being on screen**, which its docstring always
-  claimed and the code never did -- `envelope_enabled` is a config flag, not a
-  statement about the selected tab. With the tab enabled but the user on
-  Spectrum, a `butter` design, a `sosfiltfilt`, a Hilbert transform and (on an
-  auto band) a `suggest_band` convolution ran for every channel every frame for
-  a plot nobody could see: ~2.8 ms/channel, plus 1.4-1.9 ms when auto. The gate
-  tests the *plot*, not the tab -- an unselected tab still renders its own
-  header button and reports visible either way.
-- **`suggest_band` is cached per channel** rather than recomputed every frame.
-  Also better behaviour, not only cheaper: `_on_env_auto_band`'s docstring
-  already says the band should "stay put across frames instead of drifting each
-  time", and a band that moves every frame makes the envelope plot's own axis
-  unstable. Invalidated when the band fields are edited, when the Envelope tab
-  is toggled, and by the Auto button -- which means "pick one from the frame I
-  am looking at now" and must not return an earlier frame's answer.
-- Two per-frame `configure_item` calls that push an unchanged value are now
-  change-only: the four browse-button `enabled=` flags (which change twice in a
-  session), and the Frame info card's `height=`, which forces a dearpygui
-  relayout each time.
+  The statistic does not change, and that is the whole constraint. The
+  truncated window, and the measured error table that chose it over
+  zero-padding, reflection and replication, do not change. A test asserts
+  that the new code is **bit-identical** to the loop that it replaces across
+  110 length x width combinations. Even widths are included intentionally.
+  They are not reachable now, because `local_noise_floor` forces an odd
+  window. But the edge window is `[i-half, i+half]` inclusive, which is
+  `2*half+1` samples at each parity, and a window sized by `width` would make
+  each even case shorter with no notice.
+- **The stale-frame watchdog does not start a thread for each frame.**
+  `_schedule_status_timeout` cancelled a `threading.Timer` and made a new one
+  on each displayed frame, and then changed a dearpygui widget *from that
+  timer thread*. Both halves were wrong, the second more than the first: no
+  DPG call belongs outside the render thread. It is now a deadline that
+  `_poll_new_frames` checks. That function already runs on each tick, with or
+  without a frame, which is exactly when the check must run.
+- **Envelope analysis runs only when it is on screen.** Its docstring always
+  said so, but the code did not do it: `envelope_enabled` is a config flag,
+  not a statement about the selected tab. With the tab enabled and the user on
+  Spectrum, a `butter` design, a `sosfiltfilt`, a Hilbert transform and (on
+  an automatic band) a `suggest_band` convolution ran for each channel in each
+  frame for a plot that no one could see: ~2.8 ms for each channel, plus
+  1.4-1.9 ms when automatic. The gate tests the *plot*, not the tab: a tab
+  that is not selected still renders its own header button and reports
+  visible in both cases.
+- **`suggest_band` is cached for each channel** and is not calculated again
+  on each frame. This is also better behaviour, not only lower cost. The
+  docstring of `_on_env_auto_band` already says that the band should "stay put
+  across frames instead of drifting each time", and a band that moves on each
+  frame makes the axis of the envelope plot unstable. The cache is cleared
+  when the band fields are edited, when the Envelope tab is toggled, and by
+  the Auto button. Auto means "pick one from the frame on screen now" and must
+  not return the answer of an earlier frame.
+- Two `configure_item` calls on each frame that sent an unchanged value now
+  send only a change: the four `enabled=` flags of the browse buttons (which
+  change twice in a session), and the `height=` of the Frame info card, which
+  causes a dearpygui relayout each time.
 
-#### Where it stands now
-`./scripts/profile-pipeline --hardware --channels 1,3,4,8 --seconds 12` on the
-4824A (s/n 13290/0013), ms of work per wall-second:
+#### Notes for the next person
+- **Result after the fixes.** `./scripts/profile-pipeline --hardware
+  --channels 1,3,4,8 --seconds 12` on the 4824A (s/n 13290/0013), ms of work
+  per wall-second:
 
-| stage | 1 ch | 3 ch | 4 ch | 8 ch |
-|---|---|---|---|---|
-| `usb.poll` | 57.9 | 73.7 | 83.1 | 128.6 |
-| `usb.adc2mv` | 9.2 | 12.8 | 14.6 | 23.0 |
-| `usb.antialias` | 7.8 | 19.8 | 26.6 | **58.3** |
-| `ingest.receive` | 1.4 | 2.5 | 3.1 | 7.5 |
-| `proc.total` | 13.9 | 30.8 | 40.2 | **84.1** |
-| `proc.decimate` | 2.2 | 5.0 | 6.3 | 13.3 |
-| `proc.psd` | 6.3 | 13.7 | 17.9 | 36.6 |
-| `proc.peaks` | 3.5 | 7.8 | 10.3 | 22.1 |
+  | stage | 1 ch | 3 ch | 4 ch | 8 ch |
+  |---|---|---|---|---|
+  | `usb.poll` | 57.9 | 73.7 | 83.1 | 128.6 |
+  | `usb.adc2mv` | 9.2 | 12.8 | 14.6 | 23.0 |
+  | `usb.antialias` | 7.8 | 19.8 | 26.6 | **58.3** |
+  | `ingest.receive` | 1.4 | 2.5 | 3.1 | 7.5 |
+  | `proc.total` | 13.9 | 30.8 | 40.2 | **84.1** |
+  | `proc.decimate` | 2.2 | 5.0 | 6.3 | 13.3 |
+  | `proc.psd` | 6.3 | 13.7 | 17.9 | 36.6 |
+  | `proc.peaks` | 3.5 | 7.8 | 10.3 | 22.1 |
 
-Zero overflow, zero rate degradation at every count. `usb.poll` *contains* the
-three stages below it -- the app callback runs synchronously inside
-`ps4000aGetStreamingLatestValues` -- and `proc.total` contains
-`proc.decimate`/`psd`/`peaks`, so these are nested, not additive; the harness
-says so in its own output.
+  Zero overflow and zero rate degradation at each count. `usb.poll`
+  *contains* the three stages below it: the app callback runs synchronously
+  inside `ps4000aGetStreamingLatestValues`. `proc.total` contains
+  `proc.decimate`/`psd`/`peaks`. Thus the stages are nested, not additive;
+  the harness says so in its own output.
 
-`proc.total` at 8 channels is 39.5 ms mean against a 500 ms frame: ~8% of the
-main thread, where it was over budget before.
-
-**The profiling's own next finding, recorded rather than acted on.** With
-`adc2mV` gone, `usb.antialias` is now the largest single cost on the
-acquisition thread -- the mandatory Kaiser FIR decimating a (38400, 8) block
-per frame. That is real, necessary work rather than a defect, and 58 ms/s is
-not currently hurting anything. It is simply where the next look should start
-if one is ever needed, and it is only visible at all because the
-instrumentation now exists.
-
-#### Not done, deliberately
-Adaptive streaming rate by channel count, and capping the enabled channel
-count. Both were on the table at the start and both trade away measurement
-capability to work around a Python loop and an unreduced fraction; Causes 1 and
-2 remove the reason for either. Moving `process_samples()` off the render
-thread is also not done: it would change the `new_frame_event` contract that
-browse mode, `collect_sample`, the monitor and the tests all depend on, and
-Cause 1 alone removes ~589 ms of the ~610 ms main-thread budget at 8 channels.
-If a hitch survives, it earns its own branch and its own measurements.
+  `proc.total` at 8 channels is 39.5 ms mean against a 500 ms frame:
+  ~8% of the main thread. Before the fixes it was over budget.
+- **The next finding of the profiler, recorded but not acted on.** With
+  `adc2mV` removed, `usb.antialias` is now the largest single cost on the
+  acquisition thread: the mandatory Kaiser FIR that decimates a (38400, 8)
+  block on each frame. That is real, necessary work, not a defect, and
+  58 ms/s causes no problem now. It is where the next investigation should
+  start, if one is necessary. It is visible only because the instrumentation
+  now exists.
+- **Not done, intentionally:** a streaming rate that adapts to the channel
+  count, and a cap on the number of enabled channels. Both were options at
+  the start. Both give up measurement capability to work around a Python loop
+  and an unreduced fraction, and Causes 1 and 2 remove the reason for either.
+  The move of `process_samples()` off the render thread is also not done. It
+  would change the `new_frame_event` contract that browse mode,
+  `collect_sample`, the monitor and the tests depend on. Cause 1 alone removes
+  ~589 ms of the ~610 ms main-thread budget at 8 channels. If a hitch
+  remains, it gets its own branch and its own measurements.
 
 ### build/ci — release automation (2026-09-17)
 
-Tagging `vX.Y.Z` now builds the Windows installer and the Python wheel and
-attaches both to a **draft** GitHub Release, replacing the manual "boot into
-Windows, pull, run `scripts/build.sh`" step. Prompted by the move from the
-self-hosted `catherby` remote to `github.com/cascadia-turbo-works/rev80`.
+A `vX.Y.Z` tag now builds the Windows installer and the Python wheel, and
+attaches both to a **draft** GitHub Release. This replaces the manual step
+"boot into Windows, pull, run `scripts/build.sh`". The cause was the move
+from the self-hosted `catherby` remote to
+`github.com/cascadia-turbo-works/rev80`.
 
-Not yet executed against a real remote — see *Rehearsing it* in
-`CONTRIBUTING.md` before trusting a release.
+Not yet run against a real remote. Read *Rehearsing a release* in `CONTRIBUTING.md`
+before you trust a release.
 
 #### Added
-- **`.github/workflows/release.yml`** — four jobs on a `v*` tag: a test gate,
+- **`.github/workflows/release.yml`**: four jobs on a `v*` tag: a test gate,
   a wheel/sdist build (ubuntu), a driver-less installer build (windows), and
-  `gh release create --draft`. The gate exists so a tag cannot cut a release
-  from a red tree; it runs one Python version, since the full matrix already
-  ran on the branch.
-- **`scripts/build.sh wheel`** — builds the wheel and sdist, which `build.sh`
-  had never done, and the only target that runs off Windows.
-- **`scripts/build.sh … nodlls`** — skips DLL collection. Hosted Windows
-  runners have no PicoSDK and it has no reliable unattended install, so CI
-  installers are **driver-less**: they work, but the user installs PicoSDK
-  themselves and the `.iss` already warns when it is missing. A local
-  `./scripts/build.sh` is unchanged and still bundles the DLLs.
+  `gh release create --draft`. The gate prevents a release from a red tree.
+  It runs one Python version, because the full matrix already ran on the
+  branch.
+- **`scripts/build.sh wheel`**: builds the wheel and sdist, which `build.sh`
+  never did before. It is the only target that runs outside Windows.
+- **`scripts/build.sh … nodlls`**: skips DLL collection. Hosted Windows
+  runners have no PicoSDK, and PicoSDK has no reliable unattended install.
+  Thus CI installers are **driver-less**: they work, but the user installs
+  PicoSDK, and the `.iss` already warns when it is missing. A local
+  `./scripts/build.sh` does not change and still bundles the DLLs.
+  - Correction: the release workflow of 0.1.3 installs PicoSDK on the Windows
+    runner, because the `picosdk` wrapper does not install without it
+    (`951ff47`). The build still passes `nodlls`, so the installer is still
+    driver-less.
 - **`build` added to the `dev` extra.**
 
 #### Fixed
-- **`fetch_font.sh` silently shipped a font-less installer on failure.** It has
-  no `set -e` and returned the status of its final `echo`, so a failed `curl`
-  or a missing `unzip` exited 0; `build.sh` carried on and `rev80.spec` printed
-  its "fonts not found" warning into a log nobody reads. Every failure path now
-  exits non-zero with a reason.
-- **…and it downloaded a font the repo already tracks.** `assets/fonts/CommitMonoNerdFont-Regular.otf`
-  is committed and byte-identical to the download (sha256 `4eda301c…`, verified
-  before the change). The tracked copy is now the primary source and the
-  download a fallback, which takes the release build off the network — and off
-  Git Bash's non-guaranteed `unzip` on the Windows runner.
+- **`fetch_font.sh` shipped an installer without the font on failure, with
+  no error.** It has no `set -e` and returned the status of its last `echo`.
+  Thus a failed `curl` or a missing `unzip` exited 0. `build.sh` continued,
+  and `rev80.spec` printed its "fonts not found" warning into a log that no
+  one reads. Each failure path now exits non-zero with a reason.
+- **It also downloaded a font that the repository already tracks.**
+  `assets/fonts/CommitMonoNerdFont-Regular.otf` is committed and
+  byte-identical to the download (sha256 `4eda301c…`, verified before the
+  change). The tracked copy is now the primary source and the download is a
+  fallback. Thus the release build does not need the network, or the `unzip`
+  of Git Bash on the Windows runner, which is not guaranteed.
 
 #### Changed
 - **`ci.yml` triggers on branch pushes only** (`push: branches: ['**']`). A
-  bare `push:` also matches tags, so tagging would have run the full 4-job
-  matrix alongside `release.yml` and its own gate.
-- **`CLAUDE.md` no longer claims the pre-commit hook stamps `_version.py`.** It
-  has not since the setuptools_scm move; the hook has carried a comment saying
-  so while the doc said the opposite. The release workflow's correctness rests
-  on the real mechanism, so the passage is now explicit about it.
+  bare `push:` also matches tags, so a tag would run the full 4-job matrix in
+  addition to `release.yml` and its own gate.
+- **`CLAUDE.md` does not say that the pre-commit hook stamps `_version.py`.**
+  The hook has not done so since the move to setuptools_scm. The hook had a
+  comment that said so, while the document said the opposite. The correct
+  operation of the release workflow depends on the real mechanism, so the
+  passage now states it.
 
 #### Notes for the next person
-- **`fetch-depth: 0` is load-bearing and its failure is silent.** `setuptools_scm`
-  reads `git describe`; a shallow checkout has no tags, falls back to
-  `0.0.0+unknown`, and ships `Rev80Setup-0.0.0+unknown.exe` with nothing
-  failing. Both build jobs assert against that string rather than trusting the
-  checkout. A dirty tree is the same hazard from the other end — it appends
-  `+d<date>`, which is why `_version.py`, `installer/version.iss`,
+- **`fetch-depth: 0` is necessary, and its failure is silent.**
+  `setuptools_scm` reads `git describe`. A shallow checkout has no tags,
+  falls back to `0.0.0+unknown`, and ships `Rev80Setup-0.0.0+unknown.exe`
+  with no failure. Both build jobs assert against that string and do not
+  trust the checkout. A dirty tree is the same hazard from the other side: it
+  appends `+d<date>`. That is why `_version.py`, `installer/version.iss`,
   `drivers/*.dll` and the fetched font are all gitignored.
-- **`python -m build` cannot run from the repo root.** This repo's own `build/`
-  directory shadows the `build` PyPI package as an implicit namespace package:
-  `import build` succeeds and `python -m build` dies with *No module named
-  `build.__main__`*. Compounding it, `python` is a pyenv shim that picks its
-  version from the cwd, so simply running from elsewhere selects a different
-  interpreter. `build.sh wheel` handles both — resolve the interpreter to an
-  absolute path, then run from a scratch cwd with the repo passed explicitly.
-- **A tag trigger ignores branches.** GitHub Actions has no notion of "tagged
-  on main"; any `v*` tag anywhere builds. Accepted deliberately. Legacy `rc0.x`
-  tags do not match `v*`.
-- **The wheel is a release asset, not a PyPI package.** `picosdk` is a direct
-  git URL dependency and PyPI rejects those.
-- **Releases are drafts** because the exe and installer remain unsigned.
-- The `--sdist` and `--wheel` invocations are deliberately separate so the
-  wheel is built from the source tree, on the theory that setuptools_scm's
-  git-tracked file finder would drop the gitignored font. Measured: it does
-  not, `package_data` wins. Kept as belt-and-braces and recorded as measured
-  rather than left as a claim.
+- **`python -m build` cannot run from the repository root.** The `build/`
+  directory of this repository shadows the `build` PyPI package as an
+  implicit namespace package: `import build` succeeds, and `python -m build`
+  stops with *No module named `build.__main__`*. Also, `python` is a pyenv
+  shim that selects its version from the cwd, so a run from a different
+  directory selects a different interpreter. `build.sh wheel` handles both:
+  it resolves the interpreter to an absolute path, then runs from a scratch
+  cwd with the repository given explicitly.
+- **A tag trigger ignores branches.** GitHub Actions has no concept of
+  "tagged on main": each `v*` tag builds, on any branch. This is accepted
+  intentionally. The old `rc0.x` tags do not match `v*`.
+- **The wheel is a release asset, not a PyPI package.** `picosdk` is a
+  direct git URL dependency, and PyPI does not accept those.
+- **Releases are drafts**, because the exe and the installer are not signed.
+- The `--sdist` and `--wheel` invocations are separate intentionally, so that
+  the wheel is built from the source tree. The theory was that the
+  git-tracked file finder of setuptools_scm would drop the gitignored font.
+  Measured: it does not, because `package_data` wins. The separation stays as
+  an extra safeguard, and the result is recorded as measured, not as a claim.
 
 
 ## [0.1.0] - 2026-09-01
