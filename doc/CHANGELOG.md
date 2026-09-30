@@ -48,6 +48,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   an info message: stop the recording first.
   `tests/test_gui_stream_stop_lock.py` keeps this. Without the fix, 3 of its
   6 tests fail.
+- **The Welch Overlap tooltip is correct.** It said that a higher overlap
+  smooths the spectrum. Welch uses one segment per frame
+  (`nperseg == blocksize`), so the overlap has no effect. Now the tooltip
+  says this and refers to Average spectrum. `tests/test_welch_overlap_tip.py`
+  shows that the spectrum is bit-identical at 0 % and 90 % overlap, at six
+  F_max and bin-size presets.
 
 ### fix/collector — reprocess a session with a tachometer channel (2026-09-29)
 

@@ -179,6 +179,17 @@ def interval_to_save(label, stored_s) -> float:
     return interval_from_label(label, stored)
 
 
+# Welch runs one segment per frame (nperseg == blocksize), so the overlap has
+# no segments to act on.
+_WELCH_OVERLAP_TIP = (
+    "Welch Overlap: at present this setting has no effect on the spectrum. "
+    "Welch uses one segment per frame: the segment is the full block, so "
+    "there are no adjacent segments to overlap. The value is kept in the "
+    "settings and in each saved file. To make the spectrum smoother, use "
+    "Average spectrum."
+)
+
+
 # Ratio of a sample rate to the top of its anti-alias-protected band. The
 # same 2.56 as AcquisitionSettings.samplerate = 2.56 x maxfreq: at 25600 Hz
 # raw, the protected band ends at 10 kHz.
@@ -4169,9 +4180,7 @@ class GUI:
                             dpg.add_separator()
                             _fft_hdr = dpg.add_text("FFT Conditioning  (?)")
                             _tip(_fft_hdr,
-                                 "Welch Overlap: fraction of data shared between adjacent FFT "
-                                 "segments. 50% is typical — higher overlap smooths the spectrum "
-                                 "at the cost of correlated estimates.\n\n"
+                                 f"{_WELCH_OVERLAP_TIP}\n\n"
                                  "Window: shape applied to each segment before FFT. Hann is a "
                                  "good general-purpose choice. Flat-top improves amplitude "
                                  "accuracy for calibration; Blackman-Harris reduces sidelobes "
@@ -4185,6 +4194,7 @@ class GUI:
                                 max_value=95.0,
                                 width=_w,
                             )
+                            _tip(_welch_w, _WELCH_OVERLAP_TIP)
                             # Control: FFT Window
                             dpg.add_combo(
                                 label="FFT Window",
