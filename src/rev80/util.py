@@ -89,7 +89,7 @@ def hex_to_rgba(hex_color: str, alpha: int = 255) -> tuple:
 MAXFREQ_PRESETS = [2e2, 5e2, 1e3, 2e3, 5e3, 1e4]
 
 # Declared-band presets for the overall, (fmin, fmax) in Hz. ISO 20816-3
-# defines 10-1000 Hz, and 2-1000 Hz below 600 RPM. 'Full band' (the
+# defines both bands; the standard gives the speed range for each. 'Full band' (the
 # default, not in this dict) is the high-pass edge up to F_max.
 ISO_BAND_PRESETS: dict[str, tuple[float, float]] = {
     'ISO 20816 (10-1000 Hz)':        (10.0, 1000.0),
