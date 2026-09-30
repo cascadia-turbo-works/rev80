@@ -27,6 +27,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `_start_recording` used 60 s / 60 s, and the dialog 30 s / 120 s.
   `tests/test_gui_monitor_config.py` keeps this. Without the startup load,
   5 of its 11 tests fail.
+- **The automatic envelope band stays in the protected band.** The GUI
+  searched for a demodulation band up to the raw Nyquist frequency (12.8 kHz
+  at 25600 Hz). Above 10 kHz, the anti-alias filter attenuates the signal.
+  Now the search ends at the raw rate / 2.56 (10 kHz), as the
+  `envelope.suggest_band` contract requires.
+- **The degraded-rate warning compares two raw rates.** It compared the
+  measured raw rate with the display rate, for example "25000/5120 Hz". Now
+  it compares with the nominal raw rate, for example "25000/25600 Hz".
+- **The monitor storage estimate has correct units.** It divided by 10^9 and
+  10^6, but showed "GiB" and "MiB". Now it shows "GB", "MB" and "kB". It
+  also counted a tachometer channel as a full waveform; a session stores
+  only its edge times, so now the estimate does not count it. The estimate
+  still assumes that gzip halves the data; its new tooltip says that this
+  is an assumption. `tests/test_gui_small_defects.py` keeps these three
+  fixes. Without them, 5 of its 8 tests fail.
 
 ### fix/collector — reprocess a session with a tachometer channel (2026-09-29)
 

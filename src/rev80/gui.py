@@ -177,6 +177,70 @@ def interval_to_save(label, stored_s) -> float:
     if label == shown:
         return stored
     return interval_from_label(label, stored)
+
+
+# Ratio of a sample rate to the top of its anti-alias-protected band. The
+# same 2.56 as AcquisitionSettings.samplerate = 2.56 x maxfreq: at 25600 Hz
+# raw, the protected band ends at 10 kHz.
+_PROTECTED_BAND_RATIO = 2.56
+
+
+def envelope_search_fmax(samplerate: float) -> float:
+    """Top of the protected band, as the fmax for envelope.suggest_band.
+
+    Above it, the anti-alias filter attenuates the signal. A demodulation
+    band there shows filter roll-off, not machine content.
+    """
+    return samplerate / _PROTECTED_BAND_RATIO
+
+
+def degraded_rate_text(effective_hz: float | None, cfg) -> str:
+    """Text of the degraded-rate warning.
+
+    The stream measures its raw acquisition rate, so compare it with the
+    nominal raw rate, not with the display rate.
+    """
+    if effective_hz is None:
+        return "⚠ rate degraded"
+    return f"⚠ rate degraded: {effective_hz:.0f}/{cfg.raw_samplerate:.0f} Hz"
+
+
+# Assumed gzip ratio for the storage estimate. It is not measured: the ratio
+# changes with the signal.
+_ASSUMED_GZIP_RATIO = 0.5
+
+
+def monitor_storage_estimate(cfg, interval_s: float, burst_s: float,
+                             pre_s: float) -> tuple[str, float]:
+    """Estimated session storage, as (text, bytes per year of interval captures).
+
+    Units are decimal (1 GB = 1e9 bytes). A session stores the raw-rate
+    waveform of each vibration channel. A tachometer channel stores only
+    edge times, a few float64 values per second, so it is not counted.
+    """
+    raw_fs = cfg.raw_samplerate
+    block_s = cfg.raw_blocksize / raw_fs if raw_fs else 1.0
+    block_bytes = cfg.raw_blocksize * len(cfg.vibration_channels) * 8  # float64
+    compressed = block_bytes * _ASSUMED_GZIP_RATIO
+
+    # Interval logger: one capture per interval
+    per_year = (365 * 24 * 3600 / interval_s) * compressed
+    if per_year >= 1e9:
+        interval_est = f"~{per_year / 1e9:.1f} GB/year"
+    else:
+        interval_est = f"~{per_year / 1e6:.0f} MB/year"
+    if per_year > 50e9:
+        interval_est += "  (exceeds 50 GB)"
+
+    # Per burst: pre-buffer frames + post-trigger frames
+    burst_frames = max(1, int((burst_s + pre_s) / block_s)) if block_s > 0 else 1
+    burst_bytes = burst_frames * compressed
+    if burst_bytes >= 1e6:
+        burst_est = f"~{burst_bytes / 1e6:.1f} MB/burst"
+    else:
+        burst_est = f"~{burst_bytes / 1e3:.0f} kB/burst"
+
+    return f"Interval: {interval_est}\nBurst: {burst_est}", per_year
 _BINSIZE_LABELS = [f"{b} Hz/bin" for b in rev80.BINSIZE_PRESETS]
 
 # Welch FFT window options (scipy.signal.welch 'window' argument strings)
@@ -557,7 +621,8 @@ class GUI:
         if key in self._env_auto_band:
             return self._env_auto_band[key]
         try:
-            band = rev80_env.suggest_band(signal, samplerate, fmax=samplerate / 2.0)
+            band = rev80_env.suggest_band(
+                signal, samplerate, fmax=envelope_search_fmax(samplerate))
         except (ValueError, IndexError):
             return None
         self._env_auto_band[key] = band
@@ -1534,12 +1599,7 @@ class GUI:
             if degraded:
                 stream = self.collector.stream
                 eff = getattr(stream, 'effective_samplerate', None)
-                nominal = cfg.samplerate
-                if eff is not None:
-                    warn_text = f"⚠ rate degraded: {eff:.0f}/{nominal:.0f} Hz"
-                else:
-                    warn_text = "⚠ rate degraded"
-                dpg.set_value(ui.SPECTRUM_DEGRADED_WARNING, warn_text)
+                dpg.set_value(ui.SPECTRUM_DEGRADED_WARNING, degraded_rate_text(eff, cfg))
             dpg.configure_item(ui.SPECTRUM_DEGRADED_WARNING, show=degraded)
 
     def _update_acq_derived(self):
@@ -3080,39 +3140,15 @@ class GUI:
         """Update the storage estimate label when Monitor config widgets change."""
         if not dpg.does_item_exist(ui.MON_DLG_ESTIMATE):
             return
-        interval_label = dpg.get_value(ui.MON_DLG_INTERVAL) if dpg.does_item_exist(ui.MON_DLG_INTERVAL) else "1 h"
-        interval_s = next(
-            (k for k, v in rev80.MONITOR_INTERVAL_PRESETS.items() if v == interval_label),
-            3600,
-        )
-        burst_dur_s = float(dpg.get_value(ui.MON_DLG_BURST_DUR)) if dpg.does_item_exist(ui.MON_DLG_BURST_DUR) else 60.0
-        pre_buf_s   = float(dpg.get_value(ui.MON_DLG_PRE_BUFFER)) if dpg.does_item_exist(ui.MON_DLG_PRE_BUFFER) else 0.0
+        def _get(tag, default):
+            return dpg.get_value(tag) if dpg.does_item_exist(tag) else default
 
-        cfg = self.collector.config
-        # raw_blocksize/raw_samplerate, not blocksize/samplerate: session.h5
-        # stores the raw-rate data, not the display-rate data.
-        block_s = cfg.raw_blocksize / cfg.raw_samplerate if cfg.raw_samplerate else 1.0
-        block_bytes = cfg.raw_blocksize * len(cfg.enabled_channels) * 8  # float64
-        compressed = block_bytes * 0.5  # gzip ~50% compression
-
-        # Interval logger: one capture per interval
-        per_year = (365 * 24 * 3600 / interval_s) * compressed
-        if per_year >= 1e9:
-            interval_est = f"~{per_year / 1e9:.1f} GiB/year"
-        else:
-            interval_est = f"~{per_year / 1e6:.0f} MiB/year"
-        if per_year > 50e9:
-            interval_est += "  (exceeds 50 GiB)"
-
-        # Per burst: pre-buffer frames + post-trigger frames
-        burst_frames = max(1, int((burst_dur_s + pre_buf_s) / block_s)) if block_s > 0 else 1
-        burst_bytes = burst_frames * compressed
-        if burst_bytes >= 1e6:
-            burst_est = f"~{burst_bytes / 1e6:.1f} MiB/burst"
-        else:
-            burst_est = f"~{burst_bytes / 1e3:.0f} KiB/burst"
-
-        estimate = f"Interval: {interval_est}\nBurst: {burst_est}"
+        interval_s = interval_from_label(
+            _get(ui.MON_DLG_INTERVAL, None), _MON_SEED['interval_s'])
+        burst_dur_s = float(_get(ui.MON_DLG_BURST_DUR, _MON_SEED['burst_duration_s']))
+        pre_buf_s = float(_get(ui.MON_DLG_PRE_BUFFER, _MON_SEED['pre_burst_s']))
+        estimate, per_year = monitor_storage_estimate(
+            self.collector.config, interval_s, burst_dur_s, pre_buf_s)
         # Flag more than 10 GB/year: a long run with a daily or weekly
         # interval stores less, so the interval is possibly set too short.
         over_10gb = per_year > 10e9
@@ -4255,6 +4291,14 @@ class GUI:
                             dpg.add_spacer(height=6)
                             dpg.add_separator()
                             dpg.add_text("", tag=ui.MON_DLG_ESTIMATE, color=_c("ON_SURFACE"))
+                            _tip(ui.MON_DLG_ESTIMATE,
+                                 "Estimated disk use in decimal units (1 GB = 10^9 bytes). "
+                                 "It counts the raw-rate waveform of each vibration channel. "
+                                 "A tachometer channel stores only edge times and is not "
+                                 "counted. It assumes that gzip halves the data. This is an "
+                                 "assumption, not a measurement: the ratio changes with the "
+                                 "signal, and on simulated data gzip kept 96 % of the raw "
+                                 "size. Plan for the raw size, two times the estimate.")
 
                             # ── Anomaly Detection ───────────────────────
                             dpg.add_spacer(height=8)
