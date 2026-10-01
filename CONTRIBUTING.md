@@ -72,7 +72,13 @@ installs the newest releases, so no job tests the lower bounds. Two
 exceptions:
 
 - **`dearpygui==2.0.0`.** Later versions crash the viewport on Windows.
-  Test on Windows before you change the pin.
+  Test on Windows before you change the pin. An environment marker installs
+  it on x86-64 only (`platform_machine` `x86_64` or `AMD64`): 2.0.0 has no
+  Linux ARM wheel, so on a Raspberry Pi `pip install .` would fail. There
+  the package installs without the GUI, and `tests/conftest.py` does not
+  collect the test modules that import dearpygui or `rev80.gui`. A test that
+  imports the GUI inside a function calls `pytest.importorskip("dearpygui")`
+  first.
 - **`picosdk`** installs from the vendor repository, pinned to one commit.
   It is not a PyPI package.
 
@@ -2095,6 +2101,21 @@ new test in the file for its area. Put a new amplitude assertion in
 
 The GUI tests create a dearpygui context, but never a viewport.
 
+### 6.4 Tests on a Raspberry Pi
+
+An ARM install has no dearpygui (section 1), so the GUI test modules are not
+collected. A source check reads `gui.py` as text; it does not import it.
+
+Raspberry Pi OS and Debian mount `/tmp` as a tmpfs of half the RAM: 453 MB
+on a Pi 3. The monitor writer stops below 1 GiB free, so about 30 monitor
+tests fail there with "Insufficient disk space". Put the pytest temporary
+directory on the SD card:
+
+```bash
+mkdir -p ~/.cache/pytest-tmp
+TMPDIR=~/.cache/pytest-tmp python -m pytest tests/ -q
+```
+
 ---
 
 ## 7. Profiling
@@ -2258,7 +2279,7 @@ asks the user to continue or stop.
 - **64-bit only.** The PicoSDK DLLs are 64-bit.
 - **dearpygui is pinned to 2.0.0** in `pyproject.toml`, because later versions
   crash the viewport on Windows. Do not change the pin without a test on
-  Windows.
+  Windows. The pin applies on x86-64 only; ARM installs have no GUI.
 - **USB kernel driver.** `ps4000a.dll` is the user-mode library. PicoSDK
   installs the kernel driver separately and needs a restart before the first
   connection to a scope.

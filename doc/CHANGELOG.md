@@ -9,6 +9,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### build/arm — install on ARM computers without the GUI (2026-09-30)
+
+#### Fixed
+- **`pip install .` failed on a Raspberry Pi.** dearpygui 2.0.0 has no Linux
+  ARM wheel, and pip stopped with "No matching distribution found for
+  dearpygui==2.0.0" (Pi 3, Debian 13, Python 3.13, aarch64). An environment
+  marker now installs dearpygui on x86-64 only (`x86_64`, `AMD64`). A plain
+  `pip install .` on a PC still installs the GUI. An optional `[gui]` extra
+  was rejected, because a new user then gets no GUI from `pip install .`.
+
+#### Changed
+- **A bare `rev80` without dearpygui** prints "the GUI is not available on
+  this platform" and exits with code 2, instead of an `AttributeError`.
+- **Tests on ARM.** `tests/conftest.py` leaves out the ten test modules that
+  import dearpygui or `rev80.gui` when dearpygui is not installed, and names
+  them in the report header. Four helpers or tests that import the GUI inside
+  a function call `pytest.importorskip("dearpygui")`. The source checks in
+  `test_session_from.py` and `test_headless_tach.py` read `gui.py` as text, so
+  they also run on ARM. On a Raspberry Pi 3 (Debian 13, Python 3.13, PicoScope
+  4824A with AWG loopback on channel A) the suite gives 1159 passed and 44
+  skipped, hardware tests included.
+- **CONTRIBUTING, "6.4 Tests on a Raspberry Pi".** `/tmp` there is a 453 MB
+  tmpfs, and the monitor writer stops below 1 GiB free, so about 30 monitor
+  tests fail unless `TMPDIR` points to the SD card.
+
 ### doc/revision — documentation split, audit record and design evidence (2026-09-30)
 
 #### Added

@@ -4,12 +4,27 @@ Covers the shared role decision, --channels against the roles, the tach summary
 lines, the channel roles in a monitor session, and the simulated tach source.
 """
 
+from pathlib import Path
+
 import pytest
 
 import rev80 as vc
 from rev80 import tach
 from rev80.config import channel_role_state
 from rev80.headless import _apply_channel_config, _apply_overrides
+
+
+# Source checks read the files as text: importing rev80.gui needs dearpygui,
+# which ARM installs do not have.
+_PKG = Path(__file__).parent.parent / 'src' / 'rev80'
+
+
+def _source(module):
+    return (_PKG / f'{module}.py').read_text(encoding='utf-8')
+
+
+def _front_end_sources():
+    return [(f'rev80.{m}', _source(m)) for m in ('gui', 'headless')]
 
 
 class _Args:
@@ -260,16 +275,11 @@ def test_neither_front_end_reimplements_the_role_decision():
     This reads the source, because `_restore_channel_assignments` cannot run
     without a dearpygui context.
     """
-    import inspect
-
-    from rev80 import gui, headless
-
-    for mod in (gui, headless):
-        src = inspect.getsource(mod)
+    for name, src in _front_end_sources():
         assert 'channel_role_state(' in src, (
-            f'{mod.__name__} must call the shared decision, not its own copy')
+            f'{name} must call the shared decision, not its own copy')
         assert "info.get('role')" not in src and 'info.get("role")' not in src, (
-            f'{mod.__name__} is reading the role itself again')
+            f'{name} is reading the role itself again')
 
 
 # --- --channels persistence, which is sticky across restarts --------------

@@ -347,4 +347,11 @@ and "11. Automated releases". Facts that the files do not show:
   `0.0.0+unknown` and nothing fails except the build-job check for that
   string. A dirty tree adds `+d<date>`.
 - dearpygui is pinned to 2.0.0. Do not change the pin without a test on
-  Windows.
+  Windows. A marker installs it on x86-64 only; 2.0.0 has no Linux ARM
+  wheel. Do not make it unconditional: a Raspberry Pi install then fails.
+  Do not move it to an extra: a plain `pip install .` on a PC then has no
+  GUI.
+- On ARM, `tests/conftest.py` leaves out the test modules that import
+  dearpygui or `rev80.gui`. A new GUI test file needs no guard; a GUI import
+  inside a function in a non-GUI test file needs
+  `pytest.importorskip("dearpygui")`.

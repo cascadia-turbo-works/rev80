@@ -794,6 +794,7 @@ def test_overflow_warns_once_per_channel_per_stream(caplog):
 @pytest.mark.parametrize('binsize', [0.5, 2.0, 10.0])
 def test_acquisition_dialog_preview_matches_settings(maxfreq, binsize):
     """derive_acquisition_preview gives the same values as AcquisitionSettings."""
+    pytest.importorskip("dearpygui")
     from rev80.gui import derive_acquisition_preview
 
     cfg = vc.AcquisitionSettings()

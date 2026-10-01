@@ -399,6 +399,7 @@ numbers for each change.
 | R61 | Aug 2026 audit | Split `gui.py` ([H-07](audit-202608.md#h-07)) | 🔲 TODO — 5194 lines. `util.__all__` and the thread excepthook are done |
 | R62 | Aug 2026 audit | Unique burst IDs ([H-08](audit-202608.md#h-08), item 4) | 🔲 TODO — the ID has one-second resolution. A second burst in the same second fails `create_group`, and headless stops on the writer error. Not reproduced |
 | R63 | Doc revision | Verify the tachometer speed-drift limit on hardware | 🔲 TODO — the `SPEED_DRIFT_MAX_PCT = 1.0` table (CONTRIBUTING E14.6) has no recorded source; the `tach.py` comment says simulation only. Measure it with a controlled speed drift (AWG sweep or a load step on a real machine) and record the conditions |
+| R64 | Sep 2026 | Install and run headless on a Raspberry Pi (ARM) | ✅ Done — Sep 2026 (CHANGELOG `build/arm`). dearpygui installs on x86-64 only, so `pip install .` works on a Pi 3 (Debian 13, Python 3.13). The full suite passes there with a 4824A, hardware tests included |
 | — | Future | Proximity probe support | ✅ Done — scope sensor with EU in displacement units |
 | — | Future | Web portal for data sharing | ❌ Abandoned |
 | — | Future | MCC DAQ tooling (USB-1608FS-Plus) | ❌ Abandoned — the PicoScope replaces the DAQ for all current use cases |

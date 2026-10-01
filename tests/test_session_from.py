@@ -5,6 +5,8 @@ frame, and takes max_burst_s from the caller. Some tests read the source of
 gui.py and headless.py to check that neither builds a session itself.
 """
 
+from pathlib import Path
+
 import pytest
 
 import rev80 as vc
@@ -14,6 +16,19 @@ from rev80.monitor.session import (
     sensor_snapshot_for,
     session_from,
 )
+
+
+# Source checks read the files as text: importing rev80.gui needs dearpygui,
+# which ARM installs do not have.
+_PKG = Path(__file__).parent.parent / 'src' / 'rev80'
+
+
+def _source(module):
+    return (_PKG / f'{module}.py').read_text(encoding='utf-8')
+
+
+def _front_end_sources():
+    return [(f'rev80.{m}', _source(m)) for m in ('gui', 'headless')]
 
 
 def _collector(pre_buffer_s=30.0):
@@ -50,14 +65,9 @@ def test_pre_buffer_frames_is_one_formula(pre_s, block_s, expected):
 
 def test_both_front_ends_size_the_cache_through_the_same_helper():
     """gui.py and headless.py both call required_cache_frames() (source check)."""
-    import inspect
-
-    from rev80 import gui, headless
-
-    for mod in (gui, headless):
-        src = inspect.getsource(mod)
+    for name, src in _front_end_sources():
         assert 'required_cache_frames(' in src, (
-            f'{mod.__name__} must size the frame cache through the shared rule')
+            f'{name} must size the frame cache through the shared rule')
 
 
 # --- max_burst_s is a real setting -------------------------------------
@@ -77,23 +87,14 @@ def test_neither_front_end_hardcodes_the_burst_cap():
     Burst retention grows at about 2.26 MB/s on 4 channels, so the cap must
     come from the configuration.
     """
-    import inspect
-
-    from rev80 import gui, headless
-
-    for mod in (gui, headless):
-        src = inspect.getsource(mod)
+    for name, src in _front_end_sources():
         assert 'max_burst_s=600.0' not in src and 'max_burst_s       = 600.0' not in src, (
-            f'{mod.__name__} still pins the burst cap to a literal')
+            f'{name} still pins the burst cap to a literal')
 
 
 def test_the_gui_config_save_preserves_a_hand_edited_burst_cap():
     """The GUI config save keeps a hand-edited max_burst_s (source check)."""
-    import inspect
-
-    from rev80 import gui
-
-    src = inspect.getsource(gui)
+    src = _source('gui')
     assert "'max_burst_s':       600.0," not in src
 
 
@@ -135,12 +136,7 @@ def test_sensor_snapshot_deduplicates_by_id():
 
 
 def test_both_front_ends_use_the_factory():
-    import inspect
-
-    from rev80 import gui, headless
-
-    for mod in (gui, headless):
-        src = inspect.getsource(mod)
-        assert 'session_from(' in src, f'{mod.__name__} must use the factory'
+    for name, src in _front_end_sources():
+        assert 'session_from(' in src, f'{name} must use the factory'
         assert 'MonitorSession(' not in src, (
-            f'{mod.__name__} still constructs MonitorSession field-by-field')
+            f'{name} still constructs MonitorSession field-by-field')

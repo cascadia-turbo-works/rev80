@@ -15,7 +15,6 @@ from rev80 import (
     DataCollector,
     VibeSample,
     VibeSensor,
-    GUI,
     get_logger,
 )
 from rev80.sample import RAW_SAMPLERATE_HZ
@@ -375,6 +374,7 @@ def test_new_frame_event_set_on_reprocess():
 # ---------------------------------------------------------------------------
 
 def test_gui_build():
+    GUI = pytest.importorskip('rev80.gui').GUI
     app = GUI()
     app.initialize()
     time.sleep(1)

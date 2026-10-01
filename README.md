@@ -110,6 +110,25 @@ simulated sensor stays available.
 
 macOS support is not verified on hardware.
 
+### Raspberry Pi and other ARM computers
+
+On an ARM computer, `pip install .` installs Rev80 without the GUI, because
+dearpygui 2.0.0 has no Linux ARM package. Use the headless datalogger
+(`rev80 headless`). A bare `rev80` prints a message and exits with code 2.
+
+1. Install the PicoScope 4000A driver for arm64 (`libps4000a`) from the Pico
+   Technology Linux repository.
+2. Install Rev80 from the source directory:
+
+   ```bash
+   pip install .
+   ```
+
+3. Continue with "Headless datalogger", "First run on a new computer".
+
+Verified on a Raspberry Pi 3 Model B (Debian 13, Python 3.13) with a
+PicoScope 4824A.
+
 ### Linux desktop entry
 
 Use a user-scheme install for a normal desktop. It needs no virtual
