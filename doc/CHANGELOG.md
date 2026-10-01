@@ -30,6 +30,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   they also run on ARM. On a Raspberry Pi 3 (Debian 13, Python 3.13, PicoScope
   4824A with AWG loopback on channel A) the suite gives 1159 passed and 44
   skipped, hardware tests included.
+- **README, "CPU and memory on a Raspberry Pi 3".** Headless CPU, memory and
+  temperature for 2, 4, 6 and 8 channels, and the burst memory rate. A 60 s
+  burst with 8 channels reached 615 MB and 82.2 °C, and the stream degraded
+  to 65 % while the burst was written. The README advises 4 channels or
+  fewer, or a shorter burst, on a Pi 3. The open work is R65.
 - **CONTRIBUTING, "6.4 Tests on a Raspberry Pi".** `/tmp` there is a 453 MB
   tmpfs, and the monitor writer stops below 1 GiB free, so about 30 monitor
   tests fail unless `TMPDIR` points to the SD card.

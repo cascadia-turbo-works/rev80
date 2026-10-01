@@ -129,6 +129,36 @@ dearpygui 2.0.0 has no Linux ARM package. Use the headless datalogger
 Verified on a Raspberry Pi 3 Model B (Debian 13, Python 3.13) with a
 PicoScope 4824A.
 
+#### CPU and memory on a Raspberry Pi 3
+
+Measured with `rev80 headless` on a Raspberry Pi 3 Model B Rev 1.2
+(4 cores, 1.2 GHz, 905 MB RAM) and a PicoScope 4824A. Settings: F_max
+1000 Hz, 1 Hz resolution (1 s block), 10 s interval, gzip level 4. Channel A
+is the tachometer (AWG square wave, 1800 RPM); the other channels are open
+inputs. CPU is the mean over 110 s after a 10 s start, sampled each second.
+100 % is one core.
+
+| Channels | Process CPU, mean | Process CPU, p95 | All 4 cores | Memory (RSS) at 120 s | SoC temperature, max |
+|---|---|---|---|---|---|
+| 2 | 54 % | 71 % | 17 % | 173 MB | 58.5 °C |
+| 4 | 94 % | 122 % | 27 % | 218 MB | 62.3 °C |
+| 6 | 134 % | 176 % | 37 % | 281 MB | 66.6 °C |
+| 8 | 174 % | 220 % | 48 % | 313 MB | 71.4 °C |
+
+- All runs read 1800 RPM on every status line, with no overflow and no
+  degraded frame.
+- With 8 channels for 10 minutes, memory stays at 313 MB after the first
+  100 s. CPU is 190 % mean, and the SoC reaches 78.4 °C.
+- A burst adds memory until it is written: 1.7 MB/s with 4 channels and
+  3.6 MB/s with 8 channels. The write adds a further step of about 70 MB.
+
+> **Caution:** On a Pi 3, do not record bursts with 8 channels at the
+> default burst length. A 60 s burst with 8 channels reached 615 MB, 82.2 °C
+> and frequency capping, and the stream degraded to 65 % of its rate while
+> the burst was written. A 120 s burst needs about 820 MB, and the Pi has
+> about 650 MB free. Use 4 channels or fewer, or set `burst_duration_s` to
+> 60 s or less and `max_burst_s` to match. Fit a heatsink.
+
 ### Linux desktop entry
 
 Use a user-scheme install for a normal desktop. It needs no virtual
