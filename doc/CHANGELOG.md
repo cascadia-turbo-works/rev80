@@ -9,6 +9,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### feature/headless-siggen — headless starts the signal generator (2026-09-30)
+
+#### Fixed
+- **Headless never started the signal generator.** It called
+  `connect_sensor(sensor)` without the device file's `siggen` block, so an
+  AWG loopback that worked in the GUI was silent in headless. Headless now
+  passes the block, as the GUI does, and the session summary shows a
+  `Siggen` line. Verified on a Raspberry Pi 3 with a PicoScope 4824A: a
+  30 Hz square wave looped back to channel A as the tachometer reads
+  1,800 RPM on every status line, with 2, 4, 6 and 8 channels.
+
 ### build/arm — install on ARM computers without the GUI (2026-09-30)
 
 #### Fixed

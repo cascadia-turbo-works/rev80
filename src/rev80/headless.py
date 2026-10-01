@@ -339,8 +339,19 @@ def _tach_summary_lines(config, tach_settings: dict,
 
 
 
+def _siggen_summary_line(siggen: dict | None) -> str | None:
+    """One summary line for the signal generator, or None when it is off."""
+    if not siggen:
+        return None
+    wave = str(siggen.get('wave_type', 'PS4000A_SINE')).removeprefix('PS4000A_').title()
+    return (f"  Siggen      {wave} {float(siggen['freq_hz']):g} Hz  "
+            f"{int(siggen['pktopk_uv']) / 1000:g} mV pk-pk  "
+            f"offset {int(siggen.get('offset_uv', 0)) / 1000:g} mV")
+
+
 def _print_session_summary(sensor, config, args, mon_cfg, anom_cfg, device_path,
-                           tach_settings: dict | None = None) -> None:
+                           tach_settings: dict | None = None,
+                           siggen: dict | None = None) -> None:
     from rev80.config import acquisition_config_path
 
     interval_s    = args.interval
@@ -368,6 +379,9 @@ def _print_session_summary(sensor, config, args, mon_cfg, anom_cfg, device_path,
     print(f"  Channels    {ch_labels or '(none)'}")
     print(f"  Sample rate {config.samplerate} Hz   block {config.blocksize}   "
           f"resolution {config.binsize:.3g} Hz")
+    siggen_line = _siggen_summary_line(siggen)
+    if siggen_line:
+        print(siggen_line)
     print()
     for line in _tach_summary_lines(config, tach_settings or {}):
         print(line)
@@ -513,8 +527,11 @@ def run(args: argparse.Namespace) -> int:
 
     # ── Summary + confirmation gate ───────────────────────────────────────────
     anom_cfg = mon_cfg.get("anomaly", {})
+    # The device file's siggen block, as the GUI restores it. It is None when
+    # the generator is off.
+    collector.siggen_config = device_cfg.get('siggen')
     _print_session_summary(sensor, config, args, mon_cfg, anom_cfg, device_path,
-                           tach_settings)
+                           tach_settings, collector.siggen_config)
     if not getattr(args, 'start_now', False):
         try:
             input("Press Enter to start monitoring, or Ctrl+C to abort… ")
@@ -524,7 +541,7 @@ def run(args: argparse.Namespace) -> int:
     print()
 
     # ── Connect stream ────────────────────────────────────────────────────────
-    collector.connect_sensor(sensor)
+    collector.connect_sensor(sensor, siggen_config=collector.siggen_config)
     collector.start_stream()
     log.info(f"Stream started — {config.samplerate} Hz, {config.blocksize} samples, "
              f"channels {config.enabled_channels}")
