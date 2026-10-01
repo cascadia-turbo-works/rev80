@@ -9,6 +9,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-09-30
+
 ### feature/headless-siggen — headless starts the signal generator (2026-09-30)
 
 #### Fixed
