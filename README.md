@@ -1324,6 +1324,11 @@ programmed once when the stream starts and has no trigger for each block.
 Rev80 saves the settings in the device file and restores them when the same
 device connects. The generator has no effect with the simulated sensor.
 
+Headless has no Generate tab. It starts the generator from the `siggen:`
+block of the device file when that block has `enabled: true`, and the
+session summary shows a `Siggen` line. Use this for an AWG loopback test of
+a tachometer channel.
+
 ---
 
 ## Simulated sensor
