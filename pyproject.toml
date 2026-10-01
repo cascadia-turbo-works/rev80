@@ -20,9 +20,10 @@ dependencies = [
     "h5py>=3.8",
     "plyer>=2.1",
     # Exact pin: later versions crash the viewport on Windows. Test on Windows
-    # before you change it. A required dependency, because gui.py and icons.py
-    # import it at module scope.
-    "dearpygui==2.0.0",
+    # before you change it. x86-64 only: 2.0.0 has no Linux ARM wheel, so a
+    # Raspberry Pi installs without it and runs headless only. PEP 508 has no
+    # `not`, so the marker lists the machines that get the GUI.
+    "dearpygui==2.0.0; platform_machine == 'x86_64' or platform_machine == 'AMD64'",
     "pywin32>=305; sys_platform == 'win32'",
     # Pinned to one commit of the vendor repository. PyPI refuses this form of
     # dependency, so the wheel is a release asset only. Its setup.py loads the
@@ -36,7 +37,7 @@ rev80 = "rev80.__main__:main"
 
 [project.optional-dependencies]
 # `gui` is an empty alias, so that `pip install rev80[gui]` still works.
-# dearpygui is a required dependency.
+# dearpygui is a required dependency on x86-64 and is absent on ARM.
 gui = []
 # ruff is bounded because its rule behaviour changes between minor releases.
 # `build` is the PEP 517 frontend for `./scripts/build.sh wheel`. Do not run

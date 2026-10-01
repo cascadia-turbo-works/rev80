@@ -74,6 +74,7 @@ def _save_hook_type(stored_hook_type, widget_value):
     It touches only self._stored_hook_type, so a stub carrying that attribute
     exercises the shipped method rather than a paraphrase of it.
     """
+    pytest.importorskip("dearpygui")
     from rev80.gui import GUI
     stub = SimpleNamespace(_stored_hook_type=stored_hook_type)
     return GUI._hook_type_to_save(stub, widget_value)

@@ -291,6 +291,10 @@ Read these before you change the code nearby. The status is in
   render loop. Tracked as R59 and R50.
 - **Headless does not close the device on an exception** in its loop.
   Tracked as R52.
+- **A burst can exceed the memory of a small board.** Burst frames stay in
+  memory until the burst is written: 3.6 MB/s with 8 channels on a
+  Raspberry Pi 3, so the default 120 s burst needs about 820 MB there.
+  Nothing checks this at start. Tracked as R65.
 - **Burst IDs have one-second resolution.** A second burst in the same second
   fails. Tracked as R62.
 - **`tests/test_monitor_session_load.py` skips on burst timing**, so a slow
@@ -347,4 +351,11 @@ and "11. Automated releases". Facts that the files do not show:
   `0.0.0+unknown` and nothing fails except the build-job check for that
   string. A dirty tree adds `+d<date>`.
 - dearpygui is pinned to 2.0.0. Do not change the pin without a test on
-  Windows.
+  Windows. A marker installs it on x86-64 only; 2.0.0 has no Linux ARM
+  wheel. Do not make it unconditional: a Raspberry Pi install then fails.
+  Do not move it to an extra: a plain `pip install .` on a PC then has no
+  GUI.
+- On ARM, `tests/conftest.py` leaves out the test modules that import
+  dearpygui or `rev80.gui`. A new GUI test file needs no guard; a GUI import
+  inside a function in a non-GUI test file needs
+  `pytest.importorskip("dearpygui")`.

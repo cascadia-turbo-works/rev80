@@ -103,6 +103,13 @@ def main():
         from rev80.desktop import uninstall as uninstall_desktop_entry
         sys.exit(uninstall_desktop_entry())
 
+    # pyproject.toml installs dearpygui on x86-64 only, so an ARM board has
+    # no GUI. Say so, instead of an AttributeError on rev80.GUI.
+    if not hasattr(rev80, "GUI"):
+        print("rev80: the GUI is not available on this platform (dearpygui is "
+              "not installed). Use `rev80 headless`.", file=sys.stderr)
+        sys.exit(2)
+
     # Default autodetect=False when opening a file; True otherwise
     if args.autodetect is None:
         args.autodetect = args.from_file is None

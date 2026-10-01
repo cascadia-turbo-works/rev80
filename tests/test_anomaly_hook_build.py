@@ -98,6 +98,7 @@ def _gui_build(hook_type, widget_over=None):
 
     The stub answers the method's widget reads from ``values``.
     """
+    pytest.importorskip("dearpygui")
     import rev80.gui as gui_module
     from rev80.gui import GUI
 
