@@ -91,6 +91,9 @@ _BUILTIN_ACQ: dict[str, Any] = {
         'speed_gate_enabled':       False,
         'speed_gate_rpm':           None,
         'speed_gate_tolerance_pct': 3.0,
+        # Seconds a stream waits for a lost scope to come back; null = no
+        # limit. With a limit, headless exits with code 3 at the end of it.
+        'device_wait_s':            None,
         # Display unit for shaft-rate readouts: RPM | Hz | rad/s | deg/s.
         'rotation_unit':            'RPM',
     },

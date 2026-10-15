@@ -1,6 +1,7 @@
 # Data Collector
 
 import threading
+import time
 from collections import deque
 from datetime import datetime
 from fractions import Fraction
@@ -35,6 +36,11 @@ _RESAMPLE_DENOM_LADDER = (4, 8, 16, 32, 64, 128, 256)
 #: integer factor. It does not add to the clock error: the returned rate is
 #: exact for the ratio used, and the frequency axis uses it.
 _RESAMPLE_RATE_TOL = 1e-3
+
+# The high-pass settles in about this many periods of its band edge after a
+# reset: at 2 Hz with 0.5 s frames, the second frame still reads 1.3 % off.
+# Evidence: CONTRIBUTING.md, "E21. Device loss".
+_HP_SETTLE_PERIODS = 2.0
 
 
 def decimate_to_rate(block: np.ndarray, raw_rate: float, target_rate: float) -> 'tuple[np.ndarray, float]':
@@ -171,6 +177,9 @@ class DataCollector:
 
         self.sensor: Union[rev80.VibeSensor, None] = None
         self.stream = None
+        self.start_error: str | None = None   # the last start_stream() failure
+        # Frames still to flag degraded after a device gap (see gap_settle_frames).
+        self._settle_frames_left = 0
         self.datadir: Path = data_dir()
         self.data: Dict = {}
         self.config = config if config else rev80.AcquisitionSettings()
@@ -250,6 +259,17 @@ class DataCollector:
         except Exception:
             log.error("Device connection may be interrupted")
             return False
+
+    @property
+    def stream_fault(self) -> str | None:
+        """Why the stream stopped by itself (device lost), else None."""
+        return getattr(self.stream, 'fault', None)
+
+    @property
+    def device_lost_for_s(self) -> float | None:
+        """Seconds since the scope was lost while the stream waits for it, else None."""
+        since = getattr(self.stream, 'lost_since', None)
+        return None if since is None else time.monotonic() - since
 
     @property
     def stream_degraded(self):
@@ -365,6 +385,13 @@ class DataCollector:
     # ------------------------------------------------------------------
     # Highpass filtering
     # ------------------------------------------------------------------
+
+    def gap_settle_frames(self) -> int:
+        """Frames to flag degraded after a device gap, while the high-pass settles."""
+        if not self.config.highpass_enabled:
+            return 1
+        settle_s = _HP_SETTLE_PERIODS / max(float(self.config.highpass_fc), 1e-9)
+        return max(1, int(np.ceil(settle_s / self.config.acquisition_period - 1e-9)))
 
     def reset_filter_state(self) -> None:
         """Drop carried highpass state (stream start / reconnect / config change)."""
@@ -602,11 +629,15 @@ class DataCollector:
         # A new stream is a new continuous signal — drop any filter state
         # carried over from the previous one.
         self.reset_filter_state()
+        self.start_error = None
         try:
             self.stream.start()
         except Exception as e:
-            self.disconnect_sensor()
+            # Log first: the teardown below must not hide the cause.
+            self.start_error = str(e)
             log.error(f"Error starting stream: {e}")
+            self.disconnect_sensor()
+            return
         log.debug("Stream started")
 
     def stop_stream(self):
@@ -687,6 +718,14 @@ class DataCollector:
 
         overflow_mask: int = samp.get("overflow_mask", 0)
         degraded: bool = samp.get("degraded", False)
+        if samp.get("gap", False):
+            # First block after a lost scope came back: a new signal. Reset
+            # the high-pass and flag the frames while it settles.
+            self.reset_filter_state()
+            self._settle_frames_left = self.gap_settle_frames()
+        if self._settle_frames_left > 0:
+            self._settle_frames_left -= 1
+            degraded = True
         samples: dict[int, rev80.VibeSample] = {}
 
         # The fallback is the raw rate, not the display rate: `samp` is a

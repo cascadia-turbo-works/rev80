@@ -19,6 +19,10 @@ import sys
 
 log = logging.getLogger(__name__)
 
+#: Exit code when the scope cannot be started or is lost and does not come
+#: back. A service manager can restart on it. README.md, "Headless datalogger".
+EXIT_DEVICE_LOST = 3
+
 
 # ── Info commands ──────────────────────────────────────────────────────────────
 
@@ -543,6 +547,10 @@ def run(args: argparse.Namespace) -> int:
     # ── Connect stream ────────────────────────────────────────────────────────
     collector.connect_sensor(sensor, siggen_config=collector.siggen_config)
     collector.start_stream()
+    if collector.stream is None:
+        # start_stream() failed and disconnected the device.
+        log.error(f"Stream did not start: {collector.start_error or 'unknown error'}")
+        return EXIT_DEVICE_LOST
     log.info(f"Stream started — {config.samplerate} Hz, {config.blocksize} samples, "
              f"channels {config.enabled_channels}")
 
@@ -636,8 +644,15 @@ def run(args: argparse.Namespace) -> int:
         sys.stdout.flush()
         _status_lines = len(lines)
 
+    exit_code = 0
     while not shutdown.is_set():
         if not collector.new_frame_event.wait(timeout=1.0):
+            if not collector.is_streaming:
+                # The stream gave up: the scope is lost and did not come back.
+                log.error(f"Stream lost: {collector.stream_fault or 'stopped by itself'}. "
+                          f"Closing the session and exiting with code {EXIT_DEVICE_LOST}.")
+                exit_code = EXIT_DEVICE_LOST
+                break
             continue
         collector.new_frame_event.clear()
 
@@ -680,7 +695,8 @@ def run(args: argparse.Namespace) -> int:
     # ── Clean shutdown ────────────────────────────────────────────────────────
     print("\nStopping…")
     monitor.stop()
-    collector.stop_stream()
+    if collector.is_streaming:
+        collector.stop_stream()
 
     snap = monitor.status_snapshot()
     print("\nSession complete.")
@@ -688,7 +704,7 @@ def run(args: argparse.Namespace) -> int:
     print(f"  Bursts   : {snap['burst_count']}")
     print(f"  File     : {session.session_h5}")
     print(f"  Size     : {snap['total_bytes'] / 1e6:.1f} MB")
-    return 0
+    return exit_code
 
 
 # ── Argument parser ────────────────────────────────────────────────────────────

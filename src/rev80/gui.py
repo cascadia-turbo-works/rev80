@@ -348,6 +348,12 @@ class GUI:
         # Stale-frame watchdog deadline (monotonic seconds), or None when
         # disarmed. See _schedule_status_timeout.
         self._status_deadline: float | None = None
+        # Why the device was lost (stream fault or failed start); shown on the
+        # Device card until a device connects again.
+        self._device_fault: str | None = None
+        # The "waiting" text on the Device card while the stream waits for a
+        # lost scope; None when not shown.
+        self._waiting_text: str | None = None
         self.found_sensors: list = []
         self._autoscale_pending: bool = False  # True → autoscale on next frame
         self._was_streaming_before_config: bool = False  # stream state when config opened
@@ -376,6 +382,7 @@ class GUI:
                 "connected": _c("GREEN"),
                 "file_loaded": _c("YELLOW"),
                 "disconnected": _c("RED"),
+                "lost": _c("RED"),
             }
             dpg.configure_item(ui.DEVICE_STATUS_RECT, fill=colors.get(state, _c("RED")))
         if dpg.does_item_exist(ui.CONN_STATUS_TEXT):
@@ -383,6 +390,7 @@ class GUI:
                 "connected": "Connected",
                 "file_loaded": "File Loaded",
                 "disconnected": "Not Connected",
+                "lost": "Device lost",
             }
             dpg.set_value(ui.CONN_STATUS_TEXT, labels.get(state, "Not Connected"))
 
@@ -1413,6 +1421,7 @@ class GUI:
         # It early-returns when its dialog is not on screen.
         self._update_tach_tab()
         self._check_status_timeout()
+        self._check_stream_fault()
         if not self.collector.new_frame_event.is_set():
             return
         self.collector.new_frame_event.clear()
@@ -1420,6 +1429,46 @@ class GUI:
         self._update_tach_cards()
         if self._monitor is not None and self._monitor.is_recording:
             self._update_monitor_card()
+
+    def _check_stream_fault(self):
+        """Show a stream that stopped by itself: the scope was lost and did not
+        come back. Render thread; the acquisition thread never touches a widget."""
+        lost_s = self.collector.device_lost_for_s
+        if lost_s is not None:
+            self._show_device_waiting(lost_s)
+            return
+        if self._waiting_text is not None:
+            # The scope came back: show the device as connected again.
+            self._waiting_text = None
+            self._update_connection_summary()
+        fault = self.collector.stream_fault
+        if fault is None or self.collector.is_streaming:
+            return
+        # The stream abandoned the lost handle: the disconnect makes no driver call.
+        self.collector.disconnect_sensor()
+        self._on_device_lost(fault)
+
+    def _show_device_waiting(self, lost_s: float):
+        """'Device lost — waiting mm:ss' on the Device card; changes once a second."""
+        minutes, seconds = divmod(int(lost_s), 60)
+        text = f"Device lost — waiting {minutes:02d}:{seconds:02d}"
+        if text == self._waiting_text:
+            return
+        self._waiting_text = text
+        self._set_device_status("lost")
+        if dpg.does_item_exist(ui.CONN_STATUS_TEXT):
+            dpg.set_value(ui.CONN_STATUS_TEXT, text)
+
+    def _on_device_lost(self, reason: str):
+        """Stop the stream display and show `reason` on the Device card."""
+        log.error(f"Device lost: {reason}")
+        if self._monitor is not None and self._monitor.is_recording:
+            log.warning("The recording continues, but it gets no frames until a device connects")
+        self._device_fault = reason
+        self._status_deadline = None
+        self._set_stream_status("idle")
+        self._update_connection_summary()
+        self._update_browse_label()
 
     def _redraw(self, sender=None, data=None):
         if not self.collector.is_streaming:
@@ -1498,7 +1547,10 @@ class GUI:
         has_data = self._has_loaded_data
 
         if sensor is not None:
+            self._device_fault = None
             self._set_device_status("connected")
+        elif self._device_fault:
+            self._set_device_status("lost")
         elif has_data:
             self._set_device_status("file_loaded")
         else:
@@ -1516,6 +1568,11 @@ class GUI:
                     f"  Ch:  {sensor.num_channels}",
                 ]:
                     dpg.add_text(line, parent=ui.DEVICE_INFO_GROUP, color=dim)
+            elif self._device_fault:
+                dpg.add_text(self._device_fault, parent=ui.DEVICE_INFO_GROUP,
+                             color=_c("RED"), wrap=0)
+                dpg.add_text("Connect the scope again: Setup", parent=ui.DEVICE_INFO_GROUP,
+                             color=dim)
             elif has_data:
                 n_frames = len(self.collector.data["frame_cache"])
                 n_ch = len(self.collector.config.enabled_channels)
@@ -1524,6 +1581,8 @@ class GUI:
             # Resize Device card
             if sensor is not None:
                 n_info = 4
+            elif self._device_fault:
+                n_info = 3
             elif has_data:
                 n_info = 2
             else:
@@ -1706,6 +1765,10 @@ class GUI:
         self._browse_context = {'type': 'live'}
         self.collector.clear_trend()  # reset rel_time so trend starts at t=0
         self.collector.start_stream()
+        if self.collector.stream is None:
+            # The start failed and the collector disconnected the device.
+            self._on_device_lost(self.collector.start_error or "the stream did not start")
+            return
         self._update_browse_label()
 
     def _stop_stream(self):
