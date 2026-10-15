@@ -341,6 +341,76 @@ def test_highpass_state_persists_across_blocks_with_dc_offset():
         )
 
 
+def _stream_block(dc, block, rel_time, gap=False):
+    dc.receive_data({
+        'status': 'OKAY', 'overflow_mask': 0, 'rel_time': rel_time,
+        'timestamp': datetime.now(), 'unit': ['mV'], 'channels': [0],
+        'data': block[:, np.newaxis], 'samplerate': dc.config.samplerate,
+        'degraded': gap, 'gap': gap,
+    })
+    return dc.data['frame_cache'][-1][0]
+
+
+def test_block_after_a_device_gap_starts_a_new_filter_state():
+    """After the scope is lost and comes back, the first block is a new signal.
+
+    The filter state from before the gap must not reach it: the block filters
+    exactly as the first block of a new stream. It is flagged degraded and not
+    trended. The block after it reads the true RMS (the state carries again).
+    """
+    def collector():
+        dc = as_streaming(make_collector(eu='mm/s2', target_unit='mm/s2',
+                                         maxfreq=2000, binsize=2.0,
+                                         highpass_enabled=True, highpass_fc=10.0))
+        dc.init_trend_channels()
+        return dc
+
+    dc = collector()
+    N = dc.config.blocksize
+    freq = 203.37                       # off-bin
+    for i in range(3):
+        _stream_block(dc, tone(dc, freq, 1.0, offset=1000.0, n=N, start_sample=i * N), i)
+        dc.process_samples()
+
+    # New stream after the gap: a different phase and DC level.
+    after = tone(dc, freq, 1.0, offset=-400.0, n=N, phase=2.1)
+    gap_sample = _stream_block(dc, after, 10.0, gap=True)
+    dc.process_samples()
+
+    fresh = collector()
+    reference = _stream_block(fresh, after, 0.0)
+    assert np.array_equal(gap_sample.filtered_mv, reference.filtered_mv)
+    assert gap_sample.degraded is True
+    assert 10.0 not in list(dc.trend[0]['rel_times'])
+
+    nxt = _stream_block(dc, tone(dc, freq, 1.0, offset=-400.0, n=N, start_sample=N,
+                                 phase=2.1), 11.0)
+    overall = dc.process_sample(0, nxt).overall
+    assert abs(rel_err(overall, 1.0 / np.sqrt(2))) < 0.01
+
+
+@pytest.mark.parametrize('fc, binsize, expected', [
+    (10.0, 2.0, 1),     # 0.5 s frames; settles in 0.2 s
+    (2.0, 2.0, 2),      # 0.5 s frames; settles in 1 s
+    (2.0, 1.0, 1),      # 1 s frames
+    (1.0, 2.0, 4),
+])
+def test_frames_flagged_after_a_gap_cover_the_highpass_settling(fc, binsize, expected):
+    """The frames after a gap stay flagged until the high-pass has settled.
+
+    At fc 2 Hz and 0.5 s frames, the second frame still reads 1.3 % off
+    (DataCollector, simulation), so one flagged frame is not enough.
+    """
+    dc = as_streaming(make_collector(maxfreq=2000, binsize=binsize,
+                                     highpass_enabled=True, highpass_fc=fc))
+    assert dc.gap_settle_frames() == expected
+    N = dc.config.blocksize
+    flags = [_stream_block(dc, tone(dc, 1.25 * fc, 1.0, n=N, start_sample=i * N),
+                           i, gap=(i == 0)).degraded
+             for i in range(expected + 2)]
+    assert flags == [True] * expected + [False, False]
+
+
 def test_replay_processing_is_order_independent():
     """Replay gives the same result for a stored frame in any processing order.
 
