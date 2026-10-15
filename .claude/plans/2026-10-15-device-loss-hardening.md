@@ -110,6 +110,30 @@ Other facts:
   re-enumeration) is a real unplug: the field crash matches the manual S3d row
   exactly (`Stop` `PICO_OK`, then SIGSEGV in `CloseUnit`).
 
+### Idle loss (S8), 2026-10-15
+
+The GUI crashed (SIGSEGV in `CloseUnit`) after: stop the stream, unplug, start.
+`start()` used the open idle handle, `RunStreaming` failed, and the error path
+in `DataCollector.start_stream()` closed the lost handle. Probe S8: stream,
+`Stop` while present, then a physical unplug. Same PC and scope as above.
+
+| ID | After `Stop` | Result (3 runs each, all clean) |
+|---|---|---|
+| S8a | no loss | `PingUnit` `PICO_OK` (0.2–0.4 ms). `EnumerateUnits` `PICO_NOT_FOUND`: **a scope open in this process is not listed**. `OpenUnit` by serial `PICO_NOT_FOUND` |
+| S8b | absent | `PingUnit` `PICO_NOT_RESPONDING` (<0.1 ms); `EnumerateUnits` `PICO_NOT_FOUND` |
+| S8c | after replug | `PingUnit` `PICO_NOT_RESPONDING`; serial listed; `OpenUnit` `PICO_OK` at the first attempt (3.0 s) |
+| S8d | absent, start sequence | `SetChannel` x 8 `PICO_OK` (no device access), `SetSigGenBuiltIn` and `RunStreaming` `PICO_NOT_RESPONDING`; `SetDataBuffers` `PICO_OK`; no crash |
+| S8e | after replug, start sequence | as S8d |
+
+Consequences:
+
+- **`PingUnit` on an idle handle is the liveness check**: `PICO_OK` only for a
+  present, owned scope; clean in all cases. (While streaming it returns
+  `PICO_BUSY` and cannot be used, S4.)
+- "Serial not listed" does not mean "absent": the open scope is never listed.
+  "Listed" while we hold a handle means the scope re-enumerated.
+- The start calls on a lost handle are safe; only teardown crashes.
+
 ### Decision
 
 In-process recovery is safe, with this rule: **after a loss, make no driver
@@ -161,6 +185,16 @@ Open risks:
       the cap, recovery gives up with a fault (step 5), and the service
       manager restarts the process. Put the S7 result beside the constant.
    For an open at start (`start()`), keep today's path.
+2b. **Check an idle handle before use** (S8). Before any driver call on a
+   handle that was idle (at the top of `start()` when the device is open, and
+   in `close()` when not streaming), call `ps4000aPingUnit`. `PICO_OK`: use
+   the handle. Any other status: abandon it (as step 2.4). Then `start()`
+   opens a new handle by serial (one open; the scope is absent → a clear
+   "not connected" error), and `close()` makes no driver call. A failure of a
+   driver call later in `start()` also abandons the handle, with no teardown.
+   The handle stays open while idle: the GUI reads metadata from it.
+2c. **Log a start error before the teardown** in
+   `DataCollector.start_stream()`, so the failing status is in the log.
 3. **Recovery deadline.** 30 s from the loss, checked between waits. Evidence:
    the serial is listed 4.2 s after a loss of 3 s, a manual replug took up to
    8.2 s, and an open takes 2.9 s. Replace `_MAX_RECONNECT_ATTEMPTS` (3 x 1 s).

@@ -23,6 +23,19 @@ Scenarios (the plan: .claude/plans/2026-10-15-device-loss-hardening.md):
          then stream 2 s on the new handle
     S7   S6 for 20 losses in one process, no handle ever closed
 
+Idle scenarios: stream, Stop while the scope is present, then the loss. The
+handle stays open and idle, as in the GUI between a stop and the next start.
+
+    S8a  no loss (control): PingUnit, EnumerateUnits, OpenUnit by serial with
+         the old handle still open
+    S8b  absent: PingUnit, EnumerateUnits
+    S8c  after the scope is back: PingUnit, EnumerateUnits until the serial is
+         listed, OpenUnit by serial (old handle not closed)
+    S8d  absent: the app's start sequence on the old handle (SetChannel,
+         SetSigGenBuiltIn, SetDataBuffers, RunStreaming); no CloseUnit
+    S8e  S8d after the scope is back
+    S8f  S8d, then CloseUnit (the GUI crash of 2026-10-15; reference only)
+
 Loss methods (Linux only):
 
     authorized    write 0, then 1, to /sys/bus/usb/devices/<dev>/authorized
@@ -61,7 +74,9 @@ USB_DEVICES = Path('/sys/bus/usb/devices')
 PICO_VID = '0ce9'                       # Pico Technology USB vendor ID
 
 ALL_SCENARIOS = ('S0', 'S1', 'S2', 'S3a', 'S3b', 'S3c', 'S3d',
-                 'S4a', 'S4b', 'S5', 'S6', 'S7')
+                 'S4a', 'S4b', 'S5', 'S6', 'S7',
+                 'S8a', 'S8b', 'S8c', 'S8d', 'S8e', 'S8f')
+IDLE_SCENARIOS = ('S8a', 'S8b', 'S8c', 'S8d', 'S8e', 'S8f')
 
 STREAM_INTERVAL_NS = 13025              # the app's request at osr 3, 25600 Hz raw
 DRIVER_BUFFER_SAMPLES = 1000            # the app's rolling buffer
@@ -278,6 +293,18 @@ class Probe:
         self.emit('lost', cause=cause,
                   poll_statuses={self.names.get(k, str(k)): v for k, v in statuses.items()})
 
+    def wait_absent(self) -> bool:
+        """Wait until sysfs shows the scope gone; this is the loss time."""
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < RETURN_TIMEOUT_S:
+            if not pico_present():
+                self.t_loss = time.monotonic()
+                self.emit('lost', cause='sysfs')
+                return True
+            time.sleep(0.05)
+        self.emit('not_removed')
+        return False
+
     def wait_present(self) -> bool:
         t0 = time.monotonic()
         while time.monotonic() - t0 < RETURN_TIMEOUT_S:
@@ -302,6 +329,10 @@ class Probe:
             sys.exit(2)
         cb = self.start_stream(handle)
         self.stream_for(handle, cb, GOOD_DATA_S)
+        if scenario in IDLE_SCENARIOS:
+            self.run_idle(scenario, handle)
+            self.emit('done')
+            return
         cycles = S7_CYCLES if scenario == 'S7' else 1
         for cycle in range(1, cycles + 1):
             self.emit('streaming', cycle=cycle)    # the parent removes the scope now
@@ -364,6 +395,73 @@ class Probe:
             self.stream_for(new, new_cb, 2.0)
             return new, new_cb
         return None, None
+
+
+    # -- idle scenarios ---------------------------------------------------
+
+    def ping_and_enumerate(self, handle) -> None:
+        self.call('ps4000aPingUnit', handle)
+        self.emit('enumerated', serials=self.enumerate())
+
+    def open_probe(self, seconds: float) -> None:
+        """OpenUnit by serial into new handles until PICO_OK or `seconds`."""
+        t0 = time.monotonic()
+        while True:
+            status, _new = self.open()
+            if status == 0 or time.monotonic() - t0 > seconds:
+                return
+            time.sleep(OPEN_RETRY_S)
+
+    def start_sequence(self, handle) -> None:
+        """The app's start() calls on `handle`, each one logged."""
+        ps = self.ps
+        for ch in range(8):
+            enabled = self.channels is None or ch < self.channels
+            if self.call('ps4000aSetChannel', handle, ch, int(enabled), 1, 7, 0.0) != 0:
+                break
+        self.call('ps4000aSetSigGenBuiltIn', handle, 0, 1000000,
+                  ps.PS4000A_WAVE_TYPE['PS4000A_SINE'], 20.0, 20.0, 0, 1,
+                  ps.PS4000A_SWEEP_TYPE['PS4000A_UP'], 0, 0, 0,
+                  ps.PS4000A_SIGGEN_TRIG_TYPE['PS4000A_SIGGEN_RISING'],
+                  ps.PS4000A_SIGGEN_TRIG_SOURCE['PS4000A_SIGGEN_NONE'],
+                  ctypes.c_int16(0))
+        buf = (ctypes.c_int16 * DRIVER_BUFFER_SAMPLES)()
+        self.keep.append(buf)
+        self.call('ps4000aSetDataBuffers', handle, 0, buf, None, DRIVER_BUFFER_SAMPLES, 0,
+                  ps.PS4000A_RATIO_MODE['PS4000A_RATIO_MODE_NONE'])
+        interval = ctypes.c_int32(STREAM_INTERVAL_NS)
+        self.call('ps4000aRunStreaming', handle, ctypes.byref(interval),
+                  ps.PS4000A_TIME_UNITS['PS4000A_NS'], 0, 4096 * 4, 0, 1,
+                  ps.PS4000A_RATIO_MODE['PS4000A_RATIO_MODE_NONE'],
+                  DRIVER_BUFFER_SAMPLES)
+
+    def run_idle(self, scenario: str, handle) -> None:
+        self.call('ps4000aStop', handle)        # scope present: a normal stop
+        time.sleep(0.5)
+        if scenario == 'S8a':
+            self.ping_and_enumerate(handle)
+            self.open_probe(0.0)
+            return
+        self.emit('idle')                       # the parent removes the scope now
+        if not self.wait_absent():
+            return
+        time.sleep(1.0)
+        if scenario in ('S8c', 'S8e'):
+            if not self.wait_present():
+                return
+            time.sleep(1.0)                     # let the kernel finish the enumeration
+        if scenario in ('S8b', 'S8c'):
+            self.ping_and_enumerate(handle)
+            if scenario == 'S8c':
+                t0 = time.monotonic()
+                while (self.serial not in self.enumerate()
+                       and time.monotonic() - t0 < RETURN_TIMEOUT_S):
+                    time.sleep(0.2)
+                self.open_probe(15.0)
+        else:
+            self.start_sequence(handle)
+            if scenario == 'S8f':
+                self.call('ps4000aCloseUnit', handle)
 
 
 def child_main(args) -> int:
@@ -435,11 +533,13 @@ def run_one(args, scenario: str, index: int, switch: LossSwitch, log_dir: Path) 
             events.append(ev)
             if args.verbose:
                 print(f'    {ev}', flush=True)
-            if ev['event'] == 'streaming':
+            if ev['event'] in ('streaming', 'idle'):
                 switch.remove()
                 t_removed = time.monotonic()
                 if switch.method != 'manual':
                     restore_at = t_removed + args.absent_s
+            elif ev['event'] == 'lost' and scenario in ('S8c', 'S8e'):
+                switch.restore()        # these scenarios need the scope back
             elif ev['event'] == 'present' and t_removed is not None:
                 present_after.append(round(time.monotonic() - t_removed, 3))
         proc.wait(timeout=10)
@@ -479,7 +579,7 @@ def describe(result: dict) -> str:
         return f'exit {result["returncode"]}'
     calls = [f'{e["fn"].removeprefix("ps4000a")}={e["name"]}'
              for e in result['events'] if e['event'] == 'status'
-             and e.get('t_after_loss_s') is not None]
+             and (e.get('t_after_loss_s') is not None or result['scenario'] == 'S8a')]
     return 'ok  ' + ' '.join(calls)
 
 
