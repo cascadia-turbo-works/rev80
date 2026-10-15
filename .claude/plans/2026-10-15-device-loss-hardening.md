@@ -329,3 +329,19 @@ installed (so the only losses are the ones we make):
   not measured for false alarms.
 - The dearpygui `show_viewport` abort in `faulthandler.log` on the Pi. It is a
   separate fault.
+
+## Changes after the GUI verification (2026-10-15)
+
+- **Step 3 is replaced.** The user decided: no time limit by default. A scope
+  can come back days later. `device_wait_s` in `acquisition.yaml` sets a
+  limit; a stop or a change of the stream settings ends the wait. The GUI
+  shows "Device lost — waiting mm:ss"; the stream logs every 5 min.
+- **The abandoned-handle limit counts for the whole process** (module
+  registry `_ABANDONED`, references in `_RETIRED`). It was per stream object,
+  and a reconnect in Setup reset it. The limit stays 4 until S7 is measured
+  (R68).
+- **Settling after a gap:** frames flagged for 2 / `highpass_fc` seconds, at
+  least 1 (vibration-engineer review, simulation table in E21).
+- **Still open:** headless on hardware (exit code 3, AWG loopback settling of
+  frames 0 to 10 after a replug), the Pi steps, S7, R69 (store a gap; break
+  the average at a gap).
