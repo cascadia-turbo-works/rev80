@@ -1,6 +1,7 @@
 # Data Collector
 
 import threading
+import time
 from collections import deque
 from datetime import datetime
 from fractions import Fraction
@@ -263,6 +264,12 @@ class DataCollector:
     def stream_fault(self) -> str | None:
         """Why the stream stopped by itself (device lost), else None."""
         return getattr(self.stream, 'fault', None)
+
+    @property
+    def device_lost_for_s(self) -> float | None:
+        """Seconds since the scope was lost while the stream waits for it, else None."""
+        since = getattr(self.stream, 'lost_since', None)
+        return None if since is None else time.monotonic() - since
 
     @property
     def stream_degraded(self):

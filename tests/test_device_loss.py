@@ -205,7 +205,8 @@ def driver(monkeypatch):
     monkeypatch.setattr(pico_module, 'ps', fake)
     monkeypatch.setattr(pico_module, 'assert_pico_ok', _assert_ok)
     monkeypatch.setattr(pico_module, '_WATCHDOG_TIMEOUT_S', 0.2)
-    monkeypatch.setattr(pico_module, '_RECOVERY_DEADLINE_S', 2.0)
+    monkeypatch.setattr(pico_module, '_ABANDONED', [])     # the registry is per process
+    monkeypatch.setattr(pico_module, '_RETIRED', [])
     monkeypatch.setattr(pico_module, '_RECOVERY_POLL_MIN_S', 0.01)
     monkeypatch.setattr(pico_module, '_RECOVERY_POLL_MAX_S', 0.02)
     monkeypatch.setattr(pico_module, '_OPEN_RETRY_DELAY_S', 0.0)
@@ -279,7 +280,7 @@ class TestIdleLoss:
             assert driver.calls_on(old, mark) == ['ps4000aPingUnit']
             assert stream._driver_buffers is not old_buffers
             assert stream._c_callback is not old_callback
-            retired = stream._retired[-1]
+            retired = pico_module._RETIRED[-1]
             assert retired[1] is old_buffers and retired[2] is old_callback
             assert _wait_for(lambda: blocks)
         finally:
@@ -337,7 +338,7 @@ class TestStreamLoss:
         after = driver.calls_on(old, mark)
         assert set(after) <= {'ps4000aGetStreamingLatestValues'}
         assert stream._chandle.value != old
-        assert old_callback in [r[2] for r in stream._retired]
+        assert old_callback in [r[2] for r in pico_module._RETIRED]
         first_after_gap = next(b for b in blocks if b['gap'])
         assert first_after_gap['degraded'] is True
         assert driver.violations == []
@@ -357,13 +358,13 @@ class TestStreamLoss:
         finally:
             stream.stop()
         assert driver.calls_on(old)[-2:] == ['ps4000aStop', 'ps4000aCloseUnit']
-        assert stream._abandoned == []
+        assert stream._abandoned == [] and pico_module.abandoned_handle_count() == 0
         assert driver.violations == []
 
-    def test_scope_that_does_not_come_back_gives_a_fault(self, driver, monkeypatch):
-        monkeypatch.setattr(pico_module, '_RECOVERY_DEADLINE_S', 0.3)
+    def test_scope_that_does_not_come_back_gives_a_fault(self, driver):
         blocks = []
         stream = _stream(blocks)
+        stream.config.device_wait_s = 0.3
         stream.start()
         assert _wait_for(lambda: blocks)
         old = stream._chandle.value
@@ -373,6 +374,59 @@ class TestStreamLoss:
         assert 'not back within' in stream.fault
         stream.close()
         assert set(driver.calls_on(old, mark)) <= {'ps4000aGetStreamingLatestValues'}
+        assert driver.violations == []
+
+    def test_waits_with_no_time_limit_by_default(self, driver):
+        blocks = []
+        stream = _stream(blocks)
+        assert stream.config.device_wait_s is None
+        stream.start()
+        try:
+            assert _wait_for(lambda: blocks)
+            driver.lose()
+            assert _wait_for(lambda: stream.lost_since is not None)
+            time.sleep(1.0)                 # many attempts with the scope absent
+            assert stream.active and stream.fault is None
+            driver.replug()
+            assert _wait_for(lambda: any(b['gap'] for b in blocks))
+            assert stream.lost_since is None
+        finally:
+            stream.stop()
+        assert driver.violations == []
+
+    def test_still_waiting_is_logged(self, driver, monkeypatch, caplog):
+        monkeypatch.setattr(pico_module, '_RECOVERY_LOG_EVERY_S', 0.1)
+        blocks = []
+        stream = _stream(blocks)
+        stream.start()
+        assert _wait_for(lambda: blocks)
+        with caplog.at_level(logging.WARNING):
+            driver.lose()
+            assert _wait_for(lambda: 'still waiting for the scope' in caplog.text)
+        stream.stop()
+
+    def test_abandoned_handle_limit_counts_for_the_whole_process(self, driver, monkeypatch):
+        """A reconnect makes a new stream object; the lost handles of the old
+        one still count, because the driver still holds them."""
+        monkeypatch.setattr(pico_module, '_MAX_ABANDONED_HANDLES', 2)
+        first = _stream()
+        first.start()
+        first.stop()
+        driver.lose()
+        driver.replug()
+        first.close()                       # abandons: 1
+        del first
+
+        blocks = []
+        second = _stream(blocks)
+        second.start()
+        assert _wait_for(lambda: blocks)
+        driver.lose()                       # abandons: 2, the limit
+        driver.replug()
+        assert _wait_for(lambda: not second.active, timeout=5.0)
+        assert 'restart the program' in second.fault
+        assert pico_module.abandoned_handle_count() == 2
+        assert len(pico_module._RETIRED) == 2   # references kept after `del first`
         assert driver.violations == []
 
     def test_abandoned_handle_limit_ends_in_a_fault(self, driver, monkeypatch):

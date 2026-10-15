@@ -62,13 +62,26 @@ _TIMEBASE_NS = 12.5
 _WATCHDOG_TIMEOUT_S     = 5.0   # seconds of silence → assume device hung
 
 # Device-loss recovery. A lost handle gets no driver call: recover by a new
-# handle. Evidence: CONTRIBUTING.md, "E21. Device loss".
-_RECOVERY_DEADLINE_S   = 30.0   # serial back 4.2 s after a 3 s loss; replug up to 8.2 s; open 2.9 s
+# handle. How long to wait is config.device_wait_s (None = no limit).
+# Evidence: CONTRIBUTING.md, "E21. Device loss".
 _RECOVERY_POLL_MIN_S   = 0.5    # first wait between open attempts; doubles each time
-_RECOVERY_POLL_MAX_S   = 2.0
+_RECOVERY_POLL_MAX_S   = 2.0    # an attempt with the scope absent takes 35 ms
+_RECOVERY_LOG_EVERY_S  = 300.0  # "still waiting" log interval
 _MAX_ABANDONED_HANDLES = 4      # lost handles one process may hold; the limit is not measured yet
-_STOP_JOIN_S           = _RECOVERY_DEADLINE_S + 5.0   # a recovery plus one open (2.9 s)
+_STOP_JOIN_S           = 10.0   # recovery checks stop between attempts; one open takes 2.9 s
 _FRESH_DATA_S          = 1.0    # data older than this at stop(): the scope may be gone, no Stop call
+
+# Lost handles of this process, with their buffers and callbacks. The driver
+# can still hold them, so they are never released, also when the stream
+# object that made them is gone. _ABANDONED counts against the limit;
+# _RETIRED keeps the references.
+_ABANDONED: list = []
+_RETIRED: list = []
+
+
+def abandoned_handle_count() -> int:
+    """Lost handles held by this process (the limit is _MAX_ABANDONED_HANDLES)."""
+    return len(_ABANDONED)
 
 # Maximum ADC rate per channel for continuous USB streaming. Above about
 # 100 kHz a 4424A drops samples with status 'OKAY' and no overflow bit. The ADC
@@ -322,8 +335,9 @@ class PicoScopeStream:
     `close()` (call it after `stop()`). The callback gets one dict for each
     `raw_blocksize` samples per channel, in mV, at the achieved raw rate.
     After 5 s without data the poll thread takes the scope as lost and opens a
-    new handle, for up to _RECOVERY_DEADLINE_S. When that fails, `fault` holds
-    the reason and `active` goes False.
+    new handle, for up to config.device_wait_s (None = no limit).
+    `lost_since` is set while it waits. When it gives up, `fault` holds the
+    reason and `active` goes False.
 
     A lost handle gets no driver call: Stop or CloseUnit on it can crash the
     process (SIGSEGV), and a try/except cannot catch that. An idle handle is
@@ -358,13 +372,12 @@ class PicoScopeStream:
         self._driver_lock  = threading.RLock()
         # The C callback of the current handle; made in _start_streaming.
         self._c_callback = None
-        # Lost handles, never used again. Their buffers and callbacks stay
-        # referenced for the life of this object: the driver can still hold
-        # them. _retired also keeps those of a handle closed during recovery.
+        # Handles this stream abandoned (the process registry is _ABANDONED).
         self._abandoned: list[ctypes.c_int16] = []
-        self._retired: list[tuple] = []
         # Why the stream stopped by itself; None while it runs or after a stop().
         self.fault: str | None = None
+        # time.monotonic() of the loss while a recovery waits, else None.
+        self.lost_since: float | None = None
         # The first block after a recovery is marked 'gap' (see _streaming_callback).
         self._gap_pending = False
         # Non-OK poll statuses already logged (once for each value).
@@ -537,10 +550,11 @@ class PicoScopeStream:
         handle with new buffers and a new callback.
         """
         self._abandoned.append(self._chandle)
-        self._retired.append((self._chandle, self._driver_buffers, self._c_callback))
+        _ABANDONED.append(self._chandle)
+        _RETIRED.append((self._chandle, self._driver_buffers, self._c_callback))
         log.warning(f'PicoScopeStream: handle {self._chandle.value} abandoned: {reason}. '
                     f'No driver call uses it again '
-                    f'({len(self._abandoned)}/{_MAX_ABANDONED_HANDLES} abandoned).')
+                    f'({len(_ABANDONED)}/{_MAX_ABANDONED_HANDLES} abandoned in this process).')
         self._chandle = ctypes.c_int16()
         self._driver_buffers = {
             ch: np.zeros(_DRIVER_BUFFER_SAMPLES, dtype=np.int16)
@@ -550,9 +564,9 @@ class PicoScopeStream:
         self._device_open = False
 
     def _check_abandoned_limit(self) -> None:
-        if len(self._abandoned) >= _MAX_ABANDONED_HANDLES:
+        if len(_ABANDONED) >= _MAX_ABANDONED_HANDLES:
             raise RuntimeError(
-                f'PicoScope lost {len(self._abandoned)} times in this process; '
+                f'PicoScope lost {len(_ABANDONED)} times in this process; '
                 f'restart the program')
 
     def _reset_stream_state(self) -> None:
@@ -920,33 +934,48 @@ class PicoScopeStream:
         - PICO_HARDWARE_VERSION_NOT_SUPPORTED: the old handle still owns the
           scope (same USB node). Only then Stop and CloseUnit it, and open again.
         - other: the scope is not back yet; wait and try again.
-        Returns False, with `fault` set, at the deadline or the abandoned-handle
-        limit; also False, with no fault, when stop() was requested.
-        Evidence: CONTRIBUTING.md, "E21. Device loss".
+        Returns False, with `fault` set, at config.device_wait_s or the
+        abandoned-handle limit; also False, with no fault, when stop() was
+        requested. Evidence: CONTRIBUTING.md, "E21. Device loss".
         """
         t_loss = time.monotonic()
-        deadline = t_loss + _RECOVERY_DEADLINE_S
+        self.lost_since = t_loss
+        try:
+            return self._recover_from(t_loss)
+        finally:
+            self.lost_since = None
+
+    def _recover_from(self, t_loss: float) -> bool:
+        wait_s = self.config.device_wait_s
+        deadline = t_loss + wait_s if wait_s else math.inf
         with self._driver_lock:
             self._abandon_handle('no data: the scope is taken as lost')
-        log.warning(f'PicoScopeStream: waiting up to {_RECOVERY_DEADLINE_S:.0f} s '
-                    f'for the scope to come back')
+        log.warning('PicoScopeStream: waiting for the scope to come back '
+                    + (f'(up to {wait_s:.0f} s)' if wait_s else '(no time limit)'))
         delay = _RECOVERY_POLL_MIN_S
+        next_log = t_loss + _RECOVERY_LOG_EVERY_S
         statuses_seen: set[int] = set()
         while True:
-            if len(self._abandoned) >= _MAX_ABANDONED_HANDLES:
-                return self._give_up(f'device lost {len(self._abandoned)} times; '
+            if len(_ABANDONED) >= _MAX_ABANDONED_HANDLES:
+                return self._give_up(f'device lost {len(_ABANDONED)} times; '
                                      f'restart the program')
             if self._stop_event.wait(delay):
                 log.info('PicoScopeStream: recovery cancelled by stop()')
                 return False
-            if time.monotonic() >= deadline:
-                return self._give_up(f'device lost: not back within '
-                                     f'{_RECOVERY_DEADLINE_S:.0f} s')
+            now = time.monotonic()
+            if now >= deadline:
+                return self._give_up(f'device lost: not back within {wait_s:.0f} s')
+            if now >= next_log:
+                next_log = now + _RECOVERY_LOG_EVERY_S
+                log.warning(f'PicoScopeStream: still waiting for the scope, '
+                            f'lost {(now - t_loss) / 60:.0f} min ago')
             delay = min(delay * 2, _RECOVERY_POLL_MAX_S)
             with self._driver_lock:
                 status = _open_once(self._chandle, self._serial)
                 if status == PICO_HARDWARE_VERSION_NOT_SUPPORTED and self._abandoned:
-                    self._release_owned_handle(self._abandoned.pop())
+                    old = self._abandoned.pop()
+                    _ABANDONED[:] = [h for h in _ABANDONED if h is not old]
+                    self._release_owned_handle(old)
                     continue
                 if status != PICO_OK:
                     if status not in statuses_seen:
