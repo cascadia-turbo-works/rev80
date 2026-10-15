@@ -198,6 +198,26 @@ pipeline", and README.md, "Tachometer".
 - The `RmsThresholdHook` default is 50 %, because a 3.2 % speed change alone
   moves the overall 10 %. "E16.1. RMS threshold 50 %".
 
+### Device loss
+
+The evidence is in CONTRIBUTING.md, "E21. Device loss".
+
+- **No driver call on a lost handle.** `Stop` or `CloseUnit` on it crashes
+  the process (SIGSEGV), also after a replug. Recover by a new handle.
+- **Check an idle handle with `PingUnit` before use**, in `start()` and
+  `close()`. Never while streaming: it returns `PICO_BUSY` on a good scope.
+- **Keep every buffer and callback that a handle received** for the life of
+  the process (`_RETIRED`). The driver can still hold them.
+- The abandoned-handle limit (4) counts for the whole process (`_ABANDONED`),
+  not for each stream object. A reconnect makes a new stream object.
+- A recovery waits with no time limit by default (`device_wait_s`).
+- **One thread in the driver at a time** (`_driver_lock`). `stop()` waits
+  for the poll thread before it calls the driver.
+- The poll returns `PICO_OK` after a loss. The silence watchdog is the
+  detector.
+- Verify with a physical unplug. The sysfs `authorized` method keeps the USB
+  node and does not show the replug crash.
+
 ### Persistence and configuration
 
 - **Readers must branch on the presence of `data`.** A tachometer channel
