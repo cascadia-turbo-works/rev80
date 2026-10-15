@@ -16,6 +16,7 @@ class _Collector:
         self.sensor = object()
         self.start_error = None
         self.disconnects = 0
+        self.device_lost_for_s = None
 
     @property
     def stream_fault(self):
@@ -37,6 +38,7 @@ def _app(collector):
     app._monitor = None
     app._status_deadline = 123.0
     app._device_fault = None
+    app._waiting_text = None
     shown = []
     app._set_stream_status = shown.append
     app._update_connection_summary = lambda: shown.append(('summary', app._device_fault))
@@ -77,3 +79,24 @@ def test_a_failed_start_shows_the_reason():
     app._start_stream()
     assert app._device_fault == 'PicoScope TEST/0001 not connected'
     assert shown[-2:] == ['idle', ('summary', 'PicoScope TEST/0001 not connected')]
+
+
+def test_waiting_for_the_scope_shows_the_time_then_clears(monkeypatch):
+    import rev80.gui as gui_module
+    values = []
+    monkeypatch.setattr(gui_module.dpg, 'does_item_exist', lambda tag: True)
+    monkeypatch.setattr(gui_module.dpg, 'set_value', lambda tag, v: values.append(v))
+    collector = _Collector(streaming=True)
+    app, shown = _app(collector)
+    app._set_device_status = lambda state: shown.append(('status', state))
+
+    collector.device_lost_for_s = 65.2
+    app._check_stream_fault()
+    app._check_stream_fault()               # same second: no widget change
+    assert values == ['Device lost — waiting 01:05']
+    assert collector.disconnects == 0       # still streaming: no disconnect
+
+    collector.device_lost_for_s = None      # the scope came back
+    app._check_stream_fault()
+    assert app._waiting_text is None
+    assert shown[-1] == ('summary', None)

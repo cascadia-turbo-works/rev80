@@ -351,6 +351,9 @@ class GUI:
         # Why the device was lost (stream fault or failed start); shown on the
         # Device card until a device connects again.
         self._device_fault: str | None = None
+        # The "waiting" text on the Device card while the stream waits for a
+        # lost scope; None when not shown.
+        self._waiting_text: str | None = None
         self.found_sensors: list = []
         self._autoscale_pending: bool = False  # True → autoscale on next frame
         self._was_streaming_before_config: bool = False  # stream state when config opened
@@ -1430,12 +1433,31 @@ class GUI:
     def _check_stream_fault(self):
         """Show a stream that stopped by itself: the scope was lost and did not
         come back. Render thread; the acquisition thread never touches a widget."""
+        lost_s = self.collector.device_lost_for_s
+        if lost_s is not None:
+            self._show_device_waiting(lost_s)
+            return
+        if self._waiting_text is not None:
+            # The scope came back: show the device as connected again.
+            self._waiting_text = None
+            self._update_connection_summary()
         fault = self.collector.stream_fault
         if fault is None or self.collector.is_streaming:
             return
         # The stream abandoned the lost handle: the disconnect makes no driver call.
         self.collector.disconnect_sensor()
         self._on_device_lost(fault)
+
+    def _show_device_waiting(self, lost_s: float):
+        """'Device lost — waiting mm:ss' on the Device card; changes once a second."""
+        minutes, seconds = divmod(int(lost_s), 60)
+        text = f"Device lost — waiting {minutes:02d}:{seconds:02d}"
+        if text == self._waiting_text:
+            return
+        self._waiting_text = text
+        self._set_device_status("lost")
+        if dpg.does_item_exist(ui.CONN_STATUS_TEXT):
+            dpg.set_value(ui.CONN_STATUS_TEXT, text)
 
     def _on_device_lost(self, reason: str):
         """Stop the stream display and show `reason` on the Device card."""
