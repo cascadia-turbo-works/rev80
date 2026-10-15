@@ -55,72 +55,122 @@ a signal.
    waits on `new_frame_event` with a 1 s timeout and continues for ever. It
    logs nothing and records nothing. For an unattended logger this is a silent
    stop. (The GUI reaction is not known yet; check it in step 6.)
+6. **The callback pointer of the old stream is released during recovery.**
+   (Found in step 0.) `_poll_loop` makes a new `StreamingReadyType` after a
+   recovery and drops the old one. The driver keeps threads on a lost handle
+   (see "Step 0 results"), and the driver buffers of the old handle are given
+   again to the new handle. Keep every callback pointer and every buffer that a
+   handle received for the life of the stream object.
 
-## Step 0: measure the driver's behaviour on hardware first
+## Step 0: measure the driver's behaviour on hardware first — DONE 2026-10-15
 
-Do not choose the teardown rule from reading. Measure which driver calls are
-safe on a lost handle. Put the table in CONTRIBUTING.md as
-"E21. Device loss", with a pointer beside the constants.
+Probe: `scripts/pico-loss-probe.py`. Each run is a child process; a "calling"
+line before each driver call names the call that was in progress at a crash.
+It keeps every buffer and callback referenced until exit.
 
-- Add `scripts/pico-loss-probe.py`. It opens the scope, starts streaming,
-  waits for the operator to remove the device, and then runs one driver call.
-  It runs each scenario in a **child process**, so a native crash shows as an
-  exit signal and does not end the probe.
-- Simulate the loss with `echo 0 > /sys/bus/usb/devices/<port>/authorized`
-  and then `1` (root; the user runs it in tmux session `0`). Repeat one
-  scenario with a physical unplug, to confirm that the simulation is
-  equivalent.
-- Scenarios, each 5 times:
+Set-up: x86-64 Linux, 8-channel PicoScope 4000A (4824A class), 5 Gbit/s USB
+port, `libps4000a` 2.2.257-2r7890, 8 channels at 13025 ns (76.8 kHz ADC).
+Loss method `authorized` = `echo 0`, then `1`, to
+`/sys/bus/usb/devices/<dev>/authorized`, 3 s absent. "Manual" = physical
+unplug and replug, about 5 s.
 
-  | ID | After loss, call | Record |
-  |---|---|---|
-  | S1 | `ps4000aGetStreamingLatestValues` | status, or signal |
-  | S2 | `ps4000aStop` | status, or signal |
-  | S3 | `ps4000aCloseUnit` (with and without S2 first; device absent, and device back) | status, or signal |
-  | S4 | `ps4000aPingUnit` | status, or signal |
-  | S5 | `ps4000aEnumerateUnits` while absent and after it is back | serial list |
-  | S6 | `ps4000aOpenUnit` by serial after it is back, old handle not closed | status, new handle |
-  | S7 | S6 repeated 20 times without any close | first failure, if any (`PICO_MAX_UNITS_OPENED`?) |
+### Step 0 results
 
-- Also record the time from loss to re-enumeration (kernel log and S5).
+| ID | After the loss | `authorized` (5 runs) | Physical unplug |
+|---|---|---|---|
+| S0 | no driver call; exit 10 s later | 5/5 clean | — |
+| S1 | `GetStreamingLatestValues` for 5 s | 5/5 clean; status `PICO_OK` | — |
+| S2 | `Stop`, absent | **4/5 SIGSEGV** | — |
+| S3a | `CloseUnit`, absent | **3/5 SIGSEGV** | — |
+| S3b | `Stop` + `CloseUnit`, absent | **1/5 SIGSEGV** (in `Stop`) | — |
+| S3c | `CloseUnit`, after return | 5/5 clean, `PICO_OK` | — |
+| S3d | `Stop` + `CloseUnit`, after return | 5/5 clean, `PICO_OK` | **2/2 SIGSEGV in `CloseUnit`** (`Stop` gave `PICO_OK`) |
+| S4a/b | `PingUnit`, absent / after return | 10/10 clean, `PICO_BUSY` | — |
+| S5 | `EnumerateUnits` | clean; `PICO_NOT_FOUND` in 33–60 ms while absent; serial listed 4.1–4.2 s after the loss (3 s absent); 1.08–1.13 s per call when present | — |
+| S6 | `OpenUnit` by serial after return, old handle not closed | **5/5 fail for 60 s**, `PICO_HARDWARE_VERSION_NOT_SUPPORTED` | **2/2 `PICO_OK` at the first attempt**, new handle 2, 75.5–75.8 kHz |
+| S7 | S6 for 20 losses | not run | not run |
 
-**Decision rule.**
-- If a call exists that reports "lost" without a crash (S1, S2 or S4), and
-  S6/S7 show that an abandoned handle does not stop a new open, then use
-  in-process recovery as below.
-- If an abandoned handle stops a new open, or every call on a lost handle can
-  crash, in-process recovery is not safe. Then stop at step 1 and step 5 of
-  this plan (do not touch the lost handle; stop cleanly), and record "run the
-  driver in a child process" as a new R-number. Do not build process isolation
-  on this branch.
+Other facts:
 
-## Steps (assuming the decision rule allows in-process recovery)
+- **The poll does not report the loss.** `GetStreamingLatestValues` returns
+  `PICO_OK` (rarely `PICO_BUSY`) after the scope is gone. Only the silence
+  shows it. Reading the status (step 1) is still correct, but it is not the
+  detector.
+- **`PingUnit` returns `PICO_BUSY` while streaming**, also on a good scope. It
+  cannot check that the scope is alive.
+- **A crash can occur in a driver thread**, not in the call. In S2 the main
+  thread was in plain Python code about 2 ms after `Stop` returned `PICO_OK`.
+- **Process exit with an abandoned handle is clean** (S0, S1, S6: 17 runs).
+- `OpenUnit` takes 2.8–2.9 s; `EnumerateUnits` takes 1.6 s for the first call
+  in a process.
+- **`authorized` is not a real unplug.** It keeps the USB device node; a real
+  unplug makes a new one. The absent-scope rows (S0 to S3b, S4a) are valid. The
+  after-return rows (S3c, S3d, S4b, S6) are valid only for a device that stayed
+  on the same node. The field event (over-current, port power lost,
+  re-enumeration) is a real unplug: the field crash matches the manual S3d row
+  exactly (`Stop` `PICO_OK`, then SIGSEGV in `CloseUnit`).
+
+### Decision
+
+In-process recovery is safe, with this rule: **after a loss, make no driver
+call on the old handle, and open a new handle.** Evidence: S0/S1 (no crash
+without a teardown call) and manual S6 (a new open works with the old handle
+abandoned). Every teardown call on a lost handle can crash: absent (S2, S3a,
+S3b) and after a real replug (manual S3d). No process isolation is necessary on
+this branch.
+
+The `PICO_HARDWARE_VERSION_NOT_SUPPORTED` result of `authorized` S6 shows the
+other case: the old handle still owns the device (same node; also the expected
+state for a real hang without a USB loss). There, and only there, `Stop` +
+`CloseUnit` on the old handle are safe (S3c, S3d `authorized`: 10/10).
+
+Open risks:
+
+- **S7 is not measured**: how many abandoned handles one process can hold.
+  Measure it on the Pi with `--method port` (port power off), after S6 with
+  `--method port` shows that `port` behaves as a real unplug (a new open
+  works). Until then, cap the abandoned handles (step 2).
+- **A real hang was not produced.** The same-node case is the nearest model.
+
+## Steps
 
 1. **Read every driver status in the stream path.** Add one helper that maps a
-   status to `ok`, `lost` (`PICO_NOT_FOUND`, `PICO_NOT_RESPONDING` and any
-   others that S1 to S4 show) or `error`. Use the picosdk `PICO_STATUS` table,
-   not number literals. The poll loop checks the status of
-   `ps4000aGetStreamingLatestValues`; today it is ignored.
-2. **Never call teardown on a lost handle.** Replace the teardown in
-   `_try_recover()` with `_teardown(lost: bool)`:
-   - lost: make no driver call on the old handle (or only the calls that
-     step 0 proved safe); log at WARNING that the handle is abandoned; make a
-     new `ctypes.c_int16` for the next open.
-   - not lost (a hang): `ps4000aStop` and `ps4000aCloseUnit`, with status
-     checked and logged.
-   `stop()` and `close()` use the same rule: no driver call on a handle that is
-   known lost.
-3. **Wait for the device to come back before opening.** Poll
-   `ps4000aEnumerateUnits` (if S5 shows it is safe) for the serial, with
-   backoff, up to a recovery deadline. Choose the deadline from the
-   re-enumeration time in step 0, with margin. It replaces the 3 x 1 s attempts.
-   Log each wait once, not every poll.
+   status to `ok`, `busy` or `error`, from the picosdk `PICO_STATUS` table, not
+   number literals. The poll loop logs a non-OK, non-BUSY status of
+   `ps4000aGetStreamingLatestValues` once for each status value; today it is
+   ignored. The silence watchdog stays the loss detector (step 0: the poll
+   returns `PICO_OK` after the loss).
+2. **Recover by a new handle; never tear down a lost handle.** Replace
+   `_try_recover()`:
+   1. Make no driver call on the old handle.
+   2. Poll `ps4000aEnumerateUnits` until the serial is listed, with backoff, up
+      to the recovery deadline (step 3). Log the wait once, not for each poll.
+   3. `ps4000aOpenUnit` by serial into a **new** `ctypes.c_int16`.
+   4. `PICO_OK`: the scope re-enumerated. Abandon the old handle: log at
+      WARNING, and never call the driver with it again (not in `stop()`,
+      `close()` or at exit).
+   5. `PICO_HARDWARE_VERSION_NOT_SUPPORTED`: the old handle still owns the
+      scope (same node). Then `ps4000aStop` + `ps4000aCloseUnit` on the old
+      handle, statuses logged, and open again.
+   6. Any other status: retry until the deadline.
+   7. Configure, set up the siggen and start streaming on the new handle, with
+      **new** driver buffers and a **new** callback pointer. Keep the old
+      buffers and callback pointers referenced for the life of the stream
+      object (root cause 6).
+   8. Cap the abandoned handles at a small number (4) until S7 is measured. At
+      the cap, recovery gives up with a fault (step 5), and the service
+      manager restarts the process. Put the S7 result beside the constant.
+   For an open at start (`start()`), keep today's path.
+3. **Recovery deadline.** 30 s from the loss, checked between waits. Evidence:
+   the serial is listed 4.2 s after a loss of 3 s, a manual replug took up to
+   8.2 s, and an open takes 2.9 s. Replace `_MAX_RECONNECT_ATTEMPTS` (3 x 1 s).
 4. **One thread in the driver at a time.** Add a lock that every driver call
    in `PicoScopeStream` takes (start, stop, close, poll, recovery). Recovery
    checks `_stop_event` between waits and returns early. `stop()` sets the
-   event, joins the thread until it exits, and only then calls the driver.
-   Bound the join by the recovery deadline. Do not leave a thread in the driver
-   when `stop()` returns.
+   event, joins the thread until it exits, and only then calls the driver, and
+   only on a handle that is not abandoned. Bound the join by the recovery
+   deadline plus one open (2.9 s). Do not leave a thread in the driver when
+   `stop()` returns.
 5. **Report a lost stream.** When recovery gives up, `PicoScopeStream` sets a
    `fault` text (for example "device lost: not found after 30 s"). The
    collector exposes it.
@@ -135,7 +185,8 @@ safe on a lost handle. Put the table in CONTRIBUTING.md as
    (`PICO_NOT_RESPONDING`, from the table) in both open helpers. Correct the
    282/286 comments. In `_check_rate_degradation()`, a window with no samples
    does not set `degraded` and does not log the bandwidth text. The silence
-   watchdog handles it.
+   watchdog handles it. Do not use `ps4000aPingUnit` as a health check: it
+   returns `PICO_BUSY` while streaming.
 7. **Keep the measurement chain honest across the gap.** After a recovery, the
    first block comes from a new stream. The high-pass state in
    `receive_data` still holds the state from before the gap, so the first
@@ -151,17 +202,24 @@ safe on a lost handle. Put the table in CONTRIBUTING.md as
 Use a fake driver module (`monkeypatch.setattr(pico_module, 'ps', ...)`, as
 `tests/test_picoscope.py` does) that records every call with the handle it got.
 
-- **Lost device:** the fake returns `PICO_NOT_FOUND` from
-  `GetStreamingLatestValues`, then shows the serial again after N polls.
-  Assert: no `Stop` or `CloseUnit` on the old handle (or only the calls that
-  step 0 proved safe); one new open by serial; blocks arrive again. Revert
-  check: the current `_try_recover()` calls `CloseUnit` on the old handle, and
-  the test must fail.
+- **Lost device, re-enumerated:** the fake stops the callbacks, returns
+  `PICO_OK` from `GetStreamingLatestValues` (as the driver does), hides the
+  serial from `EnumerateUnits` for N polls, then lists it and opens a new
+  handle with `PICO_OK`. Assert: no driver call of any kind on the old handle
+  after the loss; one new open by serial; new buffers and a new callback, the
+  old ones still referenced; blocks arrive again. Revert check: the current
+  `_try_recover()` calls `Stop` and `CloseUnit` on the old handle, and the test
+  must fail.
+- **Same node:** the first new open returns
+  `PICO_HARDWARE_VERSION_NOT_SUPPORTED`. Assert: `Stop` and `CloseUnit` on the
+  old handle, then a second open that succeeds.
+- **Abandoned-handle cap:** losses beyond the cap end in a fault, not an open.
 - **Device does not come back:** the stream gives up after the deadline (fake
-  clock), sets `fault`, and `active` is false.
+  clock), sets `fault`, and `active` is false. No driver call on the old handle.
 - **Stop during recovery:** the fake's open blocks on an `Event`. Call
   `stop()` from the test thread. The fake asserts it is never entered by two
-  threads. `stop()` returns within the bound. Revert check without the lock.
+  threads. `stop()` returns within the bound and makes no call on an abandoned
+  handle. Revert check without the lock.
 - **Constant:** `_open_unit()` with status 7 sleeps `_NOT_RESPONDING_DELAY_S`
   (spy on `time.sleep`). Revert check: with 14, the test fails.
 - **0 Hz window:** `degraded` stays false and no bandwidth warning is logged.
@@ -179,43 +237,61 @@ Run `python -m ruff check src/ tests/` and
 
 ## Verification on hardware
 
+Do not use the `authorized` method to verify the fix: it does not produce the
+re-enumeration of the field event. Use a physical unplug, or `--method port`
+after it is validated.
+
+Locally (the scope on this PC; the user unplugs when told in the chat):
+
+1. Headless, 8 channels: physical unplug for about 5 s, 3 times. Expect: a
+   WARNING for the abandoned handle, recovery, data again, the flagged frames
+   after the gap, no entry in `faulthandler.log`.
+2. Revert check: with the old `_try_recover()`, step 1 crashes (SIGSEGV in
+   `CloseUnit`, as manual S3d).
+3. Unplug and do not replug: headless logs the fault and exits with the new
+   code within the deadline. The session file opens and reads back.
+
 On `rev80pi-01`, all commands in tmux session `0`, after the powered hub is
 installed (so the only losses are the ones we make):
 
-1. `python -m pytest tests/ -q` with the scope connected (the hardware tests
+4. Probe S6 with `--method port`, 5 runs. If the new open works, `port`
+   behaves as a real unplug: run S7 with `--method port` and set the
+   abandoned-handle cap from it. If not, measure S7 by unplugs or keep the cap.
+5. `python -m pytest tests/ -q` with the scope connected (the hardware tests
    included). Do not run a second pytest at the same time.
-2. Headless, 8 channels: simulate a loss with `authorized` 0, wait 3 s, set 1.
-   Expect: a WARNING for the abandoned handle, recovery, data again, the flagged
-   frames after the gap, no entry in `faulthandler.log`. Repeat 10 times.
-3. The same with a physical unplug and replug, 5 times.
-4. Unplug and do not replug: headless logs the fault and exits with the new
-   code within the deadline. The session file opens and reads back.
-5. GUI over VNC: steps 2 and 4. The GUI does not crash and shows the fault.
-6. Revert check on hardware: with the old `_try_recover()`, step 2 crashes
-   (SIGSEGV or SIGBUS in `faulthandler.log`).
-7. Record the results (counts, recovery times) in the CHANGELOG entry.
+6. Headless, 8 channels: 10 losses with `--method port` (or 5 physical
+   unplugs). Same expectations as step 1.
+7. GUI over VNC: steps 1 and 3. The GUI does not crash and shows the fault.
+8. Record the results (counts, recovery times) in the CHANGELOG entry.
 
 ## Documentation, in the same change
 
 - `doc/CHANGELOG.md`: the fault, the field evidence above, the step 0 table in
   short, before and after.
 - `doc/PROGRESS.md`: a new R-number for "Survive the loss of the scope during a
-  stream", Done when verified. A second new R-number for process isolation if
-  the decision rule requires it.
-- `CONTRIBUTING.md`: "E21. Device loss" with the step 0 table.
+  stream", Done when verified. If S7 shows a low handle limit, a second
+  R-number for process isolation of the driver.
+- `CONTRIBUTING.md`: "E21. Device loss" with the step 0 table, the
+  `authorized`-versus-unplug caveat, and the probe usage. Pointers beside the
+  recovery deadline, the abandoned-handle cap and the "same node" status.
 - `README.md`:
   - the headless exit code;
   - the GUI fault text;
+  - the recovery behaviour: a gap of about 5 s plus the time the scope is
+    away, then data again, with the first frames flagged;
   - a Raspberry Pi 5 power note: with a supply that is not 5 A, the Pi limits
     USB to 600 mA in total, and a PicoScope 4824A declares 896 mA. Use the
     official 27 W supply or a powered USB 3 hub.
-- `CLAUDE.md`: the rule "no driver call on a lost handle" and the driver lock,
-  under Invariants. Remove nothing from "Known-bad areas" that is not fixed.
+- `CLAUDE.md`, under Invariants: "no driver call on a lost handle; recover by
+  a new handle", "keep every buffer and callback a handle received", and the
+  driver lock. Remove nothing from "Known-bad areas" that is not fixed.
 
 ## Out of scope
 
 - R52 (headless closes the device on every exit path). Step 5 adds a clean exit
   for a lost stream only. Do not use it to close R52 without its own test.
-- Running the driver in a child process (only if step 0 requires it).
+- Running the driver in a child process (only if S7 shows a low handle limit).
+- A shorter silence watchdog (5 s). A shorter one gives a shorter gap but was
+  not measured for false alarms.
 - The dearpygui `show_viewport` abort in `faulthandler.log` on the Pi. It is a
   separate fault.
