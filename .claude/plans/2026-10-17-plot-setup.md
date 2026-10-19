@@ -8,7 +8,10 @@ R42 (crest and kurtosis trend), R43 remainder (RPM on the trend plot).
 
 Revision 2 (2026-10-19): owner decisions Q1, Q2, Q4, Q5 and Q7 applied;
 spectrum averaging moves from the Acquisition tab to each spectrum chart.
-New open questions: Q3 (carried over), Q8.
+Revision 3 (2026-10-19): Q2 and Q3 revised (result cards and the peaks
+table belong to a spectrum chart, in its unit); Q6 and Q8 decided; the
+`history` argument leaves the public `result_view()` (3.2.1); the
+recording lock gets a visible disabled state (3.7). New open question: Q9.
 
 ## 1. Request
 
@@ -50,12 +53,13 @@ New open questions: Q3 (carried over), Q8.
 | The Channels tab sets them with two combos for each channel | `gui.py` `_rebuild_device_channel_rows`, `_apply_channel_assignments_from_widgets` |
 | `process_sample()` reads both, integrates the mV PSD and scales to the target unit. The mV PSD and the five mV overalls (orders −2 to +2) are cached on the sample and do not depend on the unit | `collector.py:843-1050`, `_psd_and_overalls_for` |
 | Callers of `process_sample()`: `_process_samples`, the session reprocess path (two calls), `scripts/advanced_plots.py` | `collector.py:1221`, `1918`, `1952` |
-| Spectrum averaging: `averaging_enabled`, `n_averages` in `AcquisitionSettings`; a linear power average of the N most recent valid frames up to the displayed frame. It also averages `ChannelResult.overall`, which the anomaly hooks read | `sample.py:78-81`, `collector.py` step 3b |
+| Spectrum averaging: `averaging_enabled`, `n_averages` in `AcquisitionSettings`; a linear power average over the N most recent frames up to the displayed frame; overflow and degraded frames in that window are dropped, not replaced. It also averages `ChannelResult.overall`, which the anomaly hooks read | `sample.py:78-81`, `collector.py` step 3b |
 | `n_averages_effective` clamps N to `cache_frames` | `sample.py:292` |
 | The trend stores the five mV overalls for each frame, not averaged. The unit and mode are applied at display time | `update_trend`, `get_trend_for_display()` |
 | Crest factor and kurtosis come from `ChannelResult.time_data`, the trace in the target unit. They change with the integration order | `process_sample` step 8 |
 | Shaft speed has its own trend and never goes through unit scaling | `get_rpm_trend()`, `tach_trend` |
 | `process_samples()` runs once for each displayed frame. It updates the trend and gives the results to `MonitorController.on_results()` and the result cards | `gui.py` `_display_frame_inner` |
+| The RMS hook has a sustain time (`rms_s`, converted to `consecutive_n` frames). `FixedThresholdHook` has none: it fires on one frame | `headless.py:139-141`, `anomaly.py:356` |
 | Anomaly hooks read `ChannelResult.overall` and `.unit`. `FixedThresholdHook` converts each limit's unit to the result unit through `UNIT_TO_SI`. It does not compare amplitude modes: a `0-P` limit is compared with a `P-P` reading without correction | `monitor/anomaly.py:347-435` |
 | `_build_anomaly_hook` has two copies, GUI and headless (R58) | `gui.py:3292`, `headless.py:117` |
 | The main pane is a fixed tab bar (Spectrum, Envelope, Trend) with a time-series plot of all channels below it, height `TIME_PLOT_HEIGHT` = 300 px | `gui.py:4708-4786` |
@@ -121,9 +125,17 @@ signal in a target unit and mode. Every consumer goes through it: the
 record path, each chart, the alarm view and the session reprocess.
 
 ```python
-def result_view(self, ch, sample, unit=None, amplitude_mode=None,
-                n_averages=1, history=None) -> ChannelResult | None
+def result_view(self, ch, unit=None, amplitude_mode=None, n_averages=1,
+                index=None, peaks=True) -> ChannelResult | None
 ```
+
+- `index=None` is the displayed frame: the newest when streaming, the browse
+  cursor when stopped (the rule `process_samples()` uses now). Otherwise a
+  position in the frame cache.
+- `peaks=False` skips peak selection, for a caller that needs the overall
+  and the scalars only (see 3.3).
+- The averaging history is found inside the collector, not passed in. See
+  3.2.1.
 
 - `unit=None` gives the channel's target unit, then the sensor EU
   (`get_active_eu`). `amplitude_mode=None` gives the channel's mode, then
@@ -135,8 +147,12 @@ def result_view(self, ch, sample, unit=None, amplitude_mode=None,
   integration factor; sensitivity; SI factor; amplitude scale; F_max
   truncation; peak selection; overlap-save time trace; crest factor and
   kurtosis of that trace.
-- `process_sample()` is removed. Its callers call `result_view()`,
-  `scripts/advanced_plots.py` included.
+- `process_sample()` is removed. A private
+  `_view_of_sample(ch, sample, unit, mode, history=())` holds the stage-2
+  code. `result_view()` finds the sample and its history in the cache and
+  calls it. The session reprocess path calls it directly for a sample that
+  is not in the cache, with no history. `scripts/advanced_plots.py` uses
+  `result_view()`.
 - `process_samples(unit=None, amplitude_mode=None)` returns one result for
   each vibration channel through `result_view()`, never averaged (Q8). It
   updates the trend as now; the trend stores mV orders, so it is unit-
@@ -161,17 +177,61 @@ Tests:
 - `tests/test_spectral_averaging.py` (26 references to the config fields)
   moves to the `n_averages` argument. The averaging rule does not change.
 
+#### 3.2.1 Where the averaging state lives
+
+What `history` is now: a list of `VibeSample` objects for one channel,
+oldest first. `_process_samples()` takes the frames before the displayed
+frame from the frame cache (`list(cache)[stop - N + 1 : stop]`) and drops
+the overflow and degraded ones. Stage 2 then walks the displayed frame and
+the history newest first, sums `_psd_for()` and the squared mV overalls of
+each, and stops at N frames or at the first frame whose PSD has a
+different shape (a settings change). `_psd_for()` reads the PSD cached on
+each sample, so an average costs one addition for each frame, not a
+transform. The history is a window on the shared frame cache; nothing is
+copied and no state is kept between calls.
+
+Two places for the averaging state:
+
+| | Chart keeps its own ring of past spectra | Collector derives the history from the frame cache (recommended) |
+|---|---|---|
+| Browse and replay | The ring holds what was displayed, in display order. Stepping back through the cache shows a different average than live showed. Breaks "replay shows what the live display showed" | Same rule live and browse: the N most recent frames up to the displayed one |
+| Hidden charts | Only the chart on screen renders, so a hidden chart's ring has gaps. On a tab change it shows an average of stale frames | The cache has every frame; a chart that comes on screen gets a full average at once |
+| Overflow, degraded, settings change | The chart needs the sample flags and the transform shape, so it needs the samples anyway | Already handled |
+| Memory | A second copy of up to N spectra for each chart and channel | None: views on the existing cache |
+| Units | Ring in mV² to stay unit-agnostic, or flushed on a unit change | Averaged in mV², converted after |
+| Signature | `result_view(ch, sample, unit, mode)`, no history | `result_view(ch, unit, mode, n_averages, index)`, no history |
+
+Decision for this plan: the chart owns the *setting* (Average on, N); the
+collector owns the *data*. The chart stays agnostic: it asks for a view of
+the displayed frame with its unit, mode and N, and draws what it gets.
+`history` leaves the public signature, which is the simplification asked
+for, without a second store of past frames. N is clamped to the cache
+depth (`cache_frames`), and the chart row says when it is.
+
+One behaviour to state in the README: the window is the N most recent
+frames, and invalid frames in it are dropped, not replaced. So the count
+can be below N after an overflow. `ChannelResult.n_averages` gives the
+count, and the chart shows "averaging k of N frames".
+
 ### 3.3 Record unit, alarm unit, crest factor and kurtosis
 
 - **Record unit** = the channel's target unit (Channels tab, as now; empty
-  means the sensor EU). It sets: the result card, the monitor capture, the
-  measurement file attributes, the headless results. No change to files,
-  sessions or headless input.
+  means the sensor EU). It sets: the monitor capture, the measurement file
+  attributes, the trend's stored crest factor and kurtosis, the headless
+  results. It does not set the result cards (see below). No change to
+  files, sessions or headless input.
 - **Alarm unit** (owner decision Q1): the Monitor tab anomaly section gets a
   unit and mode selector. The front end calls
   `process_samples(unit=alarm_unit, amplitude_mode=alarm_mode)` and gives
   those results to the anomaly hooks. Stage 1 is cached, so the extra cost
   is stage 2 only. Measure it (3.4).
+  - **Alarms always use unaveraged results** (owner decision Q8).
+    `process_samples()` never averages. The anomaly sustain time (`rms_s`,
+    converted to `consecutive_n` frames) is the debounce, not an average.
+    Today a hook sees an averaged overall when averaging is on; that ends.
+  - `FixedThresholdHook` has no sustain time: one frame over the limit
+    fires it. With averaging on, the average hid single-frame spikes from
+    it; unaveraged, it does not. Q10.
   - Config keys `alarm_unit` and `alarm_amplitude_mode` in the
     `monitor.anomaly` block of `acquisition.yaml`. Headless reads the same
     keys. Empty means each channel's record unit (today's behaviour).
@@ -192,17 +252,32 @@ Tests:
   - Where the alarm view is built: one shared helper,
     `monitor.anomaly.alarm_view(anom_cfg)` → `(unit, mode)`, called by both
     front ends. No copy in a front end.
-- **Crest factor and kurtosis** (owner decision Q2): from the record-unit
-  trace. The result card labels them with the unit, for example
-  `Crest 3.10 (in/s)`. A waveform chart in another unit does not change
-  them. The trend stores the record-unit values, as now.
+- **Result cards and the peaks table** (owner decisions Q2 and Q3,
+  revision 3): a card belongs to a (spectrum chart, channel) pair, not to a
+  channel. Its overall, crest factor, kurtosis, 1x level and peaks table
+  are in that chart's unit and mode, from the same `result_view()` that
+  draws the chart. A channel on two spectrum charts has two cards, possibly
+  in two units. Each value has its unit on the card, for example
+  `Crest 3.10 (in/s)`.
+  - The overall on a card of an averaging chart is the averaged overall,
+    labelled "avg k". Crest factor and kurtosis are never averaged: they
+    come from the displayed frame's trace in the chart unit.
+  - The cards are grouped under a header with the chart name.
+  - A tachometer channel keeps one shaft-speed card for each channel, not
+    for each chart. A shaft speed has no unit view.
+  - The overflow warning stays one line for each channel at the top of the
+    column. It is a fact of the frame, not of a view.
+  - Which cards show and update when the chart on screen is not their
+    chart: Q9.
+- The trend keeps storing crest factor and kurtosis of the record-unit
+  trace, from step 1 of 3.4.
 
 ### 3.4 Processing: the always-run part and the on-screen part
 
 Each new frame, whatever the selected tab:
 
-1. `process_samples()` in the record unit: trend update, tachometer trend,
-   speed gate, overflow flags, result cards, monitor capture.
+1. `process_samples()` in the record unit, unaveraged: trend update,
+   tachometer trend, speed gate, overflow flags, monitor capture.
 2. When recording with an alarm unit different from a channel's record
    unit: `process_samples(alarm unit)` for the hooks.
 
@@ -213,8 +288,10 @@ selected.
 Then, only for the chart on screen:
 
 3. `_render_chart(spec)`: one `result_view()` for each checked channel in
-   the chart unit (cache hit when it equals step 1), then `set_value` on
-   that chart's series.
+   the chart unit, mode and N (cache hit when it equals step 1), then
+   `set_value` on that chart's series. For a spectrum chart, the same
+   results update its result cards.
+4. The cards of spectrum charts that are not on screen, as Q9 decides.
 
 On-screen test: `dpg.is_item_visible(plot_tag)`, failing open, as
 `_envelope_on_screen()` does now. Generalise it to `_chart_on_screen(cid)`.
@@ -234,7 +311,7 @@ and without a separate alarm unit. Record the table in CONTRIBUTING.md,
 | Type | Data | X axis | Y axis | Notes |
 |---|---|---|---|---|
 | Time waveform | `result_view(...).time_data`, display rate | Time, ms | chart unit (a trace has no amplitude mode; the label gives the unit only) | Replaces the bottom plot. Integrated traces start after t = 0 (overlap-save); keep `_last_time_x0_ms` for each chart |
-| Spectrum | `result_view(..., n_averages)`: spectrum, peaks, 1x marker | Frequency, Hz | `unit mode` | Average checkbox and N for each chart. Info line "averaging k of N frames" for each chart. Avg. window (N × acquisition period) shown in the Charts table row |
+| Spectrum | `result_view(..., n_averages)`: spectrum, peaks, 1x marker | Frequency, Hz | `unit mode` | Average checkbox and N for each chart. Info line "averaging k of N frames" for each chart. Avg. window (N × acquisition period) shown in the Charts table row. Owns the result cards and peaks tables of its channels (3.3) |
 | Trend | `get_trend_for_display(unit, mode, channels)` | Time, s | `Overall, unit mode, band` | y2: shaft speed from `get_rpm_trend()` in the user's rotation unit (`rotation_from_rpm`); usable readings only. Browse cursor for each trend chart. Never averaged |
 | Envelope | `eu_scaled_raw()`, `envelope_spectrum()` | Modulation frequency, Hz | acceleration unit | Band controls and the Auto button move into the chart tab. Auto-band cache key becomes `(chart_id, ch, rate)` |
 | XY | two traces of the same frame, chart unit | channel X | channel Y | Same frame, same clock, same anti-alias and high-pass, so the phase between the two is kept. Equal axis scale. Trim both traces to the same span |
@@ -270,8 +347,31 @@ drawn on an equal-aspect plot. R24 in `doc/PROGRESS.md` holds this.
   `charts.yaml`, rebuild the main tab bar, render the selected chart.
 - Rebuild the table when a channel is enabled or disabled, a sensor is
   assigned, or the tachometer role changes.
-- Recording lock: the existing lock on the dialog buttons stays (Q6, not
-  answered; default kept).
+- Opened from a **Charts** button in a new strip above the tab bar of the
+  middle pane (`BTN_CHARTS_SETUP`), and from the dialog's tab bar.
+- **Recording lock** (owner decision Q6): chart setup is locked during a
+  recording, like every acquisition window. `BTN_CHARTS_SETUP` goes into
+  `_RECORDING_LOCKED_CONTROLS`.
+
+**Recording lock: visible disabled state (reported bug).** A user pressed
+the acquisition setup button during a recording and nothing happened. The
+button was disabled by `_set_recording_lock()`, but it looked the same as
+an enabled button: `gui.py` binds no theme for the disabled state, and
+dearpygui draws a disabled button with the normal colours. Fix:
+
+- One global theme with `dpg.theme_component(..., enabled_state=False)`
+  for buttons, combos, checkboxes, input fields and sliders: muted text and
+  frame colours from the existing palette (`_c("MUTED")`). Bind it once in
+  `_create_gui()`, so every disabled widget in the app is visibly disabled,
+  not only the locked ones.
+- A tooltip on each locked control while it is locked: "Stop the recording
+  to change this."
+- Test (GUI context): the theme exists with a disabled-state component for
+  `mvButton`; `_set_recording_lock(True)` disables every control in
+  `_RECORDING_LOCKED_CONTROLS`, `BTN_CHARTS_SETUP` included, and
+  `_set_recording_lock(False)` enables them again.
+- This is a separate commit (S0b) ahead of the chart work, because it is a
+  defect in the released version. CHANGELOG entry under Fixed.
 
 **Acquisition tab:** remove `ACQ_DLG_ENV_ENABLED`, `ACQ_DLG_AVG_ENABLED`,
 `ACQ_DLG_AVG_N`, `ACQ_DLG_AVG_TIME` and their callbacks and tooltips.
@@ -301,6 +401,12 @@ Remove the unit combos beside the fixed upper and lower limits.
   `_add_channel_series` / `_remove_channel_series`, `_redraw_all_channels`,
   `_refresh_channel_names`, `_update_avg_count_text`, the keyboard
   handlers, the session-browser display path.
+- Results column: the channel result sections (`ch_result_section(ch)`,
+  `ch_overall_value(ch)`, `ch_scalars_text(ch)`, `ch_one_x_text(ch)`, the
+  peaks-table pool keyed by channel) become sections keyed by
+  `(chart_id, ch)`, grouped under a header for each spectrum chart. The
+  peaks-table widget pool (E19) is kept, keyed the same way. Tachometer
+  cards and the overflow warning stay keyed by channel.
 - Put the chart builders and renderers in a new module `gui_charts.py`, so
   `gui.py` (R61) gets shorter.
 
@@ -366,10 +472,11 @@ commit as the code.
 | Step | Content | Tests |
 |---|---|---|
 | S0 | Branch, plan, tracker, R67 | — |
+| S0b | Fix: locked controls show a disabled state during a recording, with a tooltip | disabled-state theme bound; lock and unlock of every locked control |
 | S1 | `charts.py`: model, validation, `default_for`, YAML load/save, `charts_config_path()` | `tests/test_charts.py`: round trip; bad entry skipped; bad file not overwritten; allowed units; tachometer refused; XY needs two; default set equals today's layout |
-| S2 | `result_view()`; `process_sample()` removed; `process_samples(unit, mode)` unaveraged; unit-parameterised `get_trend_for_display()`; view cache | equality test (reference captured before the change); conversion test (off-bin, phase ≠ 0); revert check; `test_spectral_averaging.py` moved to the argument |
+| S2 | `result_view()` (no `history` argument); `_view_of_sample()`; `process_sample()` removed; `process_samples(unit, mode)` unaveraged; unit-parameterised `get_trend_for_display()`; view cache | equality test (reference captured before the change); conversion test (off-bin, phase ≠ 0); revert check; `test_spectral_averaging.py` moved to the argument |
 | S3 | Alarm view: Monitor-tab unit and mode, `alarm_view()` helper, both `_build_anomaly_hook` copies, headless, fixed-limit migration | hook fires on the alarm-unit overall; channel that cannot convert is skipped; migration from `fixed_upper_unit`; GUI and headless defaults agree |
-| S4 | Main window: dynamic tab bar; bottom plot and second-y-axis code removed; waveform, spectrum (with per-chart averaging) and trend renderers; on-screen-only rendering; render on tab change | GUI-context tests: tabs from a set; rebuild keeps the selection; hidden chart not rendered (patch `is_item_visible`); tags by `chart_id` |
+| S4 | Main window: dynamic tab bar; Charts button; bottom plot and second-y-axis code removed; waveform, spectrum (with per-chart averaging) and trend renderers; result cards and peaks tables for each (spectrum chart, channel); on-screen-only rendering; render on tab change | GUI-context tests: tabs from a set; rebuild keeps the selection; hidden chart not rendered (patch `is_item_visible`); tags by `chart_id` |
 | S5 | Charts tab in the dialog: add, remove, rename, checkboxes, XY selectors with swap, unit combo, options | GUI-context tests: add and remove rows; incompatible channel disabled; swap; close saves and rebuilds |
 | S6 | Acquisition tab: Envelope and averaging controls removed; settings fields removed; migration | old YAML and old files load; migration adds the envelope chart and the averaging |
 | S7 | Envelope chart: band controls for each chart | `test_envelope.py` passes; chain runs only on screen |
@@ -382,13 +489,16 @@ commit as the code.
 | # | Question | Decision |
 |---|---|---|
 | Q1 | Unit for alarms | ✅ A unit and mode selector on the Monitor tab, passed to `result_view()` for the anomaly test. Channels keep their target unit (default: sensor EU) as the record unit |
-| Q2 | Crest factor and kurtosis from the record-unit trace | ✅ Yes |
-| Q3 | Peaks table in the results column: record unit, or follow the selected spectrum chart? | Open. Recommended: follow the spectrum chart on screen (its unit, mode and averaging); with no spectrum chart on screen, the record unit. The column header gives the unit |
+| Q2 | Crest factor and kurtosis | ✅ Revised: on a result card, in the unit of that card's spectrum chart, never averaged. The trend stores the record-unit values |
+| Q3 | Peaks table and result cards | ✅ One card for each (spectrum chart, channel), in the chart's unit, mode and averaging. A channel on two spectrum charts has two cards |
 | Q4 | Polar in phase 1 | ✅ Deferred to R24 |
 | Q5 | XY selection | ✅ Two ordered selectors and a swap button |
-| Q6 | Chart edits during a recording | Not answered. Default: the existing dialog lock stays |
+| Q6 | Chart edits during a recording | ✅ Locked, like all acquisition windows. The locked controls must look disabled (reported bug, S0b) |
 | Q7 | Envelope checkbox | ✅ Retired; an envelope chart replaces it |
-| Q8 | With averaging moved to the charts, the record and alarm results are never averaged. Today, with averaging on, the hooks see an averaged overall | Open. Recommended: unaveraged. The trend is already unaveraged; the RMS hook smooths with its own EWMA and needs `consecutive_n` frames to fire |
+| Q8 | Averaged data for alarms | ✅ Never. Alarms use unaveraged results; the sustain time is the debounce |
+| — | Averaging state | ✅ The chart owns the setting (on, N); the collector derives the history from the frame cache. `history` leaves the public `result_view()` (3.2.1) |
+| Q9 | Which result cards show, and which update, when the chart on screen is not a spectrum chart, or is a different spectrum chart? | Open. Recommended: show the cards of every spectrum chart, grouped by chart. The group of the chart on screen is expanded and fully updated (peaks table included). The other groups are collapsed to one line for each channel (overall, crest factor, kurtosis), updated each frame with `result_view(..., peaks=False)`. No stale peaks table is ever shown. Measure the cost (3.4) |
+| Q10 | `FixedThresholdHook` fires on one frame. Apply the sustain time to it too? | Open. Recommended: yes, the same `rms_s` sustain, renamed "Sustain time" in the anomaly section because it then applies to both hooks |
 
 ## 7. Risks
 
