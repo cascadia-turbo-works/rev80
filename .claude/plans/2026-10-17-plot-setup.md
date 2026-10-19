@@ -8,6 +8,9 @@ R42 (crest and kurtosis trend), R43 remainder (RPM on the trend plot).
 
 Revision 2 (2026-10-19): owner decisions Q1, Q2, Q4, Q5 and Q7 applied;
 spectrum averaging moves from the Acquisition tab to each spectrum chart.
+Revision 5 (2026-10-19): Q9 decided (all cards always shown and updated);
+Q10 decided (a sustain time for the fixed-limit alarm, default 0 s). A
+table of anomaly triggers is recorded as later work (R68), not in scope.
 Revision 4 (2026-10-19): section 3.11, data loaded from a file; a defect
 found (a session trend reads 0.0 in any other unit); Q11 to Q13.
 Revision 3 (2026-10-19): Q2 and Q3 revised (result cards and the peaks
@@ -233,7 +236,15 @@ count, and the chart shows "averaging k of N frames".
     Today a hook sees an averaged overall when averaging is on; that ends.
   - `FixedThresholdHook` has no sustain time: one frame over the limit
     fires it. With averaging on, the average hid single-frame spikes from
-    it; unaveraged, it does not. Q10.
+    it; unaveraged, it does not. **It gets its own sustain time** (owner
+    decision Q10): config key `fixed_s`, default 0 s, which is one frame,
+    the current behaviour. It converts to frames as `rms_s` does
+    (`round(s / period) + 1`), and it has its own field in the anomaly
+    section beside the fixed limits. It is separate from the RMS sustain
+    time (default 3 s), because the defaults differ. A frame that fails the
+    speed gate or is flagged resets the count, as for the RMS hook. Both
+    `_build_anomaly_hook` copies and headless change; the hook-build test
+    checks that the defaults agree.
   - Config keys `alarm_unit` and `alarm_amplitude_mode` in the
     `monitor.anomaly` block of `acquisition.yaml`. Headless reads the same
     keys. Empty means each channel's record unit (today's behaviour).
@@ -269,8 +280,11 @@ count, and the chart shows "averaging k of N frames".
     for each chart. A shaft speed has no unit view.
   - The overflow warning stays one line for each channel at the top of the
     column. It is a fact of the frame, not of a view.
-  - Which cards show and update when the chart on screen is not their
-    chart: Q9.
+  - **All cards always show and update** (owner decision Q9): every
+    spectrum chart's cards, expanded, peaks table included, on every frame,
+    whichever tab is on screen. Only the plot series of a chart that is not
+    on screen are skipped. So for a spectrum chart, "process only the chart
+    on screen" applies to drawing, not to the `result_view()` calls.
 - The trend keeps storing crest factor and kurtosis of the record-unit
   trace, from step 1 of 3.4.
 
@@ -293,7 +307,14 @@ Then, only for the chart on screen:
    the chart unit, mode and N (cache hit when it equals step 1), then
    `set_value` on that chart's series. For a spectrum chart, the same
    results update its result cards.
-4. The cards of spectrum charts that are not on screen, as Q9 decides.
+4. The cards of every other spectrum chart (Q9): one `result_view()` for
+   each of their channels, peaks included, and the card widgets. No
+   `set_value` on their plot series. Cost: one view for each (spectrum
+   chart, channel) for each frame. The peaks-table widget pool (E19) keeps
+   the widget traffic to the rows that change. Measure it (2 spectrum
+   charts, 8 channels); if it is too slow, the fallback is a one-line
+   summary for the cards of a chart not on screen, updated with
+   `peaks=False`.
 
 On-screen test: `dpg.is_item_visible(plot_tag)`, failing open, as
 `_envelope_on_screen()` does now. Generalise it to `_chart_on_screen(cid)`.
@@ -609,7 +630,7 @@ commit as the code.
 | S1 | `charts.py`: model, validation, `default_for`, YAML load/save, `charts_config_path()` | `tests/test_charts.py`: round trip; bad entry skipped; bad file not overwritten; allowed units; tachometer refused; XY needs two; default set equals today's layout |
 | S2 | `result_view()` (no `history` argument); `_view_of_sample()`; `process_sample()` removed; `process_samples(unit, mode)` unaveraged; unit-parameterised `get_trend_for_display()`; view cache | equality test (reference captured before the change); conversion test (off-bin, phase ≠ 0); revert check; `test_spectral_averaging.py` moved to the argument |
 | S2b | Loaded trends: rebuild the five orders from the stored frames for sessions and bursts; NaN where no waveform; RPM trend from the loaded tachometer samples; contiguous-frame averaging rule | reproduce the zero trend first (3.11.1), then the fix; equality with `overall_json` in the record unit; NaN gap; a session gives k = 1; revert checks; session load time measured |
-| S3 | Alarm view: Monitor-tab unit and mode, `alarm_view()` helper, both `_build_anomaly_hook` copies, headless, fixed-limit migration | hook fires on the alarm-unit overall; channel that cannot convert is skipped; migration from `fixed_upper_unit`; GUI and headless defaults agree |
+| S3 | Alarm view: Monitor-tab unit and mode, `alarm_view()` helper, both `_build_anomaly_hook` copies, headless, fixed-limit migration, fixed-limit sustain time `fixed_s` | hook fires on the alarm-unit overall; `fixed_s` = 0 fires on one frame (today's behaviour, equality); `fixed_s` > 0 needs consecutive frames and a flagged frame resets the count; channel that cannot convert is skipped; migration from `fixed_upper_unit`; GUI and headless defaults agree |
 | S4 | Main window: dynamic tab bar; Charts button; `_on_data_source_changed()` for every load path and device connect; bottom plot and second-y-axis code removed; waveform, spectrum (with per-chart averaging) and trend renderers; result cards and peaks tables for each (spectrum chart, channel); on-screen-only rendering; render on tab change | GUI-context tests: tabs from a set; rebuild keeps the selection; a load with a missing channel and a channel with no sensor gives empty series with a legend note; hidden chart not rendered (patch `is_item_visible`); tags by `chart_id` |
 | S5 | Charts tab in the dialog: add, remove, rename, checkboxes, XY selectors with swap, unit combo, options | GUI-context tests: add and remove rows; incompatible channel disabled; swap; close saves and rebuilds |
 | S6 | Acquisition tab: Envelope and averaging controls removed; settings fields removed; migration | old YAML and old files load; migration adds the envelope chart and the averaging |
@@ -631,11 +652,12 @@ commit as the code.
 | Q7 | Envelope checkbox | ✅ Retired; an envelope chart replaces it |
 | Q8 | Averaged data for alarms | ✅ Never. Alarms use unaveraged results; the sustain time is the debounce |
 | — | Averaging state | ✅ The chart owns the setting (on, N); the collector derives the history from the frame cache. `history` leaves the public `result_view()` (3.2.1) |
-| Q9 | Which result cards show, and which update, when the chart on screen is not a spectrum chart, or is a different spectrum chart? | Open. Recommended: show the cards of every spectrum chart, grouped by chart. The group of the chart on screen is expanded and fully updated (peaks table included). The other groups are collapsed to one line for each channel (overall, crest factor, kurtosis), updated each frame with `result_view(..., peaks=False)`. No stale peaks table is ever shown. Measure the cost (3.4) |
+| Q9 | Result cards of spectrum charts not on screen | ✅ Always shown and updated, peaks table included (3.3, 3.4). Fallback if too slow: a one-line summary |
 | Q11 | On a file load: keep the user's chart set and select channels by index? | Open. Recommended: yes (3.11). Charts never change on a load |
 | Q12 | Averaging on non-contiguous frames (monitor sessions) | Open. Recommended: contiguous frames only; a session averages 1 frame and says why (3.11.2) |
 | Q13 | Session and burst trends: rebuild the five orders from the stored frames on load? | Open. Recommended: yes; it fixes the zero trend (3.11.1) and gives the RPM trend. Measure the load time first |
-| Q10 | `FixedThresholdHook` fires on one frame. Apply the sustain time to it too? | Open. Recommended: yes, the same `rms_s` sustain, renamed "Sustain time" in the anomaly section because it then applies to both hooks |
+| Q10 | Sustain time for the fixed-limit alarm | ✅ Yes: its own `fixed_s`, default 0 s (one frame, as now) |
+| — | Anomaly triggers as a table (like the Charts table): add a trigger type, set it up in a row; fixed triggers as one type with > or < | Not in this work. Tracked as R68 |
 
 ## 7. Risks
 
