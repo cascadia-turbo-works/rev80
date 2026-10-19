@@ -526,7 +526,15 @@ Fix (step S2b), in order of preference:
 3. **Shaft speed** from the loaded tachometer samples: each frame has a
    `TachResult` from its stored edge times. Today a session load builds no
    RPM trend, so a trend chart with y2 is empty for a session. Rebuild the
-   RPM trend from the usable readings, with the frame `rel_time`.
+   RPM trend from the usable readings, with the frame `rel_time`. Also:
+   neither `load_data()` nor `load_monitor_session()` clears `tach_trend`,
+   and `init_trend_channels()` keeps the entries of every channel that is a
+   tachometer in the loaded config. So a session with a tachometer on the
+   same channel as the live setup keeps the live RPM trend beside the
+   session's vibration trend. Found by reading the code, not reproduced;
+   a measurement file without a tachometer channel drops it correctly
+   (checked, scratchpad `tachleak.py`). Clear `tach_trend` at the start of
+   every load.
 
 `overall_json` stays in the file for older readers, and
 `reprocess_session_trend()` keeps writing it in the record unit.
