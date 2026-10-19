@@ -1,6 +1,6 @@
 # Plot setup — progress tracker
 
-Plan: `.claude/plans/2026-10-17-plot-setup.md` (revision 5, 2026-10-19).
+Plan: `.claude/plans/2026-10-17-plot-setup.md` (revision 6, 2026-10-19). Release: Rev80 1.0.0.
 Branch: `feat/plot-setup`. Requirement: R67 in `doc/PROGRESS.md`.
 
 This file gives the status of each step of the plan. Update it in the same
@@ -14,11 +14,12 @@ commit as the step. Status: 🔲 TODO, 🔄 In progress, ✅ Done, ⏸ Blocked.
 | S0b | Fix: locked controls look disabled during a recording | 🔲 TODO | | lock and unlock test |
 | S1 | `charts.py` model, validation, `charts.yaml` | 🔲 TODO | | |
 | S2 | `result_view()` as the one path; `process_sample()` removed; unaveraged `process_samples(unit, mode)`; unit-parameterised trend; view cache | 🔲 TODO | | equality test; off-bin conversion test; revert check |
-| S2b | Loaded trends from stored frames (all units, NaN gaps, RPM); contiguous-frame averaging | ⏸ Q12, Q13 | | zero-trend reproduction, then fix |
+| S2b | Loaded trends from stored frames (all units, NaN gaps, tachometer trends); `tach_trend` cleared on load; contiguous-frame averaging | 🔲 TODO | | zero-trend reproduction, then fix; load time measured |
 | S3 | Alarm unit and mode on the Monitor tab; fixed-limit sustain time `fixed_s` (default 0 s); both `_build_anomaly_hook` copies; headless | 🔲 TODO | | hook-build defaults agree |
 | S4 | Dynamic tab bar; bottom time-series removed; waveform, spectrum, trend renderers; result cards for each (spectrum chart, channel); on-screen-only rendering | 🔲 TODO | | profiling table before and after |
 | S5 | Charts tab in the configuration dialog; XY selectors with swap | 🔲 TODO | | |
-| S6 | Envelope and averaging controls off the Acquisition tab; settings fields removed; migration | 🔲 TODO | | old YAML and files load |
+| S6 | Envelope and averaging controls off the Acquisition tab; settings fields removed; `acquisition.yaml` migration | 🔲 TODO | | old YAML loads |
+| S6b | Chart layout in data files; measurement v6, session v7; old versions refused; headless writes a layout | ⏸ Q14, Q15, Q16; load-time measurement | | round trip; refusal leaves state unchanged; revert check |
 | S7 | Envelope chart | 🔲 TODO | | |
 | S8 | Trend y2: shaft speed | 🔲 TODO | | |
 | S9 | XY chart | 🔲 TODO | | |
@@ -42,9 +43,12 @@ commit as the step. Status: 🔲 TODO, 🔄 In progress, ✅ Done, ⏸ Blocked.
 | Q9 | Cards of spectrum charts not on screen | Always shown and updated; fallback to a one-line summary if measured too slow | 2026-10-19 |
 | Q10 | Sustain time for `FixedThresholdHook` | Yes: `fixed_s`, default 0 s (one frame) | 2026-10-19 |
 | — | Anomaly-trigger table | Out of scope; R68 | 2026-10-19 |
-| Q11 | Chart set on a file load | Open (recommended: keep the user's set, select by index) | |
-| Q12 | Averaging on non-contiguous frames | Open (recommended: contiguous only) | |
-| Q13 | Rebuild session and burst trends from stored frames | Open (recommended: yes) | |
+| Q11 | Chart layout and file load | Stored in every data file; a load sets it; new versions, old ones refused (use Rev80 0.1.4); release 1.0.0 | 2026-10-19 |
+| Q12 | Averaging on non-contiguous frames | Contiguous frames only | 2026-10-19 |
+| Q13 | Rebuild loaded trends from stored frames | Yes, tachometer trends included | 2026-10-19 |
+| Q14 | Charts-tab edits while a file is loaded | Open (recommended: change the layout in effect only; a "Use for live data" button) | |
+| Q15 | Layout stored by headless sessions | Open (recommended: `charts.yaml` if present, else the default set) | |
+| Q16 | A file newer than this build | Open (recommended: refuse, naming the writer's version) | |
 
 ## Measurements
 
@@ -64,5 +68,7 @@ section 5.
 ## Notes
 
 - No GUI viewport from an automated session. Tests make a context only.
+- Implementation continues on a machine with PicoSDK installed; the cloud
+  container could not install `picosdk`.
 - The averaging control is a linear power average of N frames, not an
   exponential one.

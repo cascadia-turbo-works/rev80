@@ -8,6 +8,10 @@ R42 (crest and kurtosis trend), R43 remainder (RPM on the trend plot).
 
 Revision 2 (2026-10-19): owner decisions Q1, Q2, Q4, Q5 and Q7 applied;
 spectrum averaging moves from the Acquisition tab to each spectrum chart.
+Revision 6 (2026-10-19): Q11 decided: the chart layout is stored in every
+data file and a load sets it; new file versions (measurement 6, session 7)
+with no reader for older ones; ships as Rev80 1.0.0 (3.9.2). Q12 and Q13
+decided (tachometer trends included). New questions Q14 to Q16.
 Revision 5 (2026-10-19): Q9 decided (all cards always shown and updated);
 Q10 decided (a sustain time for the fixed-limit alarm, default 0 s). A
 table of anomaly triggers is recorded as later work (R68), not in scope.
@@ -435,9 +439,11 @@ Remove the unit combos beside the fixed upper and lower limits.
 
 ### 3.9 Persistence and migration
 
+#### 3.9.1 The live layout: `charts.yaml`
+
 - `charts.yaml` in the config directory, through a new
   `config.charts_config_path()` (uses `config_dir()`). Not in
-  `acquisition.yaml` and not in the device YAML. Headless does not read it.
+  `acquisition.yaml` and not in the device YAML.
 - A chart refers to a channel by index. A device with fewer channels gives
   charts with the missing channels unchecked, not an error.
 - An unreadable or invalid `charts.yaml`: log it, use the default set, and
@@ -449,20 +455,102 @@ Remove the unit combos beside the fixed upper and lower limits.
   type.
 - One-time migration from `acquisition.yaml`: `envelope_enabled: true` adds
   an Envelope chart; `averaging_enabled` and `n_averages` set the averaging
-  of the default Spectrum chart.
+  of the default Spectrum chart. (The configuration files keep a migration;
+  the data files do not, see 3.9.2.)
 - `AcquisitionSettings`: remove `envelope_enabled`, `averaging_enabled`,
   `n_averages` and `n_averages_effective`. `from_dict` ignores the keys in
-  old files and YAML; `to_dict` stops writing them. The measurement-file
-  version does not change (a reader already tolerates an absent key).
-  Update `tests/test_config.py` and `tests/test_config_contract.py`.
-- Measurement files and monitor sessions keep the record unit for each
-  channel. The chart set is not stored in a file in phase 1.
+  old YAML; `to_dict` stops writing them. Update `tests/test_config.py` and
+  `tests/test_config_contract.py`.
+
+#### 3.9.2 The layout in the data files (owner decision Q11)
+
+Every data file stores the chart layout that was in effect when it was
+written. Loading a file sets the chart layout to the stored one. Channel
+indices in the stored layout match the stored channel configuration,
+because both were written from the same state.
+
+**New file versions, and no reader for older ones.** This ships as Rev80
+1.0.0.
+
+| File | Writer | Version now | Version in 1.0.0 |
+|---|---|---|---|
+| Measurement file | `DataCollector.save_data()`, `DataCollector._FILE_VERSION` | 5 | 6 |
+| Monitor session (`session.h5`) | `MonitorWriterThread`, `monitor.writer._FILE_VERSION` | 6 | 7 |
+
+Layout in the file:
+
+- `/metadata` attribute `chart_layout_json`: `json.dumps(ChartSet.to_dict())`,
+  the same dict as `charts.yaml`, through the same serializer. One string,
+  so the reader and `charts.yaml` cannot drift apart.
+- `/metadata` attribute `rev80_version`: the package version that wrote the
+  file (`rev80.__version__`). Not used to read the file; it makes a future
+  refusal message exact.
+- Measurement file: the layout at the time of Save. Session file: the
+  layout at the start of the recording. Chart edits are locked during a
+  recording (Q6), so one layout holds for the whole session, its captures
+  and its bursts.
+- Headless writes session files too and has no charts: Q15.
+
+Reading:
+
+- `_restore_metadata(f, min_version, max_version)`. **The version check is
+  the first read, before the frame cache or the trend is cleared.** Today
+  `load_data()` clears the cache and then reads the version; a refused file
+  must leave the data on screen as it was.
+- A file older than the minimum: refuse, log at ERROR, load nothing:
+  "<name>: data file version 5 was written by Rev80 0.x. Rev80 1.0.0 reads
+  version 6 and later. Open this file with Rev80 0.1.4." (Measurement
+  version 5 and session version 6 are the 0.1.x formats.) Return a status
+  so that the GUI does not go on to rebuild charts for a load that did not
+  happen.
+- A file newer than this build: as now, a warning, and the file loads.
+  (Q16: refuse it too?)
+- A file of the right version with no `chart_layout_json`, or an invalid
+  one: log it, and use `ChartSet.default_for(loaded config)`. This is a
+  damaged file, not a migration path.
+- The stored layout is validated against the loaded configuration with the
+  same functions as the Charts tab (3.1). A chart that does not validate
+  (a hand-edited file) shows "no channel" with the reason; the load does
+  not fail.
+- Remove the reader code for old formats: the v3 path in
+  `_read_frame_group()` (frames in the recorded unit), the v3 shared trend
+  axis in `load_data()` (order 0 only), and `_loaded_channel_units()` if
+  nothing else uses it. This also removes the v3 case of 3.11.1.
+- Every other reader of these files gets the same check: the session
+  browser scan (`_scan_session_dirs()`) lists an old session with "Rev80
+  0.x session: open with Rev80 0.1.4" and does not open it;
+  `reprocess_session_trend()` refuses to write into an old file;
+  `_on_sb_save_config()`; `scripts/advanced_plots.py`.
+
+The live layout and the file layout:
+
+- The collector holds the layout in effect: `DataCollector.chart_set`
+  (`charts.py` has no dearpygui import, so the collector can hold it).
+  `save_data()` and the session writer read it from there; a load sets it.
+- A load replaces the layout in effect, not `charts.yaml`. When the user
+  goes back to live data (device connect or Start), the live layout from
+  `charts.yaml` comes back. This is the same as the acquisition settings
+  now: a load replaces them, a device connect restores them.
+- Edits in the Charts tab while a file is loaded: Q14.
+
+Tests (`tests/test_file_version_check.py` and a new
+`tests/test_chart_layout_persistence.py`):
+
+- Round trip, both file types: save with a layout, load, the layout is
+  equal; bursts and single captures get the session's layout.
+- A version-5 measurement file and a version-6 session are refused, the
+  ERROR names the file version and Rev80 0.1.4, and the frame cache and
+  trend that were loaded before are unchanged.
+- A file with no `chart_layout_json` loads with the default layout and a
+  warning.
+- A newer file still warns.
+- Revert check: remove the version check; the refusal test must fail.
 
 ### 3.10 Headless
 
-Reads `alarm_unit` and `alarm_amplitude_mode` and builds the alarm view
-with the shared helper. No charts. Its results are no longer averaged
-(Q8). Everything else is unchanged.
+Reads `alarm_unit`, `alarm_amplitude_mode` and `fixed_s` and builds the
+alarm view with the shared helper. No charts on screen. Its results are
+not averaged (Q8). Writes session version 7 with a chart layout (Q15).
 
 ### 3.11 Data loaded from a file
 
@@ -470,7 +558,7 @@ Five entry points load data into the frame cache:
 
 | Entry point | Collector call | Frames | Trend source |
 |---|---|---|---|
-| File > Load, `--from-file` with a measurement file | `load_data()` | the saved frame cache: contiguous frames | `/trend`: all five mV orders (v4 and later); order 0 only (v3) |
+| File > Load, `--from-file` with a measurement file | `load_data()` | the saved frame cache: contiguous frames | `/trend`: all five mV orders |
 | Session browser, `--from-file` with a session | `load_monitor_session()` | every interval capture; the cache grows to hold all N | `overall_json`: one value for each capture, in the record unit |
 | Session browser, one capture | `load_monitor_capture()` | one capture | none |
 | Session browser, one burst | `load_monitor_burst()` | contiguous burst frames, `rel_time` rebased to the trigger | `overall_json` for each frame, in the record unit |
@@ -484,21 +572,20 @@ What a load does now, and what it means for charts:
    modes, roles and tachometer calibration. `_wire_session_sensors()`
    assigns the file's sensors. `_post_load()` sets `enabled_channels` to
    the channels in the frames.
-2. **The chart set does not come from the file.** It is the user's layout
-   (`charts.yaml`), and the plan keeps it unchanged through a load. Charts
-   select channels by index. This is the useful case: the same layout for
-   live data and for files of the same machine.
+2. **The chart set comes from the file** (owner decision Q11, 3.9.2). The
+   stored layout was written with the stored channel configuration, so the
+   channel indices match.
 
-Consequences and the rule for each:
+Consequences and the rule for each. With the layout from the file most of
+these do not occur for a valid file; the rules are for a damaged or
+hand-edited file, and for the Charts tab.
 
 | Case | Rule |
 |---|---|
-| A chart's channel is not in the file | The series is empty. The legend entry reads "Ch C: not in this file". The channel stays checked in the chart. |
-| A file channel is on no chart | It is not shown. The Frame info card lists the loaded channels, so this is visible. The Charts tab offers it. |
-| A file channel cannot reach the chart unit (no sensor in the file, or another quantity) | The series is empty, with the reason in the legend: "Ch B: no sensor in this file, cannot show in/s". Never a value in mV under an in/s axis. |
-| A file channel has a different name than the live channel at the same index | The legend uses the file's name (`name_for(ch)` reads the loaded config). The chart name, which the user typed, does not change. The README says that charts select by index. |
-| A file channel is a tachometer, but the chart has it as a vibration channel (or the reverse) | `channel_selectable()` uses the loaded roles. A tachometer is never drawn as vibration. A trend chart's `tach_channel` that is not a tachometer in the file gives no y2 series. |
-| The Charts tab is opened while a file is loaded | The table shows the loaded channels. A checked channel that is not loaded shows greyed with "not loaded" and stays checked. **The table never removes a channel from a chart because it is absent now.** Otherwise one edit during a file browse loses the live layout. |
+| A chart's channel is not in the file | The series is empty. The legend entry reads "Ch C: not in this file". The channel stays in the chart. |
+| A file channel cannot reach the chart unit | The series is empty, with the reason in the legend. Never a value in mV under an in/s axis. |
+| A tachometer in a vibration channel list | `channel_selectable()` uses the loaded roles. A tachometer is never drawn as vibration. |
+| The Charts tab is opened while a file is loaded | The table shows the file's layout and the loaded channels (Q14 for what an edit does). **The table never removes a channel from a chart because it is absent now.** |
 | The record unit | From the file (`target_unit` attribute). It sets the stored trend's unit and the session `overall_json`; it does not limit the charts. |
 
 One GUI hook replaces the per-path series code. `_on_load_file()`,
@@ -506,7 +593,9 @@ One GUI hook replaces the per-path series code. `_on_load_file()`,
 `_on_burst_list_select()` each remove and add series and call
 `_update_axis_assignment()` in their own way now. Replace this with one
 `_on_data_source_changed()`, called after every load and after a device
-connect: it re-evaluates each chart against the loaded channels, units and
+connect: it takes the layout in effect from `collector.chart_set` (the
+file's layout after a load, the live layout after a connect), rebuilds the
+tab bar, re-evaluates each chart against the loaded channels, units and
 roles, rebuilds the series and the legend notes, rebuilds the cards (3.3),
 and renders the chart on screen.
 
@@ -529,8 +618,8 @@ Reproduced (2026-10-19, scratchpad `trendcols.py`, an accelerometer at
 
 Today this is reachable by a change of the channel unit after a session
 load. With per-chart units, any trend chart in another unit shows it: a
-flat zero line that reads as a measured value. v3 measurement files fill
-order 0 only, so they have the same defect for integrated units.
+flat zero line that reads as a measured value. (v3 measurement files had
+the same defect; 1.0.0 does not read them, 3.9.2.)
 
 Fix (step S2b), in order of preference:
 
@@ -588,8 +677,6 @@ frame.
   `load_monitor_session()` off the render thread (R50). The view cache and
   `_on_data_source_changed()` are render-thread only; the thread must hand
   the result back to the render thread, not call them.
-- **Storing the chart set in a file** is not in phase 1. If a later phase
-  stores it, a load offers it; it does not replace the user's set.
 
 ## 4. Invariants to keep (checklist for each step)
 
@@ -606,8 +693,10 @@ frame.
 - [ ] Monitor results, alarms and trends do not depend on the selected tab.
 - [ ] The speed gate is applied in `valid_results()` only.
 - [ ] Achieved rate, not `config.samplerate`, in every view.
-- [ ] A loaded file never changes the chart set, and the Charts tab never
-      drops a checked channel because it is absent now.
+- [ ] A load sets the layout from the file; it never writes `charts.yaml`.
+      The Charts tab never drops a checked channel because it is absent now.
+- [ ] A refused file changes nothing: the version check comes before any
+      state is cleared.
 - [ ] No trend value is 0.0 because it was not recorded: NaN, a gap.
 - [ ] An average uses contiguous frames only.
 - [ ] No dearpygui import in `charts.py`, `collector.py`, `sample.py`,
@@ -629,15 +718,16 @@ commit as the code.
 | S0b | Fix: locked controls show a disabled state during a recording, with a tooltip | disabled-state theme bound; lock and unlock of every locked control |
 | S1 | `charts.py`: model, validation, `default_for`, YAML load/save, `charts_config_path()` | `tests/test_charts.py`: round trip; bad entry skipped; bad file not overwritten; allowed units; tachometer refused; XY needs two; default set equals today's layout |
 | S2 | `result_view()` (no `history` argument); `_view_of_sample()`; `process_sample()` removed; `process_samples(unit, mode)` unaveraged; unit-parameterised `get_trend_for_display()`; view cache | equality test (reference captured before the change); conversion test (off-bin, phase ≠ 0); revert check; `test_spectral_averaging.py` moved to the argument |
-| S2b | Loaded trends: rebuild the five orders from the stored frames for sessions and bursts; NaN where no waveform; RPM trend from the loaded tachometer samples; contiguous-frame averaging rule | reproduce the zero trend first (3.11.1), then the fix; equality with `overall_json` in the record unit; NaN gap; a session gives k = 1; revert checks; session load time measured |
+| S2b | Loaded trends (Q13): rebuild the five orders from the stored frames for sessions and bursts; NaN where no waveform; RPM trend rebuilt from the loaded tachometer samples (sessions, bursts, measurement files); `tach_trend` cleared at the start of every load; contiguous-frame averaging rule (Q12) | reproduce the zero trend first (3.11.1), then the fix; equality with `overall_json` in the record unit; NaN gap; a session gives k = 1; revert checks; session load time measured |
 | S3 | Alarm view: Monitor-tab unit and mode, `alarm_view()` helper, both `_build_anomaly_hook` copies, headless, fixed-limit migration, fixed-limit sustain time `fixed_s` | hook fires on the alarm-unit overall; `fixed_s` = 0 fires on one frame (today's behaviour, equality); `fixed_s` > 0 needs consecutive frames and a flagged frame resets the count; channel that cannot convert is skipped; migration from `fixed_upper_unit`; GUI and headless defaults agree |
 | S4 | Main window: dynamic tab bar; Charts button; `_on_data_source_changed()` for every load path and device connect; bottom plot and second-y-axis code removed; waveform, spectrum (with per-chart averaging) and trend renderers; result cards and peaks tables for each (spectrum chart, channel); on-screen-only rendering; render on tab change | GUI-context tests: tabs from a set; rebuild keeps the selection; a load with a missing channel and a channel with no sensor gives empty series with a legend note; hidden chart not rendered (patch `is_item_visible`); tags by `chart_id` |
 | S5 | Charts tab in the dialog: add, remove, rename, checkboxes, XY selectors with swap, unit combo, options | GUI-context tests: add and remove rows; incompatible channel disabled; swap; close saves and rebuilds |
-| S6 | Acquisition tab: Envelope and averaging controls removed; settings fields removed; migration | old YAML and old files load; migration adds the envelope chart and the averaging |
+| S6 | Acquisition tab: Envelope and averaging controls removed; settings fields removed; `acquisition.yaml` migration | old YAML loads; migration adds the envelope chart and the averaging |
+| S6b | Data files: chart layout stored (`chart_layout_json`, `rev80_version`); measurement version 6, session version 7; version check before any state is cleared; old versions refused with the 0.1.4 message; old-format reader code removed; every reader checked; headless writes a layout | 3.9.2 tests; revert check on the version refusal |
 | S7 | Envelope chart: band controls for each chart | `test_envelope.py` passes; chain runs only on screen |
 | S8 | Trend y2: shaft speed | usable readings only; no point for `None`; no unit scaling |
 | S9 | XY chart | two traces, same span and length; same unit |
-| S10 | Profiling table (E19), README, CONTRIBUTING (4.1, 4.3, 4.6, 4.8, E19), CLAUDE.md, CHANGELOG | technical-writer audit; vibration-engineer review of S2, S3, S4, S8 |
+| S10 | Profiling table (E19), README (Charts tab, Data files layouts v6 and v7, "files from 0.x need Rev80 0.1.4"), CONTRIBUTING (4.1, 4.3, 4.5, 4.6, 4.8, E19), CLAUDE.md (file versions), CHANGELOG under 1.0.0 with a Breaking section | technical-writer audit; vibration-engineer review of S2, S3, S4, S8 |
 
 ## 6. Decisions
 
@@ -653,9 +743,12 @@ commit as the code.
 | Q8 | Averaged data for alarms | ✅ Never. Alarms use unaveraged results; the sustain time is the debounce |
 | — | Averaging state | ✅ The chart owns the setting (on, N); the collector derives the history from the frame cache. `history` leaves the public `result_view()` (3.2.1) |
 | Q9 | Result cards of spectrum charts not on screen | ✅ Always shown and updated, peaks table included (3.3, 3.4). Fallback if too slow: a one-line summary |
-| Q11 | On a file load: keep the user's chart set and select channels by index? | Open. Recommended: yes (3.11). Charts never change on a load |
-| Q12 | Averaging on non-contiguous frames (monitor sessions) | Open. Recommended: contiguous frames only; a session averages 1 frame and says why (3.11.2) |
-| Q13 | Session and burst trends: rebuild the five orders from the stored frames on load? | Open. Recommended: yes; it fixes the zero trend (3.11.1) and gives the RPM trend. Measure the load time first |
+| Q11 | Chart layout and file load | ✅ Stored in every data file; a load sets the layout. New file versions; older versions are refused with a message to use an older Rev80. Release as 1.0.0 (3.9.2) |
+| Q12 | Averaging on non-contiguous frames | ✅ Contiguous frames only (3.11.2) |
+| Q13 | Rebuild loaded trends from the stored frames | ✅ Yes, tachometer trends included (3.11.1) |
+| Q14 | An edit in the Charts tab while a file is loaded: what does it change? | Open. Recommended: the layout in effect only, so the view changes and a later Save of the measurement stores it; `charts.yaml` does not change. A "Use for live data" button copies the file's layout to `charts.yaml`, for the case where the user wants it |
+| Q15 | Headless writes session files but has no charts. Which layout does it store? | Open. Recommended: `charts.yaml` from its config directory if there is one, else `ChartSet.default_for(config)`. Then a session from a Raspberry Pi opens in the GUI with a sensible layout, and a user can copy a `charts.yaml` to the Pi to set it |
+| Q16 | A file newer than this build: warn and load (as now), or refuse? | Open. Recommended: refuse, with "written by Rev80 <rev80_version>; update Rev80". A newer file can hold a chart type or a channel role this build cannot draw correctly, and the warning is easy to miss |
 | Q10 | Sustain time for the fixed-limit alarm | ✅ Yes: its own `fixed_s`, default 0 s (one frame, as now) |
 | — | Anomaly triggers as a table (like the Charts table): add a trigger type, set it up in a row; fixed triggers as one type with > or < | Not in this work. Tracked as R68 |
 
@@ -666,6 +759,13 @@ commit as the code.
 - dearpygui can drop legends when series are added and removed. Rebuilding
   whole tabs makes this more likely; test it.
 - Deleting the selected tab can leave the tab bar with no selection.
+- Session load time with the trend rebuilt from frames (Q13) is not
+  measured. If it is too slow for a long session, version 7 is the time to
+  add the five mV orders for each capture to the file, because the format
+  changes anyway. Measure before S6b is merged, so that the format is
+  decided once.
+- Users with 0.x data files must keep 0.1.4 installed to open them. The
+  1.0.0 release notes and the README must say so.
 - A second `process_samples()` call for the alarm unit costs stage 2 for
   each channel during a recording. Measure it before S3 merges.
 - `DataCollector` has no lock (R59). The view cache is used on the render
