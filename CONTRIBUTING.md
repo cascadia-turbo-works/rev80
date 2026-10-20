@@ -152,6 +152,7 @@ scripts/
   render_md.sh             Renders one Markdown file to PDF
   render_docs.sh           Renders the four published docs to doc/*.pdf
   profile-pipeline         Per-stage timing sweep; see section 7
+  convert-0x               Copies a Rev80 0.x data file into the 1.0 format
   validate-streaming-capacity  Continuous-streaming stress test on hardware
   advanced_plots.py        Cell-by-cell exploration of an .h5 file
   runtimes.ipynb           Notebook of run-time measurements

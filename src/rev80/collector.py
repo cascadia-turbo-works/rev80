@@ -1634,7 +1634,25 @@ class DataCollector:
         The channel's target unit, then the sensor EU ('mV' with no sensor);
         the channel's mode, then '0-P'.
         """
-        return self.get_active_eu(ch), self.config.amplitude_mode_for(ch) or '0-P'
+        from rev80 import charts
+        sensor = self.scope_sensors.get(ch)
+        return charts.record_view(sensor.engineering_units if sensor else None,
+                                  self.config.target_unit_for(ch),
+                                  self.config.amplitude_mode_for(ch))
+
+    def _file_view_of(self, ch: int) -> 'tuple[str, str]':
+        """`default_view_of`, with the sensor stored in the loaded file.
+
+        For the default layout of a file with no valid stored layout: the
+        front end assigns the file's sensors only after the load, and with
+        no sensor every chart would be in mV.
+        """
+        from rev80 import charts
+        sensor = self.scope_sensors.get(ch)
+        eu = (sensor.engineering_units if sensor else
+              self._loaded_channel_sensor_configs.get(ch, {}).get('engineering_units'))
+        return charts.record_view(eu, self.config.target_unit_for(ch),
+                                  self.config.amplitude_mode_for(ch))
 
     def _reachable(self, ch: int, unit: str) -> bool:
         """Can channel `ch` be shown in `unit`? Logs once for each (ch, unit) if not.
@@ -2134,7 +2152,9 @@ class DataCollector:
             self.config.enabled_channels = sorted(all_channels)
 
         if self._default_layout_pending:
-            self.chart_set = self.default_chart_layout()
+            from rev80 import charts
+            self.chart_set = charts.default_layout(self.config.vibration_channels,
+                                                   self._file_view_of)
             self._default_layout_pending = False
 
         self.init_trend_channels()

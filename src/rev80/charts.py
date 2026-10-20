@@ -242,6 +242,17 @@ def problems(spec: ChartSpec, roles: Mapping[int, str],
 # Default layout and charts.yaml
 # ---------------------------------------------------------------------------
 
+def record_view(sensor_eu: str | None, target_unit: str, amplitude_mode: str) -> tuple[str, str]:
+    """(unit, amplitude mode) of a channel's record view.
+
+    The target unit, then the sensor EU; 'mV' with no sensor, because without
+    a sensitivity no conversion is possible. The mode, then '0-P'. The one
+    rule for the collector, a file with no stored layout, and the converter.
+    """
+    unit = (target_unit or sensor_eu) if sensor_eu else 'mV'
+    return unit, amplitude_mode or '0-P'
+
+
 def default_layout(vibration_channels: Iterable[int],
                    record_unit_of: Callable[[int], tuple[str, str]]) -> ChartSet:
     """One time waveform and one spectrum, with all vibration channels.

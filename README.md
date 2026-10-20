@@ -1440,7 +1440,8 @@ monitor sessions of version 7 only. It refuses a file of another version,
 logs the reason, and does not change the data on screen.
 
 - A file from Rev80 0.x (measurement version 5 or earlier, session
-  version 6 or earlier): open it with Rev80 0.1.5.
+  version 6 or earlier): open it with Rev80 0.1.5, or convert a copy (see
+  below).
 - A file from a newer Rev80: update Rev80.
 - The session browser lists a session of another version with
   "(other version)". Hover over it to see the reason. Select it, and
@@ -1506,7 +1507,7 @@ Monitor Mode writes `{output}/{session_id}/session.h5`. The `session_id` is
 /burst/{id}/{k}/{ch}/...            one channel group, as in a measurement file
 ```
 
-`rpm` is `NaN` when there is no reading. Rev80 opens a file up to the
+`rpm` is `NaN` when there is no reading. Rev80 opens a file of exactly the
 version that it writes (6 for measurements, 7 for sessions).
 
 `orders_mv` is on a vibration channel group of a frame that the live
@@ -1528,6 +1529,32 @@ stores the layout at the start of the recording, and its captures and
 bursts use it. When you load a file, Rev80 shows its charts. A file with
 no layout or with an invalid layout gets the default layout, and Rev80
 logs a warning.
+
+
+### Converting a file from Rev80 0.x
+
+`scripts/convert-0x` writes a copy of a 0.x file in the format that Rev80
+1.0 reads. It never changes the source. Run it from a source checkout with
+the `rev80` package installed:
+
+```bash
+./scripts/convert-0x ~/Documents/Rev80/data/run.h5
+./scripts/convert-0x ~/Documents/Rev80/data/monitor/2026-09-30-101500
+./scripts/convert-0x old/*.h5 --out converted/
+```
+
+| Source | Copy |
+|---|---|
+| Measurement file, version 4 or 5 | `<name>.v6.h5` beside it, or in `--out` |
+| Session directory (or its `session.h5`), version 6 | `<directory>.v7/` beside it, or in `--out` |
+| Measurement file, version 3 | Not converted. Open it in Rev80 0.1.5, save it again, then convert that copy |
+
+The data does not change. The copy gets the new version, `rev80_version`
+= `convert-0x <version>` and the default chart layout: one time waveform
+and one spectrum with every vibration channel, in the record unit and mode
+of the first. A copy that exists is not overwritten. The exit code is 1
+when a path does not convert. The session browser lists the converted
+session beside the source, which it shows as "(other version)".
 
 ---
 

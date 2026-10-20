@@ -163,9 +163,17 @@ def test_no_or_a_bad_layout_gives_the_default_and_a_warning(measurement, stored,
     dc = vc.DataCollector()
     with caplog.at_level(logging.WARNING):
         dc.load_data(measurement)
-    assert dc.chart_set == charts.default_layout(dc.config.vibration_channels,
-                                                 dc.default_view_of)
+    # The record view of the file's channel 0: its sensor's EU (g), not mV.
+    # The load runs before a front end assigns the file's sensors.
+    assert dc.chart_set == charts.default_layout([0], lambda ch: ('g', '0-P'))
+    assert [c.unit for c in dc.chart_set.charts] == ['g', 'g']
     assert 'chart layout' in caplog.text
+
+
+def test_record_view_rule():
+    assert charts.record_view(None, 'in/s', 'RMS') == ('mV', 'RMS')
+    assert charts.record_view('g', '', '') == ('g', '0-P')
+    assert charts.record_view('g', 'in/s', 'P-P') == ('in/s', 'P-P')
 
 
 # ---------------------------------------------------------------------------

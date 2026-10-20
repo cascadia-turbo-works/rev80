@@ -63,6 +63,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   or `charts.yaml`. The last chart cannot be removed.
 
 #### Fixed
+- **The default layout of a file with no stored layout uses the file's
+  sensors.** The load made the default before the front end assigned the
+  file's sensors, so every chart was in mV, and a channel with a sensor
+  showed an empty series with a "cannot show mV" note. It now takes the
+  record view from the sensor stored in the file (`charts.record_view()`,
+  one rule for the collector, this case and `convert-0x`).
 - **A refused session no longer becomes the current session.** When the
   session browser could not load a session, it still made it current:
   it filled the burst table, drew its burst lines on the trend of the data
@@ -87,6 +93,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   stall skipped gets its live overalls, so a burst no longer stores it
   with none (10 % low in the trend, 0.0 in `overall_json`). A save of a
   loaded file keeps the stored overalls.
+
+#### Added
+- **`scripts/convert-0x`: convert a copy of a 0.x data file.** A
+  measurement file of version 4 or 5 becomes `<name>.v6.h5`, a version-6
+  session directory becomes `<directory>.v7/`, beside the source or in
+  `--out`. The data does not change; the copy gets the new version,
+  `rev80_version` = `convert-0x <version>` and the default chart layout
+  (`charts.default_layout()` with `charts.record_view()`, the rules of the
+  app). It never changes the source, never overwrites a copy, and removes
+  a partial copy after an error. A version-3 file is refused: open it in
+  Rev80 0.1.5 and save it again first.
 
 #### Changed
 - **Each data file is read at exactly its own version.** Rev80 reads
