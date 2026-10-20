@@ -600,6 +600,11 @@ class UI_Elements:
         return f'CH{ch}_OVERFLOW'
 
     @staticmethod
+    def locked_tip(tag: str) -> str:
+        """Tooltip shown on a control while a recording locks it."""
+        return f'{tag}_LOCKED_TIP'
+
+    @staticmethod
     def ch_result_section(ch: int) -> str:
         return f'CH{ch}_RESULT_SECTION'
 

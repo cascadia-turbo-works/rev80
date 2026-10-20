@@ -314,8 +314,9 @@ Settings with no widget are in the YAML files only. See
 
 While a Monitor Mode recording runs, these controls are disabled: all
 **Setup** buttons, **Sensor**, **Load**, **Load Session** and
-**Clear Cache**. `Ctrl+O` is refused, and the log records why. Stop the
-recording to use them again.
+**Clear Cache**. A disabled control is drawn in muted colours, and its
+tooltip says "Stop the recording to change this." `Ctrl+O` is refused, and
+the log records why. Stop the recording to use them again.
 
 ### Keyboard shortcuts
 

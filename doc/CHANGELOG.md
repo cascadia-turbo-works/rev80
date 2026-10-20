@@ -9,6 +9,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### feat/plot-setup — release 0.1.5 work (2026-10-19)
+
+#### Fixed
+- **A locked control looked enabled.** `_set_recording_lock()` disabled the
+  controls, but no theme had a component for the disabled state, so a
+  disabled button looked enabled. A user pressed the acquisition setup
+  button during a recording and nothing happened. A global theme now draws
+  disabled buttons, combos, checkboxes, input fields and sliders in muted
+  colours, and each locked control has the tooltip "Stop the recording to
+  change this." while the lock is on.
+
 ## [0.1.4] - 2026-09-30
 
 ### feature/headless-siggen — headless starts the signal generator (2026-09-30)

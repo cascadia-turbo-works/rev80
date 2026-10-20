@@ -1382,11 +1382,53 @@ class GUI:
         ui.FILE_LOAD, ui.BTN_MONITOR_BROWSE, ui.ACQ_CLEAR_CACHE,
     )
 
+    #: Tooltip on a locked control while a recording runs.
+    _LOCKED_TIP_TEXT = "Stop the recording to change this."
+
+    #: Widget types that get muted colours when disabled. Without a theme
+    #: component for the disabled state, dearpygui draws a disabled button
+    #: like an enabled one, and a click on it does nothing visible.
+    _DISABLED_THEME_TYPES = (
+        dpg.mvButton, dpg.mvCombo, dpg.mvCheckbox, dpg.mvInputText,
+        dpg.mvInputInt, dpg.mvInputFloat, dpg.mvSliderInt, dpg.mvSliderFloat,
+    )
+
+    def _create_disabled_theme(self) -> int:
+        """Global theme: muted colours for every disabled control."""
+        muted = _c("MUTED")
+        flat = _c("SURFACE")
+        with dpg.theme() as theme:
+            for item_type in self._DISABLED_THEME_TYPES:
+                with dpg.theme_component(item_type, enabled_state=False):
+                    dpg.add_theme_color(dpg.mvThemeCol_Text, muted,
+                                        category=dpg.mvThemeCat_Core)
+                    for col in (dpg.mvThemeCol_Button, dpg.mvThemeCol_ButtonHovered,
+                                dpg.mvThemeCol_ButtonActive, dpg.mvThemeCol_FrameBg,
+                                dpg.mvThemeCol_FrameBgHovered,
+                                dpg.mvThemeCol_FrameBgActive):
+                        dpg.add_theme_color(col, flat, category=dpg.mvThemeCat_Core)
+                    dpg.add_theme_color(dpg.mvThemeCol_CheckMark, muted,
+                                        category=dpg.mvThemeCat_Core)
+                    dpg.add_theme_color(dpg.mvThemeCol_SliderGrab, muted,
+                                        category=dpg.mvThemeCat_Core)
+        return theme
+
+    def _create_locked_tips(self) -> None:
+        """One hidden tooltip on each lockable control; the lock shows it."""
+        for tag in self._RECORDING_LOCKED_CONTROLS:
+            if not dpg.does_item_exist(tag):
+                continue
+            with dpg.tooltip(parent=tag, tag=ui.locked_tip(tag), show=False):
+                dpg.add_text(self._LOCKED_TIP_TEXT)
+
     def _set_recording_lock(self, locked: bool) -> None:
         """Disable (or enable again) the controls that a recording locks."""
         for tag in self._RECORDING_LOCKED_CONTROLS:
             if dpg.does_item_exist(tag):
                 dpg.configure_item(tag, enabled=not locked)
+            tip = ui.locked_tip(tag)
+            if dpg.does_item_exist(tip):
+                dpg.configure_item(tip, show=locked)
 
     def _ensure_legends(self):
         """Re-create any plot legend that has been lost (DPG can drop them on
@@ -4962,6 +5004,10 @@ class GUI:
                             )
                             dpg.pop_container_stack()   # ch_vib_group
                         dpg.add_spacer(height=2)
+
+        # Last: the tooltips need the locked controls to exist.
+        dpg.bind_theme(self._create_disabled_theme())
+        self._create_locked_tips()
 
     # ------------------------------------------------------------------
     # Keyboard shortcuts
