@@ -276,9 +276,16 @@ the record unit: what Rev80 stores and trends.
   markers and a 1x marker when a tachometer reads.
 - **Trend**: the overall of each channel against time. The axis label shows
   the unit, the amplitude mode and the declared band. Burst trigger times
-  show as vertical lines when you load a session.
-- **Envelope**: the envelope spectrum of a demodulation band. See
+  show as vertical lines when you load a session. With **Shaft speed** on,
+  a second y axis shows the shaft speed in the **Rate units** of the
+  Tachometer tab. The chart unit does not change it. A frame with no usable
+  reading has no point.
+- **Envelope**: the envelope spectrum of a demodulation band, in the
+  sensor quantity: the chart unit changes only the SI scale and the
+  amplitude mode. 0-P is the sideband amplitude. See
   [Envelope analysis](#envelope-analysis).
+- **XY**: channel Y against channel X, from the same frame, in one unit,
+  with equal axis scales.
 
 The default layout has a Time waveform and a Spectrum chart, with all
 vibration channels, in the record unit and mode of the first. It has no

@@ -110,6 +110,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   0.99 x Nyquist, 12.7 kHz). The search stops at raw rate / 2.56: 2.5 kHz
   to 10 kHz, a 2.5 kHz band.
 
+#### Tests
+- **Envelope, shaft-speed and XY renderers.** An envelope chart equals the
+  sensor-EU envelope spectrum times the SI scale and the mode factor (g
+  0-P, mm/s² RMS, in/s² P-P, `GenerateBearingVibration`), and is not
+  computed off screen. Shaft speed on y2 skips a missing reading, is the
+  same for every chart unit, and follows the rotation unit. An XY chart
+  in an integrated unit has two traces of the same span and equal axes.
+
 #### Measured
 - GUI time for each frame, 8 channels, one chart on screen, 4824A at
   25591.8 Hz (simulated frames in brackets): 18.1 ms (18.2 to 18.7) before

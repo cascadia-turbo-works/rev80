@@ -412,3 +412,131 @@ def test_a_swap_drops_the_snapshot_of_the_old_collector():
     import inspect
     from rev80.gui import GUI
     assert 'self._last_snapshot = None' in inspect.getsource(GUI._on_data_source_changed)
+
+
+# ---------------------------------------------------------------------------
+# Envelope chart: the SI scale and the mode of the sensor-EU result
+# ---------------------------------------------------------------------------
+
+def _bearing_collector():
+    """Channel 0: a g sensor on a bearing signal with a 4 kHz resonance."""
+    cfg = rev80.AcquisitionSettings()
+    cfg.maxfreq, cfg.binsize = 1000.0, 2.0
+    cfg.enabled_channels = [0]
+    dc = rev80.DataCollector(config=cfg)
+    dc.set_scope_sensor(0, ScopeSensor(name='acc', engineering_units='g', sensitivity=100.0))
+    dc.init_trend_channels()
+    dc.sensor = object()
+    dc.stream = _LiveStream()
+    block = sim.GenerateBearingVibration(sim._RawRateView(cfg), seed=11)
+    dc.receive_data({
+        'data': (block * 100.0)[:, None], 'channels': [0], 'status': 'OKAY',
+        'timestamp': datetime(2026, 10, 20), 'rel_time': 0.0,
+        'samplerate': cfg.raw_samplerate, 'overflow_mask': 0, 'degraded': False,
+    })
+    tick(dc)
+    return dc
+
+
+@pytest.mark.parametrize('unit, mode, factor', [
+    ('g', '0-P', 1.0),
+    ('mm/s2', 'RMS', 9806.65 / math.sqrt(2)),
+    ('in/s2', 'P-P', 9.80665 / 0.0254 * 2.0),
+])
+def test_the_envelope_chart_is_the_sensor_eu_result_times_the_scale(view, unit, mode, factor,
+                                                                    monkeypatch):
+    from rev80 import envelope as rev80_env
+    view.host.collector = dc = _bearing_collector()
+    dc.chart_set = ChartSet((ChartSpec('c1', 'envelope', 'E', channels=(0,), unit=unit,
+                                       amplitude_mode=mode),))
+    view.rebuild()
+    dpg.set_value(ui.chart_env('c1', 'lo'), 3000.0)
+    dpg.set_value(ui.chart_env('c1', 'hi'), 5000.0)
+    monkeypatch.setattr(view, 'on_screen', lambda cid: True)
+    snap = dc.snapshot()
+    view.render(snap)
+    signal, fs, eu = dc.eu_scaled_raw(0, snap.frame[0])
+    assert eu == 'g'
+    freq, amp = rev80_env.envelope_spectrum(signal, fs, band=(3000.0, 5000.0))
+    xs, ys = dpg.get_value(ui.chart_series('c1', 0))[:2]
+    assert list(xs) == pytest.approx(freq.tolist())
+    assert list(ys) == pytest.approx((amp * factor).tolist(), rel=1e-9)
+    assert max(ys) > 0
+
+
+def test_an_envelope_chart_not_on_screen_is_not_drawn(view, monkeypatch):
+    view.host.collector = dc = _bearing_collector()
+    dc.chart_set = ChartSet((ChartSpec('c1', 'envelope', 'E', channels=(0,), unit='g',
+                                       amplitude_mode='0-P'),
+                             ChartSpec('c2', 'waveform', 'W', channels=(0,), unit='g')))
+    view.rebuild()
+    calls = []
+    monkeypatch.setattr(view, 'envelope_series', lambda *a: calls.append(a))
+    monkeypatch.setattr(view, 'on_screen', lambda cid: cid == 'c2')
+    view.render(dc.snapshot())
+    assert calls == []
+    assert _xs(ui.chart_series('c1', 0)) == []
+
+
+# ---------------------------------------------------------------------------
+# Trend: shaft speed on y2
+# ---------------------------------------------------------------------------
+
+def _trend_with_rpm(view, unit='in/s', mode='RMS'):
+    _tach_on_1(view)
+    dc = view.collector
+    dc.tach_trend[1] = {'rel_times': [0.0, 0.5, 1.0, 1.5],
+                        'rpm': [1800.0, float('nan'), 1806.0, 1803.0]}
+    dc.chart_set = ChartSet((ChartSpec('c1', 'trend', 'T', channels=(0,), unit=unit,
+                                       amplitude_mode=mode, show_rpm=True, tach_channel=1),))
+    view.rebuild()
+    view.render(dc.snapshot(), force='c1')
+    return dpg.get_value(ui.chart_series('c1', 1))[:2]
+
+
+def test_shaft_speed_on_y2_skips_a_missing_reading(view):
+    xs, ys = _trend_with_rpm(view)
+    assert list(xs) == [0.0, 1.0, 1.5]
+    assert list(ys) == pytest.approx([1800.0, 1806.0, 1803.0])
+    assert dpg.get_item_parent(ui.chart_series('c1', 1)) == dpg.get_alias_id(
+        ui.chart_axis('c1', 'y2'))
+
+
+def test_shaft_speed_has_no_unit_scaling(view):
+    """The chart unit never scales a shaft speed; only the rotation unit does."""
+    _, in_s = _trend_with_rpm(view, 'in/s', 'RMS')
+    _, g = _trend_with_rpm(view, 'g', 'P-P')
+    assert list(in_s) == list(g)
+    view.collector.config.rotation_unit = 'Hz'
+    _, hz = _trend_with_rpm(view)
+    assert list(hz) == pytest.approx([30.0, 30.1, 30.05])
+
+
+def test_a_trend_without_shaft_speed_has_no_y2(view):
+    view.collector.chart_set = _layout()
+    view.rebuild()
+    assert not dpg.does_item_exist(ui.chart_axis('c3', 'y2'))
+
+
+# ---------------------------------------------------------------------------
+# XY: two traces of one frame, in one unit, with the same span
+# ---------------------------------------------------------------------------
+
+def test_xy_in_an_integrated_unit_has_the_same_span_and_equal_axes(view, monkeypatch):
+    dc = view.collector
+    dc.set_scope_sensor(1, ScopeSensor(name='acc', engineering_units='g', sensitivity=100.0))
+    dc.chart_set = _layout(ChartSpec('c4', 'xy', 'XY', channels=(0, 1), unit='in/s'))
+    view.rebuild()
+    monkeypatch.setattr(view, 'on_screen', lambda cid: cid == 'c4')
+    snap = dc.snapshot()
+    view.render(snap)
+    rx = dc.result_view(snap, 0, 'in/s', None, peaks=False)
+    ry = dc.result_view(snap, 1, 'in/s', None, peaks=False)
+    assert rx.unit == ry.unit == 'in/s'
+    assert np.array_equal(rx.time_vec, ry.time_vec)            # the same span
+    xs, ys = dpg.get_value(ui.chart_series('c4', 1))[:2]
+    assert list(xs) == pytest.approx(rx.time_data.tolist())
+    assert list(ys) == pytest.approx(ry.time_data.tolist())
+    assert dpg.get_item_configuration(ui.chart_plot('c4'))['equal_aspects'] is True
+    assert dpg.get_item_label(ui.chart_axis('c4', 'x')).endswith(', in/s')
+    assert dpg.get_item_label(ui.chart_axis('c4', 'y')).endswith(', in/s')
