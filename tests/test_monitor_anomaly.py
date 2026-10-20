@@ -528,12 +528,15 @@ class TestFixedThresholdHook:
         results = [_make_result(channel=0, overall=5.0, unit='in/s')]
         assert hook.on_results(results, None) is not None
 
-    def test_converts_compatible_units(self):
-        """1 in/s ≈ 25.4 mm/s — a channel reporting mm/s triggers against an in/s limit."""
+    def test_a_plain_list_is_not_converted(self):
+        """A list of results has only its own unit: the limit's view is empty.
+
+        The conversion to the limit's unit is the collector's view
+        (FrameViews); tests/test_hook_views.py covers it.
+        """
         hook = FixedThresholdHook(upper_limit=1.0, upper_unit='in/s')
-        results = [_make_result(channel=0, overall=30.0, unit='mm/s')]   # > 25.4 mm/s
-        event = hook.on_results(results, None)
-        assert event is not None
+        results = [_make_result(channel=0, overall=30.0, unit='mm/s')]
+        assert hook.on_results(results, None) is None
 
     def test_no_trigger_when_channel_unit_is_mv(self):
         """A channel without sensor/EU (raw 'mV') can't be evaluated — skipped, not crashed."""

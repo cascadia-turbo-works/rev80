@@ -6,8 +6,6 @@ from typing import Protocol, runtime_checkable
 
 import numpy as np
 
-from rev80.util import UNIT_TO_SI, modality_of
-
 log = logging.getLogger(__name__)
 
 
@@ -19,6 +17,17 @@ def ewma_alpha_from_time(ewma_time_s: float, dt: float) -> float:
     if ewma_time_s <= 0 or dt <= 0:
         raise ValueError(f"ewma_time_s and dt must be positive (got {ewma_time_s}, {dt})")
     return math.exp(-dt / ewma_time_s)
+
+
+def frames_for_seconds(seconds: float, period: float) -> int:
+    """Consecutive frames for a sustained time: round(seconds / period) + 1.
+
+    0 s is one frame. A period of 0 or less (no frame period known) is one
+    frame. Both front ends use it for `rms_s` and `fixed_s`.
+    """
+    if period <= 0:
+        return 1
+    return max(1, round(seconds / period) + 1)
 
 
 @dataclass(frozen=True)
@@ -54,13 +63,57 @@ def valid_results(results: list) -> list:
 
 
 @runtime_checkable
+class ResultViews(Protocol):
+    """The views of one frame that a hook can ask for.
+
+    `record`: the record results (each channel's record unit and mode, never
+    averaged); the capture writer stores these. `results(unit, mode)`: the
+    results in `unit` and `mode`; empty or None means the record unit or
+    mode. A channel that cannot reach `unit` is absent. The collector
+    supplies `collector.FrameViews`; this module imports no collector.
+    """
+    @property
+    def record(self) -> list: ...
+
+    def results(self, unit: 'str | None', mode: 'str | None') -> list: ...
+
+
+class RecordViews:
+    """`ResultViews` over a fixed list of results (tests, simple callers).
+
+    A view in another unit or mode is the subset already in it: these
+    results cannot be converted.
+    """
+    def __init__(self, results: list):
+        self._record = list(results)
+
+    @property
+    def record(self) -> list:
+        return self._record
+
+    def results(self, unit: 'str | None', mode: 'str | None') -> list:
+        if not unit and not mode:
+            return self._record
+        return [r for r in self._record
+                if (not unit or getattr(r, 'unit', None) == unit)
+                and (not mode or getattr(r, 'amplitude_mode', '') == mode)]
+
+
+def as_views(results_or_views) -> 'ResultViews':
+    """A `ResultViews` for a list of results, or the views unchanged."""
+    if isinstance(results_or_views, (list, tuple)):
+        return RecordViews(list(results_or_views))
+    return results_or_views
+
+
+@runtime_checkable
 class AnomalyHook(Protocol):
-    def on_results(self, results: list, frame_cache) -> 'AnomalyEvent | None': ...
+    def on_results(self, views: 'ResultViews | list', frame_cache) -> 'AnomalyEvent | None': ...
 
 
 class NullAnomalyHook:
     """A hook that never fires. Use it to record with no anomaly detection."""
-    def on_results(self, results: list, frame_cache) -> 'AnomalyEvent | None':
+    def on_results(self, views, frame_cache) -> 'AnomalyEvent | None':
         return None
 
 
@@ -77,6 +130,8 @@ class RmsThresholdHook:
         33 frames (half-life about 23 frames).
     min_baseline_samples: frames per channel before an event can fire.
     burst_duration_s: value put into the returned AnomalyEvent, in s.
+    unit, amplitude_mode: the view the hook compares; empty is each channel's
+        record unit and mode. The baseline is kept in this view.
     """
 
     def __init__(
@@ -86,7 +141,11 @@ class RmsThresholdHook:
         baseline_alpha: float = 0.97,
         min_baseline_samples: int = 30,
         burst_duration_s: float = 60.0,
+        unit: str = '',
+        amplitude_mode: str = '',
     ):
+        self._unit = unit or ''
+        self._mode = amplitude_mode or ''
         self._threshold_frac = rms_threshold_pct / 100.0
         self._consecutive_n = consecutive_n
         self._alpha = baseline_alpha
@@ -115,14 +174,20 @@ class RmsThresholdHook:
         """Return a copy of the current per-channel EWMA baseline values."""
         return dict(self._baseline)
 
-    def update_baseline(self, results: list) -> None:
+    def _view(self, views) -> list:
+        return valid_results(as_views(views).results(self._unit, self._mode))
+
+    def update_baseline(self, views) -> None:
         """Update EWMA state without checking for trigger events.
 
         Called during burst frames so the baseline keeps adapting while
-        suppressing spurious retriggers.
+        suppressing spurious retriggers. A burst frame ends every streak, as
+        in the other hooks: after the burst, the count starts again.
         """
-        results = valid_results(results)
-        for r in results:
+        self._consec_above = {ch: 0 for ch in self._consec_above}
+        self._streak_start_time.clear()
+        self._streak_start_rel.clear()
+        for r in self._view(views):
             ch = r.channel
             current = r.overall
             if ch not in self._n_samples:
@@ -139,9 +204,8 @@ class RmsThresholdHook:
                 )
             self._n_samples[ch] = n + 1
 
-    def on_results(self, results: list, frame_cache) -> 'AnomalyEvent | None':
-        results = valid_results(results)
-        for r in results:
+    def on_results(self, views, frame_cache) -> 'AnomalyEvent | None':
+        for r in self._view(views):
             ch = r.channel
             current = r.overall
 
@@ -270,10 +334,13 @@ class SpectralThresholdHook:
             mask &= freq <= self._fmax
         return mask
 
-    def update_baseline(self, results: list) -> None:
-        """Update EWMA state without checking for trigger events."""
-        results = valid_results(results)
-        for r in results:
+    def update_baseline(self, views) -> None:
+        """Update EWMA state without checking for trigger events.
+
+        Called during burst frames. A burst frame ends every streak.
+        """
+        self._consec_above = {ch: 0 for ch in self._consec_above}
+        for r in valid_results(as_views(views).record):
             self._update_channel(r.channel, np.array(r.spectrum, dtype=float))
 
     def _update_channel(self, ch: int, spectrum: np.ndarray) -> None:
@@ -288,9 +355,8 @@ class SpectralThresholdHook:
             self._baseline[ch] = self._alpha * self._baseline[ch] + (1.0 - self._alpha) * spectrum
         self._n_samples[ch] = n + 1
 
-    def on_results(self, results: list, frame_cache) -> 'AnomalyEvent | None':
-        results = valid_results(results)
-        for r in results:
+    def on_results(self, views, frame_cache) -> 'AnomalyEvent | None':
+        for r in valid_results(as_views(views).record):
             ch = r.channel
             spectrum = np.array(r.spectrum, dtype=float)
 
@@ -348,10 +414,16 @@ class FixedThresholdHook:
     """Fire when a channel's overall crosses a fixed upper or lower limit.
 
     No baseline and no warm-up. Set `upper_limit` or `lower_limit` to None to
-    disable that side. Each limit is in its own unit and is converted to
-    `ChannelResult.unit` through `UNIT_TO_SI`. If the channel has no sensor
-    (unit 'mV') or the quantities differ, that channel is skipped and a
-    warning is logged once.
+    disable that side. Each limit reads its own view: the overall in the
+    limit's unit and mode (an empty mode is the record mode), so a velocity
+    limit works on an accelerometer channel. A channel that cannot reach the
+    unit (no sensor, another quantity) is skipped with one warning.
+
+    `sustain_frames` is the number of consecutive valid frames beyond the
+    limit before the hook fires; 1 fires on the first frame. A frame that
+    `valid_results()` drops, a frame inside the limit, a burst frame
+    (`update_baseline`) and `reset_baseline()` end the streak. The trigger
+    time is the first frame of the streak.
     """
 
     def __init__(
@@ -361,77 +433,82 @@ class FixedThresholdHook:
         lower_limit: float | None = None,
         lower_unit: str = 'mV',
         burst_duration_s: float = 60.0,
+        upper_mode: str = '',
+        lower_mode: str = '',
+        sustain_frames: int = 1,
     ):
         self._upper_limit = upper_limit
         self._upper_unit  = upper_unit
+        self._upper_mode  = upper_mode or ''
         self._lower_limit = lower_limit
         self._lower_unit  = lower_unit
+        self._lower_mode  = lower_mode or ''
         self._burst_duration_s = burst_duration_s
+        self._sustain_frames = max(1, int(sustain_frames))
 
-        # Channels for which a unit-conversion warning has already been logged
-        self._warned_channels: set[int] = set()
+        # (side, channel) pairs for which a missing view was already logged
+        self._warned: set[tuple[str, int]] = set()
+        # (side, channel) -> (frames beyond the limit, datetime and rel_time
+        # of the first frame of the streak)
+        self._streaks: dict[tuple[str, int], tuple[int, datetime, float]] = {}
 
-    def _convert(self, value: float, from_unit: str, to_unit: str, ch: int) -> float | None:
-        """Convert `value` from `from_unit` into `to_unit`; None if impossible."""
-        if from_unit == to_unit:
-            return value
-        if from_unit == 'mV' or to_unit == 'mV':
-            if ch not in self._warned_channels:
+    def reset_baseline(self) -> None:
+        """End every streak. The hook has no baseline to reset."""
+        self._streaks = {}
+
+    def update_baseline(self, views) -> None:
+        """A burst frame: end every streak, so a streak does not span a burst."""
+        self._streaks = {}
+
+    def _side_view(self, views, side: str, unit: str, mode: str) -> list:
+        """The valid results of one limit's view; warns once for a missing channel."""
+        view = as_views(views)
+        results = view.results(unit, mode)
+        present = {r.channel for r in results}
+        for r in valid_results(view.record):
+            if r.channel not in present and (side, r.channel) not in self._warned:
+                self._warned.add((side, r.channel))
                 log.warning(
-                    "Fixed threshold ch%d: channel has no sensor/EU configured "
-                    "(reported unit %r) — cannot convert %r threshold; "
-                    "fixed-level trigger disabled for this channel",
-                    ch, to_unit, from_unit,
+                    "Fixed threshold ch%d: the channel cannot be shown in %r "
+                    "(no sensor, or another quantity); the %s limit is "
+                    "disabled for this channel", r.channel, unit, side)
+        return valid_results(results)
+
+    def _sides(self):
+        if self._upper_limit is not None:
+            yield ('upper', self._upper_unit, self._upper_mode, self._upper_limit,
+                   '>', lambda value: value > self._upper_limit)
+        if self._lower_limit is not None:
+            yield ('lower', self._lower_unit, self._lower_mode, self._lower_limit,
+                   '<', lambda value: value < self._lower_limit)
+
+    def on_results(self, views, frame_cache) -> 'AnomalyEvent | None':
+        # Only the streaks that this frame continues are kept: a channel that
+        # is inside the limit or that valid_results() dropped starts again.
+        streaks: dict[tuple[str, int], tuple[int, datetime, float]] = {}
+        event = None
+        for side, unit, mode, limit, op, beyond in self._sides():
+            for r in self._side_view(views, side, unit, mode):
+                if not beyond(r.overall):
+                    continue
+                key = (side, r.channel)
+                n, t0, rel0 = self._streaks.get(key, (0, datetime.now(), r.rel_time))
+                n += 1
+                if n < self._sustain_frames or event is not None:
+                    streaks[key] = (n, t0, rel0)
+                    continue
+                event = AnomalyEvent(
+                    trigger_time=t0,
+                    channel=r.channel,
+                    reason=(
+                        f"Overall {r.overall:.4g} {r.unit} {op} {side} limit "
+                        f"{limit:.4g} {unit} on ch{r.channel}"
+                    ),
+                    burst_duration_s=self._burst_duration_s,
+                    trigger_rel_time=rel0,
                 )
-                self._warned_channels.add(ch)
-            return None
-        if modality_of(from_unit) != modality_of(to_unit):
-            if ch not in self._warned_channels:
-                log.warning(
-                    "Fixed threshold ch%d: cannot convert %r threshold to "
-                    "channel unit %r — incompatible physical quantities; "
-                    "fixed-level trigger disabled for this channel",
-                    ch, from_unit, to_unit,
-                )
-                self._warned_channels.add(ch)
-            return None
-        return value * UNIT_TO_SI[from_unit] / UNIT_TO_SI[to_unit]
-
-    def on_results(self, results: list, frame_cache) -> 'AnomalyEvent | None':
-        results = valid_results(results)
-        for r in results:
-            ch = r.channel
-            current = r.overall
-
-            if self._upper_limit is not None:
-                limit = self._convert(self._upper_limit, self._upper_unit, r.unit, ch)
-                if limit is not None and current > limit:
-                    return AnomalyEvent(
-                        trigger_time=datetime.now(),
-                        channel=ch,
-                        reason=(
-                            f"Overall {current:.4g} {r.unit} > upper limit "
-                            f"{self._upper_limit:.4g} {self._upper_unit} on ch{ch}"
-                        ),
-                        burst_duration_s=self._burst_duration_s,
-                        trigger_rel_time=r.rel_time,
-                    )
-
-            if self._lower_limit is not None:
-                limit = self._convert(self._lower_limit, self._lower_unit, r.unit, ch)
-                if limit is not None and current < limit:
-                    return AnomalyEvent(
-                        trigger_time=datetime.now(),
-                        channel=ch,
-                        reason=(
-                            f"Overall {current:.4g} {r.unit} < lower limit "
-                            f"{self._lower_limit:.4g} {self._lower_unit} on ch{ch}"
-                        ),
-                        burst_duration_s=self._burst_duration_s,
-                        trigger_rel_time=r.rel_time,
-                    )
-
-        return None
+        self._streaks = streaks
+        return event
 
 
 class CompositeAnomalyHook:
@@ -446,19 +523,21 @@ class CompositeAnomalyHook:
     def __init__(self, hooks: list):
         self._hooks = list(hooks)
 
-    def on_results(self, results: list, frame_cache) -> 'AnomalyEvent | None':
-        results = valid_results(results)
+    def on_results(self, views, frame_cache) -> 'AnomalyEvent | None':
+        # Each child applies valid_results() to the view it reads.
+        views = as_views(views)
         for hook in self._hooks:
-            event = hook.on_results(results, frame_cache)
+            event = hook.on_results(views, frame_cache)
             if event is not None:
                 return event
         return None
 
-    def update_baseline(self, results: list) -> None:
+    def update_baseline(self, views) -> None:
         """Propagate update_baseline() to every child hook that supports it."""
+        views = as_views(views)
         for hook in self._hooks:
             if hasattr(hook, 'update_baseline'):
-                hook.update_baseline(results)
+                hook.update_baseline(views)
 
     def reset_baseline(self) -> None:
         """Propagate reset_baseline() to every child hook that supports it."""

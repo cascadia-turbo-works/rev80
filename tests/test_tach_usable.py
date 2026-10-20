@@ -15,6 +15,7 @@ import pytest
 import rev80 as vc
 from rev80 import simulation as sim
 from rev80 import tach
+from pipeline_helpers import tick
 
 RUNNING_RATE = 29.37
 RPM = RUNNING_RATE * 60.0
@@ -62,7 +63,7 @@ def test_good_reading_passes_the_gate_and_is_trended():
     dc = _streaming_collector()
     frame = _feed(dc)
     assert frame[1].tach.quality == tach.QUALITY_OK
-    res = dc.process_samples()[0]
+    res = tick(dc)[0]
     assert res.speed_ok is True
     assert dc.tach_trend[1]['rpm'].size == 1
     assert dc.tach_trend[1]['rpm'][0] == pytest.approx(RPM, rel=3e-3)
@@ -73,7 +74,7 @@ def test_good_reading_passes_the_gate_and_is_trended():
 def test_unusable_reading_fails_the_gate_and_is_not_trended(quality):
     dc = _streaming_collector()
     _feed(dc, quality=quality)
-    res = dc.process_samples()[0]
+    res = tick(dc)[0]
     assert res.speed_ok is False, 'an unusable reading must fail closed'
     assert dc.tach_trend[1]['rpm'].size == 0, 'no RPM trend point'
     # The frame is still displayed with its rpm.
@@ -84,5 +85,5 @@ def test_unusable_reading_does_not_latch_the_reference():
     dc = _streaming_collector()
     dc.config.speed_gate_rpm = None
     _feed(dc, quality=tach.QUALITY_UNSTEADY)
-    assert dc.process_samples()[0].speed_ok is False
+    assert tick(dc)[0].speed_ok is False
     assert dc._speed_ref_rpm is None

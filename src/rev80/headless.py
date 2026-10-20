@@ -128,21 +128,22 @@ def _build_anomaly_hook(anom_cfg: dict, config, pre_buffer_s: float = 0.0):
     from rev80.monitor.anomaly import (
         CompositeAnomalyHook, FixedThresholdHook, NullAnomalyHook,
         RmsThresholdHook, SpectralThresholdHook, ewma_alpha_from_time,
+        frames_for_seconds,
     )
     from rev80.util import DEFAULT_RMS_ALPHA, DEFAULT_SPEC_ALPHA, canonical_hook_type
 
     hooks: list = []
     warmup = int(anom_cfg.get("warmup", 10))
+    # Keep this above the hook branches: the RMS, the spectral and the fixed
+    # branch all read `period`.
+    period = config.acquisition_period
 
     if anom_cfg.get("enabled", False):
         hook_type = canonical_hook_type(anom_cfg.get("hook_type", "rms"))
-        # Keep this above the hook_type branches: the RMS and the spectral
-        # branch both read `period`.
-        period = config.acquisition_period
 
         if hook_type in ("rms", "both"):
             rms_s  = float(anom_cfg.get("rms_s", 3.0))
-            consecutive_n = max(1, round(rms_s / period) + 1) if period > 0 else 1
+            consecutive_n = frames_for_seconds(rms_s, period)
             if rms_s > 0.25 * pre_buffer_s:
                 log.warning(
                     "Monitor anomaly: RMS sustained time %.3gs exceeds 25%% of the "
@@ -158,6 +159,8 @@ def _build_anomaly_hook(anom_cfg: dict, config, pre_buffer_s: float = 0.0):
                 consecutive_n        = consecutive_n,
                 baseline_alpha       = rms_alpha,
                 min_baseline_samples = warmup,
+                unit                 = str(anom_cfg.get("rms_unit") or "in/s"),
+                amplitude_mode       = str(anom_cfg.get("rms_amplitude_mode") or "0-P"),
             ))
         if hook_type in ("spectral", "both"):
             if "spec_ewma_time" in anom_cfg and period > 0:
@@ -181,6 +184,9 @@ def _build_anomaly_hook(anom_cfg: dict, config, pre_buffer_s: float = 0.0):
             upper_unit  = str(anom_cfg.get("fixed_upper_unit",    "in/s")),
             lower_limit = float(anom_cfg.get("fixed_lower_value", 0.05)) if lower_on else None,
             lower_unit  = str(anom_cfg.get("fixed_lower_unit",    "in/s")),
+            upper_mode  = str(anom_cfg.get("fixed_upper_mode") or "0-P"),
+            lower_mode  = str(anom_cfg.get("fixed_lower_mode") or "0-P"),
+            sustain_frames = frames_for_seconds(float(anom_cfg.get("fixed_s", 0.0)), period),
         ))
 
     if not hooks:
@@ -410,7 +416,8 @@ def _print_session_summary(sensor, config, args, mon_cfg, anom_cfg, device_path,
                 rms_tau   = -dt / _math.log(rms_alpha) if rms_alpha < 1 else float("inf")
                 alpha_str = f"α={rms_alpha:.4f} (τ={rms_tau:.3g}s)"
             print(f"    Anomaly   RMS  threshold={anom_cfg.get('rms_pct', 50):.4g}%  "
-                  f"{alpha_str}  sustained={anom_cfg.get('rms_s', 3.0):.3g}s  warmup={warmup}")
+                  f"{alpha_str}  sustained={anom_cfg.get('rms_s', 3.0):.3g}s  warmup={warmup}  "
+                  f"view={anom_cfg.get('rms_unit') or 'in/s'} {anom_cfg.get('rms_amplitude_mode') or '0-P'}")
         if hook_type in ("SPECTRAL", "BOTH"):
             if "spec_ewma_time" in anom_cfg and dt > 0:
                 spec_tau   = float(anom_cfg["spec_ewma_time"])
@@ -428,6 +435,15 @@ def _print_session_summary(sensor, config, args, mon_cfg, anom_cfg, device_path,
                   f"{alpha_str}  n={anom_cfg.get('spec_n', 10)}  {band}  warmup={warmup}")
     else:
         print("    Anomaly   disabled")
+    limits = []
+    for side, sign in (("upper", ">"), ("lower", "<")):
+        if anom_cfg.get(f"fixed_{side}_enabled", False):
+            limits.append(
+                f"{sign} {float(anom_cfg.get(f'fixed_{side}_value', 0.0)):.4g} "
+                f"{anom_cfg.get(f'fixed_{side}_unit') or 'in/s'} {anom_cfg.get(f'fixed_{side}_mode') or '0-P'}")
+    if limits:
+        print(f"    Fixed     {'  '.join(limits)}  "
+              f"sustained={float(anom_cfg.get('fixed_s', 0.0)):.3g}s")
     print()
     print("  Config files")
     print(f"    Acquisition  {acquisition_config_path()}")
@@ -656,9 +672,14 @@ def run(args: argparse.Namespace) -> int:
             continue
         collector.new_frame_event.clear()
 
-        results = collector.process_samples()
+        # One snapshot for the tick. The record results are never averaged:
+        # the hooks and the stored captures must see each frame alone.
+        frame_snap = collector.snapshot()
+        collector.advance_frame(frame_snap)
+        results = collector.results_for(frame_snap)
         if results:
-            monitor.on_results(results, collector.data["frame_cache"])
+            monitor.on_results(rev80.FrameViews(collector, frame_snap, results),
+                               frame_snap.history)
             _print_status(results)
 
         if not ceiling_logged:

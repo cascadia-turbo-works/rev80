@@ -103,11 +103,12 @@ axes[-1, 0].set_xlabel("Time (s)")
 fig.suptitle(next(iter(frame.values())).timestamp)
 plt.show()
 
-# %% Example: spectrum of the latest frame (via collector.process_sample — same path as the GUI)
+# %% Example: spectrum of the latest frame (via collector.result_view — same path as the GUI)
 frame = frames[-1]
+snap = collector.snapshot()          # browse mode: the newest frame
 fig, ax = plt.subplots()
-for ch, sample in sorted(frame.items()):
-    result = collector.process_sample(ch, sample)
+for ch in sorted(snap.frame):
+    result = collector.result_view(snap, ch)
     if result is not None:
         ax.plot(result.freq, result.spectrum, label=f"Ch{ch} ({result.unit})")
 ax.set_xlabel("Frequency (Hz)")

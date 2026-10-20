@@ -9,6 +9,146 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### feat/plot-setup — release 0.1.5 work (2026-10-19)
+
+#### Added
+- **Fixed-limit sustain.** `FixedThresholdHook(sustain_frames=N)` fires
+  after N consecutive valid frames beyond a limit; the trigger time is the
+  first frame of the streak. A frame that `valid_results()` drops, a frame
+  inside the limit and a burst frame end the streak. N = 1 is the behaviour
+  before.
+- **Monitor-tab controls and settings for the hook views.** The RMS section
+  has **Unit** and **Amplitude** combos (`rms_unit`, `rms_amplitude_mode`).
+  Each fixed limit has a mode combo beside its unit (`fixed_upper_mode`,
+  `fixed_lower_mode`), and the fixed level has **Sustained (s)**
+  (`fixed_s`, default 0 s). The user selects every unit and mode; there is
+  no "same as the channel" choice. The seeds are `in/s` and `0-P`, and an
+  empty or unknown value reads as the seed. The RMS detector thus checks
+  `in/s` 0-P by default: a channel with no sensor (`mV` only) is not
+  checked until the user selects `mV`. Both hook builders (GUI and headless) read the keys;
+  `frames_for_seconds()` converts `rms_s` and `fixed_s` to frames for both.
+  The headless start summary shows the RMS view and a `Fixed` line.
+  Cost on the PC (i7-1260P, 8 channels, 0.5 s frames, rate 25591.8 Hz): the
+  record view takes 12.5 ms per frame; an RMS view in `g` and a fixed limit
+  in 0-P add 4.5 ms, 0.9 % of one core. Not measured on a Raspberry Pi 3.
+
+#### Changed
+- **A burst ends the sustained count of every detector.** Before, the RMS
+  and the spectral detector kept the count of frames beyond the threshold
+  across a burst, so one frame after the burst could complete a streak that
+  started before it. The fixed-level trigger already started again.
+- **One frame snapshot for each render tick.** `DataCollector.snapshot()`
+  returns a `FrameSnapshot`: the frame cache as a tuple, the index of the
+  displayed frame and whether it is live. It is the one place the displayed
+  frame is chosen. `current_rpm(snapshot)` and the speed gate read the
+  tachometer sample of the snapshot frame. Before, `process_sample()` chose
+  the displayed frame again for the shaft speed, so a frame that the
+  acquisition thread appended between two calls could give a result the
+  shaft speed of another frame.
+- **Frame side effects split from the views.** `advance_frame(snapshot)`
+  adds the trend point and the RPM point, once for each new live frame.
+  `results_for(snapshot, unit, mode, n_averages)` and
+  `result_view(snapshot, ch, unit, mode, n_averages, peaks)` have no side
+  effects except the stage-1 cache and the speed-gate latch, and are
+  memoised for the tick, so the GUI and headless can ask for
+  more than one view of a frame. `get_trend_for_display(unit, mode,
+  channels)` takes a unit. `process_samples()` and `process_sample()` are
+  removed; `_view_of_sample()` holds stage 2. A channel that cannot reach a
+  unit gives no view and one warning. Equality: `result_view()` gives the
+  arrays of the old `process_samples()` bit for bit in 16 cases (every unit,
+  three modes, no sensor, averaging N = 4; reference in `tests/reference/`).
+- **The monitor gets the record results, never averaged.** With **Average
+  spectrum** on, the GUI gave the averaged overall to the anomaly hooks and
+  stored it in the session captures. The display still averages.
+- **Each anomaly hook reads its own view of the frame.** The monitor gives
+  the hooks a `ResultViews` object (`record` and `results(unit, mode)`),
+  not a list. `RmsThresholdHook` takes `unit` and `amplitude_mode`;
+  `FixedThresholdHook` takes `upper_mode` and `lower_mode` beside each unit.
+  An empty unit or mode is the record view, which is the behaviour before.
+  The capture writer stores the record view in the channel unit, whatever
+  the hook unit. A plain list of results is the record view and is not
+  converted.
+
+#### Fixed
+- **A locked control looked enabled.** `_set_recording_lock()` disabled the
+  controls, but no theme had a component for the disabled state, so a
+  disabled button looked enabled. A user pressed the acquisition setup
+  button during a recording and nothing happened. A global theme now draws
+  disabled buttons, combos, checkboxes, input fields and sliders in muted
+  colours, and each locked control has the tooltip "Stop the recording to
+  change this." while the lock is on.
+- **State of the old data source survived a load or a connect.** The GUI
+  made one `DataCollector` and used it for every load and connect, so the
+  latched speed-gate reference, the RPM trend, the stage-1 caches, the cache
+  depth and the cursor of the previous source stayed. Each load and each
+  connect now makes a new collector (`GUI._replace_collector()`, the one
+  place `self.collector` changes). A file loads into a new collector first;
+  a file that does not load leaves the display unchanged (before, the cache
+  was cleared first). A connect closes the old device, then builds the new
+  collector from `acquisition.yaml` (`_build_live_collector()`), so a
+  connect after a file load no longer keeps the file's settings until the
+  device YAML restore. `_on_data_source_changed()` is the one widget update
+  after a swap; six copies of it are removed.
+- **A session or burst load while streaming mixed live frames into the
+  loaded cache.** The session browser loaded into the streaming collector
+  and did not stop the stream. It now stops acquisition and closes the
+  device, as **Load** does.
+- **A session or burst trend read 0.0 in every unit except the record
+  unit.** The loaders built the trend from `overall_json` (one value, record
+  unit) into one of the five order columns; the other four stayed 0.0. A
+  session recorded in in/s from a 100 mV/g accelerometer read in/s 273.0,
+  283.9, 278.5, but g 0.0 and mil 0.0 on every point. A channel-unit change
+  after a session load reached it. The loaders now compute the five mV
+  orders of each stored waveform (stateless high-pass, decimation, band
+  RMS). In the record unit the result is within 7.4e-5 relative of the
+  stored overall. A frame with no waveform gives NaN (a gap), not 0.0.
+  Crest factor and kurtosis come from `scalars_json`; the shaft-speed trend
+  comes from the stored edge times, usable readings only (before, a session
+  had no shaft-speed trend). Measurement files keep their stored trends.
+  Load time of a 1440-capture, 4-channel session (`SimulatedSensor` frames,
+  i7-1260P): 1.7 s before, 3.0 s now; peak memory 778 MB before, 783 MB now.
+- **Averaging joined frames that were far apart in time.** A session's
+  captures are 600 s apart by default, so an average of N = 8 spanned 80 min
+  under the label "averaging 8 frames". The walk back now stops at the first
+  frame that is not contiguous with the next one: 0 < delta `rel_time` <=
+  1.5 x the achieved frame period (`raw_blocksize / sample.samplerate`). A
+  new stream (negative delta) is also a gap. The label says "averaging 1 of
+  8 frames (frames not contiguous)" (`ChannelResult.averaging_gap`). The
+  averaging tests fed frames 1.0 s apart with a 0.5 s frame period; they now
+  step by the frame period.
+- **The session reprocess thread changed the collector on screen** while the
+  render loop read it. The thread now loads its own collector and the render
+  thread swaps the result in (part of R50).
+- **A redisplay while streaming added a second trend point** for the same
+  frame (a settings change sets `new_frame_event`). `advance_frame()` skips
+  a frame it already trended.
+- **A fixed limit could not use another quantity.** A limit in `in/s` on a
+  channel in `g` was skipped with a warning, and `in/s` against `mm/s` was
+  converted with a factor only. The hook now gets the overall calculated in
+  its own unit and mode from the same frame. A channel with no sensor gives
+  `mV` only and is skipped with one warning.
+- **A channel disappeared when its sensor's Source EU was `mV`.** The
+  Source EU combo offers `mV`, but the record view refused `mV` for a
+  channel with a sensor, so the channel had no display, trend, capture or
+  alarm, and one log warning. The sensor EU is now always a reachable unit.
+- **A capture could store a waveform and an overall of different frames.**
+  The front ends gave the monitor the live frame cache, and the controller
+  stored the waveform of the newest frame. A frame that arrived after the
+  tick's snapshot was stored with the results of the frame before it. Both
+  front ends now pass `FrameSnapshot.history`, the frames up to and
+  including the displayed frame. This was also true before this branch.
+
+#### Notes for the next person
+- **Not every reader uses the tick's snapshot.** The tachometer result
+  cards and the Tachometer tab call `current_frame()`, which takes a new
+  snapshot.
+- **The session reprocess thread still calls dearpygui** (the button label)
+  and adds sensors to the sensor registry from the worker thread (R50,
+  R59).
+- `result_view()` latches the speed-gate reference through `speed_ok()`
+  when `speed_gate_rpm` is not set. The first reading that a view sees is
+  the reference.
+
 ### fix/device-loss-recovery — survive the loss of the PicoScope (2026-10-15)
 
 #### Fixed

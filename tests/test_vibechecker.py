@@ -19,6 +19,7 @@ from rev80 import (
 )
 from rev80.sample import RAW_SAMPLERATE_HZ
 from rev80.scope_sensor import ScopeSensor
+from pipeline_helpers import view_of
 
 DATADIR = Path('DEVDATA')
 log = get_logger('test')
@@ -70,7 +71,7 @@ def test_collect_sample_signal_processing():
     collector.disconnect_sensor()
 
     for ch, sample in ((k, v) for k, v in result.items() if isinstance(k, int)):
-        cr = collector.process_sample(ch, sample)
+        cr = view_of(collector, ch, sample)
         assert cr is not None
         assert cr.time_data.flags['C_CONTIGUOUS']
         assert len(cr.freq) > 0
@@ -92,7 +93,7 @@ def test_eu_scaled_raw_keeps_full_raw_bandwidth_independent_of_maxfreq():
     collector.disconnect_sensor()
 
     ch, sample = next((k, v) for k, v in frame.items() if isinstance(k, int))
-    cr = collector.process_sample(ch, sample)
+    cr = view_of(collector, ch, sample)
     assert cr.samplerate < RAW_SAMPLERATE_HZ  # display rate: decimated down for low F_max
 
     signal, samplerate, unit = collector.eu_scaled_raw(ch, sample)
@@ -195,7 +196,7 @@ def test_load_offline_configures_channels():
     # Verify reprocess works (process() on loaded samples)
     last_frame = cache[-1]
     for ch, sample in ((k, v) for k, v in last_frame.items() if isinstance(k, int)):
-        cr = offline.process_sample(ch, sample)
+        cr = view_of(offline, ch, sample)
         assert cr is not None, f'process_sample() returned None for channel {ch}'
         assert len(cr.freq) > 0
 

@@ -146,6 +146,16 @@ def derive_acquisition_preview(maxfreq: float, binsize: float) -> dict:
 # this module use them, so that the GUI, the config file and headless agree.
 _MON_SEED = _cfg._BUILTIN_ACQ['monitor']
 _ANOM_SEED = _MON_SEED['anomaly']
+
+# The units and amplitude modes that a hook can compare. The user selects
+# both for each hook; there is no "each channel's own" choice.
+_HOOK_UNITS = tuple(sorted(UNIT_TO_SI.keys()))
+_HOOK_MODES = tuple(rev80.AMPLITUDE_MODES)
+
+
+def _hook_choice(value, items, default) -> str:
+    """A stored hook unit or mode, or `default` if it is empty or not in `items`."""
+    return str(value) if value in items else default
 # The seed has no EWMA times. These are the widget values when the config
 # has none.
 _EWMA_TIME_DEFAULTS = {'rms_ewma_time': 60.0, 'spec_ewma_time': 300.0}
@@ -315,6 +325,7 @@ def apply_tach_claim(collector, channel, implicit_enabled, settings=None):
 class GUI:
     collector: rev80.DataCollector
     found_sensors: list
+    _pending_collector: 'rev80.DataCollector | None' = None
 
     def __init__(self):
         self.context = None
@@ -323,6 +334,9 @@ class GUI:
         self._consecutive_render_errors: int = 0
         self._cleaned_up: bool = False
         self.collector = rev80.DataCollector()
+        # A collector that a worker thread loaded; the render thread swaps it
+        # in on its next tick. See _replace_collector.
+        self._pending_collector = None
         self.registry = ScopeSensorRegistry()
         self._editing_scope_sensor_id: str | None = None
         # Channel the Tachometer tab switched on implicitly when it was
@@ -613,7 +627,7 @@ class GUI:
         time = result.time_vec * 1000.0  # convert s → ms (axis label is "Time, ms")
         signal = result.time_data
         # Integrated and differentiated traces cover only the middle of the
-        # block (overlap-save, see collector.process_sample), so the trace can
+        # block (overlap-save, see collector._view_of_sample), so the trace can
         # start after t=0. Keep the start, so that autoscale shows data.
         if len(time):
             self._last_time_x0_ms = float(time[0])
@@ -1100,7 +1114,8 @@ class GUI:
         want = cfg.n_averages_effective
         got = int(result.n_averages)
         suffix = "" if got >= want else f" of {want}"
-        dpg.set_value(ui.FFT_AVG_COUNT_TEXT, f"averaging {got}{suffix} frames")
+        reason = " (frames not contiguous)" if got < want and result.averaging_gap else ""
+        dpg.set_value(ui.FFT_AVG_COUNT_TEXT, f"averaging {got}{suffix} frames{reason}")
 
     def _update_peak_count_text(self, n_found: int, cap: int):
         """Say how many lines passed the gate, and whether the cap is hiding any.
@@ -1288,7 +1303,7 @@ class GUI:
             if dpg.does_item_exist(tag):
                 dpg.configure_item(tag, show=(ch in enabled))
             # A tachometer's card shows its rate; the vibration fields on it
-            # would never be populated, because process_samples produces no
+            # would never be populated, because results_for produces no
             # ChannelResult for that channel -- they would sit at their
             # construction defaults and read as a real measurement of zero.
             is_tach = self.collector.config.role_for(ch) == 'tachometer'
@@ -1322,8 +1337,16 @@ class GUI:
             self._set_stream_status("active")
             self._schedule_status_timeout()
 
-        results = self.collector.process_samples()
-        raw_frame = self.collector.current_frame()
+        # One snapshot for every view of this tick. advance_frame() adds the
+        # trend point once for each new live frame. The record results go to
+        # the monitor and are never averaged; the display uses the
+        # configured averaging.
+        snap = self.collector.snapshot()
+        self.collector.advance_frame(snap)
+        record = self.collector.results_for(snap)
+        results = self.collector.results_for(
+            snap, n_averages=self.collector.display_n_averages())
+        raw_frame = snap.frame
 
         n_overflow = 0
         for result in results:
@@ -1345,7 +1368,8 @@ class GUI:
             )
 
         if self._monitor_accepts_frames():
-            self._monitor.on_results(results, self.collector.data["frame_cache"])
+            self._monitor.on_results(
+                rev80.FrameViews(self.collector, snap, record), snap.history)
 
         self._update_trend_plot()
         self._update_browse_label()
@@ -1390,11 +1414,53 @@ class GUI:
         ui.FILE_LOAD, ui.BTN_MONITOR_BROWSE, ui.ACQ_CLEAR_CACHE,
     )
 
+    #: Tooltip on a locked control while a recording runs.
+    _LOCKED_TIP_TEXT = "Stop the recording to change this."
+
+    #: Widget types that get muted colours when disabled. Without a theme
+    #: component for the disabled state, dearpygui draws a disabled button
+    #: like an enabled one, and a click on it does nothing visible.
+    _DISABLED_THEME_TYPES = (
+        dpg.mvButton, dpg.mvCombo, dpg.mvCheckbox, dpg.mvInputText,
+        dpg.mvInputInt, dpg.mvInputFloat, dpg.mvSliderInt, dpg.mvSliderFloat,
+    )
+
+    def _create_disabled_theme(self) -> int:
+        """Global theme: muted colours for every disabled control."""
+        muted = _c("MUTED")
+        flat = _c("SURFACE")
+        with dpg.theme() as theme:
+            for item_type in self._DISABLED_THEME_TYPES:
+                with dpg.theme_component(item_type, enabled_state=False):
+                    dpg.add_theme_color(dpg.mvThemeCol_Text, muted,
+                                        category=dpg.mvThemeCat_Core)
+                    for col in (dpg.mvThemeCol_Button, dpg.mvThemeCol_ButtonHovered,
+                                dpg.mvThemeCol_ButtonActive, dpg.mvThemeCol_FrameBg,
+                                dpg.mvThemeCol_FrameBgHovered,
+                                dpg.mvThemeCol_FrameBgActive):
+                        dpg.add_theme_color(col, flat, category=dpg.mvThemeCat_Core)
+                    dpg.add_theme_color(dpg.mvThemeCol_CheckMark, muted,
+                                        category=dpg.mvThemeCat_Core)
+                    dpg.add_theme_color(dpg.mvThemeCol_SliderGrab, muted,
+                                        category=dpg.mvThemeCat_Core)
+        return theme
+
+    def _create_locked_tips(self) -> None:
+        """One hidden tooltip on each lockable control; the lock shows it."""
+        for tag in self._RECORDING_LOCKED_CONTROLS:
+            if not dpg.does_item_exist(tag):
+                continue
+            with dpg.tooltip(parent=tag, tag=ui.locked_tip(tag), show=False):
+                dpg.add_text(self._LOCKED_TIP_TEXT)
+
     def _set_recording_lock(self, locked: bool) -> None:
         """Disable (or enable again) the controls that a recording locks."""
         for tag in self._RECORDING_LOCKED_CONTROLS:
             if dpg.does_item_exist(tag):
                 dpg.configure_item(tag, enabled=not locked)
+            tip = ui.locked_tip(tag)
+            if dpg.does_item_exist(tip):
+                dpg.configure_item(tip, show=locked)
 
     def _ensure_legends(self):
         """Re-create any plot legend that has been lost (DPG can drop them on
@@ -1421,6 +1487,10 @@ class GUI:
         # It early-returns when its dialog is not on screen.
         self._update_tach_tab()
         self._check_status_timeout()
+        pending, self._pending_collector = self._pending_collector, None
+        if pending is not None:
+            # A collector built on a worker thread; swap it on this thread.
+            self._replace_collector(pending)
         self._check_stream_fault()
         if not self.collector.new_frame_event.is_set():
             return
@@ -1484,7 +1554,7 @@ class GUI:
         """Push the significance threshold into the config and reprocess.
 
         This is not a display-only setting: it changes which lines are
-        selected, so the frame goes through process_sample again.
+        selected, so the frame goes through the views again.
         """
         value = float(dpg.get_value(ui.FFT_PEAK_THRESHOLD_DB))
         self.collector.config.peak_threshold_db = max(0.0, value)
@@ -1946,13 +2016,15 @@ class GUI:
             return
         self._on_load_file(Path(path_str))
 
-    def _wire_session_sensors(self) -> None:
+    def _wire_session_sensors(self, collector: 'rev80.DataCollector | None' = None) -> None:
         """Register any unknown sensors from the loaded session/file and wire them to channels.
 
         Must be called after load_monitor_session() or load_data() so that
         _loaded_scope_sensors and _loaded_channel_sensor_configs are populated.
+        `collector` defaults to the one on screen.
         """
-        for sid, sensor_dict in self.collector._loaded_scope_sensors.items():
+        collector = collector if collector is not None else self.collector
+        for sid, sensor_dict in collector._loaded_scope_sensors.items():
             if self.registry.find_by_id(sid) is None:
                 try:
                     sensor = ScopeSensor.from_dict(sensor_dict)
@@ -1960,55 +2032,151 @@ class GUI:
                     log.info(f"Added sensor to registry from file: {sensor.name!r} ({sid})")
                 except Exception as exc:
                     log.warning(f"_wire_session_sensors: could not add sensor {sid!r}: {exc}")
-        for ch, sensor_cfg in self.collector._loaded_channel_sensor_configs.items():
+        for ch, sensor_cfg in collector._loaded_channel_sensor_configs.items():
             sid    = sensor_cfg.get("id")
             sensor = self.registry.find_by_id(sid) if sid else None
-            self.collector.set_scope_sensor(ch, sensor)
+            collector.set_scope_sensor(ch, sensor)
 
-    def _on_load_file(self, path: Path):
-        """Load an h5 file and sync all GUI state to the loaded data."""
+    # ------------------------------------------------------------------
+    # Data source: a new collector for each load and each connect
+    # ------------------------------------------------------------------
+
+    def _release_device(self) -> None:
+        """Stop the stream and close the device of the collector on screen.
+
+        Close it before another collector opens a device: a device left open
+        makes the next open fail with PICO_NOT_FOUND.
+        """
         if self.collector.is_streaming:
             self._stop_stream()
-
-        # Disconnect any attached hardware so file channels are unambiguously active
         if self.collector.sensor is not None:
             self.collector.disconnect_sensor()
             self._set_device_status("disconnected")
 
-        self.collector.load_data(path)
-        self._browse_context = {'type': 'file', 'name': path.stem}
+    def _replace_collector(self, new: 'rev80.DataCollector', setup=None) -> bool:
+        """Put `new` on screen. The one place `self.collector` changes after __init__.
 
-        cache = self.collector.data["frame_cache"]
-        if not cache:
-            return
+        A new collector for each load and connect, so no state of the old
+        data source (speed reference, RPM trend, stage-1 caches, cache depth,
+        cursor) can survive. Refused while a recording runs. Closes the old
+        device, assigns, runs `setup()` if given, then calls
+        `_on_data_source_changed()`. No GUI code may keep a reference to the
+        old collector, its `data` dict or its cache.
+        """
+        if self._refuse_while_recording("A change of data source"):
+            return False
+        if new is not self.collector:
+            self._release_device()
+            self.collector = new
+        try:
+            if setup is not None:
+                setup()
+        finally:
+            self._on_data_source_changed()
+        return True
 
-        # Determine channels present in the loaded data
-        loaded_channels: set[int] = set()
-        for frame in cache:
-            loaded_channels.update(k for k in frame if isinstance(k, int))
+    def _load_into_new_collector(self, load, what: str) -> 'rev80.DataCollector | None':
+        """Load a file into a new collector; None if the load fails or is empty.
 
-        # Update _num_channels from file data (mirrors what device connect does from hardware)
-        if loaded_channels:
-            self._num_channels = max(loaded_channels) + 1
+        `load(collector)` reads the file. The collector on screen is not
+        touched, so a refused or failed file leaves the screen unchanged.
+        """
+        new = rev80.DataCollector()
+        try:
+            load(new)
+        except Exception as exc:
+            log.error("%s: load failed: %s", what, exc)
+            return None
+        if not new.data["frame_cache"]:
+            log.error("%s: no frames loaded; the display is unchanged", what)
+            return None
+        self._wire_session_sensors(new)
+        return new
 
-        # Remove stale series and trend cursor, then create series for loaded channels
+    def _on_data_source_changed(self) -> None:
+        """Bring the widgets in line with the collector on screen, after a swap."""
+        collector = self.collector
+        if collector.sensor is not None:
+            self._num_channels = collector.sensor.num_channels
+        else:
+            loaded: set[int] = set()
+            for frame in collector.data["frame_cache"]:
+                loaded.update(k for k in frame if isinstance(k, int))
+            if loaded:
+                self._num_channels = max(loaded) + 1
+        # Remove stale series and the trend cursor, then add the series again.
         for ch in range(_MAX_CHANNELS):
             self._remove_channel_series(ch)
         if dpg.does_item_exist(ui.PLT_TREND_CURSOR):
             dpg.delete_item(ui.PLT_TREND_CURSOR)
-        for ch in sorted(loaded_channels):
-            self._add_channel_series(ch)
-
-        self._wire_session_sensors()
-
+        for ch in sorted(collector.config.enabled_channels):
+            if ch < self._num_channels:
+                self._add_channel_series(ch)
         self._update_axis_assignment()
         self._update_results_section_visibility()
         self._update_connection_summary()
         self._update_spectrum_info()
+        self._update_browse_label()
         if dpg.does_item_exist(ui.ACQ_NOTES):
-            dpg.set_value(ui.ACQ_NOTES, self.collector.notes)
+            dpg.set_value(ui.ACQ_NOTES, collector.notes)
         self._autoscale_pending = True
-        self.collector.reprocess_last_block()
+        collector.reprocess_last_block()
+
+    def _build_live_collector(self, sensor) -> 'rev80.DataCollector':
+        """A new collector with the acquisition.yaml settings, connected to `sensor`."""
+        acq_dict = _cfg.load_acquisition_config().get("acquisition", {})
+        config = AcquisitionSettings.from_dict(acq_dict) if acq_dict else None
+        new = rev80.DataCollector(config=config)
+        new.connect_sensor(sensor)
+        return new
+
+    def _connect_device(self, sensor) -> bool:
+        """Close the old device, then connect `sensor` in a new collector.
+
+        Restores the device YAML (channels, siggen), the sensors from the
+        registry and the tachometer settings. On failure the new device is
+        closed and the indicator shows disconnected.
+        """
+        if self._refuse_while_recording("Device connect"):
+            return False
+        self._release_device()
+        try:
+            new = self._build_live_collector(sensor)
+        except Exception as e:
+            log.warning(f"Device connect failed: {e}")
+            self._set_device_status("disconnected")
+            return False
+
+        def _setup():
+            try:
+                self._num_channels = sensor.num_channels
+                self.collector.reset_channel_config(sensor.num_channels)
+                device_cfg = _cfg.load_device_config(sensor.model_name, sensor.serial_number)
+                self._restore_channel_assignments(device_cfg)
+                self.collector.reconnect_stream()
+                self._set_device_status("connected")
+            except Exception as e:
+                log.warning(f"Device connect failed: {e}")
+                self.collector.disconnect_sensor()
+                self._set_device_status("disconnected")
+
+        return self._replace_collector(new, setup=_setup)
+
+    def _on_load_file(self, path: Path) -> bool:
+        """Load an h5 file into a new collector and put it on screen.
+
+        Closes any device, so the file channels are the only ones active. A
+        file that does not load leaves the screen unchanged.
+        """
+        if self._refuse_while_recording("File load"):
+            return False
+        new = self._load_into_new_collector(lambda c: c.load_data(path), path.name)
+        if new is None:
+            return False
+        if not self._replace_collector(new):
+            return False
+        self._browse_context = {'type': 'file', 'name': path.stem}
+        return True
 
     # ------------------------------------------------------------------
     # Device Setup Dialog
@@ -2092,29 +2260,16 @@ class GUI:
         sensor = sensors[0]
         log.info(f"Autoconnect: found {sensor.model_name} (S/N {sensor.serial_number})")
 
-        try:
-            self.collector.connect_sensor(sensor)
-            self._num_channels = sensor.num_channels
-            for ch in range(_MAX_CHANNELS):
-                self._remove_channel_series(ch)
-            self.collector.reset_channel_config(sensor.num_channels)
-            device_cfg = _cfg.load_device_config(sensor.model_name, sensor.serial_number)
-            self._restore_channel_assignments(device_cfg)
-            self.collector.reconnect_stream()
-            self._set_device_status("connected")
-            log.info(f"Autoconnect: connected to {sensor.model_name}")
-        except Exception as e:
-            log.warning(f"Autoconnect failed: {e}")
-            self.collector.disconnect_sensor()
-            self._set_device_status("disconnected")
+        if self.collector.sensor is not None:
+            log.info("Autoconnect: a device is already connected")
             return
+        if not self._connect_device(sensor) or self.collector.sensor is None:
+            log.warning("Autoconnect failed")
+            return
+        log.info(f"Autoconnect: connected to {sensor.model_name}")
 
         self._repopulate_device_list()
         self._rebuild_device_channel_rows()
-        self._update_connection_summary()
-        self._update_axis_assignment()
-        self._update_results_section_visibility()
-        self._update_spectrum_info()
 
     def _repopulate_device_list(self):
         """Rebuild the detected-device rows inside the Device Setup dialog."""
@@ -2305,22 +2460,7 @@ class GUI:
             self._set_device_status("disconnected")
             self._set_stream_status("idle")
         else:
-            if self.collector.sensor is not None:
-                self.collector.disconnect_sensor()
-            try:
-                self.collector.connect_sensor(sensor)
-                self._num_channels = sensor.num_channels
-                # Purge all stale series before config reset so no ghost traces remain
-                for _ch in range(_MAX_CHANNELS):
-                    self._remove_channel_series(_ch)
-                self.collector.reset_channel_config(sensor.num_channels)
-                device_cfg = _cfg.load_device_config(sensor.model_name, sensor.serial_number)
-                self._restore_channel_assignments(device_cfg)
-                self.collector.reconnect_stream()
-                self._set_device_status("connected")
-            except Exception as e:
-                log.warning(f"Device connect failed: {e}")
-                self.collector.disconnect_sensor()
+            self._connect_device(sensor)
         self._repopulate_device_list()
         self._rebuild_device_channel_rows()
 
@@ -2599,31 +2739,13 @@ class GUI:
             'n_bursts':    entry.get('n_bursts',   '—'),
         }
 
-        # Clear stale plot series before loading (prevents color cycle accumulation)
-        for ch in range(_MAX_CHANNELS):
-            self._remove_channel_series(ch)
-        if dpg.does_item_exist(ui.PLT_TREND_CURSOR):
-            dpg.delete_item(ui.PLT_TREND_CURSOR)
-
-        # Load all interval frames immediately; guard against corrupt/old H5 files
-        try:
-            self.collector.load_monitor_session(session_h5)
-        except Exception as exc:
-            log.error(f'session browser: failed to load session {session_h5}: {exc}')
-
-        # Wire scope sensors from file metadata — registers unknown sensors and
-        # populates collector.scope_sensors for get_trend_for_display() / process_sample().
-        self._wire_session_sensors()
-        self.collector.reprocess_last_block()
-
-        # Re-add series and sync display state — mirrors _on_load_file post-load steps
-        for ch in sorted(self.collector.config.enabled_channels):
-            self._add_channel_series(ch)
-        self._update_axis_assignment()
-        self._update_results_section_visibility()
-        self._update_connection_summary()
-
-        self._autoscale_plots()
+        # Load all interval frames into a new collector. A corrupt or old
+        # file leaves the screen unchanged.
+        new = self._load_into_new_collector(
+            lambda c: c.load_monitor_session(session_h5), f'session {session_h5}')
+        if new is not None:
+            self._replace_collector(new)
+            self._autoscale_plots()
 
         # Populate burst listbox
         burst_list: list = []
@@ -2741,21 +2863,25 @@ class GUI:
                 dpg.configure_item('_SB_REPROCESS_BTN', label=f'{i} / {n}')
 
         def _run() -> None:
+            # This thread never touches the collector on screen. It works on
+            # its own collector, loaded from the patched session file, and
+            # hands a freshly loaded one to the render thread.
             try:
-                self.collector.reprocess_session_trend(session_h5, progress_cb=_progress)
+                work = self._load_into_new_collector(
+                    lambda c: c.load_monitor_session(session_h5), f'reprocess {session_h5}')
+                if work is not None:
+                    work.reprocess_session_trend(session_h5, progress_cb=_progress)
             except Exception as exc:
                 log.error(f"_on_sb_reprocess: failed: {exc}")
             finally:
                 if dpg.does_item_exist('_SB_REPROCESS_BTN'):
                     dpg.configure_item('_SB_REPROCESS_BTN', enabled=True,
                                        label=f'{icons.IC["refresh"]}  Reprocess')
-            # Reload session to display updated trend
-            try:
-                self.collector.load_monitor_session(session_h5)
-                self._wire_session_sensors()
-                self.collector.reprocess_last_block()
-            except Exception as exc:
-                log.error(f"_on_sb_reprocess: reload failed: {exc}")
+            # Reload the session to show the updated trend.
+            fresh = self._load_into_new_collector(
+                lambda c: c.load_monitor_session(session_h5), f'reload {session_h5}')
+            if fresh is not None:
+                self._pending_collector = fresh
 
         threading.Thread(target=_run, daemon=True, name='SBReprocess').start()
 
@@ -2780,15 +2906,11 @@ class GUI:
         except Exception:
             pass
 
-        for ch in range(_MAX_CHANNELS):
-            self._remove_channel_series(ch)
-        if dpg.does_item_exist(ui.PLT_TREND_CURSOR):
-            dpg.delete_item(ui.PLT_TREND_CURSOR)
-
-        try:
-            self.collector.load_monitor_burst(session_h5, burst_id)
-        except Exception as exc:
-            log.error(f'session browser: failed to load burst {burst_id} from {session_h5}: {exc}')
+        new = self._load_into_new_collector(
+            lambda c: c.load_monitor_burst(session_h5, burst_id),
+            f'burst {burst_id} from {session_h5}')
+        if new is None or not self._replace_collector(new):
+            return
 
         se = self._current_session_entry
         self._browse_context = {
@@ -2801,11 +2923,6 @@ class GUI:
             'n_captures':   se.get('n_captures', '—'),
             'n_bursts':     se.get('n_bursts',   '—'),
         }
-        self._wire_session_sensors()
-        for ch in sorted(self.collector.config.enabled_channels):
-            self._add_channel_series(ch)
-        self._update_axis_assignment()
-        self._update_results_section_visibility()
         self._update_browse_label()
 
         self._autoscale_plots()
@@ -3126,6 +3243,8 @@ class GUI:
         _sv(ui.MON_ANOM_RMS_S,        float(anom.get("rms_s",         _ANOM_SEED["rms_s"])))
         _sv(ui.MON_ANOM_RMS_EWMA_TIME, float(anom.get("rms_ewma_time", _EWMA_TIME_DEFAULTS["rms_ewma_time"])))
         _sv(ui.MON_ANOM_RMS_WARMUP,   int(anom.get("warmup",          _ANOM_SEED["warmup"])))
+        _sv(ui.MON_ANOM_RMS_UNIT,     _hook_choice(anom.get("rms_unit"), _HOOK_UNITS, _ANOM_SEED["rms_unit"]))
+        _sv(ui.MON_ANOM_RMS_MODE,     _hook_choice(anom.get("rms_amplitude_mode"), _HOOK_MODES, _ANOM_SEED["rms_amplitude_mode"]))
         _sv(ui.MON_ANOM_SPEC_PCT,     float(anom.get("spec_pct",      _ANOM_SEED["spec_pct"])))
         _sv(ui.MON_ANOM_SPEC_N,       int(anom.get("spec_n",          _ANOM_SEED["spec_n"])))
         _sv(ui.MON_ANOM_SPEC_FMIN,    float(anom.get("spec_fmin") or  0.0))
@@ -3138,6 +3257,9 @@ class GUI:
         _sv(ui.MON_ANOM_FIXED_LOWER_ENABLED, bool(anom.get("fixed_lower_enabled", False)))
         _sv(ui.MON_ANOM_FIXED_LOWER_VALUE,   float(anom.get("fixed_lower_value",  0.05)))
         _sv(ui.MON_ANOM_FIXED_LOWER_UNIT,    str(anom.get("fixed_lower_unit",     "in/s")))
+        _sv(ui.MON_ANOM_FIXED_UPPER_MODE,    _hook_choice(anom.get("fixed_upper_mode"), _HOOK_MODES, _ANOM_SEED["fixed_upper_mode"]))
+        _sv(ui.MON_ANOM_FIXED_LOWER_MODE,    _hook_choice(anom.get("fixed_lower_mode"), _HOOK_MODES, _ANOM_SEED["fixed_lower_mode"]))
+        _sv(ui.MON_ANOM_FIXED_S,             float(anom.get("fixed_s",            _ANOM_SEED["fixed_s"])))
 
         _sv(ui.MON_ANOM_COOLDOWN_ENABLED, bool(anom.get("cooldown_enabled", False)))
         _sv(ui.MON_ANOM_COOLDOWN_S,       float(anom.get("cooldown_s",      300.0)))
@@ -3190,6 +3312,8 @@ class GUI:
             'rms_pct':       float(_get(ui.MON_ANOM_RMS_PCT,        _ANOM_SEED['rms_pct'])),
             'rms_s':         float(_get(ui.MON_ANOM_RMS_S,          _ANOM_SEED['rms_s'])),
             'warmup':        int(_get(ui.MON_ANOM_RMS_WARMUP,        _ANOM_SEED['warmup'])),
+            'rms_unit':      _hook_choice(_get(ui.MON_ANOM_RMS_UNIT, _ANOM_SEED['rms_unit']), _HOOK_UNITS, _ANOM_SEED['rms_unit']),
+            'rms_amplitude_mode': _hook_choice(_get(ui.MON_ANOM_RMS_MODE, _ANOM_SEED['rms_amplitude_mode']), _HOOK_MODES, _ANOM_SEED['rms_amplitude_mode']),
             'spec_pct':      float(_get(ui.MON_ANOM_SPEC_PCT,        _ANOM_SEED['spec_pct'])),
             'spec_n':        int(_get(ui.MON_ANOM_SPEC_N,            _ANOM_SEED['spec_n'])),
             'spec_fmin':     _get(ui.MON_ANOM_SPEC_FMIN, None) or None,
@@ -3202,6 +3326,9 @@ class GUI:
             'fixed_lower_enabled': bool(_get(ui.MON_ANOM_FIXED_LOWER_ENABLED, False)),
             'fixed_lower_value':   float(_get(ui.MON_ANOM_FIXED_LOWER_VALUE,  0.05)),
             'fixed_lower_unit':    str(_get(ui.MON_ANOM_FIXED_LOWER_UNIT,     'in/s')),
+            'fixed_upper_mode':    _hook_choice(_get(ui.MON_ANOM_FIXED_UPPER_MODE, _ANOM_SEED['fixed_upper_mode']), _HOOK_MODES, _ANOM_SEED['fixed_upper_mode']),
+            'fixed_lower_mode':    _hook_choice(_get(ui.MON_ANOM_FIXED_LOWER_MODE, _ANOM_SEED['fixed_lower_mode']), _HOOK_MODES, _ANOM_SEED['fixed_lower_mode']),
+            'fixed_s':             float(_get(ui.MON_ANOM_FIXED_S,            _ANOM_SEED['fixed_s'])),
         })
         not_stored = getattr(self, '_ewma_time_not_stored', {})
         for key, tag in (('rms_ewma_time', ui.MON_ANOM_RMS_EWMA_TIME),
@@ -3363,6 +3490,7 @@ class GUI:
         from rev80.monitor.anomaly import (
             RmsThresholdHook, SpectralThresholdHook, FixedThresholdHook,
             CompositeAnomalyHook, NullAnomalyHook, ewma_alpha_from_time,
+            frames_for_seconds,
         )
         def _get(tag, default):
             return dpg.get_value(tag) if dpg.does_item_exist(tag) else default
@@ -3372,6 +3500,9 @@ class GUI:
             pre_buffer_s = float(_get(ui.MON_DLG_PRE_BUFFER, _MON_SEED['pre_burst_s']))
 
         hooks = []
+        # Bound before the hook branches: the RMS, the spectral and the fixed
+        # branch all read `period`.
+        period = self.collector.config.acquisition_period
 
         # ── EWMA-based hooks (RMS / Spectral) — gated by the main Enable switch
         if _get(ui.MON_ANOM_ENABLED, _ANOM_SEED['enabled']):
@@ -3379,13 +3510,10 @@ class GUI:
             # The seed value, the same as headless
             # (tests/test_anomaly_hook_build.py compares the two copies).
             warmup    = int(_get(ui.MON_ANOM_RMS_WARMUP, _ANOM_SEED['warmup']))
-            # Bound before the hook_type branches: the spectral branch reads
-            # `period` too.
-            period    = self.collector.config.acquisition_period
 
             if hook_type in ('rms', 'both'):
                 rms_s  = float(_get(ui.MON_ANOM_RMS_S, _ANOM_SEED['rms_s']))
-                consecutive_n = max(1, round(rms_s / period) + 1) if period > 0 else 1
+                consecutive_n = frames_for_seconds(rms_s, period)
                 if rms_s > 0.25 * pre_buffer_s:
                     log.warning(
                         "Monitor anomaly: RMS sustained time %.3gs exceeds 25%% of the "
@@ -3402,6 +3530,8 @@ class GUI:
                     baseline_alpha       = rms_alpha,
                     min_baseline_samples = warmup,
                     burst_duration_s     = burst_dur,
+                    unit                 = _hook_choice(_get(ui.MON_ANOM_RMS_UNIT, _ANOM_SEED['rms_unit']), _HOOK_UNITS, _ANOM_SEED['rms_unit']),
+                    amplitude_mode       = _hook_choice(_get(ui.MON_ANOM_RMS_MODE, _ANOM_SEED['rms_amplitude_mode']), _HOOK_MODES, _ANOM_SEED['rms_amplitude_mode']),
                 ))
 
             # Not reachable from the GUI: GUI_ANOMALY_HOOK_TYPES excludes
@@ -3433,6 +3563,10 @@ class GUI:
                 upper_unit  = str(_get(ui.MON_ANOM_FIXED_UPPER_UNIT,    'in/s')),
                 lower_limit = float(_get(ui.MON_ANOM_FIXED_LOWER_VALUE, 0.05)) if lower_on else None,
                 lower_unit  = str(_get(ui.MON_ANOM_FIXED_LOWER_UNIT,    'in/s')),
+                upper_mode  = _hook_choice(_get(ui.MON_ANOM_FIXED_UPPER_MODE, _ANOM_SEED['fixed_upper_mode']), _HOOK_MODES, _ANOM_SEED['fixed_upper_mode']),
+                lower_mode  = _hook_choice(_get(ui.MON_ANOM_FIXED_LOWER_MODE, _ANOM_SEED['fixed_lower_mode']), _HOOK_MODES, _ANOM_SEED['fixed_lower_mode']),
+                sustain_frames = frames_for_seconds(
+                    float(_get(ui.MON_ANOM_FIXED_S, _ANOM_SEED['fixed_s'])), period),
                 burst_duration_s = burst_dur,
             ))
 
@@ -4440,6 +4574,21 @@ class GUI:
                                      "Number of frames collected to build the initial baseline "
                                      "before anomaly detection activates. Increase if the machine "
                                      "takes a while to reach steady-state after startup.")
+                                _rms_unit_w = dpg.add_combo(
+                                    label="Unit", tag=ui.MON_ANOM_RMS_UNIT, items=list(_HOOK_UNITS),
+                                    default_value=_ANOM_SEED['rms_unit'], width=_mon_w)
+                                _tip(_rms_unit_w,
+                                     "The unit of the overall that the baseline follows, "
+                                     "for all channels. Example: g on a channel in in/s "
+                                     "finds a high-frequency change sooner. A channel that "
+                                     "cannot give the unit (no sensor) is not checked. "
+                                     "The recording stores the channel unit in all cases.")
+                                _rms_mode_w = dpg.add_combo(
+                                    label="Amplitude", tag=ui.MON_ANOM_RMS_MODE, items=list(_HOOK_MODES),
+                                    default_value=_ANOM_SEED['rms_amplitude_mode'], width=_mon_w)
+                                _tip(_rms_mode_w,
+                                     "The amplitude mode of the overall that the baseline "
+                                     "follows, for all channels.")
 
                             with dpg.group(tag=ui.MON_ANOM_SPEC_GROUP, show=False):
                                 _spec_hdr = dpg.add_text("Spectral settings  (?)", color=_c("ON_SURFACE"))
@@ -4471,20 +4620,31 @@ class GUI:
                             dpg.add_separator()
                             _fixed_hdr = dpg.add_text("Fixed Level Trigger  (?)")
                             _tip(_fixed_hdr,
-                                 "Fires immediately on a fixed overall-amplitude level — "
-                                 "no baseline or warmup. Channels without a sensor/EU "
-                                 "assigned cannot be evaluated.")
+                                 "Fires on a fixed overall level, with no baseline and no "
+                                 "warm-up. Each limit has its own unit and amplitude mode: "
+                                 "a limit in in/s works on a channel in g. A channel with no "
+                                 "sensor gives mV only, so a limit in another unit skips it.")
                             _unit_items = sorted(UNIT_TO_SI.keys())
                             with dpg.group(horizontal=True):
                                 _upper_chk = dpg.add_checkbox(label="Upper limit", tag=ui.MON_ANOM_FIXED_UPPER_ENABLED, default_value=False)
                                 dpg.add_input_float(tag=ui.MON_ANOM_FIXED_UPPER_VALUE, default_value=1.0, step=0.0, width=90)
                                 dpg.add_combo(tag=ui.MON_ANOM_FIXED_UPPER_UNIT, items=_unit_items, default_value='in/s', width=80)
+                                dpg.add_combo(tag=ui.MON_ANOM_FIXED_UPPER_MODE, items=list(_HOOK_MODES), default_value=_ANOM_SEED['fixed_upper_mode'], width=80)
                             _tip(_upper_chk, "Burst when overall vibration rises above this level.")
                             with dpg.group(horizontal=True):
                                 _lower_chk = dpg.add_checkbox(label="Lower limit", tag=ui.MON_ANOM_FIXED_LOWER_ENABLED, default_value=False)
                                 dpg.add_input_float(tag=ui.MON_ANOM_FIXED_LOWER_VALUE, default_value=0.05, step=0.0, width=90)
                                 dpg.add_combo(tag=ui.MON_ANOM_FIXED_LOWER_UNIT, items=_unit_items, default_value='in/s', width=80)
+                                dpg.add_combo(tag=ui.MON_ANOM_FIXED_LOWER_MODE, items=list(_HOOK_MODES), default_value=_ANOM_SEED['fixed_lower_mode'], width=80)
                             _tip(_lower_chk, "Burst when overall vibration drops below this level.")
+                            _fixed_s_w = dpg.add_input_float(
+                                label="Sustained (s)", tag=ui.MON_ANOM_FIXED_S,
+                                default_value=0.0, min_value=0.0, max_value=3600.0,
+                                step=1.0, width=_mon_w)
+                            _tip(_fixed_s_w,
+                                 "The overall must stay beyond a limit for this many "
+                                 "seconds of consecutive valid frames. 0 fires on the "
+                                 "first frame.")
 
                             # ── Cooldown ────────────────────────────────
                             dpg.add_spacer(height=8)
@@ -5026,6 +5186,10 @@ class GUI:
                             dpg.pop_container_stack()   # ch_vib_group
                         dpg.add_spacer(height=2)
 
+        # Last: the tooltips need the locked controls to exist.
+        dpg.bind_theme(self._create_disabled_theme())
+        self._create_locked_tips()
+
     # ------------------------------------------------------------------
     # Keyboard shortcuts
     # ------------------------------------------------------------------
@@ -5120,22 +5284,11 @@ class GUI:
 
         log.info(f"--from-file: loading {'monitor session' if is_monitor else 'measurement'} {p}")
         if is_monitor:
-            for ch in range(_MAX_CHANNELS):
-                self._remove_channel_series(ch)
-            if dpg.does_item_exist(ui.PLT_TREND_CURSOR):
-                dpg.delete_item(ui.PLT_TREND_CURSOR)
-            try:
-                self.collector.load_monitor_session(p)
-            except Exception as exc:
-                log.error(f"--from-file: load_monitor_session failed: {exc}")
+            new = self._load_into_new_collector(
+                lambda c: c.load_monitor_session(p), f"--from-file {p}")
+            if new is None or not self._replace_collector(new):
                 return
             self._current_session_h5 = p
-            self._wire_session_sensors()
-            self.collector.reprocess_last_block()
-            for ch in sorted(self.collector.config.enabled_channels):
-                self._add_channel_series(ch)
-            self._update_axis_assignment()
-            self._update_results_section_visibility()
             self._autoscale_plots()
         else:
             self._on_load_file(p)

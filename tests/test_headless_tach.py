@@ -12,6 +12,7 @@ import rev80 as vc
 from rev80 import tach
 from rev80.config import channel_role_state
 from rev80.headless import _apply_channel_config, _apply_overrides
+from pipeline_helpers import tick
 
 
 # Source checks read the files as text: importing rev80.gui needs dearpygui,
@@ -231,7 +232,7 @@ def _tach_session(tmp_path):
             'samplerate': cfg.raw_samplerate, 'overflow_mask': 0,
             'degraded': False,
         })
-        ctrl.on_results(dc.process_samples(), dc.data['frame_cache'])
+        ctrl.on_results(tick(dc), dc.data['frame_cache'])
         time.sleep(0.06)
     ctrl.stop()
     for _ in range(50):

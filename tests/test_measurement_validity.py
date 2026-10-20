@@ -13,6 +13,7 @@ import pytest
 
 import rev80 as vc
 from rev80.scope_sensor import ScopeSensor
+from pipeline_helpers import tick, view_of
 
 
 # ---------------------------------------------------------------------------
@@ -109,7 +110,7 @@ def test_integrated_velocity_overall_accurate_off_bin(frac):
     freq = 61 * df + frac * df          # deliberately not a bin centre
     amp = 1.0
 
-    result = dc.process_sample(0, make_sample(dc, tone(dc, freq, amp)))
+    result = view_of(dc, 0, make_sample(dc, tone(dc, freq, amp)))
     assert result is not None
 
     expected = true_rms(amp, freq, 1)
@@ -131,7 +132,7 @@ def test_integrated_displacement_overall_accurate_off_bin(frac):
     freq = 61 * df + frac * df
     amp = 1.0
 
-    result = dc.process_sample(0, make_sample(dc, tone(dc, freq, amp)))
+    result = view_of(dc, 0, make_sample(dc, tone(dc, freq, amp)))
     assert result is not None
 
     expected = true_rms(amp, freq, 2)
@@ -146,7 +147,7 @@ def test_integrated_displacement_overall_accurate_off_bin(frac):
 def test_displacement_overall_accurate_at_specific_off_bin_frequencies(freq_hz):
     """The displacement overall is accurate at 61.0, 120.7 and 501.0 Hz (off-bin)."""
     dc = make_collector(eu='mm/s2', target_unit='mm')
-    result = dc.process_sample(0, make_sample(dc, tone(dc, freq_hz, 1.0)))
+    result = view_of(dc, 0, make_sample(dc, tone(dc, freq_hz, 1.0)))
     assert result is not None
     expected = true_rms(1.0, freq_hz, 2)
     err = rel_err(result.overall, expected)
@@ -167,7 +168,7 @@ def test_integrated_velocity_waveform_peak_accurate_off_bin(frac):
     freq = 61 * df + frac * df
     amp = 1.0
 
-    result = dc.process_sample(0, make_sample(dc, tone(dc, freq, amp)))
+    result = view_of(dc, 0, make_sample(dc, tone(dc, freq, amp)))
     assert result is not None
     assert len(result.time_data) == len(result.time_vec), \
         'time_data and time_vec must stay the same length'
@@ -189,7 +190,7 @@ def test_integrated_displacement_waveform_peak_accurate_off_bin(frac):
     freq = 61 * df + frac * df
     amp = 1.0
 
-    result = dc.process_sample(0, make_sample(dc, tone(dc, freq, amp)))
+    result = view_of(dc, 0, make_sample(dc, tone(dc, freq, amp)))
     assert result is not None
     assert len(result.time_data) == len(result.time_vec)
 
@@ -205,7 +206,7 @@ def test_integrated_displacement_waveform_peak_accurate_off_bin(frac):
 def test_integration_still_exact_for_bin_centred_tones():
     """A bin-centred tone (500 Hz) still integrates to the analytic RMS."""
     dc = make_collector(eu='mm/s2', target_unit='mm')
-    result = dc.process_sample(0, make_sample(dc, tone(dc, 500.0, 1.0)))
+    result = view_of(dc, 0, make_sample(dc, tone(dc, 500.0, 1.0)))
     assert result is not None
     expected = true_rms(1.0, 500.0, 2)
     assert abs(rel_err(result.overall, expected)) < 0.02
@@ -223,7 +224,7 @@ def test_passthrough_overall_recovers_the_tone_rms_off_bin():
     """
     dc = make_collector(eu='mm/s2', target_unit='mm/s2')
     data = tone(dc, 120.7, 1.0)
-    result = dc.process_sample(0, make_sample(dc, data))
+    result = view_of(dc, 0, make_sample(dc, data))
     assert result is not None
 
     assert abs(rel_err(result.overall, true_rms(1.0, 120.7, 0))) < 1e-9
@@ -242,7 +243,7 @@ def test_integrated_velocity_overall_accurate_off_bin_with_highpass(frac):
     freq = 61 * df + frac * df
     amp = 1.0
 
-    result = dc.process_sample(0, make_sample(dc, tone(dc, freq, amp)))
+    result = view_of(dc, 0, make_sample(dc, tone(dc, freq, amp)))
     assert result is not None
     expected = true_rms(amp, freq, 1)
     err = rel_err(result.overall, expected)
@@ -261,7 +262,7 @@ def test_highpass_removes_dc_offset_before_integration():
     amp = 1.0
 
     data = tone(dc, freq, amp, offset=1000.0)
-    result = dc.process_sample(0, make_sample(dc, data))
+    result = view_of(dc, 0, make_sample(dc, data))
     assert result is not None
     expected = true_rms(amp, freq, 1)
     err = rel_err(result.overall, expected)
@@ -298,7 +299,7 @@ def test_highpass_state_persists_across_streaming_blocks():
             'degraded': False,
         })
         sample = dc.data['frame_cache'][-1][0]
-        result = dc.process_sample(0, sample)
+        result = view_of(dc, 0, sample)
         peaks.append(float(np.max(np.abs(result.time_data))))
 
     # The transient shows up most clearly in the waveform peak: a filter that
@@ -330,7 +331,7 @@ def test_highpass_state_persists_across_blocks_with_dc_offset():
             'degraded': False,
         })
         sample = dc.data['frame_cache'][-1][0]
-        overalls.append(dc.process_sample(0, sample).overall)
+        overalls.append(view_of(dc, 0, sample).overall)
 
     expected = amp / np.sqrt(2)
     for i, ov in enumerate(overalls[1:], start=1):
@@ -370,12 +371,12 @@ def test_block_after_a_device_gap_starts_a_new_filter_state():
     freq = 203.37                       # off-bin
     for i in range(3):
         _stream_block(dc, tone(dc, freq, 1.0, offset=1000.0, n=N, start_sample=i * N), i)
-        dc.process_samples()
+        tick(dc)
 
     # New stream after the gap: a different phase and DC level.
     after = tone(dc, freq, 1.0, offset=-400.0, n=N, phase=2.1)
     gap_sample = _stream_block(dc, after, 10.0, gap=True)
-    dc.process_samples()
+    tick(dc)
 
     fresh = collector()
     reference = _stream_block(fresh, after, 0.0)
@@ -385,7 +386,7 @@ def test_block_after_a_device_gap_starts_a_new_filter_state():
 
     nxt = _stream_block(dc, tone(dc, freq, 1.0, offset=-400.0, n=N, start_sample=N,
                                  phase=2.1), 11.0)
-    overall = dc.process_sample(0, nxt).overall
+    overall = view_of(dc, 0, nxt).overall
     assert abs(rel_err(overall, 1.0 / np.sqrt(2))) < 0.01
 
 
@@ -423,11 +424,11 @@ def test_replay_processing_is_order_independent():
     frames = [make_sample(dc, tone(dc, 200.0, 1.0 + i, n=N, start_sample=i * N))
               for i in range(3)]
 
-    forward = [dc.process_sample(0, f).overall for f in frames]
+    forward = [view_of(dc, 0, f).overall for f in frames]
     # Re-process in reverse; each frame must reproduce its own value exactly.
     reverse = {}
     for i in reversed(range(3)):
-        reverse[i] = dc.process_sample(0, frames[i]).overall
+        reverse[i] = view_of(dc, 0, frames[i]).overall
 
     for i in range(3):
         assert reverse[i] == pytest.approx(forward[i], rel=1e-12), (
@@ -451,7 +452,7 @@ def test_highpass_seed_correct_regardless_of_start_phase(phase, target):
     n_int = 0 if target == 'mm/s2' else 1
 
     data = tone(dc, freq, amp, phase=phase)
-    result = dc.process_sample(0, make_sample(dc, data))
+    result = view_of(dc, 0, make_sample(dc, data))
     assert result is not None
 
     expected = true_rms(amp, freq, n_int)
@@ -475,7 +476,7 @@ def test_highpass_seed_correct_with_phase_and_dc_offset(phase):
     freq, amp, offset = 200.0, 1.0, 1000.0
 
     data = tone(dc, freq, amp, offset=offset, phase=phase)
-    result = dc.process_sample(0, make_sample(dc, data))
+    result = view_of(dc, 0, make_sample(dc, data))
     assert result is not None
 
     expected = amp / np.sqrt(2)
@@ -502,7 +503,7 @@ def test_first_streaming_block_highpass_seeded_from_dc_not_first_sample():
         'data': block[:, np.newaxis], 'samplerate': dc.config.samplerate,
         'degraded': False,
     })
-    result = dc.process_sample(0, dc.data['frame_cache'][-1][0])
+    result = view_of(dc, 0, dc.data['frame_cache'][-1][0])
     expected = 1.0 / np.sqrt(2)
     err = rel_err(result.overall, expected)
     assert abs(err) < 0.01, (
@@ -516,7 +517,7 @@ def test_replayed_frame_has_no_highpass_startup_transient():
     dc = make_collector(eu='mm/s2', target_unit='mm/s2', maxfreq=2000,
                         binsize=2.0, highpass_enabled=True, highpass_fc=10.0)
     data = tone(dc, 200.0, 1.0, offset=1000.0)
-    result = dc.process_sample(0, make_sample(dc, data))
+    result = view_of(dc, 0, make_sample(dc, data))
     expected = 1.0 / np.sqrt(2)
     err = rel_err(result.overall, expected)
     assert abs(err) < 0.02, (
@@ -681,7 +682,7 @@ def test_overflow_and_degraded_frames_excluded_from_trend():
             {0: make_sample(dc, tone(dc, 200.0, 1.0, n=N), overflow=ovf,
                             degraded=deg, rel_time=rel)}
         )
-        dc.process_samples()
+        tick(dc)
 
     push(False, False, 0.0)
     push(True, False, 1.0)      # clipped — must be skipped
@@ -895,13 +896,13 @@ def test_psd_cache_invalidates_on_binsize_change():
     dc = make_collector(eu='mm/s2', target_unit='mm/s2', maxfreq=2000, binsize=0.5)
     sample = make_sample(dc, tone(dc, 200.0, 1.0, n=dc.config.blocksize))
 
-    first = dc.process_sample(0, sample)
+    first = view_of(dc, 0, sample)
     n_first = len(first.freq)
     df_first = float(first.freq[1] - first.freq[0])
     assert df_first == pytest.approx(0.5)
 
     dc.config.binsize = 8.0
-    second = dc.process_sample(0, sample)
+    second = view_of(dc, 0, sample)
     df_second = float(second.freq[1] - second.freq[0])
 
     assert df_second > df_first, (
@@ -918,7 +919,7 @@ def test_resolution_never_claimed_finer_than_the_record_supports():
     captured_df = dc.config.samplerate / sample.blocksize
 
     dc.config.binsize = 0.25          # ask for 8x finer than the record allows
-    result = dc.process_sample(0, sample)
+    result = view_of(dc, 0, sample)
     df = float(result.freq[1] - result.freq[0])
 
     assert df == pytest.approx(captured_df), (
@@ -931,7 +932,7 @@ def test_psd_cache_invalidates_on_samplerate_change():
     """A sample with a different sample rate does not use a cached PSD."""
     dc = make_collector(eu='mm/s2', target_unit='mm/s2', maxfreq=2000, binsize=2.0)
     sample = make_sample(dc, tone(dc, 200.0, 1.0, n=dc.config.blocksize))
-    first = dc.process_sample(0, sample)
+    first = view_of(dc, 0, sample)
 
     df_first = float(first.freq[1] - first.freq[0])
 
@@ -939,7 +940,7 @@ def test_psd_cache_invalidates_on_samplerate_change():
     # width scales with fs for a fixed segment length, so it is the observable
     # here — freq[-1] is not, since both spectra are now capped at maxfreq.
     sample.samplerate = dc.config.samplerate * 2
-    second = dc.process_sample(0, sample)
+    second = view_of(dc, 0, sample)
     df_second = float(second.freq[1] - second.freq[0])
 
     assert df_second == pytest.approx(df_first * 2), (
@@ -959,7 +960,7 @@ def test_line_count_matches_computed_spectrum(maxfreq, binsize):
     """config.n_fft_bins equals the number of lines that Welch returns."""
     dc = make_collector(eu='mm/s2', target_unit='mm/s2',
                         maxfreq=maxfreq, binsize=binsize)
-    result = dc.process_sample(0, make_sample(dc, tone(dc, maxfreq / 4, 1.0)))
+    result = view_of(dc, 0, make_sample(dc, tone(dc, maxfreq / 4, 1.0)))
     assert result is not None
     assert len(result.freq) == dc.config.n_fft_bins, (
         f'F_max={maxfreq} df={binsize}: UI states {dc.config.n_fft_bins} lines, '
@@ -973,7 +974,7 @@ def test_actual_bin_width_is_at_least_as_fine_as_requested(maxfreq, binsize):
     """The delivered bin width is not coarser than requested; binsize_actual states it."""
     dc = make_collector(eu='mm/s2', target_unit='mm/s2',
                         maxfreq=maxfreq, binsize=binsize)
-    result = dc.process_sample(0, make_sample(dc, tone(dc, maxfreq / 4, 1.0)))
+    result = view_of(dc, 0, make_sample(dc, tone(dc, maxfreq / 4, 1.0)))
     assert result is not None
     df_actual = float(result.freq[1] - result.freq[0])
     assert df_actual <= binsize * 1.0001, (
@@ -997,7 +998,7 @@ def test_spectrum_truncated_at_maxfreq(maxfreq):
     """
     dc = make_collector(eu='mm/s2', target_unit='mm/s2',
                         maxfreq=maxfreq, binsize=2.0)
-    result = dc.process_sample(0, make_sample(dc, tone(dc, maxfreq / 4, 1.0)))
+    result = view_of(dc, 0, make_sample(dc, tone(dc, maxfreq / 4, 1.0)))
     assert result is not None
 
     assert float(result.freq[-1]) <= maxfreq * 1.0001, (
@@ -1014,7 +1015,7 @@ def test_peaks_exclude_the_guard_band():
     # Real tone in-band plus a strong tone inside the guard band (F_max..fs/2).
     guard_freq = (2000 + fs / 2) / 2
     data = tone(dc, 500.0, 1.0) + tone(dc, guard_freq, 5.0)
-    result = dc.process_sample(0, make_sample(dc, data))
+    result = view_of(dc, 0, make_sample(dc, data))
     assert result is not None
 
     if len(result.peaks):
@@ -1022,3 +1023,46 @@ def test_peaks_exclude_the_guard_band():
         assert float(np.max(peak_freqs)) <= 2000 * 1.0001, (
             f'peak reported at {np.max(peak_freqs):.1f} Hz, inside the guard band'
         )
+
+
+# ===========================================================================
+# Views in other units of one snapshot (result_view)
+# ===========================================================================
+
+G0 = 9.80665          # m/s^2 per g
+IN = 0.0254           # m per in
+
+
+def _accel_snapshot(freq, amp_g=2.0):
+    """One frame of an off-bin acceleration tone, 100 mV/g, in the cache."""
+    dc = make_collector(eu='g', target_unit='g', amp_mode='0-P', maxfreq=1000,
+                        binsize=2.0, sensitivity=100.0)
+    dc.data['frame_cache'].append({0: make_sample(dc, tone(dc, freq, amp_g * 100.0))})
+    return dc, dc.snapshot()
+
+
+@pytest.mark.parametrize('frac', OFFBIN_FRACTIONS)
+def test_velocity_view_equals_the_acceleration_view_over_omega(frac):
+    """v = a / (2 pi f), bin by bin, on one snapshot; overall to the analytic RMS."""
+    freq = (100 + frac) * 2.0
+    dc, snap = _accel_snapshot(freq)
+    acc = dc.result_view(snap, 0, 'g', '0-P')
+    vel = dc.result_view(snap, 0, 'in/s', '0-P')
+    np.testing.assert_array_equal(acc.freq, vel.freq)
+    f = acc.freq[2:]                     # integration zeroes bins 0 and 1
+    expected = acc.spectrum[2:] * G0 / (2 * np.pi * f) / IN
+    np.testing.assert_allclose(vel.spectrum[2:], expected, rtol=1e-9)
+    assert vel.unit == 'in/s' and acc.unit == 'g'
+    true_vel_rms = 2.0 * G0 / (2 * np.pi * freq) / IN / np.sqrt(2)
+    assert abs(rel_err(vel.overall * 1 / np.sqrt(2), true_vel_rms)) < 0.01
+
+
+@pytest.mark.parametrize('unit', ['g', 'in/s', 'mil'])
+def test_amplitude_modes_agree_through_amplitude_scale(unit):
+    from rev80.util import amplitude_scale
+    dc, snap = _accel_snapshot((150 + 0.37) * 2.0)
+    views = {m: dc.result_view(snap, 0, unit, m) for m in ('RMS', '0-P', 'P-P')}
+    for m, v in views.items():
+        ratio = amplitude_scale(m) / amplitude_scale('0-P')
+        np.testing.assert_allclose(v.spectrum, views['0-P'].spectrum * ratio, rtol=1e-12)
+        assert v.overall == pytest.approx(views['0-P'].overall * ratio, rel=1e-12)

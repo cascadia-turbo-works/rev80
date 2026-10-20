@@ -319,8 +319,9 @@ Settings with no widget are in the YAML files only. See
 
 While a Monitor Mode recording runs, these controls are disabled: all
 **Setup** buttons, **Sensor**, **Load**, **Load Session** and
-**Clear Cache**. `Ctrl+O` is refused, and the log records why. Stop the
-recording to use them again.
+**Clear Cache**. A disabled control is drawn in muted colours, and its
+tooltip says "Stop the recording to change this." `Ctrl+O` is refused, and
+the log records why. Stop the recording to use them again.
 
 ### Keyboard shortcuts
 
@@ -441,10 +442,16 @@ lower the noise floor. Use it to see a small line in a rough floor.
 
 - The average uses the N most recent valid frames up to the frame on the
   screen. Overflow and degraded frames are skipped.
+- The frames must be contiguous in time. The average stops at the first
+  gap larger than 1.5 frame periods, or at a new stream. Session captures
+  (600 s apart by default) are therefore not averaged. The label then says
+  "averaging 1 of 8 frames (frames not contiguous)".
 - N is limited by **Cache Frames**.
 - **Avg. Window** shows N × frame time: the time for which the machine must
   be steady.
 - If the speed changes during the window, lines spread across bins.
+- Averaging changes only the display. Monitor Mode stores, trends and alarms
+  on each frame alone.
 
 Crest factor and kurtosis are never averaged.
 
@@ -848,7 +855,8 @@ A burst starts from an anomaly or from **Record Burst**:
    starts.
 
 During a burst, anomaly detection does not trigger, but the baseline
-continues to adapt. A burst holds its frames in memory until it ends;
+continues to adapt. A burst ends the sustained count of every detector:
+after the burst, the count starts again from zero. A burst holds its frames in memory until it ends;
 `max_burst_s` limits that memory.
 
 ### Anomaly detection
@@ -876,6 +884,16 @@ baseline.
 | Baseline time constant | EWMA time (s) | `rms_ewma_time` | 60 s (GUI) |
 | Baseline factor | (none) | `rms_alpha` | 0.97 |
 | Warm-up | Warmup frames | `warmup` | 10 frames |
+| Unit | Unit | `rms_unit` | `in/s` |
+| Amplitude mode | Amplitude | `rms_amplitude_mode` | `0-P` |
+
+**Unit** and **Amplitude** set the overall that the baseline follows, for
+all channels. Select both: there is no "same as the channel" choice. Use
+another unit to make the detector sensitive to a different defect: in `g`,
+a high-frequency defect changes the overall much more than in `in/s`. The
+recording stores the overall in the channel unit in all cases. A channel
+that cannot give the unit is not checked, and the log records a warning
+once. A channel with no sensor gives `mV` only: select `mV` to check it.
 
 `rms_ewma_time` is in seconds. When it is present, it replaces `rms_alpha`.
 The GUI writes `rms_ewma_time`. Why 50 %: a 3.2 % speed change can move the
@@ -908,13 +926,25 @@ baseline. It triggers when **any** bin in the band deviates by more than
 
 #### Fixed level
 
-The fixed-level trigger fires at once when the overall crosses a level. It
-has no baseline and no warm-up. **Upper limit** and **Lower limit** are
-independent.
+The fixed-level trigger fires when the overall crosses a level. It has no
+baseline and no warm-up. **Upper limit** and **Lower limit** are
+independent. Each limit has a unit combo and an amplitude-mode combo. Select
+both to agree with the standard that you use: for example, ISO 20816 zone
+limits are RMS values. Rev80 does not select a mode for you.
 
-The level unit must be the same quantity as the channel unit. Rev80 converts
-`in/s` to `mm/s`, but it cannot compare `in/s` with `g`. A channel in `mV` or
-in a different quantity is skipped, and the log records a warning once.
+**Sustained (s)** (`fixed_s`, default 0 s) is the time that the overall
+must stay beyond a limit. Rev80 converts it to `round(fixed_s / period) + 1`
+consecutive frames, as for the RMS detector. 0 s fires on the first frame.
+A frame that is not used (see
+[Frames that are not used](#frames-that-are-not-used)) and a burst end the
+count. The recorded trigger time is the first frame beyond the limit.
+
+Rev80 calculates the overall in the level unit, from the same frame. The
+level unit does not have to be the channel unit: a level in `in/s` works on
+a channel that shows `g`. A channel with no sensor gives `mV` only, so a
+level in an engineering unit skips it, and the log records a warning once.
+The level does not change what Rev80 stores: each capture holds the overall
+in the channel unit.
 
 #### Cooldown
 
@@ -928,7 +958,20 @@ Click **Load Session** to open the session browser.
 - **Session folder** sets the folder. The default is
   `~/Documents/Rev80/data/monitor/`.
 - Click a session to load all its interval captures. The trend shows burst
-  times as vertical lines.
+  times as vertical lines. The trend is calculated again from the stored
+  waveforms, so it shows a value in every unit. A 1440-capture, 4-channel
+  session with no compression (605 MB) takes about 3 s to load on a laptop
+  (Intel i7-1260P, `SimulatedSensor` frames). A capture
+  with no stored waveform shows a gap, not 0.
+
+  > **Caution:** The loaded trend does not always equal the live overall.
+  > The calculation at load cannot use the filter state of the live stream.
+  > Near a low band edge, with signal below the edge, the loaded velocity
+  > and displacement read high: velocity +92 % on average at a 2 Hz edge,
+  > 1 Hz bins and 5 mV at 0.6 Hz. At a 10 Hz edge with 5 Hz bins, the
+  > error is +0.3 % with no signal below the edge and +5.8 % with 5 mV at
+  > 3 Hz. The alarms and the stored `overall_json` use the live value.
+  > Tracked as R70.
 - Click a burst to load its frames. The trend starts at the trigger.
 - **Save Config** writes the current channel names, sensors, units and
   amplitude modes into the session file. Then it reprocesses the trend.
@@ -936,6 +979,11 @@ Click **Load Session** to open the session browser.
   settings.
 
 > **Caution:** **Save Config** changes the session file.
+
+A load (a file, a session or a burst) stops acquisition and closes the
+device, as **Load** does. A file that does not load leaves the display
+unchanged. A device connect after a load uses the settings in
+`acquisition.yaml`, not the settings of the loaded file.
 
 ---
 
@@ -1118,6 +1166,7 @@ saves.
 | `rms_s` | s | 3.0 | Sustained (s) |
 | `rms_alpha` | | 0.97 | YAML only |
 | `rms_ewma_time` | s | (none) | EWMA time (s); replaces `rms_alpha` |
+| `rms_unit`, `rms_amplitude_mode` | | `in/s`, `0-P` | Unit, Amplitude |
 | `spec_pct` | % | 50.0 | Headless only |
 | `spec_n` | frames | 10 | Headless only |
 | `spec_alpha` | | 0.995 | Headless only |
@@ -1125,7 +1174,11 @@ saves.
 | `spec_fmin`, `spec_fmax` | Hz | `null` | Headless only |
 | `fixed_upper_enabled`, `fixed_upper_value`, `fixed_upper_unit` | | `false`, 1.0, `in/s` | Upper limit |
 | `fixed_lower_enabled`, `fixed_lower_value`, `fixed_lower_unit` | | `false`, 0.05, `in/s` | Lower limit |
+| `fixed_upper_mode`, `fixed_lower_mode` | | `0-P`, `0-P` | Mode combo of each limit |
+| `fixed_s` | s | 0.0 | Sustained (s), fixed level |
 | `cooldown_enabled`, `cooldown_s` | s | `false`, 300 | Cooldown, Cooldown period (s) |
+
+An empty or unknown unit or mode in these keys reads as the seeded value.
 
 If the file holds `hook_type: spectral` or `both`, the GUI shows RMS but
 keeps the stored value when it saves.

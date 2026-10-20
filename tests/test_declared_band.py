@@ -18,6 +18,7 @@ from test_measurement_validity import (
     tone,
     true_rms,
 )
+from pipeline_helpers import view_of
 
 
 def offbin(dc, nominal: float, frac: float) -> float:
@@ -134,7 +135,7 @@ def test_channel_result_reports_the_band_it_was_measured_over():
     dc = make_collector(eu='mm/s2', target_unit='mm/s', maxfreq=1000, binsize=2.0)
     dc.config.band_fmin = 10.0
     dc.config.band_fmax = 500.0
-    r = dc.process_sample(0, make_sample(dc, tone(dc, 100.0)))
+    r = view_of(dc, 0, make_sample(dc, tone(dc, 100.0)))
     assert r.band_fmin == pytest.approx(10.0)
     assert r.band_fmax == pytest.approx(500.0)
 
@@ -158,7 +159,7 @@ def test_out_of_band_tone_does_not_reach_the_overall(frac):
     assert f_out < dc.config.samplerate / 2
 
     data = tone(dc, f_in, amp=1.0) + tone(dc, f_out, amp=2.0)
-    r = dc.process_sample(0, make_sample(dc, data))
+    r = view_of(dc, 0, make_sample(dc, data))
 
     assert abs(rel_err(r.overall, true_rms(1.0, f_in, 0))) < 0.02
 
@@ -171,7 +172,7 @@ def test_out_of_band_tone_excluded_from_integrated_overall(frac):
     f_in  = offbin(dc, 300.0, frac)
     f_out = offbin(dc, 1100.0, frac)      # above F_max, below fs/2 -- see above
     data = tone(dc, f_in, amp=1.0) + tone(dc, f_out, amp=2.0)
-    r = dc.process_sample(0, make_sample(dc, data))
+    r = view_of(dc, 0, make_sample(dc, data))
     assert abs(rel_err(r.overall, true_rms(1.0, f_in, 1))) < 0.03
 
 
@@ -184,7 +185,7 @@ def test_below_band_tone_does_not_reach_the_overall(frac):
     f_in  = offbin(dc, 300.0, frac)
     f_low = offbin(dc, 30.0, frac)
     data = tone(dc, f_in, amp=1.0) + tone(dc, f_low, amp=3.0)
-    r = dc.process_sample(0, make_sample(dc, data))
+    r = view_of(dc, 0, make_sample(dc, data))
     assert abs(rel_err(r.overall, true_rms(1.0, f_in, 0))) < 0.02
 
 
@@ -203,7 +204,7 @@ def test_overall_is_invariant_to_maxfreq_at_a_fixed_band(maxfreq):
     dc.config.band_fmin = 10.0
     dc.config.band_fmax = 800.0
     data = tone(dc, 317.3, amp=1.0) + tone(dc, 123.7, amp=0.5)
-    r = dc.process_sample(0, make_sample(dc, data))
+    r = view_of(dc, 0, make_sample(dc, data))
     expected = np.sqrt(true_rms(1.0, 317.3, 0) ** 2 + true_rms(0.5, 123.7, 0) ** 2)
     assert abs(rel_err(r.overall, expected)) < 0.02
 
@@ -218,7 +219,7 @@ def test_in_band_passthrough_overall_still_exact(frac):
     dc = make_collector(eu='mm/s2', target_unit='mm/s2', amp_mode='RMS',
                         maxfreq=1000, binsize=2.0)
     f = offbin(dc, 300.0, frac)
-    r = dc.process_sample(0, make_sample(dc, tone(dc, f, amp=1.0)))
+    r = view_of(dc, 0, make_sample(dc, tone(dc, f, amp=1.0)))
     assert abs(rel_err(r.overall, true_rms(1.0, f, 0))) < 0.005
 
 
@@ -232,7 +233,7 @@ def test_all_integration_orders_share_one_band():
                             maxfreq=1000, binsize=2.0)
         f_in, f_out = 317.3, 1517.3
         data = tone(dc, f_in, amp=1.0) + tone(dc, f_out, amp=2.0)
-        r = dc.process_sample(0, make_sample(dc, data))
+        r = view_of(dc, 0, make_sample(dc, data))
         err = abs(rel_err(r.overall, true_rms(1.0, f_in, n_int)))
         assert err < 0.03, f'{target}: {err:+.2%}'
 
@@ -243,7 +244,7 @@ def test_waveform_and_overall_describe_the_same_band():
                         maxfreq=1000, binsize=2.0)
     f_in, f_out = 317.3, 1517.3
     data = tone(dc, f_in, amp=1.0) + tone(dc, f_out, amp=2.0)
-    r = dc.process_sample(0, make_sample(dc, data))
+    r = view_of(dc, 0, make_sample(dc, data))
     # The out-of-band tone is twice the in-band one; if it survived into the
     # trace the peak would be ~3.0 rather than ~1.0.
     assert np.abs(r.time_data).max() < 1.35
@@ -261,9 +262,9 @@ def test_changing_the_band_invalidates_the_cached_overall():
     sample = make_sample(dc, data)
 
     dc.config.band_fmax = 1000.0
-    wide = dc.process_sample(0, sample).overall
+    wide = view_of(dc, 0, sample).overall
     dc.config.band_fmax = 500.0
-    narrow = dc.process_sample(0, sample).overall
+    narrow = view_of(dc, 0, sample).overall
 
     assert narrow < 0.8 * wide, (
         f'narrowing the band left the overall unchanged ({wide:.6g} -> '
@@ -409,7 +410,7 @@ def test_monitor_writer_records_the_band_beside_the_overall():
     dc = make_collector(eu='mm/s2', target_unit='mm/s2', maxfreq=1000, binsize=2.0)
     dc.config.band_fmin = 10.0
     dc.config.band_fmax = 500.0
-    r = dc.process_sample(0, make_sample(dc, tone(dc, 137.3)))
+    r = view_of(dc, 0, make_sample(dc, tone(dc, 137.3)))
 
     _, _, band_json, _ = _compute_overall_peaks([r])
     import json

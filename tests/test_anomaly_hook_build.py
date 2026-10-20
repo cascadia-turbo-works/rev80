@@ -10,6 +10,7 @@ import pytest
 from rev80.headless import _build_anomaly_hook as headless_build
 from rev80.monitor.anomaly import (
     CompositeAnomalyHook,
+    FixedThresholdHook,
     NullAnomalyHook,
     RmsThresholdHook,
     SpectralThresholdHook,
@@ -196,3 +197,60 @@ def test_alpha_fallback_constants_are_shared():
     anom = cfg_mod._BUILTIN_ACQ['monitor']['anomaly']
     assert anom['rms_alpha'] == DEFAULT_RMS_ALPHA
     assert anom['spec_alpha'] == DEFAULT_SPEC_ALPHA
+
+
+def _seeded(key):
+    import rev80.config as cfg_mod
+    return cfg_mod._BUILTIN_ACQ['monitor']['anomaly'][key]
+
+
+def test_hook_view_defaults_agree_between_front_ends():
+    """No view keys: both copies use the seeded unit and mode, never ''."""
+    (gui_rms,) = _flatten(_gui_build('rms'))
+    (hl_rms,) = _flatten(headless_build(_anom('rms'), _cfg(), pre_buffer_s=60.0))
+    assert (gui_rms._unit, gui_rms._mode) == (hl_rms._unit, hl_rms._mode)
+    assert (gui_rms._unit, gui_rms._mode) == (_seeded('rms_unit'), _seeded('rms_amplitude_mode'))
+    assert (gui_rms._unit, gui_rms._mode) == ('in/s', '0-P')
+
+
+def _fixed_of(hook):
+    (fixed,) = [h for h in _flatten(hook) if isinstance(h, FixedThresholdHook)]
+    return fixed
+
+
+def test_fixed_defaults_agree_between_front_ends():
+    """Upper limit on, no mode and no fixed_s: 0-P, and one frame."""
+    import rev80.gui as gui_module
+    ui = gui_module.ui
+    gui = _fixed_of(_gui_build('rms', {ui.MON_ANOM_FIXED_UPPER_ENABLED: True}))
+    hl = _fixed_of(headless_build(_anom('rms', fixed_upper_enabled=True), _cfg(),
+                                  pre_buffer_s=60.0))
+    assert (gui._upper_mode, gui._lower_mode) == (hl._upper_mode, hl._lower_mode) == ('0-P', '0-P')
+    assert gui._upper_mode == _seeded('fixed_upper_mode')
+    assert gui._sustain_frames == hl._sustain_frames == 1
+    assert _seeded('fixed_s') == 0.0
+
+
+def test_both_front_ends_pass_the_view_keys():
+    import rev80.gui as gui_module
+    ui = gui_module.ui
+    gui = _flatten(_gui_build('rms', {
+        ui.MON_ANOM_RMS_UNIT: 'g', ui.MON_ANOM_RMS_MODE: 'P-P',
+        ui.MON_ANOM_FIXED_UPPER_ENABLED: True, ui.MON_ANOM_FIXED_UPPER_MODE: 'RMS',
+        ui.MON_ANOM_FIXED_S: 3.0}))
+    hl = _flatten(headless_build(_anom(
+        'rms', rms_unit='g', rms_amplitude_mode='P-P', fixed_upper_enabled=True,
+        fixed_upper_mode='RMS', fixed_s=3.0), _cfg(), pre_buffer_s=60.0))
+    for leaves in (gui, hl):
+        rms = next(h for h in leaves if isinstance(h, RmsThresholdHook))
+        (fixed,) = [h for h in leaves if isinstance(h, FixedThresholdHook)]
+        assert (rms._unit, rms._mode) == ('g', 'P-P')
+        assert fixed._upper_mode == 'RMS'
+        assert fixed._sustain_frames == round(3.0 / _cfg().acquisition_period) + 1
+
+
+def test_frames_for_seconds():
+    from rev80.monitor.anomaly import frames_for_seconds
+    assert frames_for_seconds(0.0, 0.5) == 1
+    assert frames_for_seconds(3.0, 0.5) == 7
+    assert frames_for_seconds(3.0, 0.0) == 1

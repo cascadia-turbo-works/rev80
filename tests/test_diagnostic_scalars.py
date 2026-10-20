@@ -13,6 +13,7 @@ import rev80 as vc
 from rev80 import simulation as sim
 
 from test_measurement_validity import make_collector, make_sample, tone
+from pipeline_helpers import tick, view_of
 
 
 def oracle_cfg():
@@ -29,14 +30,14 @@ def oracle_cfg():
 def test_pure_sine_has_the_textbook_crest_factor():
     """A sine's crest factor is sqrt(2); anything else means a scaling error."""
     dc = make_collector(eu='mm/s2', target_unit='mm/s2', maxfreq=1000, binsize=2.0)
-    r = dc.process_sample(0, make_sample(dc, tone(dc, 217.3, amp=1.0)))
+    r = view_of(dc, 0, make_sample(dc, tone(dc, 217.3, amp=1.0)))
     assert r.crest_factor == pytest.approx(np.sqrt(2), rel=0.02)
 
 
 def test_pure_sine_has_the_textbook_kurtosis():
     """A sine's kurtosis is 1.5 (non-Fisher). Gaussian is 3."""
     dc = make_collector(eu='mm/s2', target_unit='mm/s2', maxfreq=1000, binsize=2.0)
-    r = dc.process_sample(0, make_sample(dc, tone(dc, 217.3, amp=1.0)))
+    r = view_of(dc, 0, make_sample(dc, tone(dc, 217.3, amp=1.0)))
     assert r.kurtosis == pytest.approx(1.5, rel=0.05)
 
 
@@ -44,7 +45,7 @@ def test_gaussian_noise_has_kurtosis_three():
     dc = make_collector(eu='mm/s2', target_unit='mm/s2', maxfreq=1000, binsize=2.0)
     rng = np.random.default_rng(3)
     data = rng.standard_normal(dc.config.blocksize)
-    r = dc.process_sample(0, make_sample(dc, data))
+    r = view_of(dc, 0, make_sample(dc, data))
     assert r.kurtosis == pytest.approx(3.0, abs=0.35)
 
 
@@ -53,7 +54,7 @@ def test_both_scalars_are_amplitude_invariant(amp):
     """Dimensionless by definition -- they must not move with signal level,
     sensor sensitivity or display unit."""
     dc = make_collector(eu='mm/s2', target_unit='mm/s2', maxfreq=1000, binsize=2.0)
-    r = dc.process_sample(0, make_sample(dc, tone(dc, 217.3, amp=amp)))
+    r = view_of(dc, 0, make_sample(dc, tone(dc, 217.3, amp=amp)))
     assert r.crest_factor == pytest.approx(np.sqrt(2), rel=0.02)
     assert r.kurtosis == pytest.approx(1.5, rel=0.05)
 
@@ -64,8 +65,8 @@ def test_scalars_are_invariant_to_sensor_sensitivity():
     b = make_collector(eu='mm/s2', target_unit='mm/s2', maxfreq=1000,
                        binsize=2.0, sensitivity=100.0)
     data = tone(a, 217.3, amp=1.0)
-    ra = a.process_sample(0, make_sample(a, data))
-    rb = b.process_sample(0, make_sample(b, data))
+    ra = view_of(a, 0, make_sample(a, data))
+    rb = view_of(b, 0, make_sample(b, data))
     assert ra.crest_factor == pytest.approx(rb.crest_factor, rel=1e-9)
     assert ra.kurtosis == pytest.approx(rb.kurtosis, rel=1e-9)
 
@@ -87,10 +88,10 @@ def test_scalars_separate_a_bearing_defect_the_overall_hides():
 
         dc = make_collector(eu='mm/s2', target_unit='mm/s2', amp_mode='RMS',
                             maxfreq=10000, binsize=2.0)
-        rh = dc.process_sample(0, make_sample(dc, healthy))
+        rh = view_of(dc, 0, make_sample(dc, healthy))
         dc2 = make_collector(eu='mm/s2', target_unit='mm/s2', amp_mode='RMS',
                              maxfreq=10000, binsize=2.0)
-        rf = dc2.process_sample(0, make_sample(dc2, faulted))
+        rf = view_of(dc2, 0, make_sample(dc2, faulted))
 
         assert rf.kurtosis > rh.kurtosis + 1.0, (
             f'seed {seed}: kurtosis {rh.kurtosis:.2f} -> {rf.kurtosis:.2f}')
@@ -106,7 +107,7 @@ def test_scalars_track_severity_monotonically():
             dc = make_collector(eu='mm/s2', target_unit='mm/s2',
                                 maxfreq=10000, binsize=2.0)
             x = sim.GenerateBearingVibration(cfg, severity=sev, seed=seed)
-            r = dc.process_sample(0, make_sample(dc, x))
+            r = view_of(dc, 0, make_sample(dc, x))
             ks.append(r.kurtosis)
             cs.append(r.crest_factor)
         assert ks[0] < ks[1] < ks[2], f'seed {seed}: kurtosis {ks}'
@@ -120,7 +121,7 @@ def test_scalars_are_computed_on_the_displayed_trace():
     the taper changes the peak values.
     """
     dc = make_collector(eu='mm/s2', target_unit='mm/s', maxfreq=1000, binsize=2.0)
-    r = dc.process_sample(0, make_sample(dc, tone(dc, 217.3, amp=1.0)))
+    r = view_of(dc, 0, make_sample(dc, tone(dc, 217.3, amp=1.0)))
     x = r.time_data
     assert r.crest_factor == pytest.approx(
         float(np.max(np.abs(x)) / np.sqrt(np.mean(x ** 2))), rel=1e-9)
@@ -131,7 +132,7 @@ def test_scalars_are_computed_on_the_displayed_trace():
 def test_degenerate_trace_does_not_raise():
     """An all-zero block divides by zero in both definitions."""
     dc = make_collector(eu='mm/s2', target_unit='mm/s2', maxfreq=1000, binsize=2.0)
-    r = dc.process_sample(0, make_sample(dc, np.zeros(dc.config.blocksize)))
+    r = view_of(dc, 0, make_sample(dc, np.zeros(dc.config.blocksize)))
     assert r is not None
     assert np.isfinite(r.crest_factor)
     assert np.isfinite(r.kurtosis)
@@ -157,7 +158,7 @@ def test_scalars_are_trended():
             'channels': [0], 'data': x[:, None],
             'samplerate': dc.config.samplerate, 'degraded': False,
         })
-        dc.process_samples()
+        tick(dc)
 
     td = dc.trend[0]
     assert len(td['kurtosis']) == 3
@@ -171,7 +172,7 @@ def test_monitor_writer_records_the_scalars():
     from rev80.monitor.writer import _compute_overall_peaks
 
     dc = make_collector(eu='mm/s2', target_unit='mm/s2', maxfreq=1000, binsize=2.0)
-    r = dc.process_sample(0, make_sample(dc, tone(dc, 217.3, amp=1.0)))
+    r = view_of(dc, 0, make_sample(dc, tone(dc, 217.3, amp=1.0)))
     scalars_json = _compute_overall_peaks([r])[3]
     got = json.loads(scalars_json)['0']
     assert got['crest_factor'] == pytest.approx(np.sqrt(2), rel=0.02)

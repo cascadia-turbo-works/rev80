@@ -15,6 +15,7 @@ import pytest
 import rev80 as vc
 from rev80 import simulation as sim
 from rev80 import tach
+from pipeline_helpers import tick
 
 RUNNING_RATE = 29.37
 RPM = RUNNING_RATE * 60.0
@@ -54,7 +55,7 @@ def _saved(tmp_path, frames=3):
     dc = _collector(tmp_path)
     for i in range(frames):
         _feed(dc, seed=5 + i, rel_time=float(i))
-        dc.process_samples()
+        tick(dc)
     path = tmp_path / 'tach.h5'
     dc.save_data(path)
     return dc, path
@@ -178,7 +179,7 @@ def test_a_file_with_no_tach_still_round_trips(tmp_path):
     dc2.load_data(path)
     assert dc2.config.role_for(0) == 'vibration'
     assert dc2.current_rpm() is None
-    assert len(dc2.process_samples()) == 1
+    assert len(tick(dc2)) == 1
 
 
 # --- version handling ----------------------------------------------------

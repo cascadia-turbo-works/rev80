@@ -15,6 +15,7 @@ import pytest
 import rev80 as vc
 from rev80 import simulation as sim
 from rev80.monitor import MonitorController, MonitorSession
+from pipeline_helpers import tick
 
 RUNNING_RATE_HZ = 30.0
 RPM = RUNNING_RATE_HZ * 60.0
@@ -56,7 +57,7 @@ def _session_h5(tmp_path):
             'samplerate': cfg.raw_samplerate, 'overflow_mask': 0,
             'degraded': False,
         })
-        ctrl.on_results(dc.process_samples(), dc.data['frame_cache'])
+        ctrl.on_results(tick(dc), dc.data['frame_cache'])
         time.sleep(0.06)
     ctrl.stop()
     for _ in range(50):

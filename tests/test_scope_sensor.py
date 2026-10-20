@@ -6,6 +6,7 @@ import numpy as np
 import rev80 as vc
 from rev80.scope_sensor import ScopeSensor
 from rev80.scope_sensor_registry import ScopeSensorRegistry
+from pipeline_helpers import view_of
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +167,7 @@ def test_pipeline_scope_sensor_scales_mv_data():
 
     # process_sample applies mV→EU conversion: 50 mV / 10 mV/g = 5 g
     collector.config.channel_target_units[0] = 'g'
-    result = collector.process_sample(0, sample)
+    result = view_of(collector, 0, sample)
     assert result is not None
     assert result.unit == 'g'
 

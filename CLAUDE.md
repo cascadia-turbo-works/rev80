@@ -20,7 +20,7 @@ a bin-centred tone, where the FFT wrap error is zero.
 
 | Document | Holds |
 |---|---|
-| `CONTRIBUTING.md` | Environment, layout, architecture (section 4), Design evidence E1 to E20 (section 5), testing, build, release, documentation rules (section 12) |
+| `CONTRIBUTING.md` | Environment, layout, architecture (section 4), Design evidence E1 to E22 (section 5), testing, build, release, documentation rules (section 12) |
 | `README.md` | User manual: operation, configuration files, data-file layouts, accuracy and limits |
 | `doc/CHANGELOG.md` | What changed and why, with measured before and after |
 | `doc/PROGRESS.md` | Client requirements (R-numbers) and their status |
@@ -75,16 +75,22 @@ chain, stage by stage". The facts that an agent gets wrong most often:
   `DataCollector.receive_data` directly. `VibeSensor._callback` serves
   `SimulatedSensor` only.
 - **`receive_data` keeps the samples in mV.** `VibeSample.unit` is always
-  `'mV'`. The mV-to-EU divide occurs in `process_sample()`. The fixed-mV tach
+  `'mV'`. The mV-to-EU divide occurs in the views (`_view_of_sample()`). The fixed-mV tach
   threshold depends on this.
 - **`receive_data` applies the high-pass**, causal `sosfilt` with the state
   carried from block to block, once for each frame in stream order. There is
-  no zero-phase path. `process_sample()` filters again only for replay or
+  no zero-phase path. The views filter again only for replay or
   after a filter-config change (stateless, seeded from the block mean).
-- **Main thread.** `process_samples()` decimates to the display rate, runs
-  Welch with one segment (`nperseg == blocksize`), integrates, finds peaks and
-  returns one `ChannelResult` for each vibration channel.
-  `MonitorController.on_results()` follows. The acquisition thread never
+- **Main thread.** For each new frame: one `snapshot()`, one
+  `advance_frame(snapshot)` (the only place a trend point is added), then
+  `results_for(snapshot, ...)` / `result_view()`: decimate to the display
+  rate, Welch with one segment (`nperseg == blocksize`), integrate, find
+  peaks, one `ChannelResult` for each vibration channel. Every view in
+  `_display_frame()` uses the same snapshot; the tachometer cards and the
+  Tachometer tab call `current_frame()`. `MonitorController.on_results()`
+  gets the record results, never averaged, and `snapshot.history`, not the
+  live cache, so it stores the waveform of the frame of its results. The
+  acquisition thread never
   touches a widget. `collector.py`, `sample.py`, `picoscope.py` and `monitor/`
   do not import dearpygui.
 - The frame cache is a `deque` of `cache_frames` frames: 32 for an
@@ -162,7 +168,7 @@ pipeline", and README.md, "Tachometer".
   high-pass.** The high-pass overshoot adds edges: 31 become 108 at 15 %
   duty, and 1800 RPM reads 6270 RPM. "E14.1. No high-pass on a tachometer
   channel".
-- **A tachometer channel produces no `ChannelResult`.** `process_samples()`
+- **A tachometer channel produces no `ChannelResult`.** `results_for()`
   iterates `config.vibration_channels`, not `enabled_channels`. Shaft speed
   never goes through `UNIT_TO_SI`, `amplitude_scale` or `integration_steps`.
 - **`rpm` is `None`, never `0.0`,** when there is no reading. "No signal" and
@@ -307,8 +313,15 @@ Read these before you change the code nearby. The status is in
   Tracked as R45.
 - **The first frame of a stream reads about 2x high** on the overall and is
   shown, trended and alarmed on. Tracked as R47.
-- **`DataCollector` has no lock.** The session reprocess thread races the
-  render loop. Tracked as R59 and R50.
+- **`DataCollector` has no lock.** The acquisition thread appends to the
+  cache while the main thread reads it. The session reprocess thread loads
+  its own collector, but it calls dearpygui and the sensor registry from
+  the worker thread. Tracked as R59 and R50.
+- **A loaded session or burst trend reads high near a low band edge.** It is
+  calculated from the stored waveforms with the stateless replay filter:
+  velocity +92 % on average at a 2 Hz edge, 1 Hz bins, 0.6 Hz content. The
+  fix is to store the live mV orders with each capture (plan item E1,
+  R70).
 - **Headless does not close the device on an exception** in its loop.
   Tracked as R52.
 - **A burst can exceed the memory of a small board.** Burst frames stay in

@@ -47,6 +47,11 @@ _CONSTRUCTION_DEFAULTS = {
     ui.MON_ANOM_FIXED_LOWER_ENABLED: False,
     ui.MON_ANOM_FIXED_LOWER_VALUE: 0.05,
     ui.MON_ANOM_FIXED_LOWER_UNIT: 'in/s',
+    ui.MON_ANOM_RMS_UNIT: 'in/s',
+    ui.MON_ANOM_RMS_MODE: '0-P',
+    ui.MON_ANOM_FIXED_UPPER_MODE: '0-P',
+    ui.MON_ANOM_FIXED_LOWER_MODE: '0-P',
+    ui.MON_ANOM_FIXED_S: 0.0,
     ui.MON_ANOM_COOLDOWN_ENABLED: False,
     ui.MON_ANOM_COOLDOWN_S: 300.0,
 }
@@ -80,6 +85,11 @@ _USER_MONITOR = {
         'fixed_lower_enabled': False,
         'fixed_lower_value': 0.05,
         'fixed_lower_unit': 'in/s',
+        'rms_unit': 'g',
+        'rms_amplitude_mode': 'RMS',
+        'fixed_upper_mode': '0-P',
+        'fixed_lower_mode': 'P-P',
+        'fixed_s': 4.0,
     },
 }
 
@@ -228,3 +238,36 @@ def test_fallbacks_agree_with_the_config_seed(tmp_path, monkeypatch):
     assert params['pre_buffer_s'] == float(seed['pre_burst_s'])
     assert params['burst_duration_s'] == float(seed['burst_duration_s'])
     assert params['max_burst_s'] == float(seed['max_burst_s'])
+
+
+def test_hook_views_and_fixed_sustain_come_from_the_config(fake_dpg, user_config):
+    from rev80.monitor.anomaly import FixedThresholdHook
+    user_config['anomaly'].update(fixed_upper_enabled=True)
+    cfg_mod.save_acquisition_config({**cfg_mod.load_acquisition_config(),
+                                     'monitor': user_config})
+    app = _started_app(fake_dpg)
+    assert fake_dpg.store[ui.MON_ANOM_FIXED_LOWER_MODE] == 'P-P'
+    hook = app._build_anomaly_hook(pre_buffer_s=45.0)
+    (rms,) = [h for h in hook._hooks if isinstance(h, RmsThresholdHook)]
+    (fixed,) = [h for h in hook._hooks if isinstance(h, FixedThresholdHook)]
+    assert (rms._unit, rms._mode) == ('g', 'RMS')
+    assert (fixed._upper_mode, fixed._lower_mode) == ('0-P', 'P-P')
+    period = app.collector.config.acquisition_period
+    assert fixed._sustain_frames == round(4.0 / period) + 1
+
+
+def test_an_empty_or_unknown_hook_view_reads_as_the_default(fake_dpg, user_config):
+    """There is no "each channel's own" choice: '' and a bad value give the seed."""
+    user_config['anomaly'].update(rms_unit='', rms_amplitude_mode='furlongs',
+                                  fixed_upper_mode='')
+    cfg_mod.save_acquisition_config({**cfg_mod.load_acquisition_config(),
+                                     'monitor': user_config})
+    _started_app(fake_dpg)
+    assert fake_dpg.store[ui.MON_ANOM_RMS_UNIT] == 'in/s'
+    assert fake_dpg.store[ui.MON_ANOM_RMS_MODE] == '0-P'
+    assert fake_dpg.store[ui.MON_ANOM_FIXED_UPPER_MODE] == '0-P'
+
+
+def test_the_hook_combos_offer_no_channel_choice():
+    assert '' not in gui_module._HOOK_UNITS and 'Channel' not in gui_module._HOOK_UNITS
+    assert gui_module._HOOK_MODES == ('RMS', '0-P', 'P-P')

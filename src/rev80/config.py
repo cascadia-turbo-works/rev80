@@ -112,6 +112,8 @@ _BUILTIN_ACQ: dict[str, Any] = {
             'rms_pct':    50.0,
             'rms_s':      3.0,    # sustained deviation time (s) before firing; 0 = fire on first frame
             'rms_alpha':  0.97,
+            'rms_unit':   'in/s',  # the unit and mode of the overall that the RMS baseline follows
+            'rms_amplitude_mode': '0-P',
             'spec_pct':   50.0,
             'spec_alpha': 0.995,
             'spec_n':     10,
@@ -125,6 +127,9 @@ _BUILTIN_ACQ: dict[str, Any] = {
             'fixed_lower_enabled': False,
             'fixed_lower_value':   0.05,
             'fixed_lower_unit':    'in/s',
+            'fixed_upper_mode':    '0-P',
+            'fixed_lower_mode':    '0-P',
+            'fixed_s':             0.0,    # sustained time (s) beyond a limit; 0 = first frame
         },
     },
 }

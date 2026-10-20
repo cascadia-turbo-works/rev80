@@ -34,7 +34,7 @@ from rev80.scope_sensor import ScopeSensor  # noqa: F401
 from rev80.scope_sensor_registry import ScopeSensorRegistry  # noqa: F401
 from rev80.sensor import VibeSensor  # noqa: F401
 from rev80.simulation import GenerateTone, SimulatedSensor  # noqa: F401
-from rev80.collector import DataCollector  # noqa: F401
+from rev80.collector import DataCollector, FrameSnapshot, FrameViews  # noqa: F401
 try:
     from rev80.gui import GUI  # noqa: F401
 except ModuleNotFoundError:

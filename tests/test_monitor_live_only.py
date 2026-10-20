@@ -30,11 +30,18 @@ class _FakeCollector:
         self.data = {'frame_cache': []}
         self.resets = 0
 
-    def process_samples(self):
+    def snapshot(self):
+        from rev80.collector import FrameSnapshot
+        return FrameSnapshot(frames=(), index=-1, is_live=self.is_streaming)
+
+    def advance_frame(self, snapshot):
+        pass
+
+    def results_for(self, snapshot, unit=None, amplitude_mode=None, n_averages=1):
         return []
 
-    def current_frame(self):
-        return {}
+    def display_n_averages(self):
+        return 1
 
     def reset_data_store(self):
         self.resets += 1

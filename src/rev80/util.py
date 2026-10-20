@@ -120,7 +120,7 @@ EU_OPTIONS: list = [
 #   P-P  = 0-P * 2
 # TODO: add 'PSD' (eu²/Hz) and 'ASD' (eu/√Hz) density modes.  These require
 #   switching scipy.welch to scaling='density' and adjusting the amplitude
-#   pipeline in DataCollector.process_sample() — do not mix spectrum and
+#   pipeline in DataCollector._view_of_sample() — do not mix spectrum and
 #   density normalization in the same AMPLITUDE_SCALE lookup.
 AMPLITUDE_MODES: list = ['RMS', '0-P', 'P-P']
 AMPLITUDE_SCALE: dict = {
@@ -423,6 +423,8 @@ class UI_Elements:
     MON_ANOM_RMS_EWMA_TIME  = 'MON_ANOM_RMS_EWMA_TIME'
     MON_ANOM_RMS_ALPHA_LABEL = 'MON_ANOM_RMS_ALPHA_LABEL'
     MON_ANOM_RMS_WARMUP   = 'MON_ANOM_RMS_WARMUP'
+    MON_ANOM_RMS_UNIT     = 'MON_ANOM_RMS_UNIT'
+    MON_ANOM_RMS_MODE     = 'MON_ANOM_RMS_MODE'
     MON_ANOM_SPEC_GROUP   = 'MON_ANOM_SPEC_GROUP'
     MON_ANOM_SPEC_PCT     = 'MON_ANOM_SPEC_PCT'
     MON_ANOM_SPEC_N       = 'MON_ANOM_SPEC_N'
@@ -438,6 +440,9 @@ class UI_Elements:
     MON_ANOM_FIXED_LOWER_ENABLED = 'MON_ANOM_FIXED_LOWER_ENABLED'
     MON_ANOM_FIXED_LOWER_VALUE   = 'MON_ANOM_FIXED_LOWER_VALUE'
     MON_ANOM_FIXED_LOWER_UNIT    = 'MON_ANOM_FIXED_LOWER_UNIT'
+    MON_ANOM_FIXED_UPPER_MODE    = 'MON_ANOM_FIXED_UPPER_MODE'
+    MON_ANOM_FIXED_LOWER_MODE    = 'MON_ANOM_FIXED_LOWER_MODE'
+    MON_ANOM_FIXED_S             = 'MON_ANOM_FIXED_S'
 
     # Post-burst cooldown gate (Monitor config tab)
     MON_ANOM_COOLDOWN_ENABLED = 'MON_ANOM_COOLDOWN_ENABLED'
@@ -598,6 +603,11 @@ class UI_Elements:
     @staticmethod
     def ch_overflow_warning(ch: int) -> str:
         return f'CH{ch}_OVERFLOW'
+
+    @staticmethod
+    def locked_tip(tag: str) -> str:
+        """Tooltip shown on a control while a recording locks it."""
+        return f'{tag}_LOCKED_TIP'
 
     @staticmethod
     def ch_result_section(ch: int) -> str:

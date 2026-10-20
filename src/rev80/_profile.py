@@ -34,7 +34,7 @@ USB_ANTIALIAS = 'usb.antialias'     # Kaiser FIR + decimate to raw_samplerate
 INGEST_RECV   = 'ingest.receive'    # DataCollector.receive_data (filter, tach, cache)
 
 # Main / render thread
-PROC_TOTAL    = 'proc.total'        # DataCollector.process_samples, all channels
+PROC_TOTAL    = 'proc.total'        # DataCollector.results_for, all channels
 PROC_DECIMATE = 'proc.decimate'     # raw rate → display rate resample
 PROC_PSD      = 'proc.psd'          # Welch + the five integration orders
 PROC_PEAKS    = 'proc.peaks'        # significance-based peak selection

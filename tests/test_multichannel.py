@@ -17,6 +17,7 @@ from rev80 import (
     ChannelResult,
 )
 from rev80.scope_sensor import ScopeSensor
+from pipeline_helpers import view_of
 
 
 # ---------------------------------------------------------------------------
@@ -170,7 +171,7 @@ class TestPerChannelSensorConversion:
         assert sample.unit == 'mV'
         assert np.allclose(sample.data, 100.0)
 
-        result = collector.process_sample(0, sample)
+        result = view_of(collector, 0, sample)
         assert result is not None
         assert result.unit == 'g'
 
@@ -190,8 +191,8 @@ class TestPerChannelSensorConversion:
         assert np.allclose(frame[0].data, 200.0)
         assert np.allclose(frame[1].data, 150.0)
 
-        r0 = collector.process_sample(0, frame[0])
-        r1 = collector.process_sample(1, frame[1])
+        r0 = view_of(collector, 0, frame[0])
+        r1 = view_of(collector, 1, frame[1])
         assert r0 is not None and r0.unit == 'g'
         assert r1 is not None and r1.unit == 'g'
 
@@ -206,7 +207,7 @@ class TestPerChannelSensorConversion:
         # ch1 has no sensor — stays mV
 
         frame = _collect(collector, _make_multichannel_samp(n, [0, 1], value_per_channel={0: 100.0, 1: 55.5}))
-        r1 = collector.process_sample(1, frame[1])
+        r1 = view_of(collector, 1, frame[1])
         assert r1 is not None
         assert r1.unit == 'mV'
 
