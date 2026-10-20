@@ -148,6 +148,25 @@ def _session_file_version() -> int:
     return _FILE_VERSION
 
 
+@dataclasses.dataclass(frozen=True)
+class FrameSnapshot:
+    """The frames of one render tick, and which one is displayed.
+
+    Take one with `DataCollector.snapshot()` for each new frame, and pass it
+    to every view of that tick: the acquisition thread appends to the cache
+    between calls, so a view that reads the cache again can see another
+    frame. The history for averaging comes from `frames`.
+    """
+    frames: tuple       # tuple(cache) at the time of the snapshot
+    index: int          # position of the displayed frame in `frames`; -1 if empty
+    is_live: bool       # streaming (newest frame) or browsing (cursor)
+
+    @property
+    def frame(self) -> dict:
+        """The displayed frame {ch: VibeSample}, or {} if the cache was empty."""
+        return self.frames[self.index] if self.frames else {}
+
+
 class DataCollector:
     """Collect, filter, cache, process and save multi-channel vibration data.
 
@@ -958,7 +977,8 @@ class DataCollector:
         return psd
 
     def process_sample(self, ch: int, sample: 'rev80.VibeSample',
-                       history: 'list | None' = None) -> 'rev80.ChannelResult | None':
+                       history: 'list | None' = None,
+                       snapshot: 'FrameSnapshot | None' = None) -> 'rev80.ChannelResult | None':
         """Filter, compute PSD, 5-order mV overalls, and convert to display units.
 
         Side-effects on sample (cached after first call per config):
@@ -1144,8 +1164,8 @@ class DataCollector:
             time_signal = np.fft.irfft(rfft_tukey, n=N)[keep] * eu_scale
             time_vec    = decimated_time_vec[keep]
 
-        rpm = self.current_rpm()
-        usable_rpm = self.current_rpm(usable_only=True)
+        rpm = self.current_rpm(snapshot)
+        usable_rpm = self.current_rpm(snapshot, usable_only=True)
         return rev80.ChannelResult(
             channel=ch, unit=effective_tgt, overflow=sample.overflow,
             degraded=sample.degraded,
@@ -1167,21 +1187,27 @@ class DataCollector:
             rpm=rpm, speed_ok=self.speed_ok(usable_rpm),
         )
 
-    def current_frame(self) -> dict:
-        """The frame dict {ch: VibeSample} currently displayed/being processed.
-
-        Same selection as `process_samples` (latest frame when streaming, the
-        cursor when browsing); the index logic is a copy. For consumers that
-        need the raw-rate `VibeSample`, such as the Envelope tab.
-        Returns {} if the cache is empty.
+    def snapshot(self) -> FrameSnapshot:
+        """The frame cache now, and the displayed frame: newest when streaming,
+        the cursor when browsing. The one place the displayed frame is chosen.
         """
-        cache = self.data["frame_cache"]
-        if not cache:
-            return {}
-        if not self.is_streaming:
-            self._cache_cursor = min(self._cache_cursor, len(cache) - 1)
-        idx = -1 if self.is_streaming else -1 - self._cache_cursor
-        return cache[idx]
+        frames = tuple(self.data["frame_cache"])
+        live = bool(self.is_streaming)
+        if not frames:
+            return FrameSnapshot(frames=(), index=-1, is_live=live)
+        if not live:
+            # Clamp: the cache can shrink (a load, a resize).
+            self._cache_cursor = min(self._cache_cursor, len(frames) - 1)
+        index = len(frames) - 1 if live else len(frames) - 1 - self._cache_cursor
+        return FrameSnapshot(frames=frames, index=index, is_live=live)
+
+    def current_frame(self) -> dict:
+        """The displayed frame {ch: VibeSample}, {} if the cache is empty.
+
+        A new snapshot each call; inside one render tick use the tick's
+        snapshot instead.
+        """
+        return self.snapshot().frame
 
     @staticmethod
     def _tach_key(samplerate: float, settings: TachSettings) -> tuple:
@@ -1237,18 +1263,19 @@ class DataCollector:
             return False
         return abs(float(rpm) - ref) / ref * 100.0 <= self.config.speed_gate_tolerance_pct
 
-    def current_rpm(self, usable_only: bool = False) -> float | None:
-        """Shaft speed for the frame currently being displayed, or None.
+    def current_rpm(self, snapshot: 'FrameSnapshot | None' = None,
+                    usable_only: bool = False) -> float | None:
+        """Shaft speed of the snapshot's displayed frame, or None.
 
         None means no reading: no tachometer channel, no signal, or too few
         edges. Never 0.0, because "no signal" is not "stopped". With
         `usable_only`, a reading that is not `TachResult.is_usable` also gives
-        None; the speed gate uses this.
+        None; the speed gate uses this. `snapshot` None takes a new one.
         """
         tach_channels = self.config.tach_channels
         if not tach_channels:
             return None
-        frame = self.current_frame()
+        frame = (snapshot if snapshot is not None else self.snapshot()).frame
         for ch in tach_channels:
             sample = frame.get(ch)
             if sample is None:
@@ -1333,14 +1360,10 @@ class DataCollector:
             return self._process_samples()
 
     def _process_samples(self) -> list['rev80.ChannelResult']:
-        cache = self.data["frame_cache"]
-        if not cache:
+        snap = self.snapshot()
+        if not snap.frames:
             return []
-        if not self.is_streaming:
-            # Clamp cursor to valid range when cache size changes (e.g. after loading a session)
-            self._cache_cursor = min(self._cache_cursor, len(cache) - 1)
-        idx   = -1 if self.is_streaming else -1 - self._cache_cursor
-        frame = cache[idx]
+        frame = snap.frame
 
         # Frames before the displayed one, oldest first, for averaging. One
         # rule for live and browse: the N most recent valid frames up to and
@@ -1349,13 +1372,12 @@ class DataCollector:
         history: list = []
         averaging_gap = False
         if self.config.averaging_enabled:
-            stop = len(cache) + idx              # index of the displayed frame
             want = self.config.n_averages_effective
-            history, averaging_gap = self._contiguous_history(cache, stop, want)
+            history, averaging_gap = self._contiguous_history(snap.frames, snap.index, want)
 
         # Record shaft speed for this frame before the vibration channels,
         # so a consumer reading results has current_rpm() already updated.
-        if self.is_streaming:
+        if snap.is_live:
             for tch in self.config.tach_channels:
                 tsample = frame.get(tch)
                 if tsample is None:
@@ -1380,12 +1402,12 @@ class DataCollector:
                 if ch in f and f[ch] is not None
                 and not (f[ch].overflow or f[ch].degraded)
             ]
-            result = self.process_sample(ch, sample, history=ch_history)
+            result = self.process_sample(ch, sample, history=ch_history, snapshot=snap)
             if result is None:
                 continue
             if averaging_gap:
                 result = dataclasses.replace(result, averaging_gap=True)
-            if self.is_streaming:
+            if snap.is_live:
                 # Do not trend a clipped or degraded frame: the trend would show
                 # a step that did not occur on the machine, and an alarm could
                 # follow. The frame is still returned for display, flagged.

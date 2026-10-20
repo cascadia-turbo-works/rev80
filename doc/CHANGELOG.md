@@ -62,6 +62,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   render loop read it. The thread now loads its own collector and the render
   thread swaps the result in (part of R50).
 
+#### Changed
+- **One frame snapshot for each render tick.** `DataCollector.snapshot()`
+  returns a `FrameSnapshot`: the frame cache as a tuple, the index of the
+  displayed frame and whether it is live. It is the one place the displayed
+  frame is chosen. `current_rpm(snapshot)` and the speed gate read the
+  tachometer sample of the snapshot frame. Before, `process_sample()` chose
+  the displayed frame again for the shaft speed, so a frame that the
+  acquisition thread appended between two calls could give a result the
+  shaft speed of another frame.
+
 ## [0.1.4] - 2026-09-30
 
 ### feature/headless-siggen — headless starts the signal generator (2026-09-30)
