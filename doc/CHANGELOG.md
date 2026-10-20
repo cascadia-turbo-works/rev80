@@ -197,8 +197,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   channels)` takes a unit. `process_samples()` and `process_sample()` are
   removed; `_view_of_sample()` holds stage 2. A channel that cannot reach a
   unit gives no view and one warning. Equality: `result_view()` gives the
-  arrays of the old `process_samples()` bit for bit in 16 cases (every unit,
-  three modes, no sensor, averaging N = 4; reference in `tests/reference/`).
+  arrays of the old `process_samples()` in 16 cases (every unit, three
+  modes, no sensor, averaging N = 4; reference in `tests/reference/`). Axes,
+  peak indices and counts are identical; float values agree to 1e-9 of full
+  scale. The old code on another machine differs from the stored reference
+  by up to 1.1e-10 of full scale (FFT rounding), so the test is not bit for
+  bit; a 1e-7 change of the amplitude scale fails all 16 cases.
 - **The monitor gets the record results, never averaged.** With **Average
   spectrum** on, the GUI gave the averaged overall to the anomaly hooks and
   stored it in the session captures. The display still averages.
