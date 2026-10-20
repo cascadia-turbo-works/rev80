@@ -930,6 +930,15 @@ Click **Load Session** to open the session browser.
   session with no compression (605 MB) takes about 3 s to load on a laptop
   (Intel i7-1260P, `SimulatedSensor` frames). A capture
   with no stored waveform shows a gap, not 0.
+
+  > **Caution:** The loaded trend does not always equal the live overall.
+  > The calculation at load cannot use the filter state of the live stream.
+  > Near a low band edge, with signal below the edge, the loaded velocity
+  > and displacement read high: velocity +92 % on average at a 2 Hz edge,
+  > 1 Hz bins and 5 mV at 0.6 Hz. At a 10 Hz edge with 5 Hz bins, the
+  > error is +0.3 % with no signal below the edge and +5.8 % with 5 mV at
+  > 3 Hz. The alarms and the stored `overall_json` use the live value.
+  > Tracked as R67.
 - Click a burst to load its frames. The trend starts at the trigger.
 - **Save Config** writes the current channel names, sensors, units and
   amplitude modes into the session file. Then it reprocesses the trend.

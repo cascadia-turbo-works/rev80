@@ -297,6 +297,11 @@ Read these before you change the code nearby. The status is in
   cache while the main thread reads it. The session reprocess thread loads
   its own collector, but it calls dearpygui and the sensor registry from
   the worker thread. Tracked as R59 and R50.
+- **A loaded session or burst trend reads high near a low band edge.** It is
+  calculated from the stored waveforms with the stateless replay filter:
+  velocity +92 % on average at a 2 Hz edge, 1 Hz bins, 0.6 Hz content. The
+  fix is to store the live mV orders with each capture (plan item E1,
+  R67).
 - **Headless does not close the device on an exception** in its loop.
   Tracked as R52.
 - **A burst can exceed the memory of a small board.** Burst frames stay in
