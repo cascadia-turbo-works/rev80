@@ -480,6 +480,9 @@ class ChannelResult:
     # Dimensionless impulsiveness scalars of `time_data`. Never averaged.
     crest_factor: float = 0.0
     kurtosis:     float = 3.0
+    # Amplitude mode of `spectrum` and `overall` ('RMS', '0-P', 'P-P');
+    # '' = not recorded (test fixtures).
+    amplitude_mode: str = ''
     # Frames averaged into `spectrum` and `overall`; 1 = no averaging.
     n_averages:   int = 1
     # True when a gap in time stopped the averaging walk before N frames:

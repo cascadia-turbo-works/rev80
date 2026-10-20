@@ -167,6 +167,33 @@ class FrameSnapshot:
         return self.frames[self.index] if self.frames else {}
 
 
+class FrameViews:
+    """The `monitor.anomaly.ResultViews` of one snapshot, for the hooks and the writer.
+
+    `record` is `results_for(snapshot)`: each channel's record unit and
+    mode, never averaged. `results(unit, mode)` is the view in `unit` and
+    `mode` (empty: the record one), memoised by the collector for the tick.
+    The hooks apply `valid_results()`; this class does not filter.
+    """
+
+    def __init__(self, collector: 'DataCollector', snapshot: FrameSnapshot,
+                 record: 'list | None' = None):
+        self._collector = collector
+        self._snapshot = snapshot
+        self._record = list(record) if record is not None else None
+
+    @property
+    def record(self) -> list:
+        if self._record is None:
+            self._record = self._collector.results_for(self._snapshot)
+        return self._record
+
+    def results(self, unit: 'str | None', mode: 'str | None') -> list:
+        if not unit and not mode:
+            return self.record
+        return self._collector.results_for(self._snapshot, unit or None, mode or None)
+
+
 class DataCollector:
     """Collect, filter, cache, process and save multi-channel vibration data.
 
@@ -1190,7 +1217,8 @@ class DataCollector:
         else:
             rpm = usable_rpm = None
         return rev80.ChannelResult(
-            channel=ch, unit=effective_tgt, overflow=sample.overflow,
+            channel=ch, unit=effective_tgt, amplitude_mode=amp_mode,
+            overflow=sample.overflow,
             degraded=sample.degraded,
             time_data=time_signal, time_vec=time_vec, samplerate=samplerate,
             freq=freq_hz, spectrum=spectrum_amp, peaks=peak_idx, overall=overall,

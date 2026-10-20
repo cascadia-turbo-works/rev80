@@ -18,9 +18,9 @@ Update this file in the same commit as each step. Status: 🔲 TODO,
 | A4 | Averaging on contiguous frames only | ✅ Done | 1417ccb | session k = 1; live and burst k = N; restart stops the walk; 1.5-period limit; revert check (`test_spectral_averaging.py`) |
 | B0 | Reference results from the old path | ✅ Done | 5413dbf | `tests/reference/result_view_reference.npz`, 16 cases |
 | B1 | `FrameSnapshot`; `current_rpm(snapshot)` | ✅ Done | da8667e | append between calls (`test_frame_snapshot.py`) |
-| B2 | `advance_frame()`, `results_for()`; `process_samples()` removed | ✅ Done | B2+B3 | one trend point per tick; redisplay adds none (`test_frame_views.py`) |
-| B3 | `result_view()`, tick memo, unit-parameterised trend | ✅ Done | B2+B3 | equality bit for bit, 16 cases (`test_result_view_equality.py`); off-bin conversion with revert check (`test_measurement_validity.py`) |
-| C1 | `ResultViews`; RMS hook unit and mode; fixed-limit modes; capture stores the record view | 🔲 TODO | | stored record unit; empty keys bit for bit |
+| B2 | `advance_frame()`, `results_for()`; `process_samples()` removed | ✅ Done | fc655b4 | one trend point per tick; redisplay adds none (`test_frame_views.py`) |
+| B3 | `result_view()`, tick memo, unit-parameterised trend | ✅ Done | fc655b4 | equality bit for bit, 16 cases (`test_result_view_equality.py`); off-bin conversion with revert check (`test_measurement_validity.py`) |
+| C1 | `ResultViews`; RMS hook unit and mode; fixed-limit modes; capture stores the record view | ✅ Done | (this commit) | RMS hook in g fires on an in/s channel; capture stores in/s; 0-P limit on a P-P channel; velocity limit on a g channel; no sensor warns once; empty keys give the record list itself; revert check 4 of 6 fail (`test_hook_views.py`) |
 | C2 | Fixed-limit sustain time `fixed_s` (default 0 s) | 🔲 TODO | | 0 s = one frame |
 | C3 | Monitor-tab controls; both hook builders; headless | 🔲 TODO | | defaults agree; Pi 3 cost |
 | R1 | Docs, vibration-engineer review (A3, A4, B, C), technical-writer audit | 🔲 TODO | | |

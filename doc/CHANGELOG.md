@@ -91,6 +91,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   frame (a settings change sets `new_frame_event`). `advance_frame()` skips
   a frame it already trended.
 
+#### Changed (part C)
+- **Each anomaly hook reads its own view of the frame.** The monitor gives
+  the hooks a `ResultViews` object (`record` and `results(unit, mode)`),
+  not a list. `RmsThresholdHook` takes `unit` and `amplitude_mode`;
+  `FixedThresholdHook` takes `upper_mode` and `lower_mode` beside each unit.
+  An empty unit or mode is the record view, which is the behaviour before.
+  The capture writer stores the record view in the channel unit, whatever
+  the hook unit. A plain list of results is the record view and is not
+  converted.
+
+#### Fixed (part C)
+- **A fixed limit could not use another quantity.** A limit in `in/s` on a
+  channel in `g` was skipped with a warning, and `in/s` against `mm/s` was
+  converted with a factor only. The hook now gets the overall calculated in
+  its own unit and mode from the same frame. A channel with no sensor gives
+  `mV` only and is skipped with one warning.
+
 ## [0.1.4] - 2026-09-30
 
 ### feature/headless-siggen — headless starts the signal generator (2026-09-30)

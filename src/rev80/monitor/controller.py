@@ -3,7 +3,7 @@ from collections import deque
 from datetime import datetime
 
 import rev80
-from rev80.monitor.anomaly import AnomalyEvent, AnomalyHook, NullAnomalyHook
+from rev80.monitor.anomaly import AnomalyEvent, AnomalyHook, NullAnomalyHook, as_views
 from rev80.monitor.gate import IntervalGate
 from rev80.monitor.session import MonitorSession
 from rev80.scope_sensor import ScopeSensor
@@ -240,8 +240,15 @@ class MonitorController:
         except Exception:                                    # noqa: BLE001
             log.debug('resource trail failed', exc_info=True)
 
-    def on_results(self, results: list, frame_cache: deque) -> None:
-        """Handle one frame's record results (`results_for`). Does not block."""
+    def on_results(self, views, frame_cache: deque) -> None:
+        """Handle one frame. Does not block.
+
+        `views` is a `ResultViews` (`collector.FrameViews`), or a list of
+        record results. The capture and the burst store `views.record`, in
+        the unit the channel snapshot names; each hook reads its own view.
+        """
+        views = as_views(views)
+        results = views.record
         if not self._recording or not results:
             return
 
@@ -256,7 +263,7 @@ class MonitorController:
         self._log_resource_trail(now)
 
         if self._in_burst:
-            self._handle_burst_frame(results, frame_cache, now, rel_time)
+            self._handle_burst_frame(views, frame_cache, now, rel_time)
             return
 
         # Skip anomaly detection while a post-burst cooldown is active —
@@ -266,7 +273,7 @@ class MonitorController:
             and now < self._cooldown_until_mono
         )
         if not in_cooldown:
-            event: AnomalyEvent | None = self._anomaly_hook.on_results(results, frame_cache)
+            event: AnomalyEvent | None = self._anomaly_hook.on_results(views, frame_cache)
             if event is not None:
                 # Write trigger frame to interval trend before entering burst
                 self._gate.mark_captured(now)
@@ -452,8 +459,10 @@ class MonitorController:
         if self._session is not None and self._session.cooldown_enabled:
             self._cooldown_until_mono = now + self._session.cooldown_s
 
-    def _handle_burst_frame(self, results: list, frame_cache: deque,
+    def _handle_burst_frame(self, views, frame_cache: deque,
                              now: float, rel_time: float) -> None:
+        views = as_views(views)
+        results = views.record
         latest = dict(frame_cache[-1]) if frame_cache else {}
         self._burst_frames.append(latest)
         self._burst_all_results.append(list(results))
@@ -477,7 +486,7 @@ class MonitorController:
 
         # Keep EWMA adapting during burst but suppress retriggers
         if hasattr(self._anomaly_hook, 'update_baseline'):
-            self._anomaly_hook.update_baseline(results)
+            self._anomaly_hook.update_baseline(views)
 
         if now >= self._burst_end_mono:
             self._flush_burst(results, rel_time)

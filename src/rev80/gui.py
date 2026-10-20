@@ -1350,7 +1350,9 @@ class GUI:
             )
 
         if self._monitor_accepts_frames():
-            self._monitor.on_results(record, self.collector.data["frame_cache"])
+            self._monitor.on_results(
+                rev80.FrameViews(self.collector, snap, record),
+                self.collector.data["frame_cache"])
 
         self._update_trend_plot()
         self._update_browse_label()

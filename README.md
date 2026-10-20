@@ -886,9 +886,12 @@ The fixed-level trigger fires at once when the overall crosses a level. It
 has no baseline and no warm-up. **Upper limit** and **Lower limit** are
 independent.
 
-The level unit must be the same quantity as the channel unit. Rev80 converts
-`in/s` to `mm/s`, but it cannot compare `in/s` with `g`. A channel in `mV` or
-in a different quantity is skipped, and the log records a warning once.
+Rev80 calculates the overall in the level unit, from the same frame. The
+level unit does not have to be the channel unit: a level in `in/s` works on
+a channel that shows `g`. A channel with no sensor gives `mV` only, so a
+level in an engineering unit skips it, and the log records a warning once.
+The level does not change what Rev80 stores: each capture holds the overall
+in the channel unit.
 
 #### Cooldown
 
