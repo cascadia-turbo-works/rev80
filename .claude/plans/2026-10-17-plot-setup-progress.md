@@ -71,7 +71,8 @@ section 5.
 |---|---|---|---|
 | 2026-10-19 | Session trend rebuilt from `overall_json`, accelerometer 100 mV/g, recorded in in/s, shown in in/s / g / mil | synthetic trend, `get_trend_for_display()` (scratchpad `trendcols.py`) | 273.0, 283.9, 278.5 / 0.0 x3 / 0.0 x3: defect, A3 |
 | 2026-10-19 | Session load time and peak memory, 1440 captures, 4 channels, before and after A3 | `SimulatedSensor` frames copied to 1440 captures, i7-1260P (scratchpad `mksession.py`, `loadsession.py`) | 1.7 s, 778 MB before; 5.3 s, 779 MB one call for each frame; 3.0 s, 783 MB with 2-D chunks of 16. CONTRIBUTING.md E22 |
-| | Extra time for the hook views during a recording, 8 channels | Raspberry Pi 3 headless; GUI PC | |
+| 2026-10-20 | Extra time for the hook views during a recording, 8 channels, GUI PC | 4824A at 25591.8 Hz, AWG on A, live stream, i7-1260P (scratchpad `bench_hooks_hw.py`) | RMS hook in the record unit 0.03 ms; in another unit 5.03 ms (p90 5.57); frame advance and record results 14.57 ms. CONTRIBUTING.md E16 |
+| | The same on a Raspberry Pi 3, headless | Pi 3 + 4824A | |
 | 2026-10-20 | GUI time for each frame, 8 channels, before and after D2 | `GUI._display_frame_inner`, `SimulatedSensor` frames, dearpygui context with no viewport, i7-1260P (scratchpad `bench_render.py`) | before 18.2 to 18.7 ms; 3 charts in the record unit 16.0 to 16.6 ms; in another unit 20.2 to 20.7 ms; 6 charts with 2 spectrum charts × 8 channels of cards 23.2 to 23.8 ms (26.0 to 26.3 ms before the pool pushed only changes). CONTRIBUTING.md E19 |
 | 2026-10-20 | The same on hardware | 4824A, 8 channels at 25591.8 Hz, AWG 500 Hz on A, live stream (scratchpad `bench_render_hw.py`) | before 18.1 ms; 3 charts record unit 17.2 ms; other unit 21.2 ms; 6 charts 23.3 ms. `test_picoscope_hw.py` 27 passed |
 

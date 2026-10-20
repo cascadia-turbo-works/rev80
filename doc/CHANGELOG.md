@@ -80,6 +80,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   23.8) for six charts. CONTRIBUTING.md, "E19. GUI render cost".
 - `tests/test_picoscope_hw.py` on a 4824A, AWG loopback on channel A:
   27 passed.
+- RMS hook views, 8 channels, 4824A: 0.03 ms for each frame in the record
+  unit, 5.03 ms in another unit. CONTRIBUTING.md, "E16. Anomaly
+  thresholds".
 
 ### feat/plot-setup — release 0.1.5 work (2026-10-19)
 

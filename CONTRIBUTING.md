@@ -1865,6 +1865,20 @@ time constant of about 200 frames (half-life about 138 frames).
 `ewma_alpha_from_time(tau, dt)` returns exp(-dt / tau); at tau = 30 s and
 dt = 1 s it is 0.967.
 
+**Cost of the hook unit.** Each hook asks for its own view. A hook in the
+record unit and mode reuses the record results (memo of the tick); a hook
+in another unit computes one more view for each channel. Time for
+`update_baseline` and `on_results` of one `RmsThresholdHook` for each
+frame, median of 40 frames (p90). **Measured on:** a 4824A, 8 channels at
+25591.8 Hz, AWG 500 Hz on channel A, F_max 2000 Hz, 2 Hz bins, i7-1260P,
+2026-10-20. Not measured on a Raspberry Pi 3 (R70).
+
+| Hook unit | Time (ms) |
+|---|---|
+| Frame advance and record results (reference) | 14.57 (19.26) |
+| Record unit, g 0-P | 0.03 (0.04) |
+| Another unit, in/s RMS | 5.03 (5.57) |
+
 #### E16.2. Spectral hook statistics
 
 **Decision.** The GUI offers the RMS hook only (`util.GUI_ANOMALY_HOOK_TYPES
