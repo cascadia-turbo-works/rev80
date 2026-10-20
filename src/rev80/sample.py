@@ -394,6 +394,20 @@ class VibeSample:
     # filter-config change.
     filtered_mv: np.ndarray | None      = field(default=None, repr=False)
     _filter_config_key: tuple | None    = field(default=None, repr=False)
+    # True while filtered_mv is the ingestion result (the stateful filter),
+    # and True for the overalls computed from it. Only those overalls are
+    # what the live display showed, so only they are stored with a capture.
+    _filter_from_stream: bool           = field(default=False, repr=False)
+    _orders_from_stream: bool           = field(default=False, repr=False)
+    # The settings that the overalls were computed with
+    # (DataCollector.orders_key). Stored with them: they are valid only for
+    # those settings.
+    _orders_key: tuple | None           = field(default=None, repr=False)
+    # The live 5-order mV overalls read from a data file (`orders_mv`) and
+    # their settings (`orders_key`), or None. While the settings match, a
+    # loaded trend and the loaded frame's view use them, not a replay.
+    stored_orders_mv: np.ndarray | None = field(default=None, repr=False)
+    stored_orders_key: tuple | None     = field(default=None, repr=False)
 
     # filtered_mv decimated to the display rate, for the Spectrum-tab Welch
     # input. Cached: the views run many times on one frame (browse).

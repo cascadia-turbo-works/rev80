@@ -3,7 +3,7 @@
 The loaders rebuilt the trend from `overall_json`, which holds one value in
 the record unit, into one order column. The other four columns stayed 0.0,
 so a session recorded in in/s and shown in g or mil read 0.0 on every
-point. The trend now holds the five mV orders of each stored waveform.
+point. The trend now holds the five live mV orders stored with each frame.
 A frame with no waveform gives NaN, never 0.0. The shaft-speed trend holds
 the usable readings of the stored edge times.
 """
@@ -104,9 +104,8 @@ def test_record_unit_trend_equals_the_stored_overall(session_h5):
     _, values = dc.get_trend_for_display()[0]
     stored = _stored_overalls(session_h5)
     assert len(values) == len(stored) >= 3
-    # The live overall used the stateful high-pass; the reload filters each
-    # frame alone (seeded from the block mean). Measured: 7.4e-5 relative.
-    np.testing.assert_allclose(values, stored, rtol=1e-3)
+    # The trend is the stored live orders, so it equals the stored overall.
+    np.testing.assert_allclose(values, stored, rtol=1e-9)
 
 
 @pytest.mark.parametrize('unit, steps', [('g', 1), ('mil', -1), ('mm/s2', 1)])
@@ -115,7 +114,8 @@ def test_every_unit_shows_a_value_not_zero(session_h5, unit, steps):
     dc.config.channel_target_units[0] = unit
     _, values = dc.get_trend_for_display()[0]
     assert values and all(np.isfinite(v) and v > 0.0 for v in values), values
-    # Each point equals that frame's overall, processed in the new unit.
+    # Each point equals that frame's overall, processed in the new unit: the
+    # trend point and the card of a loaded frame agree.
     frames = list(dc.data['frame_cache'])
     for v, frame in zip(values, frames):
         ref = view_of(dc, 0, frame[0])

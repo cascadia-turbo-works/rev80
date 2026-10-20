@@ -88,6 +88,16 @@ def role_of_sample(sample) -> str:
     return 'tachometer' if getattr(sample, 'tach', None) is not None else 'vibration'
 
 
+def _read_stored_orders(cg) -> tuple:
+    """(orders_mv (5,), orders_key tuple) of a channel group, or (None, None)."""
+    orders = cg.attrs.get("orders_mv", None)
+    key = cg.attrs.get("orders_key", None)
+    if orders is None or key is None or np.shape(orders) != (5,):
+        return None, None
+    return (np.asarray(orders, dtype=np.float64),
+            tuple(float(v) for v in np.asarray(key, dtype=np.float64)))
+
+
 def _stored_waveforms(h5_grp):
     """Yield (ch, data) for each channel group in h5_grp that has a waveform.
 
@@ -136,6 +146,18 @@ def _write_channel_group(h5_grp, ch: int, sample: 'rev80.VibeSample',
         cg.attrs['pulses_per_rev'] = int(getattr(res, 'pulses_per_rev', 1))
     else:
         cg.create_dataset('data', data=np.asarray(sample.data, dtype=np.float64), **kw)
+        # The overalls that the live display showed, from the stateful
+        # high-pass, with the settings that computed them. A replay of the
+        # waveform filters each block alone and differs near a low band edge.
+        # A loaded frame keeps its stored overalls on a save. A frame with
+        # none: a reader calculates them from `data`.
+        if sample._orders_from_stream and sample._orders_key is not None:
+            orders, key = sample.overall_ampl_by_integration_order, sample._orders_key
+        else:
+            orders, key = sample.stored_orders_mv, sample.stored_orders_key
+        if orders is not None and key is not None:
+            cg.attrs['orders_mv'] = np.asarray(orders, dtype=np.float64)
+            cg.attrs['orders_key'] = np.asarray(key, dtype=np.float64)
     cg.attrs['timestamp']  = sample.timestamp
     cg.attrs['rel_time']   = float(sample.rel_time)
     cg.attrs['samplerate'] = float(sample.samplerate)
@@ -587,6 +609,7 @@ class DataCollector:
         filtered = self.filter_block(ch, sample.data, sample.samplerate, stateful=False)
         sample.filtered_mv        = filtered
         sample._filter_config_key = key
+        sample._filter_from_stream = False
         return filtered
 
     @staticmethod
@@ -875,6 +898,7 @@ class DataCollector:
                 label=f"Ch{chr(65 + ch)}",
                 filtered_mv=filtered,
                 _filter_config_key=self._filter_key(samplerate),
+                _filter_from_stream=True,
                 tach=tach_res,
                 _tach_config_key=tach_key,
             )
@@ -966,7 +990,31 @@ class DataCollector:
 
             sample.overall_ampl_by_integration_order[:] = self._overall_orders_mv(
                 decimated_mv, samplerate)
+            sample._orders_from_stream = sample._filter_from_stream
+            sample._orders_key = self.orders_key(sample)
+            if self.stored_orders_valid(sample):
+                # A loaded frame shows the overalls that the live display
+                # showed, the same as its trend point. The spectrum is the
+                # replay: it is not stored.
+                sample.overall_ampl_by_integration_order[:] = sample.stored_orders_mv
             return freq_hz, psd_mv
+
+    def orders_key(self, sample: 'rev80.VibeSample') -> tuple:
+        """The settings that the 5-order overalls of `sample` depend on, as floats.
+
+        High-pass on and edge, bin size, display and raw rate, declared band.
+        Stored overalls are valid only while this key is the same.
+        """
+        cfg = self.config
+        lo, hi = cfg.band
+        return (float(bool(cfg.highpass_enabled)), float(cfg.highpass_fc),
+                float(cfg.binsize), float(cfg.samplerate), float(sample.samplerate),
+                float(lo), float(hi))
+
+    def stored_orders_valid(self, sample: 'rev80.VibeSample') -> bool:
+        """True if `sample` has stored overalls for the settings in effect now."""
+        return (sample.stored_orders_mv is not None
+                and sample.stored_orders_key == self.orders_key(sample))
 
     def _overall_orders_mv(self, decimated_mv: np.ndarray, samplerate: float) -> np.ndarray:
         """The 5-order mV RMS overalls (orders -2 to +2) of display-rate blocks.
@@ -1006,7 +1054,9 @@ class DataCollector:
     def _stored_orders(self, samples: list) -> np.ndarray:
         """The 5-order mV overalls of loaded frames of one channel, (len, 5).
 
-        A row is NaN for a sample that is None or has no waveform. The same
+        A row is the stored live overalls (`stored_orders_mv`) when the file
+        has them. Else it is calculated from the waveform, and NaN for a
+        sample that is None or has no waveform. The calculation uses the same
         stateless filter (seeded from each block's mean) and decimation as
         `_psd_and_overalls_for`, on one 2-D array for each group of equal
         block length and rate, in chunks: one call for each frame cost about
@@ -1017,7 +1067,9 @@ class DataCollector:
         out = np.full((len(samples), 5), np.nan)
         groups: dict[tuple, list[int]] = {}
         for i, sample in enumerate(samples):
-            if sample is not None and sample.blocksize > 1:
+            if sample is not None and self.stored_orders_valid(sample):
+                out[i] = sample.stored_orders_mv          # the live overalls
+            elif sample is not None and sample.blocksize > 1:
                 groups.setdefault((sample.blocksize, float(sample.samplerate)), []).append(i)
         step = self._STORED_ORDERS_CHUNK
         for (_, rate), idx in groups.items():
@@ -1039,8 +1091,9 @@ class DataCollector:
 
         Evidence: CONTRIBUTING.md, "E22. Loaded trends from the stored frames".
 
-        One point for each frame in the cache: the five mV orders from its
-        stored waveform, so every unit and integration order shows a value.
+        One point for each frame in the cache: the five live mV orders stored
+        with the frame, else the five orders of its stored waveform, so every
+        unit and integration order shows a value.
         A frame with no waveform for a channel gets NaN, never 0.0. Overflow
         and degraded frames are not trended, as for a live stream. Crest
         factor and kurtosis are read from the stored `scalars_json`
@@ -1628,6 +1681,7 @@ class DataCollector:
         frame = snapshot.frame
         if not snapshot.is_live or not frame or frame is self._advanced_frame:
             return
+        self._orders_of_skipped_frames(snapshot, self._advanced_frame)
         self._advanced_frame = frame
         for tch in self.config.tach_channels:
             tsample = frame.get(tch)
@@ -1656,6 +1710,25 @@ class DataCollector:
                               sample.overall_ampl_by_integration_order,
                               crest_factor=result.crest_factor,
                               kurtosis=result.kurtosis)
+
+    def _orders_of_skipped_frames(self, snapshot: FrameSnapshot, previous) -> None:
+        """The live overalls of frames that arrived since `previous` and were not shown.
+
+        A render stall shows only the newest frame. The frames before it are
+        still in the cache, and a burst can store them as pre-trigger frames.
+        Their filtered data is still the stream result, so their overalls
+        are the live values. Without this, they are stored with no overalls
+        and a load calculates them with the replay filter.
+        """
+        for j in range(snapshot.index - 1, -1, -1):
+            older = snapshot.frames[j]
+            if older is previous:
+                break
+            for ch in self.config.vibration_channels:
+                sample = older.get(ch)
+                if (sample is not None and sample.blocksize > 1
+                        and sample._filter_from_stream and not sample._orders_from_stream):
+                    self._psd_and_overalls_for(ch, sample)
 
     # ------------------------------------------------------------------
     # Persistence
@@ -2029,10 +2102,12 @@ class DataCollector:
             # Read the validity flags back; files without them read as False.
             overflow = bool(cg.attrs.get("overflow", False))
             degraded = bool(cg.attrs.get("degraded", False))
+            orders, orders_key = _read_stored_orders(cg)
             frame_samples[ch] = rev80.VibeSample(
                 status=status, _timestamp=timestamp, samplerate=samplerate,
                 unit=unit, overflow=overflow, degraded=degraded,
                 data=data, rel_time=rel_time,
+                stored_orders_mv=orders, stored_orders_key=orders_key,
             )
         return frame_samples
 
@@ -2223,6 +2298,9 @@ class DataCollector:
 
         Reads stored raw-mV arrays, computes the record view with the currently
         wired sensor config, and overwrites the overall_json attr on each capture group.
+        The overall comes from the stored live mV orders while their settings
+        match (`stored_orders_valid`): a sensor or unit change acts after mV,
+        so they stay valid.
         Call after saving new sensor/channel config to keep the trend consistent.
         Returns the number of captures processed.
         """
@@ -2252,9 +2330,11 @@ class DataCollector:
                         # stored isoformat string and could raise TypeError
                         # against the naive timestamps read alongside it.
                         ts_dt = _dt.now(_tz.utc).replace(tzinfo=None)
+                    orders, orders_key = _read_stored_orders(grp[str(ch)])
                     sample = VibeSample(
                         status="OK", _timestamp=ts_dt,
                         samplerate=sr, unit="mV", overflow=False, data=data,
+                        stored_orders_mv=orders, stored_orders_key=orders_key,
                     )
                     try:
                         result = self._record_view_of_sample(ch, sample)
@@ -2286,9 +2366,11 @@ class DataCollector:
                             except ValueError:
                                 # See note above: deliberately naive-UTC.
                                 ts_dt = _dt.now(_tz.utc).replace(tzinfo=None)
+                            orders, orders_key = _read_stored_orders(fi_grp[str(ch)])
                             sample = VibeSample(
                                 status="OK", _timestamp=ts_dt,
                                 samplerate=sr, unit="mV", overflow=False, data=data,
+                                stored_orders_mv=orders, stored_orders_key=orders_key,
                             )
                             try:
                                 result = self._record_view_of_sample(ch, sample)

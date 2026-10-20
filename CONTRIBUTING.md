@@ -2237,9 +2237,11 @@ Each scenario is described in the script's docstring.
 
 ### E22. Loaded trends from the stored frames
 
-**Decision.** A session or burst load computes the trend from the stored
-waveforms: the five mV orders of each frame, so the trend shows a value in
-every unit. Stateless high-pass, seeded from each block's mean, then the
+**Decision.** A session or burst load trends the five live mV orders
+stored with each frame (`orders_mv` on the channel group), so the trend
+shows a value in every unit and equals what the live display showed. A
+frame without them is computed from its stored waveform: stateless
+high-pass, seeded from each block's mean, then the
 same decimation and band RMS as a live frame. Each channel's frames are
 processed as one 2-D array, 16 frames at a time. The filtered and
 decimated arrays are not kept on the samples. Measurement files keep their
@@ -2253,10 +2255,28 @@ read 0.0. A session recorded in in/s from a 100 mV/g accelerometer gave
 in/s 273.0, 283.9, 278.5, g 0.0 x 3 and mil 0.0 x 3 (synthetic trend,
 2026-10-19).
 
-**Agreement with the stored overall.** In the record unit the rebuilt trend
-is within 7.4e-5 relative of `overall_json`. The live overall used the
-stateful high-pass; the reload filters each frame alone (`SimulatedSensor`,
-`GenerateMachineWithTach`, 3 captures, 2026-10-19).
+**Why the live orders are stored.** The live overall uses the stateful
+high-pass; a replay filters each frame alone, seeded from its mean. Far
+from the band edge they agree: within 7.4e-5 relative of `overall_json`
+(`GenerateMachineWithTach`, 10 Hz edge, 3 captures, 2026-10-19). Near a low
+edge they do not: at a 2 Hz edge, 1 Hz bins, with off-bin 0.6, 2.7 and
+47.3 Hz content, the replay read the velocity order 21 % low and the
+displacement order 27 % low on one frame
+(`tests/test_session_live_orders.py`, 2026-10-20); another signal read
++92 % on average. With the stored orders the loaded trend equals the live
+orders exactly. Only overalls that came from the stateful filter are
+stored (`VibeSample._orders_from_stream`), with their settings
+(`orders_key`): high-pass on and edge, bin size, display rate, raw rate
+and band. A load uses a stored row only while the key equals
+`orders_key()` of the settings in effect. Without the key, a burst whose
+pre-trigger frames were cached before a high-pass change from 2 Hz to
+10 Hz trended them about 46 times higher than the frames after the
+trigger. The view of a loaded frame uses the same row, so its card equals
+its trend point; before, they differed by -21 % to +22 % on the test
+signal. Reprocess also uses it. `advance_frame()` computes the live
+overalls of frames that a render stall skipped, because a burst can store
+them as pre-trigger frames; before, such a frame read 10 % low in the
+burst trend and 0.0 in `overall_json`.
 
 **Load time and peak memory.** 1440 captures, 4 channels, 0.5 s blocks of
 12800 samples, no compression (605 MB file). Captures copied from 8
@@ -2269,8 +2289,11 @@ stateful high-pass; the reload filters each frame alone (`SimulatedSensor`,
 | One 2-D array, 16 frames | 3.0 s | 783 MB |
 | One 2-D array, 64 frames | 3.2 s | 799 MB |
 | One 2-D array, 256 frames | 3.3 s | 859 MB |
+| Stored live orders (`orders_mv`), 2026-10-20 | 1.7 to 1.85 s | 786 MB |
+| The same file without `orders_mv`, 2026-10-20 | 3.3 s | 786 MB |
 
-Reading the file takes about 1.7 s of each load. One call for each frame
+Reading the file takes about 1.7 s of each load. With the stored orders a
+load is the file read only. One call for each frame
 spent about 1 ms in each channel-frame, mostly call overhead: the FIR
 design in `resample_poly` (0.80 s), `sosfilt_zi` (0.98 s) and the Hann
 window (0.42 s) were computed again for each call (cProfile).

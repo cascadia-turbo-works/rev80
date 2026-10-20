@@ -1451,7 +1451,8 @@ by default in `~/Documents/Rev80/data/`. The file is not compressed.
                                     tach_* (tachometer channels only)
 /frames/{i}.attrs                   timestamp, rel_time, samplerate, status
 /frames/{i}/{ch}.attrs              timestamp, rel_time, samplerate, status,
-                                    overflow, degraded
+                                    overflow, degraded, orders_mv,
+                                    orders_key
 /frames/{i}/{ch}/data               (N,) float64, mV        vibration channels
 /frames/{i}/{ch}/edge_times         (E,) float64, s from block start
 /frames/{i}/{ch}/pulse_widths       (P,) float64, s          tachometer channels
@@ -1496,6 +1497,18 @@ Monitor Mode writes `{output}/{session_id}/session.h5`. The `session_id` is
 
 `rpm` is `NaN` when there is no reading. Rev80 opens a file up to the
 version that it writes (6 for measurements, 7 for sessions).
+
+`orders_mv` is on a vibration channel group of a frame that the live
+display processed: the five overalls in mV RMS, integration orders −2 to
++2, from the live high-pass. `orders_key` holds the settings that computed
+them: high-pass on and edge, bin size, display rate, raw rate and the
+declared band. When you load a file, Rev80 uses these values for the trend
+and for the overall of each frame while the settings are the same, so the
+loaded trend and the cards show what the live display showed. A save of a
+loaded file keeps them. A frame without them, or with other settings (for
+example a pre-trigger frame from before a band change), is calculated
+again from its waveform. That replay filters each frame alone and can
+differ near a low band edge.
 
 `rev80_version` is the Rev80 version that wrote the file.
 `chart_layout_json` is the chart layout as JSON, in the form of

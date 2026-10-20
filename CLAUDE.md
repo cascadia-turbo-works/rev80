@@ -244,6 +244,16 @@ The evidence is in CONTRIBUTING.md, "E21. Device loss".
   `save_data()` and `MonitorWriterThread`. Pass `role=role_of_sample(sample)`
   at every call: the parameter defaults to `'vibration'`, which stores a
   tachometer's whole waveform.
+- **A vibration channel group stores the live overalls** (`orders_mv`, the
+  five mV orders) and the settings that computed them (`orders_key`,
+  `DataCollector.orders_key()`), when they came from the stateful
+  high-pass (`VibeSample._orders_from_stream`). A load uses them only
+  while `stored_orders_valid()`: for the trend, the view of the loaded
+  frame (so its card equals its trend point) and Reprocess. Frames cached
+  before a settings change keep their old key and get the replay. Never
+  store or trend replay overalls in their place. `advance_frame()` gives
+  the frames that a render stall skipped their live overalls, because a
+  burst can store them. "E22. Loaded trends from the stored frames".
 - `DataCollector._FILE_VERSION` = 6 (measurement files);
   `monitor.writer._FILE_VERSION` = 7 (`session.h5`). Each loader checks its
   own limit (`_restore_metadata(f, max_version=...)`).
@@ -328,11 +338,6 @@ Read these before you change the code nearby. The status is in
   cache while the main thread reads it. The session reprocess thread loads
   its own collector, but it calls dearpygui and the sensor registry from
   the worker thread. Tracked as R59 and R50.
-- **A loaded session or burst trend reads high near a low band edge.** It is
-  calculated from the stored waveforms with the stateless replay filter:
-  velocity +92 % on average at a 2 Hz edge, 1 Hz bins, 0.6 Hz content. The
-  fix is to store the live mV orders with each capture (plan item E1,
-  R70).
 - **Headless does not close the device on an exception** in its loop.
   Tracked as R52.
 - **A burst can exceed the memory of a small board.** Burst frames stay in

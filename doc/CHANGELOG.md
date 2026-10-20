@@ -62,6 +62,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   drops the edits, so the layout of one data source never reaches another
   or `charts.yaml`. The last chart cannot be removed.
 
+#### Fixed
+- **A loaded session or burst trend equals the live overall.** Each
+  stored capture and burst frame holds the five live mV orders of each
+  vibration channel (`orders_mv`, from the stateful high-pass), and a load
+  trends them. Before, the load calculated them again from the waveform
+  with the stateless replay filter, which differs near a low band edge:
+  at a 2 Hz edge, 1 Hz bins and off-bin 0.6 Hz content the velocity order
+  read 21 % low on one frame, and +92 % on average with another signal.
+  Now the loaded trend equals the live orders for every order. A frame
+  without stored orders is still calculated from its waveform. A
+  1440-capture session loads in 1.7 to 1.85 s against 3.3 s (i7-1260P).
+- **Review fixes before the commit (vibration-engineer).** The stored
+  overalls carry their settings (`orders_key`) and are used only while the
+  settings match: pre-trigger frames cached before a high-pass change no
+  longer step the burst trend about 46 times at the trigger. The card of a
+  loaded frame now equals its trend point (they differed by -21 % to
+  +22 %), and Reprocess keeps the live overall. A frame that a render
+  stall skipped gets its live overalls, so a burst no longer stores it
+  with none (10 % low in the trend, 0.0 in `overall_json`). A save of a
+  loaded file keeps the stored overalls.
+
 #### Changed
 - **Envelope and averaging belong to the charts.** The Acquisition-tab
   controls "Average spectrum", "Averages", "Avg. Window" and
