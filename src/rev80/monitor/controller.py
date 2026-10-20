@@ -18,8 +18,9 @@ class MonitorController:
     Lifecycle: start(session, anomaly_hook) / stop(). The hook given to
     start() is active for the whole session; there is no arm step.
 
-    Call ``on_results(results, frame_cache)`` once for each new frame, with
-    the record results of the tick's snapshot (``collector.results_for``),
+    Call ``on_results(views, frame_cache)`` once for each new frame, with
+    the views of the tick's snapshot (``collector.FrameViews``) or a list of
+    record results (``collector.results_for``),
     from the same thread (the GUI render loop or the headless loop).
     """
 
@@ -252,8 +253,9 @@ class MonitorController:
         if not self._recording or not results:
             return
 
-        # For trigger_burst(): the cache, the frame these results belong to,
-        # and the results themselves.
+        # For trigger_burst(): the cache, its newest frame, and the results.
+        # The newest frame is not always the frame of the results: a frame
+        # can arrive after the caller's snapshot.
         self._last_frame_cache = frame_cache
         self._last_frame       = frame_cache[-1] if frame_cache else None
         self._last_results     = list(results)

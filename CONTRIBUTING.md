@@ -250,10 +250,18 @@ DataCollector.receive_data()
   results, the display results, the shaft speed, the Envelope tab's raw
   `VibeSample` (`snap.frame`). The acquisition thread appends between calls,
   so a view that reads the cache again can see another frame.
+- Three readers do not use the tick's snapshot. The tachometer result cards
+  and the Tachometer tab call `current_frame()`, which takes a new snapshot.
+  `MonitorController.on_results()` gets the live cache and stores the
+  waveform of `frame_cache[-1]` with the record results of `snap.frame`.
+  When a frame arrives between `snapshot()` and `on_results()`, the stored
+  waveform and the stored overall come from different frames.
 - **Frame side effects are only in `advance_frame(snapshot)`**: one trend
   point and one RPM point for each new live frame, none for a browsed frame
   or a redisplay. `result_view()` and `results_for()` have no side effects
-  except the stage-1 cache, and are memoised for the tick.
+  except the stage-1 cache and the latch of the speed-gate reference
+  (`speed_ok()`, when `speed_gate_rpm` is not set). They are memoised for
+  the tick.
 - The record results (the channel's target unit and mode, never averaged)
   go to the monitor. The display uses the configured averaging
   (`display_n_averages()`).
@@ -407,8 +415,11 @@ in the vibration path gives a plausible wrong result, not an error. Thus:
 ### 4.6 Monitor Mode internals
 
 `MonitorController.on_results()` runs on the main thread once for each new
-frame, with the record results of the tick's snapshot. `IntervalGate` decides if a frame is an interval
-capture. The anomaly hook decides if a burst starts. A burst keeps the
+frame, with the views of the tick's snapshot (`collector.FrameViews`, a
+`monitor.anomaly.ResultViews`). The captures store `views.record`, the
+record results. Each hook reads its own view with `views.results(unit,
+mode)`; a plain list is the record view only (`as_views()`). `IntervalGate`
+decides if a frame is an interval capture. The anomaly hook decides if a burst starts. A burst keeps the
 pre-trigger frames from the frame cache, the trigger frame, and the frames
 that follow. `MonitorWriterThread` writes all of it to one `session.h5`.
 
@@ -2029,10 +2040,11 @@ condition.
 sets `ChannelResult.speed_ok`. It fails closed: no reading, or a reading
 that is not `TachResult.is_usable` (E14.6), gives False.
 `monitor.anomaly.valid_results()` applies it, with the `overflow` and
-`degraded` flags, and it is the only place that does. Every hook
-(`RmsThresholdHook`, `SpectralThresholdHook`, `FixedThresholdHook`,
-`CompositeAnomalyHook`) calls it in `on_results`, and the two EWMA hooks
-also call it in `update_baseline`.
+`degraded` flags, and it is the only place that does. Each hook
+(`RmsThresholdHook`, `SpectralThresholdHook`, `FixedThresholdHook`) calls
+it in `on_results` on the view that it reads, and the two EWMA hooks also
+call it in `update_baseline`. `CompositeAnomalyHook` does not filter; its
+child hooks do.
 
 **Rejected alternative.** A speed-gate parameter on each hook. That needs a
 change in `_build_anomaly_hook`, which is still copied in `gui.py` and
@@ -2051,8 +2063,9 @@ every unit. Stateless high-pass, seeded from each block's mean, then the
 same decimation and band RMS as a live frame. Each channel's frames are
 processed as one 2-D array, 16 frames at a time. The filtered and
 decimated arrays are not kept on the samples. Measurement files keep their
-stored `/trend` and `/tach_trend`: those hold up to 500 points, and the
-file holds 32 frames at most.
+stored `/trend` and `/tach_trend`: those hold up to 500 points
+(`trend_max_points`), and the file holds only `cache_frames` frames (15
+from a seeded `acquisition.yaml`, 512 at most from the widget).
 
 **Why.** `overall_json` holds one value for each channel, in the record
 unit and mode. A trend built from it has one order column; the other four

@@ -1447,9 +1447,10 @@ class DataCollector:
 
         None for `unit` or `amplitude_mode` is the record view
         (`default_view_of`). Averaging: power average over the contiguous
-        valid frames among the `n_averages` most recent. No side effects
-        except the stage-1 cache. Memoised for the tick. Returns None for a
-        channel that is not in the frame or cannot reach `unit`.
+        valid frames among the `n_averages` most recent. Side effects: the
+        stage-1 cache and the speed-gate latch (`speed_ok`). Memoised for
+        the tick. None for a channel not in the frame or that cannot reach
+        `unit`.
         """
         sample = snapshot.frame.get(ch)
         if sample is None or sample.blocksize <= 1:
@@ -1495,7 +1496,7 @@ class DataCollector:
     def results_for(self, snapshot: FrameSnapshot, unit: 'str | None' = None,
                     amplitude_mode: 'str | None' = None,
                     n_averages: int = 1) -> list['rev80.ChannelResult']:
-        """One `ChannelResult` for each vibration channel of the snapshot. No side effects.
+        """One `ChannelResult` for each vibration channel of the snapshot (`result_view`).
 
         Tachometer channels get no ChannelResult: a pulse train gives
         kurtosis 15.94 through this path.

@@ -11,6 +11,57 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### feat/plot-setup — release 0.1.5 work (2026-10-19)
 
+#### Added
+- **Fixed-limit sustain.** `FixedThresholdHook(sustain_frames=N)` fires
+  after N consecutive valid frames beyond a limit; the trigger time is the
+  first frame of the streak. A frame that `valid_results()` drops, a frame
+  inside the limit and a burst frame end the streak. N = 1 is the behaviour
+  before.
+- **Monitor-tab controls and settings for the hook views.** The RMS section
+  has **Unit** and **Amplitude** combos (`rms_unit`, `rms_amplitude_mode`).
+  Each fixed limit has a mode combo beside its unit (`fixed_upper_mode`,
+  `fixed_lower_mode`), and the fixed level has **Sustained (s)**
+  (`fixed_s`, default 0 s). `''`, shown as **Channel**, is each channel's
+  own unit or mode. Both hook builders (GUI and headless) read the keys;
+  `frames_for_seconds()` converts `rms_s` and `fixed_s` to frames for both.
+  The headless start summary shows the RMS view and a `Fixed` line.
+  Cost on the PC (i7-1260P, 8 channels, 0.5 s frames, rate 25591.8 Hz): the
+  record view takes 12.5 ms per frame; an RMS view in `g` and a fixed limit
+  in 0-P add 4.5 ms, 0.9 % of one core. Not measured on a Raspberry Pi 3.
+
+#### Changed
+- **One frame snapshot for each render tick.** `DataCollector.snapshot()`
+  returns a `FrameSnapshot`: the frame cache as a tuple, the index of the
+  displayed frame and whether it is live. It is the one place the displayed
+  frame is chosen. `current_rpm(snapshot)` and the speed gate read the
+  tachometer sample of the snapshot frame. Before, `process_sample()` chose
+  the displayed frame again for the shaft speed, so a frame that the
+  acquisition thread appended between two calls could give a result the
+  shaft speed of another frame.
+- **Frame side effects split from the views.** `advance_frame(snapshot)`
+  adds the trend point and the RPM point, once for each new live frame.
+  `results_for(snapshot, unit, mode, n_averages)` and
+  `result_view(snapshot, ch, unit, mode, n_averages, peaks)` have no side
+  effects except the stage-1 cache and the speed-gate latch, and are
+  memoised for the tick, so the GUI and headless can ask for
+  more than one view of a frame. `get_trend_for_display(unit, mode,
+  channels)` takes a unit. `process_samples()` and `process_sample()` are
+  removed; `_view_of_sample()` holds stage 2. A channel that cannot reach a
+  unit gives no view and one warning. Equality: `result_view()` gives the
+  arrays of the old `process_samples()` bit for bit in 16 cases (every unit,
+  three modes, no sensor, averaging N = 4; reference in `tests/reference/`).
+- **The monitor gets the record results, never averaged.** With **Average
+  spectrum** on, the GUI gave the averaged overall to the anomaly hooks and
+  stored it in the session captures. The display still averages.
+- **Each anomaly hook reads its own view of the frame.** The monitor gives
+  the hooks a `ResultViews` object (`record` and `results(unit, mode)`),
+  not a list. `RmsThresholdHook` takes `unit` and `amplitude_mode`;
+  `FixedThresholdHook` takes `upper_mode` and `lower_mode` beside each unit.
+  An empty unit or mode is the record view, which is the behaviour before.
+  The capture writer stores the record view in the channel unit, whatever
+  the hook unit. A plain list of results is the record view and is not
+  converted.
+
 #### Fixed
 - **A locked control looked enabled.** `_set_recording_lock()` disabled the
   controls, but no theme had a component for the disabled state, so a
@@ -61,70 +112,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **The session reprocess thread changed the collector on screen** while the
   render loop read it. The thread now loads its own collector and the render
   thread swaps the result in (part of R50).
-
-#### Changed
-- **One frame snapshot for each render tick.** `DataCollector.snapshot()`
-  returns a `FrameSnapshot`: the frame cache as a tuple, the index of the
-  displayed frame and whether it is live. It is the one place the displayed
-  frame is chosen. `current_rpm(snapshot)` and the speed gate read the
-  tachometer sample of the snapshot frame. Before, `process_sample()` chose
-  the displayed frame again for the shaft speed, so a frame that the
-  acquisition thread appended between two calls could give a result the
-  shaft speed of another frame.
-- **Frame side effects split from the views.** `advance_frame(snapshot)`
-  adds the trend point and the RPM point, once for each new live frame.
-  `results_for(snapshot, unit, mode, n_averages)` and
-  `result_view(snapshot, ch, unit, mode, n_averages, peaks)` have no side
-  effects and are memoised for the tick, so the GUI and headless can ask for
-  more than one view of a frame. `get_trend_for_display(unit, mode,
-  channels)` takes a unit. `process_samples()` and `process_sample()` are
-  removed; `_view_of_sample()` holds stage 2. A channel that cannot reach a
-  unit gives no view and one warning. Equality: `result_view()` gives the
-  arrays of the old `process_samples()` bit for bit in 16 cases (every unit,
-  three modes, no sensor, averaging N = 4; reference in `tests/reference/`).
-- **The monitor gets the record results, never averaged.** With **Average
-  spectrum** on, the GUI gave the averaged overall to the anomaly hooks and
-  stored it in the session captures. The display still averages.
-
-#### Fixed (part B)
 - **A redisplay while streaming added a second trend point** for the same
   frame (a settings change sets `new_frame_event`). `advance_frame()` skips
   a frame it already trended.
-
-#### Changed (part C)
-- **Each anomaly hook reads its own view of the frame.** The monitor gives
-  the hooks a `ResultViews` object (`record` and `results(unit, mode)`),
-  not a list. `RmsThresholdHook` takes `unit` and `amplitude_mode`;
-  `FixedThresholdHook` takes `upper_mode` and `lower_mode` beside each unit.
-  An empty unit or mode is the record view, which is the behaviour before.
-  The capture writer stores the record view in the channel unit, whatever
-  the hook unit. A plain list of results is the record view and is not
-  converted.
-
-#### Fixed (part C)
 - **A fixed limit could not use another quantity.** A limit in `in/s` on a
   channel in `g` was skipped with a warning, and `in/s` against `mm/s` was
   converted with a factor only. The hook now gets the overall calculated in
   its own unit and mode from the same frame. A channel with no sensor gives
   `mV` only and is skipped with one warning.
 
-#### Added (part C)
-- **Fixed-limit sustain.** `FixedThresholdHook(sustain_frames=N)` fires
-  after N consecutive valid frames beyond a limit; the trigger time is the
-  first frame of the streak. A frame that `valid_results()` drops, a frame
-  inside the limit and a burst frame end the streak. N = 1 is the behaviour
-  before.
-- **Monitor-tab controls and settings for the hook views.** The RMS section
-  has **Unit** and **Amplitude** combos (`rms_unit`, `rms_amplitude_mode`).
-  Each fixed limit has a mode combo beside its unit (`fixed_upper_mode`,
-  `fixed_lower_mode`), and the fixed level has **Sustained (s)**
-  (`fixed_s`, default 0 s). `''`, shown as **Channel**, is each channel's
-  own unit or mode. Both hook builders (GUI and headless) read the keys;
-  `frames_for_seconds()` converts `rms_s` and `fixed_s` to frames for both.
-  The headless start summary shows the RMS view and a `Fixed` line.
-  Cost on the PC (i7-1260P, 8 channels, 0.5 s frames, rate 25591.8 Hz): the
-  record view takes 12.5 ms per frame; an RMS view in `g` and a fixed limit
-  in 0-P add 4.5 ms, 0.9 % of one core. Not measured on a Raspberry Pi 3.
+#### Notes for the next person
+- **Not every reader uses the tick's snapshot.** The tachometer result
+  cards and the Tachometer tab call `current_frame()`, which takes a new
+  snapshot. `MonitorController.on_results()` gets the live frame cache and
+  stores the waveform of `frame_cache[-1]` beside the record results of
+  `snap.frame`. A frame that arrives between the two calls makes the stored
+  waveform and the stored overall come from different frames. This was
+  also true before this branch.
+- **The session reprocess thread still calls dearpygui** (the button label)
+  and adds sensors to the sensor registry from the worker thread (R50,
+  R59).
+- `result_view()` latches the speed-gate reference through `speed_ok()`
+  when `speed_gate_rpm` is not set. The first reading that a view sees is
+  the reference.
 
 ## [0.1.4] - 2026-09-30
 

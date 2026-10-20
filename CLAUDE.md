@@ -20,7 +20,7 @@ a bin-centred tone, where the FFT wrap error is zero.
 
 | Document | Holds |
 |---|---|
-| `CONTRIBUTING.md` | Environment, layout, architecture (section 4), Design evidence E1 to E20 (section 5), testing, build, release, documentation rules (section 12) |
+| `CONTRIBUTING.md` | Environment, layout, architecture (section 4), Design evidence E1 to E21 (section 5), testing, build, release, documentation rules (section 12) |
 | `README.md` | User manual: operation, configuration files, data-file layouts, accuracy and limits |
 | `doc/CHANGELOG.md` | What changed and why, with measured before and after |
 | `doc/PROGRESS.md` | Client requirements (R-numbers) and their status |
@@ -85,9 +85,11 @@ chain, stage by stage". The facts that an agent gets wrong most often:
   `advance_frame(snapshot)` (the only place a trend point is added), then
   `results_for(snapshot, ...)` / `result_view()`: decimate to the display
   rate, Welch with one segment (`nperseg == blocksize`), integrate, find
-  peaks, one `ChannelResult` for each vibration channel. Every view of the
-  tick uses the same snapshot. `MonitorController.on_results()` gets the
-  record results, never averaged. The acquisition thread never
+  peaks, one `ChannelResult` for each vibration channel. Every view in
+  `_display_frame()` uses the same snapshot; the tachometer cards and the
+  Tachometer tab call `current_frame()`. `MonitorController.on_results()`
+  gets the record results, never averaged, and stores the waveform of the
+  live `frame_cache[-1]`. The acquisition thread never
   touches a widget. `collector.py`, `sample.py`, `picoscope.py` and `monitor/`
   do not import dearpygui.
 - The frame cache is a `deque` of `cache_frames` frames: 32 for an
@@ -290,8 +292,14 @@ Read these before you change the code nearby. The status is in
   Tracked as R45.
 - **The first frame of a stream reads about 2x high** on the overall and is
   shown, trended and alarmed on. Tracked as R47.
-- **`DataCollector` has no lock.** The session reprocess thread races the
-  render loop. Tracked as R59 and R50.
+- **`DataCollector` has no lock.** The acquisition thread appends to the
+  cache while the main thread reads it. The session reprocess thread loads
+  its own collector, but it calls dearpygui and the sensor registry from
+  the worker thread. Tracked as R59 and R50.
+- **The monitor can store a waveform and an overall of different frames.**
+  It gets `snap.frame`'s results and the live cache, and stores
+  `frame_cache[-1]`. A frame that arrives between `snapshot()` and
+  `on_results()` causes the mismatch.
 - **Headless does not close the device on an exception** in its loop.
   Tracked as R52.
 - **A burst can exceed the memory of a small board.** Burst frames stay in
