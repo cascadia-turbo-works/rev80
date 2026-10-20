@@ -6,6 +6,7 @@ Config directory layout:
 
   acquisition.yaml             — acquisition + monitor settings (per software instance)
   scope_sensors.yaml           — global IEPE sensor registry (all devices)
+  charts.yaml                  — chart layout for live data (rev80.charts)
   devices/
     picoscope-defaults.yaml    — per-channel prototype applied to new devices
     picoscope-<model>-<SN>.yaml — per-device channels + siggen config
@@ -262,6 +263,57 @@ def save_acquisition_config(data: dict[str, Any]) -> None:
     path = acquisition_config_path()
     _atomic_yaml_write(path, data)
     log.debug('Saved acquisition config to %s', path)
+
+
+#: acquisition.yaml keys from before the Charts tab. Each chart now holds
+#: its own averaging, and an envelope chart replaces "Envelope analysis".
+LEGACY_CHART_KEYS = ('averaging_enabled', 'n_averages', 'envelope_enabled')
+
+
+def migrate_chart_settings(default_layout, envelope_unit: str):
+    """Move the pre-Charts-tab settings of acquisition.yaml to charts.yaml, once.
+
+    `default_layout()` gives the default layout of the device's channels;
+    `envelope_unit` is the sensor EU of its first vibration channel. Call it
+    after the device channels are restored, and before anything saves the
+    acquisition block. Returns the new layout, or None when no layout was
+    written.
+
+    "Envelope analysis" on adds an envelope chart; "Average spectrum" on sets
+    the averaging of the spectrum (`charts.legacy_layout`). An existing
+    charts.yaml is not changed. With both off, no charts.yaml is written, so
+    the default layout keeps following the channels. The keys are then
+    removed from acquisition.yaml, so the move runs once.
+    """
+    from rev80 import charts
+    path = acquisition_config_path()
+    if not path.exists():
+        return None
+    try:
+        with open(path) as f:
+            raw = yaml.safe_load(f) or {}
+    except (OSError, yaml.YAMLError, UnicodeDecodeError):
+        return None                                  # load_acquisition_config logs it
+    acq = raw.get('acquisition') if isinstance(raw, dict) else None
+    if not isinstance(acq, dict):
+        return None
+    legacy = {k: acq[k] for k in LEGACY_CHART_KEYS if k in acq}
+    if not legacy:
+        return None
+    envelope = bool(legacy.get('envelope_enabled', False))
+    averaging = bool(legacy.get('averaging_enabled', False))
+    layout = None
+    if (envelope or averaging) and not charts_config_path().exists():
+        layout = charts.legacy_layout(
+            default_layout(), envelope_enabled=envelope, envelope_unit=envelope_unit,
+            averaging_enabled=averaging,
+            n_averages=int(legacy.get('n_averages', charts.DEFAULT_N_AVERAGES)))
+        charts.save_chart_set(charts_config_path(), layout)
+        log.info('Chart settings moved from %s to %s', path, charts_config_path())
+    for k in legacy:
+        del acq[k]
+    _atomic_yaml_write(path, raw)
+    return layout
 
 
 # ---------------------------------------------------------------------------

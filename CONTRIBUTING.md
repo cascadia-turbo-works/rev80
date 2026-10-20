@@ -277,9 +277,12 @@ DataCollector.receive_data()
   tab's plot visible only after it draws it. The memo of the tick makes a
   view that two charts share cost one computation.
 - The layout in effect is `DataCollector.chart_layout()`: `chart_set`, else
-  the default (`charts.default_layout()`) passed through
-  `charts.legacy_layout()`, which adds the "Envelope analysis" and
-  "Average spectrum" settings. A file load sets `chart_set` from the file
+  `default_chart_layout()` (`charts.default_layout()` of the vibration
+  channels). A spectrum chart averages `n_averages_for(spec)` frames. The
+  0.x keys `envelope_enabled`, `averaging_enabled` and `n_averages` are not
+  settings now: `config.migrate_chart_settings()` moves them from
+  `acquisition.yaml` to `charts.yaml` once, at a GUI connect after the
+  device channels are restored (`charts.legacy_layout()`). A file load sets `chart_set` from the file
   (default layout if the file has none). A live collector
   (`GUI._build_live_collector`, and the first collector at startup) takes
   `charts.yaml`, else `None`. A collector swap does not carry the layout

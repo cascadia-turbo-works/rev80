@@ -40,9 +40,6 @@ class _FakeCollector:
     def results_for(self, snapshot, unit=None, amplitude_mode=None, n_averages=1):
         return []
 
-    def display_n_averages(self):
-        return 1
-
     def reset_data_store(self):
         self.resets += 1
 

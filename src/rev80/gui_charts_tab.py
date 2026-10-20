@@ -322,6 +322,15 @@ class ChartsTab:
                 dpg.add_checkbox(label="Average", default_value=spec.averaging,
                                  tag=ui.charts_row(cid, 'avg'),
                                  callback=lambda s, a: self.set_averaging(cid, a))
+                self.host._tooltip(
+                    ui.charts_row(cid, 'avg'),
+                    "Average the spectrum over N successive valid frames, in the power "
+                    "domain. A single frame has a scatter in each bin equal to its "
+                    "mean; N frames cut it by sqrt(N): 4 halves it, 16 quarters it. "
+                    "Averaging does not lower the noise floor, only its scatter.\n\n"
+                    "The machine must be steady over the window. A speed drift smears "
+                    "the lines. Overload and degraded frames are skipped, so the card "
+                    "shows the count used. N is limited to the frame cache.")
                 if spec.averaging:
                     n = min(spec.n_averages, self._cache_depth())
                     dpg.add_input_int(default_value=n, min_value=1, max_value=self._cache_depth(),

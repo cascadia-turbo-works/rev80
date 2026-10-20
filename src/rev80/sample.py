@@ -77,10 +77,6 @@ class AcquisitionSettings:
     # FFT / Welch
     fft_window: str = 'hann'
     welch_overlap: float = 0.5     # 0.0–0.95 fraction of nperseg
-    # Spectral averaging of N frames in the power domain. Off by default: it
-    # changes what the displayed number means, and it needs a steady machine.
-    averaging_enabled: bool = False
-    n_averages: int = 8
     # Peak selection: dB above the line's own local noise floor. See rev80.peaks.
     peak_threshold_db: float = PEAK_THRESHOLD_DB_DEFAULT
     # High-pass: applied with state in DataCollector.receive_data; stateless on replay.
@@ -92,8 +88,6 @@ class AcquisitionSettings:
     # the high-pass off) up to maxfreq.
     band_fmin: float | None = None
     band_fmax: float | None = None
-    # Envelope tab. Off by default: it is for bearing jobs only.
-    envelope_enabled: bool = False
     # Frame cache
     cache_frames: int = DEFAULT_CACHE_FRAMES  # depth of the ring cache in DataCollector
 
@@ -181,15 +175,12 @@ class AcquisitionSettings:
             'fft_window':       self.fft_window,
             'welch_overlap':    self.welch_overlap,
             'peak_threshold_db': self.peak_threshold_db,
-            'averaging_enabled': self.averaging_enabled,
-            'n_averages':       self.n_averages,
             'highpass_enabled': self.highpass_enabled,
             'highpass_fc':      self.highpass_fc,
             # None must survive the round trip: writing the resolved value back
             # would freeze the F_max in force at save time into the config.
             'band_fmin':        self.band_fmin,
             'band_fmax':        self.band_fmax,
-            'envelope_enabled': self.envelope_enabled,
             'speed_gate_enabled': self.speed_gate_enabled,
             # None means "latch the reference from the first valid frame".
             # Writing a resolved value back would freeze one session's running
@@ -214,13 +205,10 @@ class AcquisitionSettings:
         if 'fft_window'       in d: obj.fft_window       = str(d['fft_window'])        # noqa: E701
         if 'welch_overlap'    in d: obj.welch_overlap    = float(d['welch_overlap'])   # noqa: E701
         if 'peak_threshold_db' in d: obj.peak_threshold_db = float(d['peak_threshold_db'])  # noqa: E701
-        if 'averaging_enabled' in d: obj.averaging_enabled = bool(d['averaging_enabled'])  # noqa: E701
-        if 'n_averages'       in d: obj.n_averages       = int(d['n_averages'])        # noqa: E701
         if 'highpass_enabled' in d: obj.highpass_enabled = bool(d['highpass_enabled']) # noqa: E701
         if 'highpass_fc'      in d: obj.highpass_fc      = float(d['highpass_fc'])     # noqa: E701
         if 'band_fmin'        in d: obj.band_fmin        = _opt_float(d['band_fmin'])  # noqa: E701
         if 'band_fmax'        in d: obj.band_fmax        = _opt_float(d['band_fmax'])  # noqa: E701
-        if 'envelope_enabled' in d: obj.envelope_enabled = bool(d['envelope_enabled'])  # noqa: E701
         if 'speed_gate_enabled' in d: obj.speed_gate_enabled = bool(d['speed_gate_enabled'])  # noqa: E701
         if 'speed_gate_rpm'   in d: obj.speed_gate_rpm    = _opt_float(d['speed_gate_rpm'])  # noqa: E701
         if 'speed_gate_tolerance_pct' in d: obj.speed_gate_tolerance_pct = float(d['speed_gate_tolerance_pct'])  # noqa: E701
@@ -291,15 +279,6 @@ class AcquisitionSettings:
     @binsize.setter
     def binsize(self, df: float):
         self._df = float(df)
-
-    @property
-    def n_averages_effective(self) -> int:
-        """Averages that the ring cache can hold: n_averages clamped to cache_frames.
-
-        The dialog must state what is delivered. The count used for one frame
-        is in ChannelResult.n_averages; early and excluded frames lower it.
-        """
-        return max(1, min(int(self.n_averages), int(self.cache_frames)))
 
     @property
     def band_fmin_resolved(self) -> float:

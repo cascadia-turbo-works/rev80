@@ -14,7 +14,7 @@ import rev80 as vc
 from rev80.scope_sensor import ScopeSensor
 
 from test_measurement_validity import make_collector, tone
-from pipeline_helpers import tick
+from pipeline_helpers import set_spectrum_averaging, tick
 
 
 def feed(dc, block, rel_time=0.0, overflow=False, degraded=False):
@@ -40,8 +40,7 @@ FRAME_S = 0.5
 def averaging_collector(n=8, enabled=True, **kw):
     dc = make_collector(eu='mm/s2', target_unit='mm/s2', amp_mode='RMS',
                         maxfreq=1000, binsize=2.0, **kw)
-    dc.config.averaging_enabled = enabled
-    dc.config.n_averages = n
+    set_spectrum_averaging(dc, n, enabled)
     return dc
 
 
@@ -49,28 +48,22 @@ def averaging_collector(n=8, enabled=True, **kw):
 # Configuration
 # ===========================================================================
 
-def test_averaging_is_off_by_default():
+def test_averaging_is_off_in_the_default_layout():
     """Turning it on must be a deliberate act -- it changes what the number means."""
-    c = vc.AcquisitionSettings()
-    assert c.averaging_enabled is False
-    assert c.n_averages >= 1
-
-
-def test_averaging_config_round_trips():
-    c = vc.AcquisitionSettings()
-    c.averaging_enabled = True
-    c.n_averages = 12
-    back = vc.AcquisitionSettings.from_dict(c.to_dict())
-    assert back.averaging_enabled is True
-    assert back.n_averages == 12
+    dc = vc.DataCollector()
+    spectra = [c for c in dc.chart_layout().charts if c.chart_type == 'spectrum']
+    assert spectra and not any(c.averaging for c in spectra)
+    assert dc.n_averages_for(spectra[0]) == 1
 
 
 def test_n_averages_is_clamped_to_the_ring_cache():
-    """n_averages_effective is clamped to cache_frames, so the stated count is true."""
-    c = vc.AcquisitionSettings()
-    c.cache_frames = 8
-    c.n_averages = 64
-    assert c.n_averages_effective == 8
+    """The chart's N is clamped to cache_frames, so the stated count is true."""
+    from rev80.charts import ChartSpec
+    dc = vc.DataCollector()
+    dc.config.cache_frames = 8
+    spec = ChartSpec('c1', 'spectrum', 'S', channels=(0,), averaging=True, n_averages=64)
+    assert dc.n_averages_for(spec) == 8
+    assert dc.n_averages_for(spec.evolve(averaging=False)) == 1
 
 
 # ===========================================================================
@@ -243,8 +236,7 @@ def test_averaging_survives_the_hdf5_round_trip_and_recomputes(tmp_path):
     dc2.set_scope_sensor(0, ScopeSensor(name='test', engineering_units='mm/s2',
                                         sensitivity=1.0))
     dc2.load_data(target)
-    dc2.config.averaging_enabled = True
-    dc2.config.n_averages = 8
+    set_spectrum_averaging(dc2, 8)
     dc2._cache_cursor = 0
     r = tick(dc2)[0]
     assert r.n_averages == 8
@@ -255,7 +247,7 @@ def test_changing_n_after_load_recomputes_without_reloading():
     for i in range(8):
         feed(dc, noisy(dc, 300.37, 1.0, seed=i), rel_time=i * FRAME_S)
     wide = tick(dc)[0]
-    dc.config.n_averages = 2
+    set_spectrum_averaging(dc, 2)
     narrow = tick(dc)[0]
     assert wide.n_averages == 8 and narrow.n_averages == 2
     assert not np.allclose(wide.spectrum, narrow.spectrum)

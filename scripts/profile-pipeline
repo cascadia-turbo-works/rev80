@@ -82,8 +82,6 @@ def _parse_args() -> argparse.Namespace:
                    help="F_max preset to profile at (default: the shipped default)")
     p.add_argument("--binsize", type=float, default=None,
                    help="Bin width to profile at (default: the shipped default)")
-    p.add_argument("--envelope", action="store_true",
-                   help="Enable envelope analysis, which the GUI leaves off by default")
     p.add_argument("--cprofile", action="store_true",
                    help="Also write a pstats file per channel count for drill-down")
     p.add_argument("--outdir", default=None,
@@ -100,7 +98,6 @@ def _build_config(n_channels: int, args: argparse.Namespace):
     cfg.enabled_channels     = list(range(n_channels))
     cfg.channel_voltage_ranges = {ch: 7 for ch in range(n_channels)}  # +/-1 V, app default
     cfg.coupling             = "AC"
-    cfg.envelope_enabled     = bool(args.envelope)
     return cfg
 
 
@@ -169,7 +166,7 @@ def _run_one(n_channels: int, args: argparse.Namespace) -> dict:
             snap = dc.snapshot()
             dc.advance_frame(snap)
             dc.results_for(snap)
-            dc.results_for(snap, n_averages=dc.display_n_averages())
+            dc.results_for(snap)
         stream_stats["eff_rate"] = getattr(dc.stream, "effective_samplerate", None)
         stream_stats["degraded"] = bool(dc.stream_degraded)
     finally:
@@ -224,7 +221,6 @@ def main() -> int:
           f"display {cfg0.samplerate} Hz x {cfg0.blocksize}   "
           f"raw {cfg0.raw_samplerate} Hz x {cfg0.raw_blocksize}   "
           f"period {cfg0.acquisition_period:.3f} s")
-    print(f"Envelope analysis: {'ON' if args.envelope else 'off'}")
     print()
 
     outdir  = Path(args.outdir) if args.outdir else Path.cwd()

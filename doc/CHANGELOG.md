@@ -63,6 +63,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   or `charts.yaml`. The last chart cannot be removed.
 
 #### Changed
+- **Envelope and averaging belong to the charts.** The Acquisition-tab
+  controls "Average spectrum", "Averages", "Avg. Window" and
+  "Envelope/Demodulation" are removed, and `AcquisitionSettings` has no
+  `averaging_enabled`, `n_averages`, `envelope_enabled` or
+  `n_averages_effective`. Each spectrum chart has its own averaging
+  (`DataCollector.n_averages_for(spec)`); an envelope chart replaces the
+  checkbox. At the first device connect, the GUI moves the old keys of
+  `acquisition.yaml` to `charts.yaml` once
+  (`config.migrate_chart_settings()`) and removes them. With both settings
+  off it writes no `charts.yaml`, so the default layout keeps following the
+  channels. An existing `charts.yaml` is not changed. Headless does not
+  move them: it assigns no sensors (R73), so an envelope chart would get
+  mV. `scripts/profile-pipeline --envelope` is removed; it had no effect on
+  the profiled path.
 - **One unit rule.** `DataCollector._reachable()` uses
   `charts.unit_reachable()`, so a view and the Charts tab agree on what a
   channel can show.
@@ -70,10 +84,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   record unit, and a third unit shared the second y axis of two. Now every
   series of a chart is in the chart's unit and mode. The record unit on the
   Channels tab sets what is stored and trended, and the default layout.
-- **Layout until the Charts tab exists.** `chart_layout()` gives the
-  default (time waveform and spectrum, all vibration channels, the record
-  unit of the first); "Envelope analysis" adds an envelope chart and "Average spectrum" sets the spectrum
-  averaging. A live collector takes `charts.yaml`; a collector swap does
+- **Default layout.** `chart_layout()` gives the default (time waveform
+  and spectrum, all vibration channels, the record unit of the first) when
+  no layout is set. A live collector takes `charts.yaml`; a collector swap does
   not carry the layout over, so a file's layout does not become the live
   layout.
 - **Peaks table pushes only changes.** The pool is keyed by (chart,

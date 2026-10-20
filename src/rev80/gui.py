@@ -1201,19 +1201,6 @@ class GUI:
         else:
             mem_str = f"{total_mem} B"
 
-        # Averaging window, in seconds: how long the machine must stay steady.
-        # A frame is 1/binsize seconds, rounded up to a whole sample (see
-        # AcquisitionSettings.blocksize), so the window is about N/binsize.
-        if dpg.does_item_exist(ui.ACQ_DLG_AVG_TIME):
-            if dpg.get_value(ui.ACQ_DLG_AVG_ENABLED):
-                n_req = max(1, int(dpg.get_value(ui.ACQ_DLG_AVG_N)))
-                n_eff = min(n_req, cache_frames)
-                capped = '' if n_eff == n_req else f'  (capped by {cache_frames}-frame cache)'
-                dpg.set_value(ui.ACQ_DLG_AVG_TIME,
-                              f"{n_eff} x {acq_time:.3g} s = {n_eff * acq_time:.3g} s{capped}")
-            else:
-                dpg.set_value(ui.ACQ_DLG_AVG_TIME, "off")
-
         if dpg.does_item_exist(ui.ACQ_DLG_SAMPLERATE):
             dpg.set_value(ui.ACQ_DLG_SAMPLERATE, f"{samplerate / 1000:.3f} kS/s")
         if dpg.does_item_exist(ui.ACQ_DLG_NFFT_BINS):
@@ -1485,6 +1472,17 @@ class GUI:
         new.connect_sensor(sensor)
         return new
 
+    def _migrate_chart_settings(self) -> None:
+        """Move the chart settings of an old acquisition.yaml to charts.yaml, once.
+
+        Runs after the device channels are restored, so the layout has the
+        device's channels.
+        """
+        migrated = _cfg.migrate_chart_settings(self.collector.default_chart_layout,
+                                               self.collector.first_sensor_eu())
+        if migrated is not None:
+            self.collector.chart_set = migrated
+
     @staticmethod
     def _live_chart_set() -> 'rev80_charts.ChartSet | None':
         """The layout for live data: charts.yaml, or None for the default.
@@ -1525,6 +1523,7 @@ class GUI:
                 self.collector.reset_channel_config(sensor.num_channels)
                 device_cfg = _cfg.load_device_config(sensor.model_name, sensor.serial_number)
                 self._restore_channel_assignments(device_cfg)
+                self._migrate_chart_settings()
                 self.collector.reconnect_stream()
                 self._set_device_status("connected")
             except Exception as e:
@@ -2409,9 +2408,6 @@ class GUI:
             dpg.set_value(ui.ACQ_DLG_HP_ENABLED, cfg.highpass_enabled)
         if dpg.does_item_exist(ui.ACQ_DLG_HP_FC):
             dpg.set_value(ui.ACQ_DLG_HP_FC, cfg.highpass_fc)
-        if dpg.does_item_exist(ui.ACQ_DLG_AVG_ENABLED):
-            dpg.set_value(ui.ACQ_DLG_AVG_ENABLED, cfg.averaging_enabled)
-            dpg.set_value(ui.ACQ_DLG_AVG_N, cfg.n_averages)
         if dpg.does_item_exist(ui.ACQ_DLG_BAND_FMIN):
             # 0 is the "unset" sentinel in the widget; None in the config.
             dpg.set_value(ui.ACQ_DLG_BAND_FMIN, cfg.band_fmin or 0.0)
@@ -2419,8 +2415,6 @@ class GUI:
             dpg.set_value(ui.ACQ_DLG_BAND_PRESET, self._band_preset_label(cfg))
         if dpg.does_item_exist(ui.ACQ_DLG_CACHE_FRAMES):
             dpg.set_value(ui.ACQ_DLG_CACHE_FRAMES, cfg.cache_frames)
-        if dpg.does_item_exist(ui.ACQ_DLG_ENV_ENABLED):
-            dpg.set_value(ui.ACQ_DLG_ENV_ENABLED, cfg.envelope_enabled)
         self._update_acq_derived()
 
     def _band_suffix(self) -> str:
@@ -2489,9 +2483,6 @@ class GUI:
             cfg.highpass_enabled = dpg.get_value(ui.ACQ_DLG_HP_ENABLED)
         if dpg.does_item_exist(ui.ACQ_DLG_HP_FC):
             cfg.highpass_fc = float(dpg.get_value(ui.ACQ_DLG_HP_FC))
-        if dpg.does_item_exist(ui.ACQ_DLG_AVG_ENABLED):
-            cfg.averaging_enabled = bool(dpg.get_value(ui.ACQ_DLG_AVG_ENABLED))
-            cfg.n_averages = max(1, int(dpg.get_value(ui.ACQ_DLG_AVG_N)))
         if dpg.does_item_exist(ui.ACQ_DLG_BAND_FMIN):
             fmin = float(dpg.get_value(ui.ACQ_DLG_BAND_FMIN))
             fmax = float(dpg.get_value(ui.ACQ_DLG_BAND_FMAX))
@@ -2501,8 +2492,6 @@ class GUI:
             n = max(1, int(dpg.get_value(ui.ACQ_DLG_CACHE_FRAMES)))
             cfg.cache_frames = n
             self.collector.resize_frame_cache(n)
-        if dpg.does_item_exist(ui.ACQ_DLG_ENV_ENABLED):
-            cfg.envelope_enabled = bool(dpg.get_value(ui.ACQ_DLG_ENV_ENABLED))
 
     def _on_acq_apply(self, sender=None, data=None):
         was_streaming = self.collector.is_streaming
@@ -2510,8 +2499,7 @@ class GUI:
             self._stop_stream()
         self._apply_acq_settings_from_widgets()
         self._save_channel_assignments()  # persist acquisition settings to device YAML
-        # The layout follows "Envelope analysis" and "Average spectrum", and
-        # the card and axis labels show the band.
+        # The card and axis labels show the band.
         self._charts.rebuild()
         if self.collector.sensor is not None:
             self.collector.reconnect_stream()
@@ -3616,59 +3604,6 @@ class GUI:
                                 dpg.add_input_float(
                                     label="Hz", tag=ui.ACQ_DLG_HP_FC, default_value=10.0, min_value=0.1, width=100
                                 )
-                            # Control: linear power averaging of the spectrum.
-                            _avg_en = dpg.add_checkbox(
-                                label="Average spectrum",
-                                tag=ui.ACQ_DLG_AVG_ENABLED,
-                                default_value=False,
-                                callback=self._on_acq_preview,
-                            )
-                            self._tooltip(
-                                _avg_en,
-                                "Average the spectrum over several successive frames. "
-                                "Each bin of a single frame has a standard deviation "
-                                "equal to its own mean, so the floor looks rough and a "
-                                "small line is hard to pick out; averaging N frames cuts "
-                                "that scatter by sqrt(N).\n\n"
-                                "It does NOT lower the noise floor -- only the "
-                                "uncertainty of it. To separate two close lines you need "
-                                "a finer bin size instead.\n\n"
-                                "Assumes the machine is steady over the window. If the "
-                                "speed drifts, lines smear across bins and averaging "
-                                "blurs them rather than sharpening them.")
-                            _avg_n = dpg.add_input_int(
-                                label="Averages", tag=ui.ACQ_DLG_AVG_N,
-                                default_value=8, min_value=1, max_value=512,
-                                callback=self._on_acq_preview, width=_w,
-                            )
-                            self._tooltip(
-                                _avg_n,
-                                "Number of frames to average. Diminishing returns past "
-                                "about 16, since the benefit goes as sqrt(N): 4 halves "
-                                "the scatter, 16 quarters it, 64 only halves it again.\n\n"
-                                "Capped by the frame cache below -- you cannot average "
-                                "more frames than are kept. Frames rejected for ADC "
-                                "overload or a degraded stream are skipped, so the count "
-                                "actually achieved is shown beside the spectrum.")
-                            dpg.add_input_text(
-                                label="Avg. Window", tag=ui.ACQ_DLG_AVG_TIME,
-                                readonly=True, width=_w,
-                            )
-
-                            dpg.add_separator()
-                            dpg.add_text("Analysis Tabs")
-                            _env_en = dpg.add_checkbox(
-                                label="Envelope/Demodulation (bearing analysis)",
-                                tag=ui.ACQ_DLG_ENV_ENABLED,
-                                default_value=False,
-                            )
-                            self._tooltip(
-                                _env_en,
-                                "Shows the Envelope tab, which demodulates a housing "
-                                "resonance to reveal rolling-element bearing defects. "
-                                "Not every job is a bearing job -- turn this off to "
-                                "keep it from cluttering ones that aren't.")
-
                             # Control: declared measurement band for the overall.
                             # Blank/0 means "derive": the highpass edge up to
                             # F_max. Two overalls are comparable only when

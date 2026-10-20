@@ -274,13 +274,13 @@ def _chart_set_for(collector):
 
     The default is `charts.default_layout()` of the run's vibration channels.
     A bad charts.yaml gives the default and a warning, and is not changed.
+    Headless does not move the old chart settings of acquisition.yaml: it
+    assigns no sensors (R73), so its layout could not have the sensor units.
+    The GUI moves them at its next connect.
     """
     from rev80 import charts
     from rev80 import config as _cfg
-    cs, _ = charts.load_chart_set(
-        _cfg.charts_config_path(),
-        lambda: charts.default_layout(collector.config.vibration_channels,
-                                      collector.default_view_of))
+    cs, _ = charts.load_chart_set(_cfg.charts_config_path(), collector.default_chart_layout)
     return cs
 
 

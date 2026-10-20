@@ -282,9 +282,7 @@ the record unit: what Rev80 stores and trends.
 
 The default layout has a Time waveform and a Spectrum chart, with all
 vibration channels, in the record unit and mode of the first. It has no
-Trend chart; use the Charts tab to add one. Until you edit the layout,
-**Envelope analysis** on the Acquisition tab adds an Envelope chart and
-**Average spectrum** sets the averaging of the Spectrum chart.
+Trend chart; use the Charts tab to add one.
 
 A channel that cannot show the chart unit has an empty series. Its legend
 label gives the reason, for example "Ch B: no sensor, cannot show in/s".
@@ -329,7 +327,7 @@ once, and starts the stream again if it was running.
 | Tachometer | **Channel**, **Polarity**, **Threshold** (adaptive/fixed), **Level (mV)**, **Min ampl. (mV)**, **Rate units**, **Reflector (mm)**, **Pulses/rev**, **Start**/**Stop**, and a live plot of the tach signal. See [Tachometer](#tachometer). |
 | Charts | The chart layout: one row for each chart. See [Charts tab](#charts-tab). |
 | Sensors | **Sensor Library** list, **Add**, **Delete**. For the selected sensor: **Name**, **Source EU**, **Sensitivity (mV/eu)**, **Notes**. |
-| Acquisition | **Freq. Range**, **Freq. Resolution**, **Highpass** and its **Hz**, **Average spectrum**, **Averages**, **Envelope/Demodulation (bearing analysis)**, **Overall Band** with **min** and **max Hz**, **Cache Frames**, **Welch Overlap %**, **FFT Window**. Read-only: **Sample Rate**, **Spectral Lines**, **Acq. Time**, **Avg. Window**, **Rec. Window**, **Memory**. |
+| Acquisition | **Freq. Range**, **Freq. Resolution**, **Highpass** and its **Hz**, **Overall Band** with **min** and **max Hz**, **Cache Frames**, **Welch Overlap %**, **FFT Window**. Read-only: **Sample Rate**, **Spectral Lines**, **Acq. Time**, **Rec. Window**, **Memory**. |
 | Generate | Signal generator. See [Signal generator](#signal-generator). |
 | Monitor | Interval, pre-trigger, burst, output and anomaly settings. See [Monitor Mode](#monitor-mode). |
 
@@ -494,8 +492,9 @@ The design response at the edge is −0.915 dB (about −10 %). ISO 2954 names
 
 ### Spectral averaging
 
-**Average spectrum** averages N frames in the power domain (default off,
-N = 8). Averaging reduces the scatter of the noise floor by √N. It does not
+Each Spectrum chart has its own averaging: **Average** and N on the Charts
+tab (default off, N = 8). Rev80 averages N frames in the power domain.
+Averaging reduces the scatter of the noise floor by √N. It does not
 lower the noise floor. Use it to see a small line in a rough floor.
 
 - The average uses the N most recent valid frames up to the frame on the
@@ -505,8 +504,8 @@ lower the noise floor. Use it to see a small line in a rough floor.
   (600 s apart by default) are therefore not averaged. The label then says
   "averaging 1 of 8 frames (frames not contiguous)".
 - N is limited by **Cache Frames**.
-- **Avg. Window** shows N × frame time: the time for which the machine must
-  be steady.
+- The Charts tab shows N × frame time beside N: the time for which the
+  machine must be steady.
 - If the speed changes during the window, lines spread across bins.
 - Averaging changes only the display. Monitor Mode stores, trends and alarms
   on each frame alone.
@@ -772,8 +771,8 @@ A shaft speed always shows its unit. 30 is a plausible RPM, Hz and rad/s.
 
 An **Envelope** chart finds rolling-element bearing defects (inner race,
 outer race, ball, cage) early, before they show in the overall. To add the
-chart, select **Envelope/Demodulation (bearing analysis)** in the
-Acquisition tab. It is off by default.
+chart, select **Envelope** below the table of the Charts tab and click
+**+**. The default layout has no Envelope chart.
 
 ### Why the spectrum does not show the defect
 
@@ -1198,13 +1197,17 @@ headless use the same file.
 | `speed_gate_tolerance_pct` | % | 3.0 | YAML only | Allowed deviation from the reference |
 | `device_wait_s` | s | `null` | YAML only | How long a stream waits for a lost scope. `null` = no limit |
 | `rotation_unit` | | `RPM` | Rate units | `RPM`, `Hz`, `rad/s`, `deg/s` |
-| `averaging_enabled` | | (false) | Average spectrum | Spectral averaging on or off |
-| `n_averages` | frames | (8) | Averages | Frames to average |
 | `peak_threshold_db` | dB | (9.5) | Peak Sig., dB | Peak threshold |
-| `envelope_enabled` | | (false) | Envelope/Demodulation | Add an Envelope chart |
 
 Values in parentheses are not in a seeded file. The GUI writes them when it
 saves.
+
+Rev80 0.x had the keys `envelope_enabled`, `averaging_enabled` and
+`n_averages` here. The chart layout replaces them. At the first device
+connect, the GUI moves them to `charts.yaml`, once: "Envelope analysis" on
+adds an Envelope chart, and "Average spectrum" on sets the averaging of the
+Spectrum chart. Then the GUI removes the keys from this file. An existing
+`charts.yaml` is not changed. Headless ignores the keys.
 
 **`monitor:` section**
 

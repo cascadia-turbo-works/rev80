@@ -257,3 +257,17 @@ def test_live_data_on_screen(app, tmp_path):
     assert not app._live_data_on_screen()          # a file, no device
     app.collector.sensor = object()
     assert app._live_data_on_screen()              # a device is connected
+
+
+def test_connect_moves_the_old_chart_settings_to_charts_yaml(app):
+    """"Envelope analysis" and "Average spectrum" of an old acquisition.yaml."""
+    data = cfg_mod.load_acquisition_config()
+    data['acquisition'].update(envelope_enabled=True, averaging_enabled=True, n_averages=6)
+    cfg_mod.save_acquisition_config(data)
+    assert app._connect_device(rev80.VibeSensor.simulated())
+    layout = app.collector.chart_set
+    assert [c.chart_type for c in layout.charts] == ['waveform', 'spectrum', 'envelope']
+    assert layout.charts[1].n_averages == 6
+    assert cfg_mod.charts_config_path().exists()
+    assert 'envelope_enabled' not in cfg_mod.load_acquisition_config()['acquisition']
+    app.collector.disconnect_sensor()

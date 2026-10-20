@@ -25,7 +25,9 @@ def test_result_view_equals_the_old_path(k):
     for i in range(ref.N_FRAMES):
         ref.feed(dc, i)
     snap = dc.snapshot()                    # browse mode: the newest frame
-    r = dc.result_view(snap, 0, n_averages=dc.display_n_averages())
+    # The old path averaged min(N, cache_frames) frames when averaging was on.
+    n = min(n_avg, dc.config.cache_frames) if n_avg > 0 else 1
+    r = dc.result_view(snap, 0, n_averages=n)
     assert r.unit == str(DATA[f'{k}_unit'])
     for f in ref.FIELDS:
         np.testing.assert_array_equal(np.asarray(getattr(r, f)), DATA[f'{k}_{f}'],

@@ -302,7 +302,6 @@ class TestAcquisitionSettingsSerialisation:
         d = AcquisitionSettings().to_dict()
         for key in ('maxfreq', 'binsize', 'fft_window', 'welch_overlap',
                     'highpass_enabled', 'highpass_fc',
-                    'envelope_enabled',
                     'trend_max_points'):
             assert key in d, f'Missing key: {key}'
 
@@ -314,7 +313,6 @@ class TestAcquisitionSettingsSerialisation:
         original.welch_overlap = 0.75
         original.highpass_enabled = False
         original.highpass_fc = 20.0
-        original.envelope_enabled = True
         original.trend_max_points = 200
 
         restored = AcquisitionSettings.from_dict(original.to_dict())
@@ -325,7 +323,6 @@ class TestAcquisitionSettingsSerialisation:
         assert restored.welch_overlap == 0.75
         assert restored.highpass_enabled is False
         assert restored.highpass_fc == 20.0
-        assert restored.envelope_enabled is True
         assert restored.trend_max_points == 200
 
     def test_from_dict_with_partial_dict_uses_defaults(self):
@@ -374,3 +371,64 @@ def test_acquisition_template_round_trips_through_settings():
     assert cfg.speed_gate_enabled is False
     assert cfg.speed_gate_rpm is None
     assert cfg.speed_gate_tolerance_pct == 3.0
+
+
+# ---------------------------------------------------------------------------
+# Chart settings from before the Charts tab
+# ---------------------------------------------------------------------------
+
+def _base():
+    from rev80 import charts
+    return charts.default_layout([0, 1], lambda ch: ('g', '0-P'))
+
+
+def _write_acq(vc, acq):
+    vc.mkdir(parents=True, exist_ok=True)
+    (vc / 'acquisition.yaml').write_text(yaml.dump({'acquisition': acq, 'monitor': {'x': 1}}))
+
+
+def _read_acq(vc):
+    return yaml.safe_load((vc / 'acquisition.yaml').read_text())
+
+
+def test_old_chart_settings_move_to_charts_yaml_once(tmp_path):
+    from rev80 import charts
+    vc = tmp_path / 'vc'
+    _write_acq(vc, {'maxfreq': 2000.0, 'envelope_enabled': True,
+                    'averaging_enabled': True, 'n_averages': 6})
+    with patch('rev80.config.config_dir', return_value=vc):
+        layout = cfg.migrate_chart_settings(_base, 'g')
+        assert [c.chart_type for c in layout.charts] == ['waveform', 'spectrum', 'envelope']
+        assert (layout.charts[1].averaging, layout.charts[1].n_averages) == (True, 6)
+        assert charts.load_chart_set(vc / 'charts.yaml', lambda: None) == (layout, True)
+        acq = _read_acq(vc)
+        assert acq['acquisition'] == {'maxfreq': 2000.0}
+        assert acq['monitor'] == {'x': 1}
+        assert cfg.migrate_chart_settings(_base, 'g') is None     # once
+
+
+def test_old_settings_off_write_no_charts_yaml(tmp_path):
+    """The default layout keeps following the channels."""
+    vc = tmp_path / 'vc'
+    _write_acq(vc, {'envelope_enabled': False, 'averaging_enabled': False, 'n_averages': 8})
+    with patch('rev80.config.config_dir', return_value=vc):
+        assert cfg.migrate_chart_settings(_base, 'g') is None
+    assert not (vc / 'charts.yaml').exists()
+    assert _read_acq(vc)['acquisition'] == {}
+
+
+def test_an_existing_charts_yaml_is_not_changed(tmp_path):
+    vc = tmp_path / 'vc'
+    _write_acq(vc, {'envelope_enabled': True})
+    vc.joinpath('charts.yaml').write_text('mine')
+    with patch('rev80.config.config_dir', return_value=vc):
+        assert cfg.migrate_chart_settings(_base, 'g') is None
+    assert vc.joinpath('charts.yaml').read_text() == 'mine'
+    assert 'envelope_enabled' not in _read_acq(vc)['acquisition']
+
+
+def test_old_keys_are_not_settings_now():
+    d = AcquisitionSettings().to_dict()
+    assert not set(cfg.LEGACY_CHART_KEYS) & set(d)
+    assert not set(cfg.LEGACY_CHART_KEYS) & set(cfg._BUILTIN_ACQ['acquisition'])
+    AcquisitionSettings.from_dict({'envelope_enabled': True, 'n_averages': 4})   # ignored

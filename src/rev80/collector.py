@@ -1495,29 +1495,33 @@ class DataCollector:
     # Views of a snapshot
     # ------------------------------------------------------------------
 
-    def display_n_averages(self) -> int:
-        """Frames the display averages: the configured N when averaging is on, else 1."""
-        return self.config.n_averages_effective if self.config.averaging_enabled else 1
+    def n_averages_for(self, spec) -> int:
+        """Frames that the spectrum chart `spec` averages: its N clamped to the cache, else 1.
+
+        The count used for one frame is in ChannelResult.n_averages; early
+        and excluded frames lower it.
+        """
+        if not spec.averaging:
+            return 1
+        return max(1, min(int(spec.n_averages), int(self.config.cache_frames)))
 
     def chart_layout(self):
-        """The chart layout in effect: `chart_set`, else the default of this config.
-
-        The default is one time waveform and one spectrum with every vibration
-        channel, in the record view of the first, plus the "Envelope analysis"
-        and "Average spectrum" settings (`charts.legacy_layout`).
-        """
-        from rev80 import charts
+        """The chart layout in effect: `chart_set`, else `default_chart_layout()`."""
         if self.chart_set is not None:
             return self.chart_set
-        vib = list(self.config.vibration_channels)
-        base = charts.default_layout(vib, self.default_view_of)
-        first = self.scope_sensors.get(vib[0]) if vib else None
-        return charts.legacy_layout(
-            base,
-            envelope_enabled=bool(self.config.envelope_enabled),
-            envelope_unit=first.engineering_units if first is not None else 'mV',
-            averaging_enabled=bool(self.config.averaging_enabled),
-            n_averages=self.config.n_averages_effective)
+        return self.default_chart_layout()
+
+    def default_chart_layout(self):
+        """One time waveform and one spectrum with every vibration channel,
+        in the record view of the first (`charts.default_layout`)."""
+        from rev80 import charts
+        return charts.default_layout(self.config.vibration_channels, self.default_view_of)
+
+    def first_sensor_eu(self) -> str:
+        """The sensor EU of the first vibration channel; 'mV' with no sensor."""
+        vib = self.config.vibration_channels
+        sensor = self.scope_sensors.get(vib[0]) if vib else None
+        return sensor.engineering_units if sensor is not None else 'mV'
 
     def default_view_of(self, ch: int) -> 'tuple[str, str]':
         """(unit, amplitude mode) of a channel's record view.
@@ -2054,9 +2058,7 @@ class DataCollector:
             self.config.enabled_channels = sorted(all_channels)
 
         if self._default_layout_pending:
-            from rev80 import charts
-            self.chart_set = charts.default_layout(self.config.vibration_channels,
-                                                   self.default_view_of)
+            self.chart_set = self.default_chart_layout()
             self._default_layout_pending = False
 
         self.init_trend_channels()

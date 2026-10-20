@@ -16,6 +16,7 @@ import pytest
 import rev80 as vc
 from rev80 import simulation as sim
 from rev80.scope_sensor import ScopeSensor
+from pipeline_helpers import display_n_averages, set_spectrum_averaging
 
 
 class _LiveStream:
@@ -28,11 +29,10 @@ def _collector(streaming=True, averaging=False):
     cfg.enabled_channels = [0, 1]
     cfg.channel_roles = {1: 'tachometer'}
     cfg.channel_target_units = {0: 'in/s'}
-    cfg.averaging_enabled = averaging
-    cfg.n_averages = 4
     dc = vc.DataCollector(config=cfg)
     dc.set_scope_sensor(0, ScopeSensor(name='acc', engineering_units='g', sensitivity=100.0))
     dc.init_trend_channels()
+    set_spectrum_averaging(dc, 4, averaging)
     if streaming:
         dc.sensor = object()
         dc.stream = _LiveStream()
@@ -119,7 +119,7 @@ def test_record_results_are_never_averaged():
         _feed(dc, i)
     snap = dc.snapshot()
     (rec,) = dc.results_for(snap)
-    (disp,) = dc.results_for(snap, n_averages=dc.display_n_averages())
+    (disp,) = dc.results_for(snap, n_averages=display_n_averages(dc))
     assert rec.n_averages == 1
     assert disp.n_averages == 4
     assert rec.overall != disp.overall

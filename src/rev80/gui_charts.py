@@ -361,9 +361,7 @@ class ChartsView:
 
     def n_averages_for(self, spec) -> int:
         """The frames a spectrum chart averages, clamped to the cache depth."""
-        if not spec.averaging:
-            return 1
-        return max(1, min(int(spec.n_averages), int(self.collector.config.cache_frames)))
+        return self.collector.n_averages_for(spec)
 
     def render(self, snapshot, force: str | None = None) -> None:
         """Draw the charts on screen and the cards of every spectrum chart.
