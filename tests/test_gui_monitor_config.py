@@ -140,17 +140,25 @@ def user_config(tmp_path, monkeypatch):
     return cfg_mod.load_acquisition_config()['monitor']
 
 
+class _NullCharts:
+    """ChartsView with no widgets."""
+
+    def __getattr__(self, name):
+        return lambda *a, **k: None
+
+
 def _started_app(fake_dpg) -> GUI:
     """Run GUI.initialize with a _create_gui that makes the widgets only."""
     app = GUI.__new__(GUI)
     app.collector = _FakeCollector()
+    app._charts = _NullCharts()
 
     def _create_gui():
         fake_dpg.store.update(_CONSTRUCTION_DEFAULTS)
 
     app._create_gui = _create_gui
     for name in ('_setup_keyboard_handlers', '_update_spectrum_info',
-                 '_update_connection_summary', '_update_axis_assignment',
+                 '_update_connection_summary',
                  '_refresh_registry_dialog_list', '_set_stream_status'):
         setattr(app, name, lambda *a, **k: None)
     app.initialize()

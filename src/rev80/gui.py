@@ -10,7 +10,9 @@ import numpy as np
 
 import rev80
 from rev80 import _profile
-from rev80 import envelope as rev80_env
+from rev80.gui_charts import (  # noqa: F401 (envelope_search_fmax: re-export)
+    DEFAULT_PEAK_DISPLAY_CAP, ChartsView, envelope_search_fmax,
+)
 from rev80 import peaks as rev80_peaks
 import rev80.config as _cfg
 import rev80.icons as icons
@@ -45,7 +47,6 @@ WINDOW_WIDTH = 1500
 WINDOW_HEIGHT = 1000
 CONTROLS_WIDTH = 300
 RESULTS_WIDTH = 300
-TIME_PLOT_HEIGHT = 300
 
 # Config dialog dimensions — referenced wherever the dialog is built or positioned
 _DLG_CFG_W = 720
@@ -73,7 +74,6 @@ _DLG_DEVICE_TAB_SPACER = _DLG_CFG_W - 434
 _MAX_CHANNELS = 8
 _DEFAULT_NUM_CHANNELS = 4
 # Height of each per-channel result card so 4 cards fit the default window height
-_RESULTS_CARD_HEIGHT = (WINDOW_HEIGHT - 70) // 4  # ≈ 232 px
 # Width of paired buttons side-by-side in the left control panel
 _BTN_HALF = (CONTROLS_WIDTH - 30) // 2
 
@@ -85,13 +85,8 @@ _BTN_HALF = (CONTROLS_WIDTH - 30) // 2
 #   card base ≈ 68 px (top/bottom WindowPadding + title + separator)
 _CARD_LINE_H = 20  # per text-line height estimate (font + spacing)
 
-# Clutter cap on the peaks table and the plot markers. Not a selection
-# rule -- rev80.peaks decides which lines are real, this only decides how
-# many of them fit on screen. Sized from the measured corpus counts at the
-# default threshold (median 40, p90 49, max 61 over 60 channel-spectra),
-# so in the normal case nothing is hidden.
-_DEFAULT_PEAK_DISPLAY_CAP = 50
 _CARD_BASE_H = 68  # card overhead: padding + title + separator + bottom pad
+_TACH_CARD_HEIGHT = _CARD_BASE_H + 2 * _CARD_LINE_H
 _CARD_BTN_H = 28   # single button row height
 _CARD_H_DEVICE = _CARD_BASE_H + _CARD_LINE_H * 5  # disconnected baseline
 _CARD_H_CHANNELS = _CARD_BASE_H + _CARD_BTN_H + _CARD_LINE_H
@@ -198,21 +193,6 @@ _WELCH_OVERLAP_TIP = (
     "settings and in each saved file. To make the spectrum smoother, use "
     "Average spectrum."
 )
-
-
-# Ratio of a sample rate to the top of its anti-alias-protected band. The
-# same 2.56 as AcquisitionSettings.samplerate = 2.56 x maxfreq: at 25600 Hz
-# raw, the protected band ends at 10 kHz.
-_PROTECTED_BAND_RATIO = 2.56
-
-
-def envelope_search_fmax(samplerate: float) -> float:
-    """Top of the protected band, as the fmax for envelope.suggest_band.
-
-    Above it, the anti-alias filter attenuates the signal. A demodulation
-    band there shows filter roll-off, not machine content.
-    """
-    return samplerate / _PROTECTED_BAND_RATIO
 
 
 def degraded_rate_text(effective_hz: float | None, cfg) -> str:
@@ -342,20 +322,19 @@ class GUI:
         # Channel the Tachometer tab switched on implicitly when it was
         # claimed, so releasing the role can switch it back off again.
         self._tach_implicit_enable: int | None = None
-        # Peaks-table widget pool: how many rows each channel's table has been
-        # grown to, and the last state rendered into it. See
-        # _update_fft_peaks_table.
-        self._peaks_table_rows: dict[int, int] = {}
-        # Cached automatic demodulation bands, keyed (channel, samplerate).
-        # See _env_band_for.
-        self._env_auto_band: dict[tuple, tuple] = {}
+        # The chart tabs and the spectrum result cards. See gui_charts.py.
+        self._charts = ChartsView(self)
+        # Axes that _autoscale_plots locked; released one frame later.
+        self._autoscale_locked: list[str] = []
+        # The snapshot of the last displayed frame, for a tab change.
+        self._last_snapshot = None
         # Last values pushed for two widgets whose state changes far less often
         # than once per frame. See _update_browse_label / _update_frame_info.
         self._browse_enabled: bool | None = None
         self._frame_info_height: int | None = None
-        self._peaks_table_state: dict[int, tuple] = {}
         self._num_channels: int = _DEFAULT_NUM_CHANNELS
         self._channel_themes: list = []
+        self._channel_colors: list = list(_CH_COLORS)
         self._peak_themes: list = []
         self._sect_theme = None
         self._toggle_themes: dict = {}  # 'active'|'waiting'|'idle' → dpg theme
@@ -439,383 +418,6 @@ class GUI:
         self._status_deadline = None
         if self.collector.is_streaming:
             self._set_stream_status("waiting")
-
-    # ------------------------------------------------------------------
-    # Plot axis helpers
-    # ------------------------------------------------------------------
-
-    def _get_time_axis_for(self, ch: int) -> str:
-        tag = ui.plt_time_series(ch)
-        if dpg.does_item_exist(tag):
-            parent = dpg.get_item_parent(tag)
-            if parent == dpg.get_alias_id(ui.PLT_SAMPLE_AX_ACCEL_2):
-                return ui.PLT_SAMPLE_AX_ACCEL_2
-        return ui.PLT_SAMPLE_AX_ACCEL
-
-    def _get_freq_axis_for(self, ch: int) -> str:
-        tag = ui.plt_freq_series(ch)
-        if dpg.does_item_exist(tag):
-            parent = dpg.get_item_parent(tag)
-            if parent == dpg.get_alias_id(ui.PLT_FREQ_AX_2):
-                return ui.PLT_FREQ_AX_2
-        return ui.PLT_FREQ_AX_ACCEL
-
-    def _get_unit_groups(self) -> list:
-        """Group enabled channels by effective target unit."""
-        groups: dict = {}
-        for ch in sorted(self.collector.config.enabled_channels):
-            unit = self.collector.get_active_eu(ch)
-            groups.setdefault(unit, []).append(ch)
-        return list(groups.items())
-
-    def _freq_axis_label(self, unit: str, channels: list[int] | None = None) -> str:
-        """Build a frequency-plot Y-axis label like 'Amplitude, mils P-P'."""
-        mode = self._get_amplitude_mode(channels[0]) if channels else "0-P"
-        return f"Amplitude, {unit} {mode}"
-
-    def _update_axis_assignment(self):
-        """Show/hide secondary axes and reassign series based on unit groups."""
-        groups = self._get_unit_groups()
-
-        if len(groups) > 2:
-            log.warning(
-                "More than 2 unique output units configured %s; only the first 2 will have dedicated axes.",
-                [g[0] for g in groups],
-            )
-            # Absorb excess channels into group 1
-            overflow = [ch for _, chs in groups[2:] for ch in chs]
-            groups = [groups[0], (groups[1][0], groups[1][1] + overflow)]
-
-        if len(groups) <= 1:
-            # ── Single unit: hide all secondary axes ─────────────────────
-            dpg.hide_item(ui.PLT_FREQ_AX_2)
-            dpg.hide_item(ui.PLT_SAMPLE_AX_ACCEL_2)
-            dpg.hide_item(ui.PLT_TREND_AX_OVERALL_2)
-            for ch in self.collector.config.enabled_channels:
-                self._reassign_series_to_axis(ch, ui.PLT_FREQ_AX_ACCEL, ui.PLT_SAMPLE_AX_ACCEL, ui.PLT_TREND_AX_OVERALL)
-            unit = groups[0][0] if groups else "mV"
-            chs = groups[0][1] if groups else []
-            mode = self._get_amplitude_mode(chs[0]) if chs else "0-P"
-            dpg.set_item_label(ui.PLT_FREQ_AX_ACCEL, self._freq_axis_label(unit, chs))
-            dpg.set_item_label(ui.PLT_SAMPLE_AX_ACCEL, f"Amplitude, {unit}")
-            band = self._band_suffix()
-            dpg.set_item_label(ui.PLT_TREND_AX_OVERALL,
-                               f"Overall Vibration, {unit} {mode}{band}")
-            for ch in chs:
-                tag = ui.ch_overall_value(ch)
-                if dpg.does_item_exist(tag):
-                    dpg.configure_item(tag, label=f"Overall, {unit} {mode}{band}")
-        else:
-            # ── Two units: show secondary axes and split channels ─────────
-            dpg.show_item(ui.PLT_FREQ_AX_2)
-            dpg.show_item(ui.PLT_SAMPLE_AX_ACCEL_2)
-            dpg.show_item(ui.PLT_TREND_AX_OVERALL_2)
-            for ch in groups[0][1]:
-                self._reassign_series_to_axis(ch, ui.PLT_FREQ_AX_ACCEL, ui.PLT_SAMPLE_AX_ACCEL, ui.PLT_TREND_AX_OVERALL)
-            for ch in groups[1][1]:
-                self._reassign_series_to_axis(ch, ui.PLT_FREQ_AX_2, ui.PLT_SAMPLE_AX_ACCEL_2, ui.PLT_TREND_AX_OVERALL_2)
-            dpg.set_item_label(ui.PLT_FREQ_AX_ACCEL, self._freq_axis_label(groups[0][0], groups[0][1]))
-            dpg.set_item_label(ui.PLT_SAMPLE_AX_ACCEL, f"Amplitude, {groups[0][0]}")
-            dpg.set_item_label(ui.PLT_FREQ_AX_2, self._freq_axis_label(groups[1][0], groups[1][1]))
-            dpg.set_item_label(ui.PLT_SAMPLE_AX_ACCEL_2, f"Amplitude, {groups[1][0]}")
-            mode0 = self._get_amplitude_mode(groups[0][1][0]) if groups[0][1] else "0-P"
-            mode1 = self._get_amplitude_mode(groups[1][1][0]) if groups[1][1] else "0-P"
-            band = self._band_suffix()
-            dpg.set_item_label(ui.PLT_TREND_AX_OVERALL,
-                               f"Overall, {groups[0][0]} {mode0}{band}")
-            dpg.set_item_label(ui.PLT_TREND_AX_OVERALL_2,
-                               f"Overall, {groups[1][0]} {mode1}{band}")
-            for unit, chs in groups:
-                mode = self._get_amplitude_mode(chs[0]) if chs else "0-P"
-                for ch in chs:
-                    tag = ui.ch_overall_value(ch)
-                    if dpg.does_item_exist(tag):
-                        dpg.configure_item(tag, label=f"Overall, {unit} {mode}")
-
-    def _reassign_series_to_axis(
-        self,
-        ch: int,
-        freq_axis: str,
-        time_axis: str,
-        trend_axis: str = ui.PLT_TREND_AX_OVERALL,
-    ):
-        """If a channel's series are on wrong axes, delete and recreate them."""
-        wrong = False
-        for tag, axis in [
-            (ui.plt_freq_series(ch), freq_axis),
-            (ui.plt_time_series(ch), time_axis),
-            (ui.plt_trend_series(ch), trend_axis),
-        ]:
-            if dpg.does_item_exist(tag) and dpg.get_item_parent(tag) != dpg.get_alias_id(axis):
-                wrong = True
-                break
-        if wrong:
-            self._remove_channel_series(ch)
-            self._add_channel_series(ch, freq_axis=freq_axis, time_axis=time_axis, trend_axis=trend_axis)
-
-    # ------------------------------------------------------------------
-    # Plot update helpers
-    # ------------------------------------------------------------------
-
-    def _update_fft_peaks_table(self, columns: list[str], rows: list[tuple], ch: int):
-        """Refresh one channel's peaks table in place, reusing its widgets.
-
-        Rows are a pool: created on demand, then updated with set_value, and
-        surplus rows are hidden, not deleted. Do not rebuild the table for each
-        frame (about 164 widget operations per channel). Evidence:
-        CONTRIBUTING.md, "E19. GUI render cost".
-        """
-        with _profile.timed(_profile.GUI_PEAKS_TBL):
-            self._update_fft_peaks_table_inner(columns, rows, ch)
-
-    def _update_fft_peaks_table_inner(self, columns: list[str], rows: list[tuple], ch: int):
-        table_tag = ui.ch_peaks_table(ch)
-        if not dpg.does_item_exist(table_tag):
-            return
-        limit = int(dpg.get_value(ui.FFT_PEAKS_DISPLAY_COUNT) or _DEFAULT_PEAK_DISPLAY_CAP)
-        shown = rows[:max(0, limit)]
-
-        pool = self._peaks_table_rows.get(ch, 0)
-        # Self-healing, in the spirit of _ensure_legends: if the table was
-        # rebuilt underneath us the pooled row tags are gone, and reusing the
-        # stale count would address widgets that no longer exist.
-        if pool and not dpg.does_item_exist(ui.ch_peak_row(ch, 0)):
-            pool = 0
-            self._peaks_table_state.pop(ch, None)
-
-        # Neither the headings nor a single cell changed -- nothing to push.
-        state = (tuple(columns), tuple(shown))
-        if pool and self._peaks_table_state.get(ch) == state:
-            return
-        self._peaks_table_state[ch] = state
-
-        # Columns persist and are relabelled. The amplitude heading really does
-        # change (it carries the unit and the amplitude mode), but a relabel is
-        # one call against a table rebuild.
-        for c, label in enumerate(columns):
-            col_tag = ui.ch_peak_col(ch, c)
-            if dpg.does_item_exist(col_tag):
-                dpg.configure_item(col_tag, label=label)
-            else:
-                dpg.add_table_column(label=label, tag=col_tag, parent=table_tag)
-
-        n_cols = len(columns)
-        while pool < len(shown):
-            with dpg.table_row(parent=table_tag, tag=ui.ch_peak_row(ch, pool)):
-                for c in range(n_cols):
-                    dpg.add_text("", tag=ui.ch_peak_cell(ch, pool, c))
-            pool += 1
-        self._peaks_table_rows[ch] = pool
-
-        for i in range(pool):
-            if i < len(shown):
-                for c in range(n_cols):
-                    cell = ui.ch_peak_cell(ch, i, c)
-                    if dpg.does_item_exist(cell):
-                        dpg.set_value(cell, f"{shown[i][c]}")
-                dpg.configure_item(ui.ch_peak_row(ch, i), show=True)
-            else:
-                dpg.configure_item(ui.ch_peak_row(ch, i), show=False)
-
-    def _get_amplitude_mode(self, ch: int) -> str:
-        """Return amplitude mode: channel config → default '0-P'."""
-        return self.collector.config.amplitude_mode_for(ch) or "0-P"
-
-    def _update_time_plot(self, result: rev80.ChannelResult, ch: int):
-        if not dpg.does_item_exist(ui.plt_time_series(ch)):
-            return
-        time = result.time_vec * 1000.0  # convert s → ms (axis label is "Time, ms")
-        signal = result.time_data
-        # Integrated and differentiated traces cover only the middle of the
-        # block (overlap-save, see collector._view_of_sample), so the trace can
-        # start after t=0. Keep the start, so that autoscale shows data.
-        if len(time):
-            self._last_time_x0_ms = float(time[0])
-        dpg.set_value(ui.plt_time_series(ch), [time.tolist(), signal.tolist()])
-
-    def _env_band_for(self, signal: np.ndarray, samplerate: float, ch: int):
-        """Demodulation band to use: the typed one, else auto from this frame.
-
-        Returns (lo, hi) or None when no usable band can be formed -- too
-        little bandwidth leaves no room above the machine orders for a
-        resonance to sit in, and inventing a band there would produce a
-        confident-looking plot of nothing.
-        """
-        lo = float(dpg.get_value(ui.ENV_BAND_LO) or 0.0)
-        hi = float(dpg.get_value(ui.ENV_BAND_HI) or 0.0)
-        if lo > 0 and hi > lo:
-            return (lo, hi)
-
-        # Cached per channel, so the auto band stays the same from frame to
-        # frame and the envelope axis is stable. A new sample rate makes a new
-        # key; _invalidate_auto_band() clears the cache when the user edits
-        # the band controls.
-        key = (ch, float(samplerate))
-        if key in self._env_auto_band:
-            return self._env_auto_band[key]
-        try:
-            band = rev80_env.suggest_band(
-                signal, samplerate, fmax=envelope_search_fmax(samplerate))
-        except (ValueError, IndexError):
-            return None
-        self._env_auto_band[key] = band
-        return band
-
-    def _invalidate_auto_band(self, sender=None, data=None):
-        """Drop cached auto bands so the next frame re-derives them."""
-        self._env_auto_band.clear()
-
-    def _on_env_band_change(self, sender=None, data=None):
-        """Band edited by hand: forget any cached auto band, then redraw.
-
-        Clearing a typed band back to 0 has to fall through to a FRESH auto
-        selection, not the one cached before the band was typed in.
-        """
-        self._invalidate_auto_band()
-        self._redraw()
-
-    def _update_env_fmax_warning(self, samplerate: float):
-        """Warn when the raw-rate Nyquist is below envelope.MIN_USEFUL_NYQUIST_HZ.
-
-        The envelope reads the raw-rate signal, so F_max does not trigger this.
-        A file recorded at a lower raw rate can: then a housing resonance
-        (typically 2 kHz to 20 kHz) is possibly not in the block at all.
-        """
-        if not dpg.does_item_exist(ui.ENV_FMAX_WARNING):
-            return
-        nyquist = samplerate / 2.0
-        if nyquist < rev80_env.MIN_USEFUL_NYQUIST_HZ:
-            dpg.set_value(
-                ui.ENV_FMAX_WARNING,
-                f"This recording's acquisition bandwidth gives only "
-                f"{nyquist:.0f} Hz of headroom -- a bearing resonance "
-                f"(typically 2-20 kHz) may not fit under Nyquist at all. "
-                f"Envelope/demodulation results here should not be trusted "
-                f"for genuine defect detection.")
-            dpg.configure_item(ui.ENV_FMAX_WARNING, show=True)
-        else:
-            dpg.configure_item(ui.ENV_FMAX_WARNING, show=False)
-
-    def _update_envelope_plot(self, sample: 'rev80.VibeSample | None', ch: int):
-        """Band-pass, demodulate, and plot the envelope spectrum for one channel.
-
-        Takes the raw VibeSample, not the ChannelResult: the ChannelResult is
-        at the display rate and does not hold the high frequencies that this
-        tab uses. See DataCollector.eu_scaled_raw. Does nothing when the
-        Envelope tab is disabled or its plot is not on screen.
-        """
-        if not self.collector.config.envelope_enabled:
-            return
-        # Enabled is not the same as on screen. The chain costs about 2.8 ms
-        # per channel per frame, so skip it for a hidden plot. Evidence:
-        # CONTRIBUTING.md, "E19. GUI render cost".
-        if not self._envelope_on_screen():
-            return
-        with _profile.timed(_profile.GUI_ENVELOPE):
-            self._update_envelope_plot_inner(sample, ch)
-
-    @staticmethod
-    def _envelope_on_screen() -> bool:
-        """True when the Envelope plot is rendered.
-
-        Fails open: any error from the visibility query returns True, because
-        a blank plot with no reason is worse than CPU time. Queries the plot,
-        not the tab: an unselected tab shows its header button, so the tab
-        always reports visible (and raises KeyError in some dearpygui versions).
-        """
-        try:
-            return bool(dpg.is_item_visible(ui.PLT_ENV))
-        except Exception:                                    # noqa: BLE001
-            return True
-
-    def _update_envelope_plot_inner(self, sample: 'rev80.VibeSample | None', ch: int):
-        tag = ui.plt_env_series(ch)
-        if not dpg.does_item_exist(tag):
-            return
-        if sample is None:
-            dpg.set_value(tag, [[], []])
-            return
-        signal, samplerate, _unit = self.collector.eu_scaled_raw(ch, sample)
-        self._update_env_fmax_warning(samplerate)
-        band = self._env_band_for(signal, samplerate, ch)
-        if band is None:
-            dpg.set_value(tag, [[], []])
-            return
-        try:
-            freq, spec = rev80_env.envelope_spectrum(signal, samplerate, band=band)
-        except ValueError:
-            # An unusable band is a configuration problem, not a crash: clear
-            # the series and say why on the info line.
-            dpg.set_value(tag, [[], []])
-            if dpg.does_item_exist(ui.ENV_INFO_TEXT):
-                dpg.set_value(ui.ENV_INFO_TEXT,
-                              f"band {band[0]:.0f}-{band[1]:.0f} Hz is outside "
-                              f"this frame's usable range")
-            return
-        dpg.set_value(tag, [freq.tolist(), spec.tolist()])
-        if dpg.does_item_exist(ui.ENV_INFO_TEXT):
-            auto = '' if float(dpg.get_value(ui.ENV_BAND_LO) or 0.0) > 0 else '  (auto)'
-            dpg.set_value(
-                ui.ENV_INFO_TEXT,
-                f"demodulating {band[0]:.0f}-{band[1]:.0f} Hz{auto}   "
-                f"envelope to {freq[-1]:.0f} Hz" if len(freq) else "")
-
-    def _on_env_auto_band(self, sender=None, data=None):
-        """Fill the band fields from the current frame, then redraw.
-
-        Writing the numbers into the fields rather than leaving them blank is
-        deliberate: the analyst can see what was chosen and adjust it, and the
-        band then stays put across frames instead of drifting each time.
-        """
-        raw_frame = self.collector.current_frame()
-        enabled = sorted(self.collector.config.enabled_channels)
-        ch = next((c for c in enabled if c in raw_frame), None)
-        if ch is None:
-            return
-        signal, samplerate, _unit = self.collector.eu_scaled_raw(ch, raw_frame[ch])
-        # Drop the cache first: this button means "pick a band from the frame
-        # on screen now", not from an earlier frame.
-        self._invalidate_auto_band()
-        band = self._env_band_for(signal, samplerate, ch)
-        if band is None:
-            return
-        dpg.set_value(ui.ENV_BAND_LO, float(band[0]))
-        dpg.set_value(ui.ENV_BAND_HI, float(band[1]))
-        self._redraw()
-
-    def _update_freq_plot(self, result: rev80.ChannelResult, ch: int):
-        if not dpg.does_item_exist(ui.plt_freq_series(ch)):
-            return
-        freq = result.freq
-        spectrum = result.spectrum
-        dpg.set_value(ui.plt_freq_series(ch), [freq.tolist(), spectrum.tolist()])
-        if dpg.does_item_exist(ui.ch_overall_value(ch)):
-            dpg.set_value(ui.ch_overall_value(ch), f"{result.overall:.4f}")
-        if dpg.does_item_exist(ui.ch_scalars_text(ch)):
-            dpg.set_value(
-                ui.ch_scalars_text(ch),
-                f"Crest {result.crest_factor:.2f}   Kurt {result.kurtosis:.2f}",
-            )
-        self._update_one_x(result, ch)
-        peak_limit = max(1, int(dpg.get_value(ui.FFT_PEAKS_DISPLAY_COUNT) or 1))
-        peaks = result.peaks
-        self._update_peak_count_text(len(peaks), peak_limit)
-        self._update_avg_count_text(result)
-        if len(peaks) > 0:
-            top_peaks = peaks[:peak_limit]
-            dpg.set_value(ui.plt_freq_peaks(ch), [freq[top_peaks].tolist(), spectrum[top_peaks].tolist()])
-            amp_mode = self._get_amplitude_mode(ch)
-            cols = ["Frequency (Hz)", f"Amp., {result.unit} {amp_mode}"]
-            rows = list(
-                zip(
-                    np.round(freq[top_peaks], 2).tolist(),
-                    np.round(spectrum[top_peaks], 6).tolist(),
-                )
-            )
-            self._update_fft_peaks_table(cols, rows, ch)
-        else:
-            dpg.set_value(ui.plt_freq_peaks(ch), [[], []])
-            self._update_fft_peaks_table(["Frequency (Hz)", "Amp."], [], ch)
 
     # ------------------------------------------------------------------
     # Tachometer tab
@@ -1073,80 +675,6 @@ class GUI:
             dpg.set_value(ui.ch_tach_detail(ch),
                           f"{res.quality}   {res.n_edges} edges   duty {duty}")
 
-    def _update_one_x(self, result: 'rev80.ChannelResult', ch: int):
-        """Show the 1x level and marker, or hide both when there is no tach.
-
-        Hidden, not zeroed: with no shaft-speed reading there is no 1x level,
-        and 0.0 would look like a measured value.
-        """
-        amp = result.one_x_amplitude
-        f_1x = result.one_x_hz
-        txt_tag = ui.ch_one_x_text(ch)
-        line_tag = ui.plt_freq_one_x(ch)
-        if f_1x is None:
-            if dpg.does_item_exist(txt_tag):
-                dpg.configure_item(txt_tag, show=False)
-            if dpg.does_item_exist(line_tag):
-                dpg.set_value(line_tag, [[]])
-            return
-        if dpg.does_item_exist(line_tag):
-            dpg.set_value(line_tag, [[float(f_1x)]])
-        if dpg.does_item_exist(txt_tag):
-            amp_mode = self._get_amplitude_mode(ch)
-            shown = ("--" if amp is None
-                     else f"{amp:.4g} {result.unit} {amp_mode}")
-            dpg.set_value(txt_tag, f"1x @ {f_1x:.2f} Hz:  {shown}")
-            dpg.configure_item(txt_tag, show=True)
-
-    def _update_avg_count_text(self, result: 'rev80.ChannelResult'):
-        """Report how many frames were actually averaged, not how many were asked for.
-
-        Early in a capture there are fewer than N frames, and overflow or
-        degraded frames are not averaged. The label must show the number that
-        was computed, not the configured N.
-        """
-        if not dpg.does_item_exist(ui.FFT_AVG_COUNT_TEXT):
-            return
-        cfg = self.collector.config
-        if not cfg.averaging_enabled:
-            dpg.set_value(ui.FFT_AVG_COUNT_TEXT, "")
-            return
-        want = cfg.n_averages_effective
-        got = int(result.n_averages)
-        suffix = "" if got >= want else f" of {want}"
-        reason = " (frames not contiguous)" if got < want and result.averaging_gap else ""
-        dpg.set_value(ui.FFT_AVG_COUNT_TEXT, f"averaging {got}{suffix} frames{reason}")
-
-    def _update_peak_count_text(self, n_found: int, cap: int):
-        """Say how many lines passed the gate, and whether the cap is hiding any.
-
-        The significance threshold sets the count, so show it: without it, a
-        capped table looks the same as a spectrum with few significant lines.
-        """
-        if not dpg.does_item_exist(ui.FFT_PEAKS_FOUND_TEXT):
-            return
-        if n_found == 0:
-            dpg.set_value(ui.FFT_PEAKS_FOUND_TEXT, "no significant peaks")
-        elif n_found > cap:
-            dpg.set_value(ui.FFT_PEAKS_FOUND_TEXT, f"{n_found} peaks, showing {cap}")
-        else:
-            dpg.set_value(ui.FFT_PEAKS_FOUND_TEXT, f"{n_found} peaks")
-
-    def _update_trend_plot(self):
-        """Refresh the trend plot; collector handles unit/sensitivity conversion."""
-        trend_data = self.collector.get_trend_for_display()
-        for ch in self.collector.config.enabled_channels:
-            tag = ui.plt_trend_series(ch)
-            if not dpg.does_item_exist(tag):
-                continue
-            times, values = trend_data.get(ch, ([], []))
-            if times and values:
-                dpg.set_value(tag, [times, values])
-            else:
-                dpg.set_value(tag, [[0.0], [0.0]])
-        # NOTE: trend X range is NOT updated here; use the Autoscale button to
-        # fit [0, max_t * 1.1].  Updating it every frame would lock out user pan/zoom.
-
     def _update_browse_label(self):
         """Refresh the frame-browser label, nav buttons, and trend cursor line."""
         if not dpg.does_item_exist(ui.ACQ_BROWSE_LABEL):
@@ -1166,9 +694,6 @@ class GUI:
                         ui.ACQ_BROWSE_NEXT, ui.ACQ_BROWSE_LAST]:
                 if dpg.does_item_exist(tag):
                     dpg.configure_item(tag, enabled=can_browse)
-
-        # Vertical cursor on trend plot showing current browse position
-        self._update_trend_cursor()
 
     def _update_frame_info(self) -> None:
         """Populate the Frame info card from the currently displayed frame + browse context."""
@@ -1259,73 +784,18 @@ class GUI:
         else:
             dpg.configure_item(ui.FRAME_INFO_SECTION, show=True)
 
-    def _update_trend_cursor(self):
-        """Show/hide a vertical line on the trend plot at the browsed frame's rel_time."""
-        cache = self.collector.data["frame_cache"]
-        cursor = self.collector._cache_cursor
-        show = (not self.collector.is_streaming) and len(cache) > 0
-
-        if show:
-            idx = min(cursor, len(cache) - 1)
-            frame = cache[-(idx + 1)]
-            # Get rel_time from the first channel sample in the frame
-            rel_time = None
-            for k, v in frame.items():
-                if isinstance(k, int):
-                    rel_time = v.rel_time
-                    break
-
-            if rel_time is not None and dpg.does_item_exist(ui.PLT_TREND_AX_OVERALL):
-                if not dpg.does_item_exist(ui.PLT_TREND_CURSOR):
-                    dpg.add_inf_line_series(
-                        [rel_time], tag=ui.PLT_TREND_CURSOR, parent=ui.PLT_TREND_AX_OVERALL, label="##cursor"
-                    )
-                    with dpg.theme() as cursor_theme:
-                        with dpg.theme_component(dpg.mvAll):
-                            dpg.add_theme_color(dpg.mvPlotCol_Line, _c("RED_LIGHT", 220))
-                            dpg.add_theme_style(dpg.mvPlotStyleVar_LineWeight, 1.5)
-                    dpg.bind_item_theme(ui.PLT_TREND_CURSOR, cursor_theme)
-                else:
-                    dpg.set_value(ui.PLT_TREND_CURSOR, [[rel_time]])
-                dpg.configure_item(ui.PLT_TREND_CURSOR, show=True)
-                return
-
-        # Hide cursor when streaming or no data
-        if dpg.does_item_exist(ui.PLT_TREND_CURSOR):
-            dpg.configure_item(ui.PLT_TREND_CURSOR, show=False)
-
     def _update_results_section_visibility(self):
-        """Show per-channel result sections only for enabled channels, and the
-        Envelope tab only when AcquisitionSettings.envelope_enabled."""
-        enabled = set(self.collector.config.enabled_channels)
+        """Show the shaft-speed card of each enabled tachometer channel.
+
+        A vibration channel's results are on the cards of each spectrum
+        chart (gui_charts.py). A tachometer produces no ChannelResult, so
+        its card shows the shaft rate only.
+        """
+        tach = set(self.collector.config.tach_channels)
         for ch in range(_MAX_CHANNELS):
             tag = ui.ch_result_section(ch)
             if dpg.does_item_exist(tag):
-                dpg.configure_item(tag, show=(ch in enabled))
-            # A tachometer's card shows its rate; the vibration fields on it
-            # would never be populated, because results_for produces no
-            # ChannelResult for that channel -- they would sit at their
-            # construction defaults and read as a real measurement of zero.
-            is_tach = self.collector.config.role_for(ch) == 'tachometer'
-            for grp, want in ((ui.ch_vib_group(ch), not is_tach),
-                              (ui.ch_tach_group(ch), is_tach)):
-                if dpg.does_item_exist(grp):
-                    dpg.configure_item(grp, show=want)
-        self._update_envelope_tab_visibility()
-
-    def _update_envelope_tab_visibility(self):
-        """Show/hide the Envelope tab per AcquisitionSettings.envelope_enabled.
-
-        Envelope analysis is for bearing jobs. On other jobs the tab is hidden.
-        """
-        if dpg.does_item_exist(ui.TAB_ENVELOPE):
-            dpg.configure_item(ui.TAB_ENVELOPE, show=self.collector.config.envelope_enabled)
-
-    def _on_envelope_enabled_change(self, sender=None, data=None):
-        """Live-toggle the Envelope tab from the dialog checkbox, ahead of Apply/Close."""
-        if dpg.does_item_exist(ui.TAB_ENVELOPE):
-            dpg.configure_item(ui.TAB_ENVELOPE, show=bool(dpg.get_value(ui.ACQ_DLG_ENV_ENABLED)))
-        self._invalidate_auto_band()
+                dpg.configure_item(tag, show=(ch in tach))
 
     def _display_frame(self):
         """Process the current frame via collector and update all GUI plots."""
@@ -1342,23 +812,18 @@ class GUI:
         # the monitor and are never averaged; the display uses the
         # configured averaging.
         snap = self.collector.snapshot()
+        self._last_snapshot = snap
         self.collector.advance_frame(snap)
         record = self.collector.results_for(snap)
-        results = self.collector.results_for(
-            snap, n_averages=self.collector.display_n_averages())
-        raw_frame = snap.frame
 
         n_overflow = 0
-        for result in results:
-            ch = result.channel
-            tag = ui.ch_overflow_warning(ch)
+        for result in record:
+            tag = ui.ch_overflow_warning(result.channel)
             if dpg.does_item_exist(tag):
                 dpg.configure_item(tag, show=result.overflow)
                 if result.overflow:
                     n_overflow += 1
-            self._update_time_plot(result, ch)
-            self._update_freq_plot(result, ch)
-            self._update_envelope_plot(raw_frame.get(ch), ch)
+        self._charts.render(snap)
 
         if dpg.does_item_exist(ui.CH_WARNINGS_SECTION):
             dpg.configure_item(
@@ -1371,10 +836,9 @@ class GUI:
             self._monitor.on_results(
                 rev80.FrameViews(self.collector, snap, record), snap.history)
 
-        self._update_trend_plot()
         self._update_browse_label()
         self._update_frame_info()
-        self._ensure_legends()
+        self._charts.ensure_legends()
         if self._autoscale_pending:
             self._autoscale_plots()
             self._autoscale_pending = False
@@ -1462,18 +926,6 @@ class GUI:
             if dpg.does_item_exist(tip):
                 dpg.configure_item(tip, show=locked)
 
-    def _ensure_legends(self):
-        """Re-create any plot legend that has been lost (DPG can drop them on
-        dynamic series add/remove).  Called every _display_frame so recovery is
-        immediate."""
-        for plot_tag, legend_tag in [
-            (ui.PLT_FREQ, ui.PLT_FREQ_LEGEND),
-            (ui.PLT_TREND, ui.PLT_TREND_LEGEND),
-            (ui.PLT_SAMPLE, ui.PLT_SAMPLE_LEGEND),
-        ]:
-            if dpg.does_item_exist(plot_tag) and not dpg.does_item_exist(legend_tag):
-                dpg.add_plot_legend(location=dpg.mvPlot_Location_East, tag=legend_tag, parent=plot_tag)
-
     def _poll_new_frames(self):
         """Check for new data from the collector and display the current frame.
 
@@ -1544,6 +996,17 @@ class GUI:
         if not self.collector.is_streaming:
             self.collector.reprocess_last_block()
 
+    def _on_chart_tab_change(self, sender=None, data=None):
+        """Draw the chart of the new tab at once, from the frame on screen.
+
+        Only the chart on screen is drawn on each frame, so the new tab
+        would otherwise be empty until the next frame arrives.
+        """
+        snap = getattr(self, '_last_snapshot', None)
+        cid = self._charts.selected_chart_id()
+        if snap is not None and cid is not None:
+            self._charts.render(snap, force=cid)
+
     @staticmethod
     def _tooltip(target, text: str, wrap: int = 320):
         """Attach a wrapped hover tooltip to an already-created widget."""
@@ -1559,48 +1022,6 @@ class GUI:
         value = float(dpg.get_value(ui.FFT_PEAK_THRESHOLD_DB))
         self.collector.config.peak_threshold_db = max(0.0, value)
         self._redraw()
-
-    # ------------------------------------------------------------------
-    # Channel series management
-    # ------------------------------------------------------------------
-
-    def _add_channel_series(
-        self,
-        ch: int,
-        freq_axis: str = ui.PLT_FREQ_AX_ACCEL,
-        time_axis: str = ui.PLT_SAMPLE_AX_ACCEL,
-        trend_axis: str = ui.PLT_TREND_AX_OVERALL,
-    ):
-        ch_label = self.collector.config.name_for(ch)
-        theme = self._channel_themes[ch % len(self._channel_themes)]
-        for tag, axis in [
-            (ui.plt_time_series(ch), time_axis),
-            (ui.plt_freq_series(ch), freq_axis),
-            (ui.plt_env_series(ch), ui.PLT_ENV_AX_AMPL),
-            (ui.plt_trend_series(ch), trend_axis),
-        ]:
-            if not dpg.does_item_exist(tag):
-                dpg.add_line_series([0.0], [0.0], label=ch_label, tag=tag, parent=axis)
-                dpg.bind_item_theme(tag, theme)
-        one_x_tag = ui.plt_freq_one_x(ch)
-        if not dpg.does_item_exist(one_x_tag):
-            # Vertical marker at the shaft rate. A line's frequency is only
-            # diagnostic relative to 1x -- unbalance sits on it, misalignment
-            # on 2x, and a bearing tone characteristically between orders.
-            dpg.add_inf_line_series([], label=f"##onex_{ch}", tag=one_x_tag,
-                                    parent=freq_axis)
-        peaks_tag = ui.plt_freq_peaks(ch)
-        if not dpg.does_item_exist(peaks_tag):
-            dpg.add_scatter_series([0.0], [0.0], label=f"##peaks_{ch}", tag=peaks_tag, parent=freq_axis)
-            if self._peak_themes:
-                dpg.bind_item_theme(peaks_tag, self._peak_themes[ch % len(self._peak_themes)])
-
-    def _remove_channel_series(self, ch: int):
-        for tag in [ui.plt_time_series(ch), ui.plt_freq_series(ch),
-                    ui.plt_env_series(ch), ui.plt_trend_series(ch),
-                    ui.plt_freq_peaks(ch), ui.plt_freq_one_x(ch)]:
-            if dpg.does_item_exist(tag):
-                dpg.delete_item(tag)
 
     # ------------------------------------------------------------------
     # Connection summary (left panel display)
@@ -1885,87 +1306,27 @@ class GUI:
     # so a typical 60 Hz fundamental fills the trace legibly on autoscale.
     _TIME_WINDOW_RANGE_MS: float = 300.0
     _TIME_WINDOW_OFFSET_MS: float = 200.0
-    _last_time_x0_ms: float = 0.0   # start of the most recently plotted trace
 
     def _autoscale_plots(self, sender=None, data=None):
-        """Scale all plot axes to sensible initial bounds.
+        """Scale the axes of every chart to sensible initial bounds.
 
-        Axes that are explicitly set via set_axis_limits (time-series X and
-        trend Y/X) are unlocked one frame later so the user can freely pan/zoom
-        afterwards.  Axes scaled with fit_axis_data are inherently one-shot and
-        don't need unlocking.
+        Axes set with set_axis_limits (waveform X, trend X and Y) are
+        released one frame later, so the user can pan and zoom. Axes scaled
+        with fit_axis_data are one-shot and stay free.
         """
-        # Time Series X: fixed window for legibility (not fit-to-data), anchored
-        # to where the trace actually begins.
-        if self.collector.config.acquisition_period > 0.5 and dpg.does_item_exist(ui.PLT_SAMPLE_AX_TIME):
-            start = getattr(self, '_last_time_x0_ms', 0.0) + self._TIME_WINDOW_OFFSET_MS
-            dpg.set_axis_limits(
-                ui.PLT_SAMPLE_AX_TIME,
-                start,
-                start + self._TIME_WINDOW_RANGE_MS,
-            )
-        else:
-            # Acq period too small. Fit whole axis
-            dpg.fit_axis_data(ui.PLT_SAMPLE_AX_TIME)
-
-        # Amplitude / frequency axes: fit to current data (one-shot, no lock)
-        for ax in [
-            ui.PLT_SAMPLE_AX_ACCEL,
-            ui.PLT_SAMPLE_AX_ACCEL_2,
-            ui.PLT_FREQ_AX_FREQ,
-            ui.PLT_FREQ_AX_ACCEL,
-            ui.PLT_FREQ_AX_2,
-        ]:
-            if dpg.does_item_exist(ax):
-                dpg.fit_axis_data(ax)
-
-        # Trend X: fit to current data extent, excluding NaN/inf
-        import math as _math
-        all_times: list[float] = []
-        for ch in self.collector.config.enabled_channels:
-            td = self.collector.trend.get(ch, {})
-            rt = td.get("rel_times")
-            if rt is not None and len(rt) > 0:
-                all_times.extend(t for t in rt.tolist() if _math.isfinite(t))
-        if all_times and dpg.does_item_exist(ui.PLT_TREND_AX_TIME):
-            t_min = min(all_times)
-            t_max = max(all_times)
-            pad = max((t_max - t_min) * 0.1, 0.5)
-            dpg.set_axis_limits(ui.PLT_TREND_AX_TIME, t_min - pad, t_max + pad)
-        elif dpg.does_item_exist(ui.PLT_TREND_AX_TIME):
-            dpg.fit_axis_data(ui.PLT_TREND_AX_TIME)
-
-        # Trend Y: scale each axis independently by its own channels
-        groups = self._get_unit_groups()
-        trend_axes = [ui.PLT_TREND_AX_OVERALL, ui.PLT_TREND_AX_OVERALL_2]
-        trend_display = self.collector.get_trend_for_display()
-        for i, (_, chs) in enumerate(groups[:2]):
-            ax = trend_axes[i]
-            if not dpg.does_item_exist(ax):
-                continue
-            peak = 0.0
-            for ch in chs:
-                _, vals = trend_display.get(ch, ([], []))
-                if vals:
-                    peak = max(peak, max(vals))
-            if peak > 0.0:
-                dpg.set_axis_limits(ax, 0.0, peak * 1.1)
-            else:
-                dpg.fit_axis_data(ax)
-
-        # Unlock all explicitly-set axes one frame later so user can pan/zoom freely.
-        # dpg.set_axis_limits locks the axis until set_axis_limits_auto is called;
-        # doing it on the next frame preserves the view while releasing the lock.
+        self._autoscale_locked = self._charts.autoscale(
+            self._TIME_WINDOW_OFFSET_MS, self._TIME_WINDOW_RANGE_MS)
         dpg.set_frame_callback(
             dpg.get_frame_count() + 1,
             callback=self._unlock_autoscaled_axes,
         )
 
     def _unlock_autoscaled_axes(self):
-        """Release axis locks set by _autoscale_plots (called one frame later)."""
-        for ax in [ui.PLT_SAMPLE_AX_TIME, ui.PLT_TREND_AX_TIME, ui.PLT_TREND_AX_OVERALL, ui.PLT_TREND_AX_OVERALL_2]:
+        """Release the axis locks that _autoscale_plots set, one frame later."""
+        for ax in self._autoscale_locked:
             if dpg.does_item_exist(ax):
                 dpg.set_axis_limits_auto(ax)
+        self._autoscale_locked = []
 
     def _clear_cache(self, sender=None, data=None):
         """Wipe the frame cache and trend data, refresh the browse label."""
@@ -1973,13 +1334,7 @@ class GUI:
             return
         self.collector.reset_data_store()
         self._update_browse_label()
-        # Push flat (0,0) traces to every series so the plots visually clear
-        for ch in range(_MAX_CHANNELS):
-            for tag in [ui.plt_time_series(ch), ui.plt_freq_series(ch), ui.plt_trend_series(ch), ui.plt_freq_peaks(ch)]:
-                if dpg.does_item_exist(tag):
-                    dpg.set_value(tag, [[0.0], [0.0]])
-        if dpg.does_item_exist(ui.PLT_TREND_AX_TIME):
-            dpg.set_axis_limits(ui.PLT_TREND_AX_TIME, 0.0, 1.0)
+        self._charts.clear()
 
     @staticmethod
     def _native_file_dialog(save: bool = False) -> str:
@@ -2067,6 +1422,8 @@ class GUI:
             return False
         if new is not self.collector:
             self._release_device()
+            if new.chart_set is None:
+                new.chart_set = self.collector.chart_set
             self.collector = new
         try:
             if setup is not None:
@@ -2104,15 +1461,10 @@ class GUI:
                 loaded.update(k for k in frame if isinstance(k, int))
             if loaded:
                 self._num_channels = max(loaded) + 1
-        # Remove stale series and the trend cursor, then add the series again.
-        for ch in range(_MAX_CHANNELS):
-            self._remove_channel_series(ch)
-        if dpg.does_item_exist(ui.PLT_TREND_CURSOR):
-            dpg.delete_item(ui.PLT_TREND_CURSOR)
-        for ch in sorted(collector.config.enabled_channels):
-            if ch < self._num_channels:
-                self._add_channel_series(ch)
-        self._update_axis_assignment()
+        # A tab change draws from the last snapshot; one of the old
+        # collector must not reach the new one.
+        self._last_snapshot = None
+        self._charts.rebuild()
         self._update_results_section_visibility()
         self._update_connection_summary()
         self._update_spectrum_info()
@@ -2513,27 +1865,6 @@ class GUI:
                 else:
                     self.collector.config.channel_amplitude_modes.pop(ch, None)
         self.collector.config.enabled_channels.sort()
-        # Sync plot series visibility with final widget state (hide/show, preserve data)
-        for ch in range(self._num_channels):
-            enabled_tag = ui.scope_ch_enabled(ch)
-            if dpg.does_item_exist(enabled_tag):
-                series_tags = [
-                    ui.plt_time_series(ch),
-                    ui.plt_freq_series(ch),
-                    ui.plt_trend_series(ch),
-                    ui.plt_freq_peaks(ch),
-                ]
-                if dpg.get_value(enabled_tag):
-                    if any(dpg.does_item_exist(t) for t in series_tags):
-                        for t in series_tags:
-                            if dpg.does_item_exist(t):
-                                dpg.show_item(t)
-                    else:
-                        self._add_channel_series(ch)
-                else:
-                    for t in series_tags:
-                        if dpg.does_item_exist(t):
-                            dpg.hide_item(t)
 
     # ------------------------------------------------------------------
     # Session Browser
@@ -2794,16 +2125,7 @@ class GUI:
             if isinstance(b, dict) and 'rel_time' in b
         ]
         try:
-            if dpg.does_item_exist(ui.PLT_TREND_AX_OVERALL):
-                if dpg.does_item_exist(ui.PLT_TREND_BURST_VLINES):
-                    dpg.delete_item(ui.PLT_TREND_BURST_VLINES)
-                if burst_rel_times:
-                    dpg.add_inf_line_series(
-                        burst_rel_times,
-                        parent=ui.PLT_TREND_AX_OVERALL,
-                        tag=ui.PLT_TREND_BURST_VLINES,
-                        label='Burst',
-                    )
+            self._charts.set_burst_lines(burst_rel_times)
         except Exception as exc:
             log.warning(f'session browser: failed to draw burst vlines: {exc}')
 
@@ -2901,10 +2223,9 @@ class GUI:
         session_h5 = Path(str(session_dir)) / 'session.h5'
         # Remove session vlines — burst view is independent, trend rebased to trigger=0
         try:
-            if dpg.does_item_exist(ui.PLT_TREND_BURST_VLINES):
-                dpg.delete_item(ui.PLT_TREND_BURST_VLINES)
-        except Exception:
-            pass
+            self._charts.set_burst_lines([])
+        except Exception as exc:                             # noqa: BLE001
+            log.warning(f'session browser: failed to remove burst vlines: {exc}')
 
         new = self._load_into_new_collector(
             lambda c: c.load_monitor_burst(session_h5, burst_id),
@@ -3016,7 +2337,7 @@ class GUI:
         self._refresh_assigned_sensors()
         self._update_connection_summary()
         self._update_spectrum_info()
-        self._update_axis_assignment()
+        self._charts.rebuild()
         self._update_results_section_visibility()
         self.collector.init_trend_channels()
 
@@ -3157,6 +2478,9 @@ class GUI:
             self._stop_stream()
         self._apply_acq_settings_from_widgets()
         self._save_channel_assignments()  # persist acquisition settings to device YAML
+        # The layout follows "Envelope analysis" and "Average spectrum", and
+        # the card and axis labels show the band.
+        self._charts.rebuild()
         if self.collector.sensor is not None:
             self.collector.reconnect_stream()
         if was_streaming:
@@ -3785,23 +3109,12 @@ class GUI:
         if not dpg.does_item_exist(ui.scope_ch_enabled(ch)):
             return
         enabled = dpg.get_value(ui.scope_ch_enabled(ch))
-        series_tags = [ui.plt_time_series(ch), ui.plt_freq_series(ch), ui.plt_trend_series(ch), ui.plt_freq_peaks(ch)]
         if enabled:
             if ch not in self.collector.config.enabled_channels:
                 self.collector.config.enabled_channels.append(ch)
                 self.collector.config.enabled_channels.sort()
-            # Show if series already exists (file or prior capture); create if not
-            if any(dpg.does_item_exist(t) for t in series_tags):
-                for t in series_tags:
-                    if dpg.does_item_exist(t):
-                        dpg.show_item(t)
-            else:
-                self._add_channel_series(ch)
         else:
             self.collector.config.enabled_channels = [c for c in self.collector.config.enabled_channels if c != ch]
-            for t in series_tags:
-                if dpg.does_item_exist(t):
-                    dpg.hide_item(t)
         self._save_channel_assignments()
         # Reflect enabled/disabled state in the header text color
         header_tag = ui.scope_ch_header(ch)
@@ -3809,7 +3122,7 @@ class GUI:
         if dpg.does_item_exist(header_tag) and dpg.does_item_exist(theme_tag):
             dpg.bind_item_theme(header_tag, theme_tag)
         self._update_connection_summary()
-        self._update_axis_assignment()
+        self._charts.rebuild()
         self._update_results_section_visibility()
         # Skip live reconnect while the config dialog is open — _on_config_close
         # will do a single reconnect with all changes applied at once.
@@ -3817,20 +3130,16 @@ class GUI:
             self.collector.reconnect_stream()
 
     def _refresh_channel_names(self):
-        """Sync channel name labels in plot series and results panel headers."""
+        """Sync the channel names on the tachometer cards.
+
+        The charts and their cards take the names at their rebuild, which
+        follows in _on_config_close.
+        """
         for ch in range(_MAX_CHANNELS):
             name = self.collector.config.name_for(ch)
-            for series_tag in [ui.plt_time_series(ch), ui.plt_freq_series(ch), ui.plt_trend_series(ch)]:
-                if dpg.does_item_exist(series_tag):
-                    dpg.set_item_label(series_tag, name)
             header_tag = ui.ch_header_text(ch)
             if dpg.does_item_exist(header_tag):
                 dpg.set_value(header_tag, name)
-
-    def _redraw_all_channels(self):
-        """Re-display the current cached frame for all enabled channels."""
-        if not self.collector.is_streaming:
-            self.collector.reprocess_last_block()
 
     def _refresh_channel_header(self, ch: int):
         """Update the name display text and collapsing-header summary label."""
@@ -3872,8 +3181,8 @@ class GUI:
         self.collector.set_scope_sensor(ch, sensor)
         self._save_channel_assignments()
         self._update_connection_summary()
-        self._update_axis_assignment()
-        self._redraw_all_channels()
+        self._charts.rebuild()
+        self._redraw()
         self._refresh_channel_header(ch)
 
     def _restore_channel_assignments(self, device_cfg: dict | None = None):
@@ -3945,15 +3254,8 @@ class GUI:
             coupling_tag = ui.scope_ch_coupling(ch)
             if dpg.does_item_exist(coupling_tag):
                 dpg.set_value(coupling_tag, coupling)
-            if enabled:
-                self._add_channel_series(ch)
-            else:
-                self._remove_channel_series(ch)
         self.collector.config.enabled_channels.sort()
-        for ch in self.collector.config.enabled_channels:
-            if ch < self._num_channels:
-                self._add_channel_series(ch)
-        self._update_axis_assignment()
+        self._charts.rebuild()
         # After the roles are restored, so the tab shows the loaded values,
         # not its construction defaults.
         self._populate_tach_tab()
@@ -4321,7 +3623,6 @@ class GUI:
                                 label="Envelope/Demodulation (bearing analysis)",
                                 tag=ui.ACQ_DLG_ENV_ENABLED,
                                 default_value=False,
-                                callback=self._on_envelope_enabled_change,
                             )
                             self._tooltip(
                                 _env_en,
@@ -4928,84 +4229,10 @@ class GUI:
                                 dpg.add_theme_color(dpg.mvPlotCol_MarkerOutline, color, category=dpg.mvThemeCat_Plots)
                         self._peak_themes.append(pt)
 
-                    with dpg.tab_bar():
-                        with dpg.tab(label="Spectrum"):
-                            with dpg.plot(
-                                label="Frequency Series",
-                                width=-1,
-                                height=-TIME_PLOT_HEIGHT,
-                                tag=ui.PLT_FREQ,
-                                crosshairs=True,
-                            ):
-                                dpg.add_plot_legend(location=dpg.mvPlot_Location_East, tag=ui.PLT_FREQ_LEGEND)
-                                dpg.add_plot_axis(dpg.mvXAxis, label="Frequency, hz", tag=ui.PLT_FREQ_AX_FREQ)
-                                dpg.add_plot_axis(dpg.mvYAxis, label="", tag=ui.PLT_FREQ_AX_ACCEL)
-                                dpg.add_plot_axis(dpg.mvYAxis2, label="", tag=ui.PLT_FREQ_AX_2)
-                                dpg.hide_item(ui.PLT_FREQ_AX_2)
-                        with dpg.tab(label="Envelope", tag=ui.TAB_ENVELOPE, show=False):
-                            # Demodulation band controls. A bearing defect's
-                            # impulses ring a housing resonance at 2-20 kHz and
-                            # are modulated at the defect rate; the raw spectrum
-                            # buries that under the 1x, the envelope of the
-                            # resonance shows it as a clean line.
-                            dpg.add_text("", tag=ui.ENV_FMAX_WARNING, color=_c("YELLOW"), show=False, wrap=0)
-                            with dpg.group(horizontal=True):
-                                dpg.add_text("Band")
-                                dpg.add_input_float(
-                                    label="-", tag=ui.ENV_BAND_LO, default_value=0.0,
-                                    min_value=0.0, step=0, format="%.0f", width=80,
-                                    callback=self._on_env_band_change,
-                                )
-                                dpg.add_input_float(
-                                    label="Hz", tag=ui.ENV_BAND_HI, default_value=0.0,
-                                    min_value=0.0, step=0, format="%.0f", width=80,
-                                    callback=self._on_env_band_change,
-                                )
-                                _auto = dpg.add_button(label="Auto",
-                                                       tag=ui.ENV_BAND_AUTO,
-                                                       callback=self._on_env_auto_band)
-                                self._tooltip(
-                                    _auto,
-                                    "Pick a demodulation band from the current frame: "
-                                    "the strongest concentration of high-frequency "
-                                    "energy, which is where a housing resonance shows "
-                                    "up. Leave the band at 0 to auto-select every "
-                                    "frame.")
-                            dpg.add_text("", tag=ui.ENV_INFO_TEXT, color=_c("MUTED"))
-                            with dpg.plot(
-                                label="Envelope Spectrum",
-                                width=-1,
-                                height=-TIME_PLOT_HEIGHT,
-                                tag=ui.PLT_ENV,
-                                crosshairs=True,
-                            ):
-                                dpg.add_plot_legend(location=dpg.mvPlot_Location_East,
-                                                    tag=ui.PLT_ENV_LEGEND)
-                                dpg.add_plot_axis(dpg.mvXAxis, label="Modulation frequency, Hz",
-                                                  tag=ui.PLT_ENV_AX_FREQ)
-                                dpg.add_plot_axis(dpg.mvYAxis, label="Envelope amplitude",
-                                                  tag=ui.PLT_ENV_AX_AMPL)
-                        with dpg.tab(label="Trend"):
-                            with dpg.plot(
-                                label="Trend Series",
-                                width=-1,
-                                height=-TIME_PLOT_HEIGHT,
-                                tag=ui.PLT_TREND,
-                                crosshairs=True,
-                            ):
-                                dpg.add_plot_legend(location=dpg.mvPlot_Location_East, tag=ui.PLT_TREND_LEGEND)
-                                dpg.add_plot_axis(dpg.mvXAxis, label="Time, s", tag=ui.PLT_TREND_AX_TIME)
-                                dpg.add_plot_axis(dpg.mvYAxis, label="Overall Vibration", tag=ui.PLT_TREND_AX_OVERALL)
-                                dpg.add_plot_axis(dpg.mvYAxis2, label="", tag=ui.PLT_TREND_AX_OVERALL_2)
-                                dpg.hide_item(ui.PLT_TREND_AX_OVERALL_2)
-                    with dpg.plot(
-                        label="Time Series", width=-1, height=TIME_PLOT_HEIGHT, tag=ui.PLT_SAMPLE, crosshairs=True
-                    ):
-                        dpg.add_plot_legend(location=dpg.mvPlot_Location_East, tag=ui.PLT_SAMPLE_LEGEND)
-                        dpg.add_plot_axis(dpg.mvXAxis, label="Time, ms", tag=ui.PLT_SAMPLE_AX_TIME)
-                        dpg.add_plot_axis(dpg.mvYAxis, label="", tag=ui.PLT_SAMPLE_AX_ACCEL)
-                        dpg.add_plot_axis(dpg.mvYAxis2, label="", tag=ui.PLT_SAMPLE_AX_ACCEL_2)
-                        dpg.hide_item(ui.PLT_SAMPLE_AX_ACCEL_2)
+                    # One tab for each chart of the layout in effect.
+                    # ChartsView.rebuild() fills it.
+                    dpg.add_tab_bar(tag=ui.MAIN_CHART_TAB_BAR,
+                                    callback=self._on_chart_tab_change)
 
                 # ── Results column (right) ────────────────────────────
                 with dpg.child_window(width=RESULTS_WIDTH, autosize_y=True):
@@ -5059,7 +4286,7 @@ class GUI:
                     _pk_cap = dpg.add_input_int(
                         label="Max Shown",
                         tag=ui.FFT_PEAKS_DISPLAY_COUNT,
-                        default_value=_DEFAULT_PEAK_DISPLAY_CAP,
+                        default_value=DEFAULT_PEAK_DISPLAY_CAP,
                         min_value=1,
                         max_value=500,
                         callback=self._redraw,
@@ -5071,8 +4298,6 @@ class GUI:
                         "the smallest of the lines that already passed the "
                         "significance test; it does not decide which lines are real.",
                     )
-                    dpg.add_text("", tag=ui.FFT_PEAKS_FOUND_TEXT, color=_c("MUTED"))
-                    dpg.add_text("", tag=ui.FFT_AVG_COUNT_TEXT, color=_c("MUTED"))
                     dpg.add_spacer(height=4)
 
                     # Frame metadata card — hidden until first frame arrives
@@ -5107,13 +4332,15 @@ class GUI:
                         dpg.add_text("Capture interval: —", tag=ui.FRAME_INFO_INTERVAL,      show=False)
                     dpg.add_spacer(height=4)
 
-                    # Per-channel result sections (all hidden by default;
-                    # _update_results_section_visibility shows enabled ones)
+                    # Shaft-speed card of each tachometer channel (hidden
+                    # by default; _update_results_section_visibility shows
+                    # the enabled ones). A tachometer has no overall, no
+                    # spectrum and no engineering unit.
                     for _ch in range(_MAX_CHANNELS):
                         with dpg.child_window(
                             border=True,
                             autosize_x=True,
-                            height=_RESULTS_CARD_HEIGHT,
+                            height=_TACH_CARD_HEIGHT,
                             no_scrollbar=True,
                             tag=ui.ch_result_section(_ch),
                             show=False,
@@ -5130,61 +4357,15 @@ class GUI:
                                     )
                                 dpg.add_text(self.collector.config.name_for(_ch), tag=ui.ch_header_text(_ch))
                             dpg.add_separator()
-                            # A tachometer channel has no overall, no spectrum
-                            # and no engineering unit, so its card shows the
-                            # shaft rate instead of a set of vibration fields
-                            # that nothing would ever populate. The Tachometer
-                            # tab took the channel; it takes the card with it.
-                            with dpg.group(tag=ui.ch_tach_group(_ch), show=False):
+                            with dpg.group(tag=ui.ch_tach_group(_ch)):
                                 dpg.add_text("--", tag=ui.ch_tach_rate(_ch))
                                 dpg.add_text("", tag=ui.ch_tach_detail(_ch),
                                              color=_c("MUTED"))
-                            dpg.add_group(tag=ui.ch_vib_group(_ch))
-                            dpg.push_container_stack(ui.ch_vib_group(_ch))
-                            dpg.add_input_text(
-                                label="Overall",
-                                tag=ui.ch_overall_value(_ch),
-                                readonly=True,
-                                default_value="0.0",
-                                width=RESULTS_WIDTH // 2,
-                            )
-                            # Impulsiveness scalars. A broadband overall
-                            # averages impulsiveness away, so these are what
-                            # see a bearing before the overall moves.
-                            _sc = dpg.add_text("Crest -   Kurt -",
-                                               tag=ui.ch_scalars_text(_ch),
-                                               color=_c("MUTED"))
-                            # Vibration level at the shaft rate, shown only
-                            # when a tachometer is reading. Blank rather than
-                            # zero without one -- an absent number and a
-                            # measured zero are different facts.
-                            _ox = dpg.add_text("", tag=ui.ch_one_x_text(_ch),
-                                               color=_c("MUTED"), show=False)
-                            self._tooltip(
-                                _ox,
-                                "Vibration level at 1x shaft rate.\n\n"
-                                "1x rarely lands on a bin centre, so this is the "
-                                "larger of the two bins straddling it -- no "
-                                "interpolation, the same rule the peak table uses.")
-                            self._tooltip(
-                                _sc,
-                                "Crest factor = peak / RMS: 1.41 for a pure sine, "
-                                "~3-4 for random noise, higher when the signal is "
-                                "impulsive. It rises early in a bearing defect's life "
-                                "and falls again once the defect spalls, so it is read "
-                                "alongside kurtosis rather than instead of it.\n\n"
-                                "Kurtosis = 3.0 for random noise, 1.5 for a pure sine. "
-                                "Above about 4 means impulsive -- repetitive impacts "
-                                "that a broadband overall averages away completely.")
-                            dpg.add_table(
-                                header_row=True,
-                                row_background=True,
-                                borders_innerV=True,
-                                no_host_extendX=True,
-                                tag=ui.ch_peaks_table(_ch),
-                            )
-                            dpg.pop_container_stack()   # ch_vib_group
                         dpg.add_spacer(height=2)
+
+                    # Result cards of each spectrum chart, one collapsing
+                    # header for each chart. ChartsView.rebuild() fills it.
+                    dpg.add_group(tag=ui.CHART_CARDS)
 
         # Last: the tooltips need the locked controls to exist.
         dpg.bind_theme(self._create_disabled_theme())
@@ -5247,7 +4428,7 @@ class GUI:
         self._setup_keyboard_handlers()
         self._update_spectrum_info()
         self._update_connection_summary()
-        self._update_axis_assignment()
+        self._charts.rebuild()
         self._refresh_registry_dialog_list()
         self._set_stream_status("idle")  # apply initial toggle button theme
         log.info("Setup GUI")

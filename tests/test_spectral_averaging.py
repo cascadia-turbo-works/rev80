@@ -424,17 +424,19 @@ def test_the_gap_limit_is_one_and_a_half_achieved_periods():
     assert _browse_newest(dc).n_averages == 1
 
 
-def test_count_text_says_why_frames_were_not_averaged(monkeypatch):
+def test_count_text_says_why_frames_were_not_averaged():
     pytest.importorskip("dearpygui")
-    import dearpygui.dearpygui as dpg
-    from rev80.gui import GUI
-    shown = {}
-    monkeypatch.setattr(dpg, 'does_item_exist', lambda tag: True)
-    monkeypatch.setattr(dpg, 'set_value', lambda tag, v: shown.update(text=v))
+    from rev80.gui_charts import averaging_text
     dc = averaging_collector(n=8)
     for i in range(3):
         feed(dc, noisy(dc, 300.37, 1.0, seed=i), rel_time=i * 600.0)
-    app = GUI.__new__(GUI)
-    app.collector = dc
-    app._update_avg_count_text(_browse_newest(dc))
-    assert shown['text'] == "averaging 1 of 8 frames (frames not contiguous)"
+    r = _browse_newest(dc)
+    assert (averaging_text(r.n_averages, 8, r.averaging_gap)
+            == "averaging 1 of 8 frames (frames not contiguous)")
+
+
+def test_count_text_of_a_full_average():
+    pytest.importorskip("dearpygui")
+    from rev80.gui_charts import averaging_text
+    assert averaging_text(8, 8, False) == "averaging 8 frames"
+    assert averaging_text(3, 8, False) == "averaging 3 of 8 frames"

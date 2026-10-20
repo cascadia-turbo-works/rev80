@@ -232,8 +232,9 @@ This procedure uses the simulated sensor, so you can do it without a scope.
 6. Click **Close**. Rev80 applies all tabs and saves them.
 7. In the **Acquisition** card, click **Stopped** to start the stream. The
    button then shows **Running**.
-8. Read the result card for each channel in the right column: **Overall**,
-   **Crest** and **Kurt**, and the peak table.
+8. Read the result card for each channel in the right column, under the
+   name of the spectrum chart: **Overall**, **Crest** and **Kurt**, and the
+   peak table.
 9. Click **Running** to stop the stream.
 10. In the **File** card, type a note in **Measurement Notes**. Click
     **Save**.
@@ -263,21 +264,33 @@ The main window has three columns.
 | Monitor Mode | **Setup** opens the Monitor tab. **Monitor** starts and stops a recording. **Reset Baseline** restarts the anomaly baseline. **Record Burst** starts a manual burst. The status text shows elapsed time, captures, bursts and the time to the next capture. **Load Session** opens the session browser. |
 | File | **Save** writes the frame cache to an `.h5` file. **Load** opens an `.h5` file. **Measurement Notes** is saved in the file. |
 
-**Center column (plots):**
+**Center column (charts):**
 
-- **Spectrum** tab: the amplitude spectrum from 0 Hz to F_max, with peak
+One tab for each chart of the chart layout. Each chart has one unit and one
+amplitude mode for all its series. The unit and mode on the Channels tab are
+the record unit: what Rev80 stores and trends.
+
+- **Time waveform**: the band-limited waveform in the chart unit.
+- **Spectrum**: the amplitude spectrum from 0 Hz to F_max, with peak
   markers and a 1x marker when a tachometer reads.
-- **Envelope** tab: shown only when you enable it in the Acquisition tab. See
+- **Trend**: the overall of each channel against time. The axis label shows
+  the unit, the amplitude mode and the declared band. Burst trigger times
+  show as vertical lines when you load a session.
+- **Envelope**: the envelope spectrum of a demodulation band. See
   [Envelope analysis](#envelope-analysis).
-- **Trend** tab: the overall of each channel against time. The axis label
-  shows the unit, the amplitude mode and the declared band. Burst trigger
-  times show as vertical lines when you load a session.
-- **Time Series** plot (below the tabs): the band-limited waveform in the
-  display unit.
 
-When two channels have different units, the plots use a second Y axis. Rev80
-supports two units on screen. A third unit shares the second axis, and the
-log records a warning.
+The layout has a Time waveform, a Spectrum and a Trend chart, with all
+vibration channels, in the record unit and mode of the first. **Envelope
+analysis** on the Acquisition tab adds an Envelope chart. **Average
+spectrum** sets the averaging of the Spectrum chart.
+
+A channel that cannot show the chart unit has an empty series. Its legend
+label gives the reason, for example "Ch B: no sensor, cannot show in/s".
+Rev80 never shows mV on an engineering-unit axis. A note at the top of the
+tab lists the channels of the chart that it cannot show.
+
+Only the chart on screen is drawn on each frame. When you select a tab,
+Rev80 draws its chart at once from the frame on screen.
 
 **Right column (results):**
 
@@ -286,15 +299,20 @@ log records a warning.
   to be a peak. Default 9.5 dB.
 - **Max Shown**: the maximum number of peaks in the table and on the plot
   (default 50). It does not change which lines are peaks.
-- The peak count ("N peaks", "N peaks, showing M", "no significant peaks")
-  and the averaging count ("averaging N of M frames").
 - **Frame** card: capture time, block size (samples), sample rate (the
   achieved raw rate, Hz). It also shows burst and session data when you
   browse a session.
-- One card for each enabled channel: **Overall**, **Crest** and **Kurt**, the
-  1x level when a tachometer reads, and the peak table. A tachometer channel
-  card shows the shaft speed, the reading quality, the edge count and the
-  duty cycle instead.
+- One card for each enabled tachometer channel: the shaft speed, the
+  reading quality, the edge count and the duty cycle.
+- One group of cards for each Spectrum chart, under a header with the name
+  of the chart. Click the header to open or close the group. The cards
+  update on each frame, also when the group is closed or the chart is not
+  on screen. Each card has the **Overall**, **Crest** and **Kurt**, the 1x
+  level when a tachometer reads, the peak count ("N peaks", "N peaks,
+  showing M", "no significant peaks"), the averaging count ("averaging N of
+  M frames") when the chart averages, and the peak table. The overall, the
+  1x level and the peaks are in the unit and mode of the chart. Crest
+  factor and kurtosis are never averaged.
 
 ### Configuration dialog
 
@@ -712,10 +730,10 @@ A shaft speed always shows its unit. 30 is a plausible RPM, Hz and rad/s.
 
 ## Envelope analysis
 
-The **Envelope** tab finds rolling-element bearing defects (inner race,
-outer race, ball, cage) early, before they show in the overall. To show the
-tab, select **Envelope/Demodulation (bearing analysis)** in the Acquisition
-tab. It is off by default.
+An **Envelope** chart finds rolling-element bearing defects (inner race,
+outer race, ball, cage) early, before they show in the overall. To add the
+chart, select **Envelope/Demodulation (bearing analysis)** in the
+Acquisition tab. It is off by default.
 
 ### Why the spectrum does not show the defect
 
@@ -739,8 +757,10 @@ Rev80 does these steps:
 4. Amplitude spectrum of the envelope, 0 Hz to 500 Hz.
 
 The envelope uses the raw rate (25600 Hz nominal, 12800 Hz Nyquist). F_max
-has no effect on it. The amplitude is in the source EU of the sensor (for
-example `g`), not in the channel unit.
+has no effect on it. The amplitude is in the unit and mode of the chart.
+The unit is the quantity of the sensor (for example `g` or `mm/s2` for an
+accelerometer), with no integration. `0-P` is the sideband amplitude; RMS
+and P-P are scaled from it.
 
 ### Reading the envelope spectrum
 
@@ -765,14 +785,16 @@ than one reading.
 ### Choosing the demodulation band
 
 The band is the most important setting. Set it in the **Band** fields (low,
-high, in Hz).
+high, in Hz) at the top of the Envelope chart. Each Envelope chart has its
+own band.
 
 - **Auto:** With both fields at 0, Rev80 selects a band from the first frame
   and keeps it. **Auto** selects a new band from the current frame and
-  writes it into the fields. The search covers a quarter of the raw Nyquist
-  up to 0.99 × Nyquist (about 3.2 kHz to 12.7 kHz). The band is a quarter of
-  that upper limit wide (about 3.2 kHz). The search uses the band energy, not
-  one tall line.
+  writes it into the fields. The search stays below the top of the
+  anti-alias-protected band, raw rate / 2.56 (10 kHz at 25600 Hz). It
+  covers a quarter of that top up to the top (2.5 kHz to 10 kHz). The band
+  is a quarter of the top wide (2.5 kHz). The search uses the band energy,
+  not one tall line.
 - **Type a band** when you know the resonance, for example from a bump test.
   A housing has more than one resonance. Auto can select a different one.
 - **Width:** too narrow loses the sidebands; too wide lets machine lines in
@@ -1138,7 +1160,7 @@ headless use the same file.
 | `averaging_enabled` | | (false) | Average spectrum | Spectral averaging on or off |
 | `n_averages` | frames | (8) | Averages | Frames to average |
 | `peak_threshold_db` | dB | (9.5) | Peak Sig., dB | Peak threshold |
-| `envelope_enabled` | | (false) | Envelope/Demodulation | Show the Envelope tab |
+| `envelope_enabled` | | (false) | Envelope/Demodulation | Add an Envelope chart |
 
 Values in parentheses are not in a seeded file. The GUI writes them when it
 saves.

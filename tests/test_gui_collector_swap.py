@@ -34,7 +34,6 @@ class _LiveStream:
 
 
 _WIDGET_METHODS = (
-    '_remove_channel_series', '_add_channel_series', '_update_axis_assignment',
     '_update_results_section_visibility', '_update_connection_summary',
     '_update_spectrum_info', '_update_browse_label', '_set_device_status',
     '_set_stream_status', '_update_monitor_card', '_populate_siggen_tab',
@@ -57,9 +56,17 @@ def app(monkeypatch, tmp_path):
     a.collector = rev80.DataCollector()
     a._waiting_text = None
     a._device_fault = None
+    a._charts = _NullCharts()
     for name in _WIDGET_METHODS:
         monkeypatch.setattr(a, name, lambda *args, **kw: None)
     return a
+
+
+class _NullCharts:
+    """ChartsView with no widgets."""
+
+    def __getattr__(self, name):
+        return lambda *a, **k: None
 
 
 class _NoRegistry:

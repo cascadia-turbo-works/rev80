@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 import rev80.gui as gui_module
+import rev80.gui_charts as gui_charts
 from rev80.gui import (
     GUI,
     degraded_rate_text,
@@ -32,7 +33,11 @@ def test_envelope_search_fmax_is_the_protected_band_top():
 
 
 class _BandDpg:
-    """ENV_BAND_LO and ENV_BAND_HI are 0: the GUI selects the band."""
+    """The band fields of the envelope chart are 0: the GUI selects the band."""
+
+    @staticmethod
+    def does_item_exist(tag):
+        return True
 
     @staticmethod
     def get_value(tag):
@@ -41,14 +46,13 @@ class _BandDpg:
 
 def test_auto_band_is_at_or_below_the_protected_band(monkeypatch):
     """Put the most energy in the guard band, above 10 kHz."""
-    monkeypatch.setattr(gui_module, 'dpg', _BandDpg)
-    app = GUI.__new__(GUI)
-    app._env_auto_band = {}
+    monkeypatch.setattr(gui_charts, 'dpg', _BandDpg)
+    view = gui_charts.ChartsView(host=None)
     rng = np.random.default_rng(1)
     n = int(RAW_FS)
     t = np.arange(n) / RAW_FS
     signal = 0.01 * rng.standard_normal(n) + np.sin(2 * np.pi * 11500.0 * t)
-    lo, hi = app._env_band_for(signal, RAW_FS, ch=0)
+    lo, hi = view._env_band('c1', signal, RAW_FS, ch=0)
     assert lo < hi <= RAW_FS / 2.56
 
 

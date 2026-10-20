@@ -31,8 +31,8 @@ Update this file in the same commit as each step. Status: 🔲 TODO,
 
 | Step | Content | Status | Commit | Verification |
 |---|---|---|---|---|
-| D1 | `charts.py`; default layout = time waveform + spectrum | ✅ Done | (this commit) | round trip of every type through YAML; bad entry skipped; bad file not overwritten (3 cases); unit rules; tachometer refused; XY needs two; default = waveform + spectrum; collector uses the same rule (`test_charts.py`) |
-| D2 | Main window from `chart_set`; cards with collapsing headers; `gui_charts.py`; ARM pattern | 🔲 TODO | | profiling before and after |
+| D1 | `charts.py`; default layout = time waveform + spectrum | ✅ Done | 3b4659e | round trip of every type through YAML; bad entry skipped; bad file not overwritten (3 cases); unit rules; tachometer refused; XY needs two; default = waveform + spectrum; collector uses the same rule (`test_charts.py`) |
+| D2 | Main window from `chart_set`; cards with collapsing headers; `gui_charts.py`; ARM pattern | ✅ Done | (this commit) | tabs from a set; selection kept and first tab after a removal; hidden chart not drawn, its cards updated; tab change draws at once; series in the chart unit; legend reason and tab note; peaks pool shrink, grow and clear; main window build and one display tick; ARM pattern (`test_gui_charts.py`). Revert checks: drawing every chart fails the hidden-chart test; the XY and disabled-tachometer tests fail without their fixes. Code review (python-reviewer): 2 HIGH, 4 MEDIUM fixed (Apply rebuild, XY tachometer, rebuild redraw, clear, stale snapshot; XY by time as a guard, the trims are equal today); LOW: cursor theme and x0 fixed, envelope info line for each chart and no autoscale at the first open of a tab accepted. Profiling in E19. The renderers of D5 (envelope SI scale and mode), D6 (y2 shaft speed) and D7 (XY) are in this step; their steps add the tests. `legacy_layout()` adds the trend of the old window (owner question open: the default layout, Q15, has no trend) |
 | D3 | Charts tab; XY swap; file-loaded edits and "Use for live data" | 🔲 TODO | | |
 | D4 | Acquisition-tab controls and fields removed; YAML migration | 🔲 TODO | | |
 | D5 | Envelope chart with SI scale and mode | 🔲 TODO | | |
@@ -71,9 +71,8 @@ section 5.
 | 2026-10-19 | Session trend rebuilt from `overall_json`, accelerometer 100 mV/g, recorded in in/s, shown in in/s / g / mil | synthetic trend, `get_trend_for_display()` (scratchpad `trendcols.py`) | 273.0, 283.9, 278.5 / 0.0 x3 / 0.0 x3: defect, A3 |
 | 2026-10-19 | Session load time and peak memory, 1440 captures, 4 channels, before and after A3 | `SimulatedSensor` frames copied to 1440 captures, i7-1260P (scratchpad `mksession.py`, `loadsession.py`) | 1.7 s, 778 MB before; 5.3 s, 779 MB one call for each frame; 3.0 s, 783 MB with 2-D chunks of 16. CONTRIBUTING.md E22 |
 | | Extra time for the hook views during a recording, 8 channels | Raspberry Pi 3 headless; GUI PC | |
-| | GUI time for each frame, 1 to 8 channels, before D2 | `scripts/profile-pipeline` | |
-| | GUI time for each frame, 6 charts, 1 on screen, after D2 | `scripts/profile-pipeline` | |
-| | Cards of 2 spectrum charts × 8 channels | `scripts/profile-pipeline` | |
+| 2026-10-20 | GUI time for each frame, 8 channels, before and after D2 | `GUI._display_frame_inner`, `SimulatedSensor` frames, dearpygui context with no viewport, i7-1260P (scratchpad `bench_render.py`) | before 18.2 to 18.7 ms; 3 charts in the record unit 16.0 to 16.6 ms; in another unit 20.2 to 20.7 ms; 6 charts with 2 spectrum charts × 8 channels of cards 23.2 to 23.8 ms (26.0 to 26.3 ms before the pool pushed only changes). CONTRIBUTING.md E19 |
+| 2026-10-20 | The same on hardware | 4824A, 8 channels at 25591.8 Hz, AWG 500 Hz on A, live stream (scratchpad `bench_render_hw.py`) | before 18.1 ms; 3 charts record unit 17.2 ms; other unit 21.2 ms; 6 charts 23.3 ms. `test_picoscope_hw.py` 27 passed |
 
 ## Notes
 

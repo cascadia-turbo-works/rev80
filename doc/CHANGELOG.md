@@ -26,11 +26,58 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   uses the default for a missing, unreadable or invalid file and never
   writes it. `config.charts_config_path()` is `charts.yaml` in the config
   directory.
+- **Main window from the chart layout, `rev80.gui_charts`.** `ChartsView`
+  makes one tab for each chart of `DataCollector.chart_layout()` and keeps
+  the selected chart over a rebuild. Renderers for the time waveform,
+  spectrum, trend (with shaft speed on y2), envelope (SI scale and mode
+  from the sensor quantity) and XY charts. The cards of each spectrum chart
+  are under a collapsing header with the chart name: overall, crest factor,
+  kurtosis, 1x level, peak count, averaging count and peaks table, in the
+  unit and mode of the chart. A channel that cannot show the chart unit, or
+  is not in the data, has an empty series with the reason in its legend,
+  and a note at the top of the tab. Only the chart on screen draws its
+  series; the cards update on each frame. A tab change draws the new chart
+  at once.
 
 #### Changed
 - **One unit rule.** `DataCollector._reachable()` uses
   `charts.unit_reachable()`, so a view and the Charts tab agree on what a
   channel can show.
+- **The chart sets the unit.** Before, each series showed its channel's
+  record unit, and a third unit shared the second y axis of two. Now every
+  series of a chart is in the chart's unit and mode. The record unit on the
+  Channels tab sets what is stored and trended, and the default layout.
+- **Layout until the Charts tab exists.** `chart_layout()` gives the
+  default (time waveform and spectrum, all vibration channels, the record
+  unit of the first) plus the trend of the old window; "Envelope analysis"
+  adds an envelope chart and "Average spectrum" sets the spectrum
+  averaging. A collector swap keeps the layout of the old collector.
+- **Peaks table pushes only changes.** The pool is keyed by (chart,
+  channel) and pushes only the changed cells and the rows whose show state
+  changes. Six charts, 8 channels: 26.0 to 26.3 ms for each frame before,
+  23.2 to 23.8 ms after (i7-1260P, simulated frames, no viewport).
+- **The time-series plot below the tabs and the second y axes are
+  removed.** The envelope band fields are on each envelope chart; the auto
+  band is cached for each chart.
+- **Review fixes before the commit.** An XY chart never draws a
+  tachometer channel; a disabled tachometer is still not a vibration
+  series; Apply on the Acquisition tab rebuilds the charts; a rebuild
+  redraws the frame on screen; a cache clear empties every part of a card;
+  a tab change after a collector swap does not use the old snapshot; one
+  theme for the trend cursor. XY pairs the samples of the two traces by
+  time.
+- **The README envelope band search** gave the old search range (to
+  0.99 x Nyquist, 12.7 kHz). The search stops at raw rate / 2.56: 2.5 kHz
+  to 10 kHz, a 2.5 kHz band.
+
+#### Measured
+- GUI time for each frame, 8 channels, one chart on screen, 4824A at
+  25591.8 Hz (simulated frames in brackets): 18.1 ms (18.2 to 18.7) before
+  the charts; 17.2 ms (16.0 to 16.6) for waveform, spectrum and trend in
+  the record unit; 21.2 ms (20.2 to 20.7) in another unit; 23.3 ms (23.2 to
+  23.8) for six charts. CONTRIBUTING.md, "E19. GUI render cost".
+- `tests/test_picoscope_hw.py` on a 4824A, AWG loopback on channel A:
+  27 passed.
 
 ### feat/plot-setup — release 0.1.5 work (2026-10-19)
 

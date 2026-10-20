@@ -193,7 +193,8 @@ doc/
 | `tach.py` | Tachometer edge detection and shaft-speed estimate: `TachSettings`, `TachResult` |
 | `peaks.py` | Spectral peak selection against a local noise floor |
 | `envelope.py` | Envelope (demodulation) spectrum and `suggest_band()` |
-| `gui.py` | `GUI`: dearpygui layout, render loop, dialogs, plots, file I/O, monitor card, session browser |
+| `gui.py` | `GUI`: dearpygui layout, render loop, dialogs, file I/O, monitor card, session browser |
+| `gui_charts.py` | `ChartsView`: one main-window tab for each chart of `DataCollector.chart_layout()`, the result cards of each spectrum chart, the renderers for each chart type, the envelope band controls |
 | `headless.py` | `rev80 headless` / `rev80-headless`: the interval datalogger with no GUI |
 | `monitor/session.py` | `MonitorSession` and the shared session factory: `session_from()`, `channel_snapshot_for()`, `sensor_snapshot_for()`, `pre_buffer_frames_for()`, `required_cache_frames()` |
 | `monitor/gate.py` | `IntervalGate`: capture schedule on a fixed grid; burst entry and exit |
@@ -248,7 +249,7 @@ DataCollector.receive_data()
 - **One snapshot for each render tick.** `DataCollector.snapshot()` returns
   a `FrameSnapshot` (the cache as a tuple, the displayed index, live or
   browse). Every view of the tick takes it: the frame advance, the record
-  results, the display results, the shaft speed, the Envelope tab's raw
+  results, the chart views, the shaft speed, an envelope chart's raw
   `VibeSample` (`snap.frame`). The acquisition thread appends between calls,
   so a view that reads the cache again can see another frame.
 - Two readers do not use the tick's snapshot: the tachometer result cards
@@ -264,8 +265,21 @@ DataCollector.receive_data()
   (`speed_ok()`, when `speed_gate_rpm` is not set). They are memoised for
   the tick.
 - The record results (the channel's target unit and mode, never averaged)
-  go to the monitor. The display uses the configured averaging
-  (`display_n_averages()`).
+  go to the monitor and set the overflow warnings.
+- **The charts** (`gui_charts.ChartsView.render(snapshot)`): each chart asks
+  for its own view, `result_view(snapshot, ch, chart unit, chart mode,
+  n_averages)`, with N = the chart's `n_averages` clamped to `cache_frames`
+  when the chart averages, else 1. Only the chart on screen draws its
+  series. The cards of every spectrum chart update on each frame. A tab
+  change draws the new chart at once from the last snapshot
+  (`render(snapshot, force=chart_id)`), because dearpygui reports a new
+  tab's plot visible only after it draws it. The memo of the tick makes a
+  view that two charts share cost one computation.
+- The layout in effect is `DataCollector.chart_layout()`: `chart_set`, else
+  the default (`charts.default_layout()`) passed through
+  `charts.legacy_layout()`, which adds the trend of the old screen and the
+  "Envelope analysis" and "Average spectrum" settings. A collector swap
+  keeps the `chart_set` of the old collector when the new one has none.
 - The GUI gives results to the monitor only for live frames
   (`GUI._monitor_accepts_frames()`). During a recording, the GUI refuses a
   file load, a session browse and a cache clear.
@@ -277,7 +291,7 @@ DataCollector.receive_data()
 | Pair | Values | Set by | Used by |
 |---|---|---|---|
 | Raw rate | `raw_samplerate` = `RAW_SAMPLERATE_HZ` = 25600 Hz nominal; `raw_blocksize` | Fixed. Not user-configurable | `PicoScopeStream`, `SimulatedSensor`, `VibeSample`, HDF5 files, envelope analysis |
-| Display rate | `samplerate` = 2.56 x `maxfreq`; `blocksize` = ceil(`samplerate` / `binsize`) | `maxfreq` and `binsize` setters | Spectrum tab, `ChannelResult` |
+| Display rate | `samplerate` = 2.56 x `maxfreq`; `blocksize` = ceil(`samplerate` / `binsize`) | `maxfreq` and `binsize` setters | Spectrum charts, `ChannelResult` |
 
 Rules:
 
@@ -847,7 +861,7 @@ reported with a whole-microsecond interval request (25641 Hz, E4). The
 - At 8 channels the unbounded case is 589 ms of main-thread work for each
   500 ms frame.
 - The output of 2556 samples is less than `nperseg`. Welch then uses a
-  shorter segment, so the bin width is not the value that the Spectrum tab
+  shorter segment, so the bin width is not the value that a spectrum chart
   shows.
 - With the bound: worst case 1.05 ms for an off-preset F_max. At the
   hardware rate, 73.62 ms becomes 0.42 ms, and the output length is 2560
@@ -1257,7 +1271,7 @@ realisations, maximum 3.
 **Count of peaks** at the default threshold over the 60 corpus
 channel-spectra: median 40, p10 23, p90 50, minimum 16, maximum 63 (from
 `peaks.py`). The CHANGELOG (2026-08-29) and the comment beside
-`gui._DEFAULT_PEAK_DISPLAY_CAP` give p10 22, p90 49, maximum 61 for the same
+`gui_charts.DEFAULT_PEAK_DISPLAY_CAP` give p10 22, p90 49, maximum 61 for the same
 corpus. The reason for the difference is not recorded.
 
 `ABSOLUTE_FLOOR_DB = -40.0`: floor-relative significance alone promotes
@@ -1956,10 +1970,13 @@ and frame in the peaks table (E19). Section 7 gives the stage list.
 The render thread does all dearpygui work. Each decision below removes
 main-thread work that grows with the channel count.
 
-**Peaks table: a widget pool, not a rebuild.** `_update_fft_peaks_table`
-creates rows on demand, updates them with `set_value`, and hides surplus
-rows. It does not delete and rebuild the table for each frame. A frame with
-no change pushes nothing. Cost of a rebuild, computed from the widget count
+**Peaks table: a widget pool, not a rebuild.**
+`ChartsView._update_peaks_table` keeps one pool for each (chart, channel).
+It creates rows on demand, updates them with `set_value`, and hides surplus
+rows. It does not delete and rebuild the table for each frame. It pushes
+only the cells that changed since the last frame, and the show state of the
+rows between the old and the new count; after a clear, it sets the show
+state of every pooled row. A frame with no change pushes nothing. Cost of a rebuild, computed from the widget count
 (not timed):
 
 | Item | Count |
@@ -1971,8 +1988,7 @@ no change pushes nothing. Cost of a rebuild, computed from the widget count
 | At 8 channels, per frame | about 1300 |
 | Share of all per-frame dearpygui traffic | about 80 % |
 
-The rebuild ran from both branches of `_update_freq_plot`, so it also ran
-with zero peaks. **Measured on:** a 4824A with 3 to 8 channels, 2026-09-11;
+The rebuild ran also with zero peaks. **Measured on:** a 4824A with 3 to 8 channels, 2026-09-11;
 no time for each call is recorded.
 
 **Running median edges: vectorised.** `peaks._running_median` computes the
@@ -1994,20 +2010,47 @@ the table). The total with the loop at 8 channels is 10.2 ms (8 x 1.274 ms).
 `tests/test_peak_selection.py`,
 `test_running_median_bit_identical_to_the_loop`, is the equality test.
 
-**Envelope chain: only when the plot is on screen.** With the Envelope tab
-enabled but another tab selected, the chain (a `butter` design, a
+**Charts: only the chart on screen draws.** With an envelope chart in the
+layout but another tab selected, the chain (a `butter` design, a
 `sosfiltfilt`, a Hilbert transform) costs about 2.8 ms for each channel and
 frame, plus 1.4 ms to 1.9 ms when the band is automatic (`suggest_band`).
 **Measured on:** 2026-09-11; the machine is not recorded.
-`_envelope_on_screen()` queries the plot, not the tab, because an unselected
-tab shows its header button and always reports visible. It fails open: on
-any error it returns True, because a blank plot with no reason is worse than
-CPU time.
+`ChartsView.on_screen(chart_id)` applies the same rule to every chart type.
+It queries the plot, not the tab, because an unselected tab shows its header
+button and always reports visible. It fails open: on any error it returns
+True, because a blank plot with no reason is worse than CPU time. The cards
+of a spectrum chart update also when it is not on screen.
 
-**Automatic demodulation band: cached for each channel.** `suggest_band`
-runs a full rFFT of the raw block and an `np.convolve`. The cache key is
-(channel, sample rate). An edit of the band fields, a toggle of the
-Envelope tab, and the Auto button clear the cache. The cache also keeps the
+GUI time for each frame (`GUI._display_frame_inner`), 8 channels, each with
+a g sensor, `GenerateBearingVibration` plus noise, default acquisition
+settings (F_max 2000 Hz, 2 Hz bins), one new frame for each call, median
+of 40 calls (p90 in brackets). One chart on screen: the first spectrum.
+**Measured on:** i7-1260P, 2026-10-20, a dearpygui context with no
+viewport. Simulated: `SimulatedSensor` frames at 25600 Hz, two runs.
+Hardware: a 4824A streaming 8 channels at 25591.8 Hz, AWG 500 Hz 1 Vpp on
+channel A, the acquisition thread running, one call for each new frame,
+one run. The numbers include the frame advance (about 17 ms of each) and
+the dearpygui item updates, not the drawing.
+
+| Layout | Simulated (ms) | 4824A (ms) |
+|---|---|---|
+| Before the charts: Spectrum, Trend, Time Series, all drawn | 18.2 to 18.7 (19.0 to 20.2) | 18.1 (22.1) |
+| Waveform, spectrum, trend; chart unit = record unit | 16.0 to 16.6 (16.9 to 17.3) | 17.2 (20.4) |
+| Waveform, spectrum, trend; chart unit in/s RMS, record unit g 0-P | 20.2 to 20.7 (20.5 to 21.1) | 21.2 (24.2) |
+| Six charts: the above, a second spectrum (g 0-P), an envelope, an XY | 23.2 to 23.8 (23.8 to 25.0) | 23.3 (27.1) |
+
+- A chart unit that is not the record unit costs one more view for each
+  channel: about 4 ms at 8 channels.
+- A second spectrum chart costs its cards: about 3 ms at 8 channels.
+- Before the pool pushed only changes, the six-chart case was 26.0 to
+  26.3 ms: each table of 50 rows made about 100 `configure_item` calls for
+  each frame.
+
+**Automatic demodulation band: cached for each chart and channel.**
+`suggest_band` runs a full rFFT of the raw block and an `np.convolve`. The
+cache key is (chart id, channel, sample rate). An edit of the band fields
+of a chart and its Auto button clear the cache of that chart; a rebuild of
+the charts clears all of it. The cache also keeps the
 band, and so the envelope axis, the same from frame to frame.
 
 **Stale-frame watchdog: a deadline, not a timer thread.**
@@ -2016,7 +2059,7 @@ band, and so the envelope axis, the same from frame to frame.
 `threading.Timer` for each displayed frame, because it changes a dearpygui
 widget from another thread. Rule: no dearpygui call off the render thread.
 
-**Peak display cap.** `_DEFAULT_PEAK_DISPLAY_CAP` = 50 limits the table and
+**Peak display cap.** `gui_charts.DEFAULT_PEAK_DISPLAY_CAP` = 50 limits the table and
 the plot markers only; `rev80.peaks` selects the lines. The value comes from
 the corpus counts at the default threshold (E12.1), so in the normal case
 nothing is hidden.

@@ -93,10 +93,17 @@ chain, stage by stage". The facts that an agent gets wrong most often:
   acquisition thread never
   touches a widget. `collector.py`, `sample.py`, `picoscope.py` and `monitor/`
   do not import dearpygui.
+- **Charts.** `gui_charts.ChartsView` builds one tab for each chart of
+  `DataCollector.chart_layout()` and draws them. Each chart asks for its
+  own view in its own unit and mode; the record unit (Channels tab) sets
+  only what is stored and trended. Only the chart on screen draws its
+  series; the cards of every spectrum chart update on each frame. A
+  channel that cannot show the chart unit gets an empty series and the
+  reason in its legend, never mV under an engineering-unit axis.
 - The frame cache is a `deque` of `cache_frames` frames: 32 for an
   `AcquisitionSettings()` made in code, 15 from a seeded `acquisition.yaml`.
   Both front ends load that file.
-- `DataCollector.eu_scaled_raw()` gives the Envelope tab the high-passed
+- `DataCollector.eu_scaled_raw()` gives an envelope chart the high-passed
   signal at the raw rate, not decimated. It raises `ValueError` for a
   tachometer channel.
 
@@ -332,7 +339,8 @@ Read these before you change the code nearby. The status is in
   fails. Tracked as R62.
 - **`tests/test_monitor_session_load.py` skips on burst timing**, so a slow
   runner passes it without a check. Tracked as R60.
-- `gui.py` is about 5200 lines. Tracked as R61.
+- `gui.py` is about 4600 lines. Tracked as R61. New GUI code goes to
+  `gui_charts.py` or another new module.
 - Other open audit items (R51 to R57) are in `doc/PROGRESS.md`.
 
 ## How to work here

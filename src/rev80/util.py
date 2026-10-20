@@ -368,11 +368,7 @@ class UI_Elements:
     TACH_STREAM_BTN      = 'TACH_STREAM_BTN'
     TACH_WARN_BOX        = 'TACH_WARN_BOX'
     TACH_WARN_THEME      = 'TACH_WARN_THEME'
-    # Result card: a tachometer channel shows its rate, not a spectrum.
-    @staticmethod
-    def ch_vib_group(ch: int) -> str:
-        return f'CH{ch}_VIB_GROUP'
-
+    # Result card of a tachometer channel: its rate.
     @staticmethod
     def ch_tach_group(ch: int) -> str:
         return f'CH{ch}_TACH_GROUP'
@@ -397,7 +393,6 @@ class UI_Elements:
     MONITOR_BURST_STATUS = 'MONITOR_BURST_STATUS'   # drawlist
     MONITOR_BURST_RECT   = 'MONITOR_BURST_RECT'     # rectangle inside drawlist
     MONITOR_BURST_TEXT   = 'MONITOR_BURST_TEXT'     # "Xs remaining" text
-    PLT_TREND_BURST_VLINES = 'PLT_TREND_BURST_VLINES'  # vline_series on trend plot
     DLG_SESSION_BROWSER  = 'DLG_SESSION_BROWSER'
     MONITOR_CARD         = 'MONITOR_CARD'
     MONITOR_RECORD_BTN   = 'MONITOR_RECORD_BTN'
@@ -490,49 +485,11 @@ class UI_Elements:
     DEVSETUP_DEVICE_LIST_GROUP = 'DEVSETUP_DEVICE_LIST_GROUP'  # device picker rows
     DEVSETUP_CHANNEL_GROUP     = 'DEVSETUP_CHANNEL_GROUP'      # per-channel rows
 
-    # ── Plots ──────────────────────────────────────────────────────────────
-    PLT_SAMPLE          = 'PLT_SAMPLE'
-    PLT_SAMPLE_AX_TIME  = 'PLT_SAMPLE_AX_TIME'
-    PLT_SAMPLE_AX_ACCEL = 'PLT_SAMPLE_AX_ACCEL'
-    PLT_SAMPLE_OVERALL  = 'PLT_SAMPLE_OVERALL'
-
-    PLT_FREQ          = 'PLT_FREQ'
-    PLT_FREQ_LEGEND   = 'PLT_FREQ_LEGEND'
-    PLT_FREQ_AX_FREQ  = 'PLT_FREQ_AX_FREQ'
-    PLT_FREQ_AX_ACCEL = 'PLT_FREQ_AX_ACCEL'
-    PLT_FREQ_AX_2     = 'PLT_FREQ_AX_2'
-
-    PLT_SAMPLE_AX_ACCEL_2  = 'PLT_SAMPLE_AX_ACCEL_2'
-    PLT_SAMPLE_LEGEND      = 'PLT_SAMPLE_LEGEND'
-
-    PLT_TREND            = 'PLT_TREND'
-    PLT_TREND_LEGEND     = 'PLT_TREND_LEGEND'
-    PLT_TREND_AX_TIME    = 'PLT_TREND_AX_TIME'
-    PLT_TREND_AX_OVERALL   = 'PLT_TREND_AX_OVERALL'
-    PLT_TREND_AX_OVERALL_2 = 'PLT_TREND_AX_OVERALL_2'
-    # Envelope / demodulation plot
-    TAB_ENVELOPE       = 'TAB_ENVELOPE'    # the tab itself — shown/hidden per ACQ_DLG_ENV_ENABLED
-    PLT_ENV            = 'PLT_ENV'
-    PLT_ENV_LEGEND     = 'PLT_ENV_LEGEND'
-    PLT_ENV_AX_FREQ    = 'PLT_ENV_AX_FREQ'
-    PLT_ENV_AX_AMPL    = 'PLT_ENV_AX_AMPL'
-    ENV_BAND_LO        = 'ENV_BAND_LO'
-    ENV_BAND_HI        = 'ENV_BAND_HI'
-    ENV_BAND_AUTO      = 'ENV_BAND_AUTO'
-    ENV_INFO_TEXT      = 'ENV_INFO_TEXT'
-    ENV_FMAX_WARNING   = 'ENV_FMAX_WARNING'
-
-    PLT_TREND_DATA         = 'PLT_TREND_DATA'
-    PLT_TREND_CURSOR     = 'PLT_TREND_CURSOR'    # vertical line at browsed frame time
-
     # Primary peak control: how far a line must stand out of its own local
     # noise floor to be reported. FFT_PEAKS_DISPLAY_COUNT only limits how many
     # rows and plot markers are shown; it does not select peaks.
     FFT_PEAK_THRESHOLD_DB   = 'FFT_PEAK_THRESHOLD_DB'
     FFT_PEAKS_DISPLAY_COUNT = 'FFT_PEAK_DISPLAY_COUNT'
-    FFT_PEAKS_TABLE         = 'FFT_PEAKS_TABLE'
-    FFT_PEAKS_FOUND_TEXT    = 'FFT_PEAKS_FOUND_TEXT'
-    FFT_AVG_COUNT_TEXT      = 'FFT_AVG_COUNT_TEXT'
 
     # ── Results pane ────────────────────────────────────────────────────────
     CH_WARNINGS_SECTION = 'CH_WARNINGS_SECTION'
@@ -613,61 +570,81 @@ class UI_Elements:
     def ch_result_section(ch: int) -> str:
         return f'CH{ch}_RESULT_SECTION'
 
-    @staticmethod
-    def ch_overall_value(ch: int) -> str:
-        return f'CH{ch}_OVERALL'
+    # ── Charts (rev80.charts). Tags come from the chart_id, never the name.
+    MAIN_CHART_TAB_BAR = 'MAIN_CHART_TAB_BAR'
+    CHART_CARDS        = 'CHART_CARDS'     # the result cards of every spectrum chart
 
     @staticmethod
-    def ch_scalars_text(ch: int) -> str:
-        return f'CH{ch}_SCALARS'
+    def chart_tab(cid: str) -> str:
+        return f'CHART_{cid}_TAB'
 
     @staticmethod
-    def ch_peaks_table(ch: int) -> str:
-        return f'CH{ch}_PEAKS_TABLE'
-
-    # Tags for the peaks-table widget pool, which is updated in place, not
-    # rebuilt each frame. Evidence: CONTRIBUTING.md, "E19. GUI render cost".
-    @staticmethod
-    def ch_peak_col(ch: int, col: int) -> str:
-        return f'CH{ch}_PEAKS_COL{col}'
+    def chart_plot(cid: str) -> str:
+        return f'CHART_{cid}_PLOT'
 
     @staticmethod
-    def ch_peak_row(ch: int, row: int) -> str:
-        return f'CH{ch}_PEAKS_ROW{row}'
+    def chart_axis(cid: str, axis: str) -> str:
+        """axis: 'x', 'y' or 'y2'."""
+        return f'CHART_{cid}_AX_{axis.upper()}'
 
     @staticmethod
-    def ch_peak_cell(ch: int, row: int, col: int) -> str:
-        return f'CH{ch}_PEAKS_R{row}C{col}'
+    def chart_legend(cid: str) -> str:
+        return f'CHART_{cid}_LEGEND'
 
     @staticmethod
-    def plt_time_series(ch: int) -> str:
-        return f'PLT_TIME_CH{ch}'
+    def chart_note(cid: str) -> str:
+        """The line on a chart tab that says what the chart cannot show."""
+        return f'CHART_{cid}_NOTE'
 
     @staticmethod
-    def plt_freq_series(ch: int) -> str:
-        return f'PLT_FREQ_CH{ch}'
+    def chart_series(cid: str, ch: int) -> str:
+        return f'CHART_{cid}_CH{ch}'
 
     @staticmethod
-    def plt_freq_one_x(ch: int) -> str:
-        """Vertical marker on the spectrum at the shaft rate (1x)."""
-        return f'PLT_FREQ_ONE_X_{ch}'
+    def chart_peaks(cid: str, ch: int) -> str:
+        return f'CHART_{cid}_PEAKS_CH{ch}'
 
     @staticmethod
-    def ch_one_x_text(ch: int) -> str:
-        """1x level readout on a channel result card."""
-        return f'CH{ch}_ONE_X'
+    def chart_one_x(cid: str, ch: int) -> str:
+        return f'CHART_{cid}_ONE_X_CH{ch}'
 
     @staticmethod
-    def plt_freq_peaks(ch: int) -> str:
-        return f'PLT_FREQ_PEAKS_CH{ch}'
+    def chart_cursor(cid: str) -> str:
+        """The browse cursor on a trend chart."""
+        return f'CHART_{cid}_CURSOR'
 
     @staticmethod
-    def plt_env_series(ch: int) -> str:
-        return f'PLT_ENV_CH{ch}'
+    def chart_bursts(cid: str) -> str:
+        """The burst-time lines on a trend chart."""
+        return f'CHART_{cid}_BURSTS'
 
     @staticmethod
-    def plt_trend_series(ch: int) -> str:
-        return f'PLT_TREND_CH{ch}'
+    def chart_env(cid: str, part: str) -> str:
+        """Envelope chart controls: part 'lo', 'hi', 'auto', 'info' or 'warn'."""
+        return f'CHART_{cid}_ENV_{part.upper()}'
+
+    @staticmethod
+    def card_group(cid: str) -> str:
+        """The collapsing header that holds the cards of one spectrum chart."""
+        return f'CARD_{cid}_GROUP'
+
+    @staticmethod
+    def card(cid: str, ch: int, part: str = '') -> str:
+        """A result card, or one of its fields: 'overall', 'scalars', 'one_x',
+        'avg', 'found' or 'peaks' (the table)."""
+        return f'CARD_{cid}_CH{ch}' + (f'_{part.upper()}' if part else '')
+
+    @staticmethod
+    def card_peak_col(cid: str, ch: int, col: int) -> str:
+        return f'CARD_{cid}_CH{ch}_PCOL{col}'
+
+    @staticmethod
+    def card_peak_row(cid: str, ch: int, row: int) -> str:
+        return f'CARD_{cid}_CH{ch}_PROW{row}'
+
+    @staticmethod
+    def card_peak_cell(cid: str, ch: int, row: int, col: int) -> str:
+        return f'CARD_{cid}_CH{ch}_PR{row}C{col}'
 
 
 # Monitor Mode capture interval presets (seconds → display label).

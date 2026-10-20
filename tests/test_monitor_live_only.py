@@ -47,14 +47,21 @@ class _FakeCollector:
         self.resets += 1
 
 
+class _NullCharts:
+    """ChartsView with no widgets."""
+
+    def __getattr__(self, name):
+        return lambda *a, **k: None
+
+
 def _app(monitor=None, streaming=True) -> GUI:
     app = GUI.__new__(GUI)
     app._monitor = monitor
+    app._charts = _NullCharts()
     app.collector = _FakeCollector(streaming)
     app._autoscale_pending = False
     for name in ('_set_stream_status', '_schedule_status_timeout',
-                 '_update_trend_plot', '_update_browse_label',
-                 '_update_frame_info', '_ensure_legends'):
+                 '_update_browse_label', '_update_frame_info'):
         setattr(app, name, lambda *a, **k: None)
     return app
 

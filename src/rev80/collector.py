@@ -242,6 +242,9 @@ class DataCollector:
         self.data: Dict = {}
         self.config = config if config else rev80.AcquisitionSettings()
         self.scope_sensors: dict[int, ScopeSensor] = {}
+        # The chart layout in effect (rev80.charts.ChartSet). None: the
+        # default layout of this configuration (chart_layout()).
+        self.chart_set = None
         # Per-channel tachometer calibration, keyed like scope_sensors. A
         # channel with role 'tachometer' and no entry uses TachSettings()
         # defaults.
@@ -1457,6 +1460,27 @@ class DataCollector:
     def display_n_averages(self) -> int:
         """Frames the display averages: the configured N when averaging is on, else 1."""
         return self.config.n_averages_effective if self.config.averaging_enabled else 1
+
+    def chart_layout(self):
+        """The chart layout in effect: `chart_set`, else the default of this config.
+
+        The default is one time waveform and one spectrum with every vibration
+        channel, in the record view of the first, plus the trend of the old
+        screen and the "Envelope analysis" and "Average spectrum" settings
+        (`charts.legacy_layout`).
+        """
+        from rev80 import charts
+        if self.chart_set is not None:
+            return self.chart_set
+        vib = list(self.config.vibration_channels)
+        base = charts.default_layout(vib, self.default_view_of)
+        first = self.scope_sensors.get(vib[0]) if vib else None
+        return charts.legacy_layout(
+            base,
+            envelope_enabled=bool(self.config.envelope_enabled),
+            envelope_unit=first.engineering_units if first is not None else 'mV',
+            averaging_enabled=bool(self.config.averaging_enabled),
+            n_averages=self.config.n_averages_effective)
 
     def default_view_of(self, ch: int) -> 'tuple[str, str]':
         """(unit, amplitude mode) of a channel's record view.
