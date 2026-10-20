@@ -35,6 +35,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   loaded cache.** The session browser loaded into the streaming collector
   and did not stop the stream. It now stops acquisition and closes the
   device, as **Load** does.
+- **A session or burst trend read 0.0 in every unit except the record
+  unit.** The loaders built the trend from `overall_json` (one value, record
+  unit) into one of the five order columns; the other four stayed 0.0. A
+  session recorded in in/s from a 100 mV/g accelerometer read in/s 273.0,
+  283.9, 278.5, but g 0.0 and mil 0.0 on every point. A channel-unit change
+  after a session load reached it. The loaders now compute the five mV
+  orders of each stored waveform (stateless high-pass, decimation, band
+  RMS). In the record unit the result is within 7.4e-5 relative of the
+  stored overall. A frame with no waveform gives NaN (a gap), not 0.0.
+  Crest factor and kurtosis come from `scalars_json`; the shaft-speed trend
+  comes from the stored edge times, usable readings only (before, a session
+  had no shaft-speed trend). Measurement files keep their stored trends.
+  Load time of a 1440-capture, 4-channel session (`SimulatedSensor` frames,
+  i7-1260P): 1.7 s before, 3.0 s now; peak memory 778 MB before, 783 MB now.
 - **The session reprocess thread changed the collector on screen** while the
   render loop read it. The thread now loads its own collector and the render
   thread swaps the result in (part of R50).

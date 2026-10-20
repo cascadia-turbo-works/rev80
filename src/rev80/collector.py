@@ -785,8 +785,6 @@ class DataCollector:
         # the Spectrum tab keeps showing exactly the line count/bin width the
         # UI states regardless of what's actually acquired.
         decimated_mv, samplerate = self._decimated_for(sample, filtered_mv)
-        N           = len(decimated_mv)
-        freq_td     = np.fft.rfftfreq(N, d=1.0 / samplerate)
         band_fmin, band_fmax = config.band
 
         # The key holds everything that changes the transform or the cached
@@ -814,26 +812,144 @@ class DataCollector:
             sample.freq_hz         = freq_hz
             sample._psd_config_key = psd_key
 
-            # 5-order mV RMS overalls, from the time domain, not from the Welch
-            # PSD (Hann leakage makes sqrt(sum(psd)) sqrt(3/2) high on a tone).
-            # All five orders, order 0 included: Hann taper, band mask, inverse
-            # transform, RMS divided by the window power gain. The mask is a
-            # transform-domain multiply, so order 0 needs the taper too. Not
-            # un-tapered Parseval: it passes a tone 30 Hz below a 100 Hz edge at
-            # -22 dB, against -84 dB here. Evidence: CONTRIBUTING.md,
-            # "E9. Tapers for integration" and "E10. Band RMS".
-            hann_w, hann_gain = _dsp.hann_taper(N)
-            masked_hann = np.where(_dsp.band_mask(freq_td, band_fmin, band_fmax),
-                                   np.fft.rfft(decimated_mv * hann_w), 0.0)
-            for i, n_ord in enumerate(range(-2, 3)):
-                if n_ord == 0:
-                    time_ord = np.fft.irfft(masked_hann, n=N)
-                else:
-                    time_ord = _dsp.integrate_rfft(masked_hann, freq_td, n_ord, N)
-                sample.overall_ampl_by_integration_order[i] = float(
-                    np.sqrt(np.mean(np.square(time_ord))) / hann_gain
-                )
+            sample.overall_ampl_by_integration_order[:] = self._overall_orders_mv(
+                decimated_mv, samplerate)
             return freq_hz, psd_mv
+
+    def _overall_orders_mv(self, decimated_mv: np.ndarray, samplerate: float) -> np.ndarray:
+        """The 5-order mV RMS overalls (orders -2 to +2) of display-rate blocks.
+
+        `decimated_mv` is one block (N,) or one block in each row (F, N); the
+        result is (5,) or (F, 5).
+
+        From the time domain, not from the Welch PSD (Hann leakage makes
+        sqrt(sum(psd)) sqrt(3/2) high on a tone). All five orders, order 0
+        included: Hann taper, band mask, inverse transform, RMS divided by the
+        window power gain. The mask is a transform-domain multiply, so order 0
+        needs the taper too. Not un-tapered Parseval: it passes a tone 30 Hz
+        below a 100 Hz edge at -22 dB, against -84 dB here. Evidence:
+        CONTRIBUTING.md, "E9. Tapers for integration" and "E10. Band RMS".
+        """
+        N = decimated_mv.shape[-1]
+        freq_td = np.fft.rfftfreq(N, d=1.0 / samplerate)
+        band_fmin, band_fmax = self.config.band
+        hann_w, hann_gain = _dsp.hann_taper(N)
+        masked_hann = np.where(_dsp.band_mask(freq_td, band_fmin, band_fmax),
+                               np.fft.rfft(decimated_mv * hann_w, axis=-1), 0.0)
+        orders = np.empty(decimated_mv.shape[:-1] + (5,))
+        for i, n_ord in enumerate(range(-2, 3)):
+            if n_ord == 0:
+                time_ord = np.fft.irfft(masked_hann, n=N, axis=-1)
+            else:
+                time_ord = _dsp.integrate_rfft(masked_hann, freq_td, n_ord, N)
+            orders[..., i] = np.sqrt(np.mean(np.square(time_ord), axis=-1)) / hann_gain
+        return orders
+
+    #: Frames processed together by `_stored_orders`. 16 was as fast as 64
+    #: and 256 (3.0 s against 3.2 s and 3.3 s for 1440 captures, 4 channels)
+    #: with the lowest peak memory. Evidence: CONTRIBUTING.md, "E21. Loaded
+    #: trends from the stored frames".
+    _STORED_ORDERS_CHUNK = 16
+
+    def _stored_orders(self, samples: list) -> np.ndarray:
+        """The 5-order mV overalls of loaded frames of one channel, (len, 5).
+
+        A row is NaN for a sample that is None or has no waveform. The same
+        stateless filter (seeded from each block's mean) and decimation as
+        `_psd_and_overalls_for`, on one 2-D array for each group of equal
+        block length and rate, in chunks: one call for each frame cost about
+        1 ms, mostly call overhead. Does not keep `filtered_mv` or
+        `decimated_mv` on the samples, which would about double the memory
+        of a large session.
+        """
+        out = np.full((len(samples), 5), np.nan)
+        groups: dict[tuple, list[int]] = {}
+        for i, sample in enumerate(samples):
+            if sample is not None and sample.blocksize > 1:
+                groups.setdefault((sample.blocksize, float(sample.samplerate)), []).append(i)
+        step = self._STORED_ORDERS_CHUNK
+        for (_, rate), idx in groups.items():
+            sos = self._highpass_sos(rate)
+            for start in range(0, len(idx), step):
+                rows = idx[start:start + step]
+                x = np.stack([np.asarray(samples[i].data, dtype=np.float64) for i in rows])
+                if sos is not None:
+                    zi = (scipy.signal.sosfilt_zi(sos)[:, np.newaxis, :]
+                          * np.mean(x, axis=1)[np.newaxis, :, np.newaxis])
+                    x, _ = scipy.signal.sosfilt(sos, x, axis=1, zi=zi)
+                decimated, drate = decimate_to_rate(x.T, rate, self.config.samplerate)
+                if decimated.shape[0] > 1:
+                    out[rows] = self._overall_orders_mv(np.ascontiguousarray(decimated.T), drate)
+        return out
+
+    def _rebuild_trends_from_frames(self, scalars: 'list[dict]') -> None:
+        """Session and burst trends from the loaded frames.
+
+        Evidence: CONTRIBUTING.md, "E21. Loaded trends from the stored frames".
+
+        One point for each frame in the cache: the five mV orders from its
+        stored waveform, so every unit and integration order shows a value.
+        A frame with no waveform for a channel gets NaN, never 0.0. Overflow
+        and degraded frames are not trended, as for a live stream. Crest
+        factor and kurtosis are read from the stored `scalars_json`
+        (`scalars[i]`, record unit), NaN when absent. The shaft-speed trend
+        holds the usable readings of the tachometer samples.
+        """
+        frames = list(self.data["frame_cache"])
+        trend: dict[int, dict[str, np.ndarray]] = {}
+        for ch in self.config.vibration_channels:
+            rel, kept, crest, kurt = [], [], [], []
+            for i, frame in enumerate(frames):
+                sample = frame.get(ch)
+                if sample is not None and (sample.overflow or sample.degraded):
+                    continue
+                if sample is None:
+                    sample = next((v for k, v in frame.items() if isinstance(k, int)), None)
+                    if sample is None:
+                        continue
+                    kept.append(None)
+                else:
+                    kept.append(sample)
+                rel.append(float(sample.rel_time))
+                sc = scalars[i].get(str(ch), {}) if i < len(scalars) else {}
+                crest.append(float(sc.get('crest_factor', np.nan)))
+                kurt.append(float(sc.get('kurtosis', np.nan)))
+            trend[ch] = {
+                "rel_times":    np.asarray(rel, dtype=np.float64),
+                "orders":       self._stored_orders(kept),
+                "crest_factor": np.asarray(crest, dtype=np.float64),
+                "kurtosis":     np.asarray(kurt, dtype=np.float64),
+            }
+        self.trend = trend
+
+        tach_trend: dict[int, dict[str, np.ndarray]] = {}
+        for ch in self.config.tach_channels:
+            rel, rpm = [], []
+            for frame in frames:
+                sample = frame.get(ch)
+                if sample is None:
+                    continue
+                res = self.tach_for(ch, sample)
+                # Usable readings only, as for a live trend and the speed gate.
+                if res.rpm is not None and res.is_usable:
+                    rel.append(float(sample.rel_time))
+                    rpm.append(float(res.rpm))
+            tach_trend[ch] = {"rel_times": np.asarray(rel, dtype=np.float64),
+                              "rpm": np.asarray(rpm, dtype=np.float64)}
+        self.tach_trend = tach_trend
+
+    @staticmethod
+    def _stored_scalars(grp) -> dict:
+        """The `scalars_json` attribute of a capture group, {} if absent or bad."""
+        import json as _json
+        raw = grp.attrs.get("scalars_json", None)
+        if raw is None:
+            return {}
+        try:
+            out = _json.loads(raw)
+        except (TypeError, ValueError):
+            return {}
+        return out if isinstance(out, dict) else {}
 
     def _psd_for(self, ch: int, sample: 'rev80.VibeSample'):
         """Just the PSD of one frame, for the averaging accumulator."""
@@ -1652,9 +1768,7 @@ class DataCollector:
         self._loaded_channel_sensor_configs = {}
         self._loaded_scope_sensors = {}
 
-        import json as _json
-        trend_rel_times: dict[int, list] = {}
-        trend_overalls:  dict[int, list] = {}
+        scalars: list[dict] = []
 
         with h5py.File(session_h5, "r") as f:
             version  = self._restore_metadata(f, _session_file_version())
@@ -1671,59 +1785,14 @@ class DataCollector:
                 grp = mon_grp[key]
                 frame = self._read_frame_group(grp, ch_units, version)
                 self.data["frame_cache"].append(frame)
-                # Collect stored overall values for trend reconstruction
-                rel_t = float(grp.attrs.get("rel_time", 0.0))
-                try:
-                    overall = _json.loads(grp.attrs.get("overall_json", "{}"))
-                except Exception:
-                    overall = {}
-                for ch_str, val in overall.items():
-                    ch = int(ch_str)
-                    trend_rel_times.setdefault(ch, []).append(rel_t)
-                    trend_overalls.setdefault(ch, []).append(float(val))
+                scalars.append(self._stored_scalars(grp))
 
         n = len(self.data["frame_cache"])
-        self._post_load()  # clears trend, reprocesses last frame
+        self._post_load()
+        # The trend from the frames, not from overall_json: that holds one
+        # value in the record unit, so every other unit read 0.0.
+        self._rebuild_trends_from_frames(scalars)
         log.info(f"Loaded {n} captures from {session_h5.name}")
-
-        # Rebuild trend from stored overall_json — overwrites the single point
-        # added by reprocess_last_block() with the full session history.
-        #
-        # overall_json values are in the TARGET unit recorded at capture time,
-        # not raw mV.  get_trend_for_display() expects orders[:,col] in raw mV
-        # (same as overall_ampl_by_integration_order), so we back-scale each
-        # channel's values and place them in the correct column.
-        from rev80.util import UNIT_TO_SI, amplitude_scale, integration_steps
-        for ch, rel_times in trend_rel_times.items():
-            if self.config.role_for(ch) == 'tachometer':
-                # A tachometer has no overall. Reconstructing one would write a
-                # fabricated amplitude trend for it -- in practice a line
-                # pinned at zero, since overall_ampl_by_integration_order is
-                # never populated on a channel process_sample never runs on.
-                continue
-            overalls    = np.array(trend_overalls[ch])
-            sensor_cfg  = self._loaded_channel_sensor_configs.get(ch, {})
-            sensor_eu   = sensor_cfg.get('engineering_units', 'mV')
-            sensitivity = float(sensor_cfg.get('sensitivity', 1.0))
-            rec_tgt     = self.config.channel_target_units.get(ch, sensor_eu) or sensor_eu
-            amp_mode    = self.config.channel_amplitude_modes.get(ch, '0-P') or '0-P'
-
-            n_steps   = integration_steps(sensor_eu, rec_tgt)
-            col       = max(0, min(4, n_steps + 2))
-            src_si    = UNIT_TO_SI.get(sensor_eu, 1.0)
-            tgt_si    = UNIT_TO_SI.get(rec_tgt,   1.0)
-            amp_f     = amplitude_scale(amp_mode)
-            scale     = src_si / tgt_si / sensitivity
-
-            orders           = np.zeros((len(overalls), 5))
-            # Reverse the display scaling so get_trend_for_display re-applies it correctly
-            orders[:, col]   = overalls / (scale * amp_f) if (scale * amp_f) != 0 else overalls
-            self.trend[ch]   = {
-                "rel_times": np.array(rel_times),
-                "orders":    orders,
-            }
-        if trend_rel_times:
-            log.debug(f"Reconstructed trend from {n} monitor frame attrs")
 
     def load_monitor_capture(self, session_h5: Path, capture_index: int) -> None:
         """Load a single interval capture frame into frame_cache and trigger display.
@@ -1779,9 +1848,7 @@ class DataCollector:
         self._loaded_channel_sensor_configs = {}
         self._loaded_scope_sensors = {}
 
-        import json as _json
-        trend_rel_times: dict[int, list] = {}
-        trend_overalls:  dict[int, list] = {}
+        scalars: list[dict] = []
 
         with h5py.File(session_h5, "r") as f:
             version  = self._restore_metadata(f, _session_file_version())
@@ -1830,50 +1897,13 @@ class DataCollector:
                     if hasattr(s, 'rel_time'):
                         s.rel_time = rel_t
                 self.data["frame_cache"].append(frame)
-                # Per-frame overall for trend (all frames now have overall_json)
-                raw_overall = fi_grp.attrs.get("overall_json", None)
-                if raw_overall is not None:
-                    try:
-                        overall = _json.loads(raw_overall)
-                        for ch_str, val in overall.items():
-                            ch = int(ch_str)
-                            trend_rel_times.setdefault(ch, []).append(rel_t)
-                            trend_overalls.setdefault(ch, []).append(float(val))
-                    except Exception:
-                        pass
+                scalars.append(self._stored_scalars(fi_grp))
 
         n = len(self.data["frame_cache"])
         log.debug(f"Loaded {n} burst frames for '{burst_id}' from {session_h5}")
         self._post_load()
-
-        # Rebuild trend from per-frame overall_json.
-        # overall_json is in target EU — inverse-scale to raw mV so
-        # get_trend_for_display() can apply the forward conversion correctly.
-        import math as _math
-        from rev80.util import UNIT_TO_SI, amplitude_scale, integration_steps
-        for ch, rel_times in trend_rel_times.items():
-            overalls = trend_overalls[ch]
-            valid = [(t, v) for t, v in zip(rel_times, overalls)
-                     if _math.isfinite(t) and _math.isfinite(v)]
-            if not valid:
-                continue
-            vt, vv = zip(*valid)
-            sensor_cfg  = self._loaded_channel_sensor_configs.get(ch, {})
-            sensor_eu   = sensor_cfg.get('engineering_units', 'mV')
-            sensitivity = float(sensor_cfg.get('sensitivity', 1.0))
-            rec_tgt     = self.config.channel_target_units.get(ch, sensor_eu) or sensor_eu
-            amp_mode    = self.config.channel_amplitude_modes.get(ch, '0-P') or '0-P'
-            n_steps  = integration_steps(sensor_eu, rec_tgt)
-            col      = max(0, min(4, n_steps + 2))
-            src_si   = UNIT_TO_SI.get(sensor_eu, 1.0)
-            tgt_si   = UNIT_TO_SI.get(rec_tgt,   1.0)
-            amp_f    = amplitude_scale(amp_mode)
-            scale    = src_si / tgt_si / sensitivity
-            orders         = np.zeros((len(vv), 5))
-            orders[:, col] = np.array(vv) / (scale * amp_f) if (scale * amp_f) != 0 else np.array(vv)
-            self.trend[ch] = {"rel_times": np.array(vt), "orders": orders}
-        if trend_rel_times:
-            log.debug(f"Reconstructed burst trend from {len(trend_rel_times)} channels")
+        # From the frames, as for a session (see load_monitor_session).
+        self._rebuild_trends_from_frames(scalars)
 
     def reprocess_session_trend(self, session_h5: Path,
                                  progress_cb=None) -> int:

@@ -496,6 +496,11 @@ in/s"). Never mV under an engineering-unit axis.
 - `/metadata` attribute `chart_layout_json` = `json.dumps(ChartSet.to_dict())`,
   the same dict as `charts.yaml`.
 - `/metadata` attribute `rev80_version` = `rev80.__version__`.
+- Each session capture and burst frame stores the five mV orders of each
+  vibration channel (`orders_json`, orders −2 to +2). A session or burst
+  load then reads the trend and does no DSP: today the A3 rebuild adds
+  about 1.3 s to a 1440-capture, 4-channel load (CONTRIBUTING.md E21). The
+  converter (E3) computes them from the stored waveforms.
 - Measurement: the layout in effect at Save. Session: the layout at the
   start of the recording (charts are locked during a recording).
 - **Headless** (Q15): `charts.yaml` from its config directory if present,

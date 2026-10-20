@@ -896,7 +896,10 @@ Click **Load Session** to open the session browser.
 - **Session folder** sets the folder. The default is
   `~/Documents/Rev80/data/monitor/`.
 - Click a session to load all its interval captures. The trend shows burst
-  times as vertical lines.
+  times as vertical lines. The trend is calculated again from the stored
+  waveforms, so it shows a value in every unit. A 1440-capture, 4-channel
+  session takes about 3 s to load on a laptop (Intel i7-1260P). A capture
+  with no stored waveform shows a gap, not 0.
 - Click a burst to load its frames. The trend starts at the trigger.
 - **Save Config** writes the current channel names, sensors, units and
   amplitude modes into the session file. Then it reprocesses the trend.

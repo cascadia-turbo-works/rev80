@@ -2029,6 +2029,50 @@ an EWMA baseline with alpha 0.97 affects the reference for about 33 frames
 (the time constant). A baseline that learns from it is as wrong as an alarm
 on it.
 
+### E21. Loaded trends from the stored frames
+
+**Decision.** A session or burst load computes the trend from the stored
+waveforms: the five mV orders of each frame, so the trend shows a value in
+every unit. Stateless high-pass, seeded from each block's mean, then the
+same decimation and band RMS as a live frame. Each channel's frames are
+processed as one 2-D array, 16 frames at a time. The filtered and
+decimated arrays are not kept on the samples. Measurement files keep their
+stored `/trend` and `/tach_trend`: those hold up to 500 points, and the
+file holds 32 frames at most.
+
+**Why.** `overall_json` holds one value for each channel, in the record
+unit and mode. A trend built from it has one order column; the other four
+read 0.0. A session recorded in in/s from a 100 mV/g accelerometer gave
+in/s 273.0, 283.9, 278.5, g 0.0 x 3 and mil 0.0 x 3 (synthetic trend,
+2026-10-19).
+
+**Agreement with the stored overall.** In the record unit the rebuilt trend
+is within 7.4e-5 relative of `overall_json`. The live overall used the
+stateful high-pass; the reload filters each frame alone (`SimulatedSensor`,
+`GenerateMachineWithTach`, 3 captures, 2026-10-19).
+
+**Load time and peak memory.** 1440 captures, 4 channels, 0.5 s blocks of
+12800 samples, no compression (605 MB file). Captures copied from 8
+`SimulatedSensor` frames. Intel i7-1260P, 2026-10-19.
+
+| Version | Load time | Peak RSS |
+|---|---|---|
+| Trend from `overall_json` (wrong in other units) | 1.7 s | 778 MB |
+| One call for each frame and channel | 5.3 s | 779 MB |
+| One 2-D array, 16 frames | 3.0 s | 783 MB |
+| One 2-D array, 64 frames | 3.2 s | 799 MB |
+| One 2-D array, 256 frames | 3.3 s | 859 MB |
+
+Reading the file takes about 1.7 s of each load. One call for each frame
+spent about 1 ms in each channel-frame, mostly call overhead: the FIR
+design in `resample_poly` (0.80 s), `sosfilt_zi` (0.98 s) and the Hann
+window (0.42 s) were computed again for each call (cProfile).
+
+**Rejected alternatives.** Keeping the stage-1 arrays on each sample: about
+double the memory of the raw frames. Caching the FIR kernel, the filter
+state and the window: not done; the 2-D path calls each once for each
+chunk.
+
 ---
 
 ## 6. Testing

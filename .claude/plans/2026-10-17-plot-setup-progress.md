@@ -12,8 +12,9 @@ Update this file in the same commit as each step. Status: 🔲 TODO,
 | Step | Content | Status | Commit | Verification |
 |---|---|---|---|---|
 | A1 | Visible disabled state for locked controls | ✅ Done | 85d630c | lock and unlock test (`test_gui_locked_controls.py`) |
-| A2 | A new `DataCollector` for every load and connect; `_on_data_source_changed()` | ✅ Done | A2 | no stale state; refused load leaves state; connect uses `acquisition.yaml`; revert check (`test_gui_collector_swap.py`) |
-| A3 | Session and burst trends from stored frames (no stage-1 arrays kept); NaN; RPM trend | 🔲 TODO | | zero-trend reproduction, then fix; load time and memory |
+| A2 | A new `DataCollector` for every load and connect; `_on_data_source_changed()` | ✅ Done | 1e28e05 | no stale state; refused load leaves state; connect uses `acquisition.yaml`; revert check (`test_gui_collector_swap.py`) |
+| A3 | Session and burst trends from stored frames (no stage-1 arrays kept); NaN; RPM trend | ✅ Done | A3 | zero trend reproduced on the old code (g, mil 0.0), then fixed; equality with `overall_json` 7.4e-5; load time and memory measured (`test_session_trend_from_frames.py`) |
+| A3a | Progress bar while a session or burst loads (native dearpygui `add_progress_bar`) | 🔲 TODO | | owner request 2026-10-19: a 1440-capture load takes about 3 s with no sign of activity |
 | A4 | Averaging on contiguous frames only | 🔲 TODO | | session k = 1 |
 | B1 | `FrameSnapshot`; `current_rpm(snapshot)` | 🔲 TODO | | append between calls |
 | B2 | `advance_frame()`, `results_for()`; `process_samples()` removed | 🔲 TODO | | one trend point per tick |
@@ -36,7 +37,7 @@ Update this file in the same commit as each step. Status: 🔲 TODO,
 | D5 | Envelope chart with SI scale and mode | 🔲 TODO | | |
 | D6 | Trend y2: shaft speed | 🔲 TODO | | |
 | D7 | XY chart | 🔲 TODO | | |
-| E1 | Layout in data files; versions 6 and 7; headless layout | 🔲 TODO | | round trip |
+| E1 | Layout in data files; versions 6 and 7; headless layout; stored mV orders for each capture (load without DSP) | 🔲 TODO | | round trip; load time against E21 |
 | E2 | Exact-version reading; older and newer refused; old reader removed | 🔲 TODO | | revert checks |
 | E3 | `scripts/convert-0x` | 🔲 TODO | | converted files equal; source unchanged |
 | R4 | Docs, reviews, merge chain, tag `v1.0.0` | 🔲 TODO | | |
@@ -67,7 +68,7 @@ section 5.
 | Date | What | Method | Result |
 |---|---|---|---|
 | 2026-10-19 | Session trend rebuilt from `overall_json`, accelerometer 100 mV/g, recorded in in/s, shown in in/s / g / mil | synthetic trend, `get_trend_for_display()` (scratchpad `trendcols.py`) | 273.0, 283.9, 278.5 / 0.0 x3 / 0.0 x3: defect, A3 |
-| | Session load time and peak memory, 1440 captures, 4 channels, before and after A3 | `SimulatedSensor` session | |
+| 2026-10-19 | Session load time and peak memory, 1440 captures, 4 channels, before and after A3 | `SimulatedSensor` frames copied to 1440 captures, i7-1260P (scratchpad `mksession.py`, `loadsession.py`) | 1.7 s, 778 MB before; 5.3 s, 779 MB one call for each frame; 3.0 s, 783 MB with 2-D chunks of 16. CONTRIBUTING.md E21 |
 | | Extra time for the hook views during a recording, 8 channels | Raspberry Pi 3 headless; GUI PC | |
 | | GUI time for each frame, 1 to 8 channels, before D2 | `scripts/profile-pipeline` | |
 | | GUI time for each frame, 6 charts, 1 on screen, after D2 | `scripts/profile-pipeline` | |
