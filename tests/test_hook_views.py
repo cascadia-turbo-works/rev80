@@ -6,6 +6,7 @@ the record view, in the unit that the channel snapshot names. Empty keys
 are the record view: today's behaviour.
 """
 
+import dataclasses
 import json
 import logging
 import time
@@ -164,3 +165,56 @@ def test_the_capture_stores_the_record_unit_with_a_hook_in_g(tmp_path):
     # 0.5 g at 60.3 Hz is 0.51 in/s: the two values differ by only 2 %.
     g = dc.result_view(dc.snapshot(), 0, 'g').overall
     assert stored[-1] != pytest.approx(g, rel=1e-3)
+
+
+# --- Fixed-limit sustain time -------------------------------------------------
+
+def _fixed(sustain_frames=1):
+    # 0.5 g at 60.3 Hz reads about 0.5 g 0-P: a 0.3 g limit is crossed.
+    return FixedThresholdHook(upper_limit=0.3, upper_unit='g',
+                              sustain_frames=sustain_frames)
+
+
+def _frames(dc, n, start=0):
+    for i in range(start, start + n):
+        _feed(dc, i)
+        yield _views(dc)
+
+
+def test_sustain_of_one_frame_fires_on_the_first_frame():
+    dc = _collector(record_unit='g')
+    (v,) = _frames(dc, 1)
+    event = _fixed(1).on_results(v, None)
+    assert event is not None
+    assert event.reason.startswith('Overall') and '> upper limit 0.3 g on ch0' in event.reason
+
+
+def test_sustain_needs_consecutive_frames_and_reports_the_first():
+    dc = _collector(record_unit='g')
+    hook = _fixed(3)
+    events = [hook.on_results(v, None) for v in _frames(dc, 4)]
+    assert events[:2] == [None, None]
+    assert events[2] is not None
+    assert events[2].trigger_rel_time == 0.0          # the first frame of the streak
+    assert events[3] is None                          # a new streak starts after an event
+
+
+def test_a_dropped_frame_ends_the_streak():
+    dc = _collector(record_unit='g')
+    hook = _fixed(2)
+    frames = list(_frames(dc, 4))
+    assert hook.on_results(frames[0], None) is None
+    # valid_results() drops an overflow frame: the hook sees no channel 0.
+    dropped = [dataclasses.replace(r, overflow=True) for r in frames[1].record]
+    assert hook.on_results(dropped, None) is None
+    assert hook.on_results(frames[2], None) is None
+    assert hook.on_results(frames[3], None) is not None
+
+
+def test_a_burst_frame_ends_the_streak():
+    dc = _collector(record_unit='g')
+    hook = _fixed(2)
+    a, b, c = _frames(dc, 3)
+    assert hook.on_results(a, None) is None
+    hook.update_baseline(b)
+    assert hook.on_results(c, None) is None

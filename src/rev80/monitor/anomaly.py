@@ -399,6 +399,12 @@ class FixedThresholdHook:
     limit's unit and mode (an empty mode is the record mode), so a velocity
     limit works on an accelerometer channel. A channel that cannot reach the
     unit (no sensor, another quantity) is skipped with one warning.
+
+    `sustain_frames` is the number of consecutive valid frames beyond the
+    limit before the hook fires; 1 fires on the first frame. A frame that
+    `valid_results()` drops, a frame inside the limit, a burst frame
+    (`update_baseline`) and `reset_baseline()` end the streak. The trigger
+    time is the first frame of the streak.
     """
 
     def __init__(
@@ -410,6 +416,7 @@ class FixedThresholdHook:
         burst_duration_s: float = 60.0,
         upper_mode: str = '',
         lower_mode: str = '',
+        sustain_frames: int = 1,
     ):
         self._upper_limit = upper_limit
         self._upper_unit  = upper_unit
@@ -418,9 +425,21 @@ class FixedThresholdHook:
         self._lower_unit  = lower_unit
         self._lower_mode  = lower_mode or ''
         self._burst_duration_s = burst_duration_s
+        self._sustain_frames = max(1, int(sustain_frames))
 
         # (side, channel) pairs for which a missing view was already logged
         self._warned: set[tuple[str, int]] = set()
+        # (side, channel) -> (frames beyond the limit, datetime and rel_time
+        # of the first frame of the streak)
+        self._streaks: dict[tuple[str, int], tuple[int, datetime, float]] = {}
+
+    def reset_baseline(self) -> None:
+        """End every streak. The hook has no baseline to reset."""
+        self._streaks = {}
+
+    def update_baseline(self, views) -> None:
+        """A burst frame: end every streak, so a streak does not span a burst."""
+        self._streaks = {}
 
     def _side_view(self, views, side: str, unit: str, mode: str) -> list:
         """The valid results of one limit's view; warns once for a missing channel."""
@@ -436,36 +455,41 @@ class FixedThresholdHook:
                     "disabled for this channel", r.channel, unit, side)
         return valid_results(results)
 
-    def on_results(self, views, frame_cache) -> 'AnomalyEvent | None':
+    def _sides(self):
         if self._upper_limit is not None:
-            for r in self._side_view(views, 'upper', self._upper_unit, self._upper_mode):
-                if r.overall > self._upper_limit:
-                    return AnomalyEvent(
-                        trigger_time=datetime.now(),
-                        channel=r.channel,
-                        reason=(
-                            f"Overall {r.overall:.4g} {r.unit} > upper limit "
-                            f"{self._upper_limit:.4g} {self._upper_unit} on ch{r.channel}"
-                        ),
-                        burst_duration_s=self._burst_duration_s,
-                        trigger_rel_time=r.rel_time,
-                    )
-
+            yield ('upper', self._upper_unit, self._upper_mode, self._upper_limit,
+                   '>', lambda value: value > self._upper_limit)
         if self._lower_limit is not None:
-            for r in self._side_view(views, 'lower', self._lower_unit, self._lower_mode):
-                if r.overall < self._lower_limit:
-                    return AnomalyEvent(
-                        trigger_time=datetime.now(),
-                        channel=r.channel,
-                        reason=(
-                            f"Overall {r.overall:.4g} {r.unit} < lower limit "
-                            f"{self._lower_limit:.4g} {self._lower_unit} on ch{r.channel}"
-                        ),
-                        burst_duration_s=self._burst_duration_s,
-                        trigger_rel_time=r.rel_time,
-                    )
+            yield ('lower', self._lower_unit, self._lower_mode, self._lower_limit,
+                   '<', lambda value: value < self._lower_limit)
 
-        return None
+    def on_results(self, views, frame_cache) -> 'AnomalyEvent | None':
+        # Only the streaks that this frame continues are kept: a channel that
+        # is inside the limit or that valid_results() dropped starts again.
+        streaks: dict[tuple[str, int], tuple[int, datetime, float]] = {}
+        event = None
+        for side, unit, mode, limit, op, beyond in self._sides():
+            for r in self._side_view(views, side, unit, mode):
+                if not beyond(r.overall):
+                    continue
+                key = (side, r.channel)
+                n, t0, rel0 = self._streaks.get(key, (0, datetime.now(), r.rel_time))
+                n += 1
+                if n < self._sustain_frames or event is not None:
+                    streaks[key] = (n, t0, rel0)
+                    continue
+                event = AnomalyEvent(
+                    trigger_time=t0,
+                    channel=r.channel,
+                    reason=(
+                        f"Overall {r.overall:.4g} {r.unit} {op} {side} limit "
+                        f"{limit:.4g} {unit} on ch{r.channel}"
+                    ),
+                    burst_duration_s=self._burst_duration_s,
+                    trigger_rel_time=rel0,
+                )
+        self._streaks = streaks
+        return event
 
 
 class CompositeAnomalyHook:

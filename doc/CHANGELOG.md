@@ -108,6 +108,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   its own unit and mode from the same frame. A channel with no sensor gives
   `mV` only and is skipped with one warning.
 
+#### Added (part C)
+- **Fixed-limit sustain.** `FixedThresholdHook(sustain_frames=N)` fires
+  after N consecutive valid frames beyond a limit; the trigger time is the
+  first frame of the streak. A frame that `valid_results()` drops, a frame
+  inside the limit and a burst frame end the streak. N = 1 is the behaviour
+  before. The `fixed_s` setting follows with the Monitor-tab controls.
+
 ## [0.1.4] - 2026-09-30
 
 ### feature/headless-siggen — headless starts the signal generator (2026-09-30)
