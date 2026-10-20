@@ -63,10 +63,10 @@ def _saved(tmp_path, frames=3):
 
 # --- file layout ---------------------------------------------------------
 
-def test_measurement_file_is_version_5(tmp_path):
+def test_measurement_file_is_version_6(tmp_path):
     _, path = _saved(tmp_path)
     with h5py.File(path, 'r') as f:
-        assert int(f['metadata'].attrs['version']) == 5
+        assert int(f['metadata'].attrs['version']) == 6
 
 
 def test_tach_channel_stores_edge_times_not_a_waveform(tmp_path):

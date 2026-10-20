@@ -1361,13 +1361,14 @@ again. Rev80 stores the achieved sample rate as a float.
 > **Note for programs that read the files:** A tachometer channel has no
 > `data` dataset. Test for `data` before you read it.
 
-### Measurement files (version 5)
+### Measurement files (version 6)
 
 **File → Save** writes the frame cache of the enabled channels to one file,
 by default in `~/Documents/Rev80/data/`. The file is not compressed.
 
 ```
-/metadata.attrs                     version = 5, notes
+/metadata.attrs                     version = 6, notes, rev80_version,
+                                    chart_layout_json
 /metadata/acquisition.attrs         acquisition settings (null stored as '')
 /metadata/scope_sensors/{id}.attrs  each sensor in use
 /metadata/channels/{ch}.attrs       name, unit, coupling, voltage_range,
@@ -1391,7 +1392,7 @@ by default in `~/Documents/Rev80/data/`. The file is not compressed.
 /tach_trend/{ch}/rpm                (M,) float64, RPM
 ```
 
-### Monitor sessions (version 6)
+### Monitor sessions (version 7)
 
 Monitor Mode writes `{output}/{session_id}/session.h5`. The `session_id` is
 `YYYY-MM-DD-HHMMSS`: UTC for headless, local time for the GUI.
@@ -1399,15 +1400,16 @@ Monitor Mode writes `{output}/{session_id}/session.h5`. The `session_id` is
 `none`.
 
 ```
-/metadata.attrs                     file_version = 6, session_id, start_time,
-                                    interval_s
+/metadata.attrs                     file_version = 7, session_id, start_time,
+                                    interval_s, rev80_version,
+                                    chart_layout_json
 /metadata/acquisition.attrs         acquisition settings at start
 /metadata/scope_sensors/{id}.attrs  sensors at start
 /metadata/channels/{ch}.attrs       channel settings at start (as above)
 /monitor/{N}.attrs                  timestamp, rel_time, samplerate, status,
                                     overall_json, peaks_json, band_json,
                                     scalars_json, rpm, speed_ok
-/monitor/{N}/{ch}/...               one channel group, as in version 5
+/monitor/{N}/{ch}/...               one channel group, as in a measurement file
 /burst.attrs                        burst_list (JSON list of burst summaries)
 /burst/{id}.attrs                   trigger_type, trigger_timestamp,
                                     trigger_rel_time, burst_duration_s,
@@ -1415,11 +1417,19 @@ Monitor Mode writes `{output}/{session_id}/session.h5`. The `session_id` is
                                     rpm, speed_ok, n_frames, n_pretrigger_frames
 /burst/{id}/{k}.attrs               timestamp, rel_time, samplerate, status,
                                     is_pretrigger, overall_json
-/burst/{id}/{k}/{ch}/...            one channel group, as in version 5
+/burst/{id}/{k}/{ch}/...            one channel group, as in a measurement file
 ```
 
 `rpm` is `NaN` when there is no reading. Rev80 opens a file up to the
-version that it writes (5 for measurements, 6 for sessions).
+version that it writes (6 for measurements, 7 for sessions).
+
+`rev80_version` is the Rev80 version that wrote the file.
+`chart_layout_json` is the chart layout as JSON, in the form of
+`charts.yaml`. A measurement file stores the layout at Save. A session
+stores the layout at the start of the recording, and its captures and
+bursts use it. When you load a file, Rev80 shows its charts. A file with
+no layout or with an invalid layout gets the default layout, and Rev80
+logs a warning.
 
 ---
 

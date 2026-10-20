@@ -420,8 +420,8 @@ in the vibration path gives a plausible wrong result, not an error. Thus:
 - `MonitorWriterThread` does not have the config. It gets the role from
   `role_of_sample(sample)`. Pass `role=` at every `_write_channel_group` call:
   the parameter defaults to `'vibration'`.
-- Measurement files: `DataCollector._FILE_VERSION` = 5. Monitor sessions:
-  `monitor.writer._FILE_VERSION` = 6. Each loader checks a file against its
+- Measurement files: `DataCollector._FILE_VERSION` = 6. Monitor sessions:
+  `monitor.writer._FILE_VERSION` = 7. Each loader checks a file against its
   own version limit (`_restore_metadata(f, max_version=...)`).
 - `None` in the acquisition attributes is stored as `''` and read back as
   `None`.

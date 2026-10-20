@@ -285,7 +285,7 @@ class TestIntervalCapture:
             assert 'metadata' in f
             # A literal, not the module constant, so a version change
             # needs an edit here.
-            assert f['metadata'].attrs['file_version'] == 6
+            assert f['metadata'].attrs['file_version'] == 7
             assert 'monitor' in f
             assert '0' in f['monitor']
             assert '0' in f['monitor']['0']       # channel group

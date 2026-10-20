@@ -1,7 +1,7 @@
 """Each file type is checked against its own version limit.
 
-Measurement files use DataCollector._FILE_VERSION (5). Monitor sessions use
-monitor.writer._FILE_VERSION (6). A current file loads with no "newer than this
+Measurement files use DataCollector._FILE_VERSION (6). Monitor sessions use
+monitor.writer._FILE_VERSION (7). A current file loads with no "newer than this
 build supports" warning; a file newer than its own type still warns.
 """
 

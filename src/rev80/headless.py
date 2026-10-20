@@ -269,6 +269,21 @@ def _apply_channel_config(config, device_cfg: dict) -> dict:
     return tach_settings
 
 
+def _chart_set_for(collector):
+    """The chart layout of a headless run: charts.yaml if present, else the default.
+
+    The default is `charts.default_layout()` of the run's vibration channels.
+    A bad charts.yaml gives the default and a warning, and is not changed.
+    """
+    from rev80 import charts
+    from rev80 import config as _cfg
+    cs, _ = charts.load_chart_set(
+        _cfg.charts_config_path(),
+        lambda: charts.default_layout(collector.config.vibration_channels,
+                                      collector.default_view_of))
+    return cs
+
+
 def _apply_overrides(config, args) -> None:
     if args.maxfreq:
         config.maxfreq = float(args.maxfreq)
@@ -544,6 +559,8 @@ def run(args: argparse.Namespace) -> int:
         if ch in config.enabled_channels:
             collector.set_tach_settings(ch, settings)
     collector.init_trend_channels()
+    # Stored in session.h5, so a load shows the charts of this run.
+    collector.chart_set = _chart_set_for(collector)
 
     # ── Summary + confirmation gate ───────────────────────────────────────────
     anom_cfg = mon_cfg.get("anomaly", {})

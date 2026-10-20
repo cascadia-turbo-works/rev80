@@ -1,4 +1,4 @@
-"""Monitor writer: a daemon thread that appends a session's captures and bursts to one session.h5 (file_version 6)."""
+"""Monitor writer: a daemon thread that appends a session's captures and bursts to one session.h5 (file_version 7)."""
 
 import json
 import queue
@@ -14,12 +14,12 @@ log = rev80.get_logger(__name__)
 
 _DISK_GUARD_BYTES: int = 1 * 1024 ** 3  # 1 GiB
 _QUEUE_WARN_DEPTH: int = 50
-_FILE_VERSION: int = 6
+_FILE_VERSION: int = 7
 
 
 # The same channel writer as DataCollector.save_data. Do not add a local
 # copy: both file types must store the overflow and degraded flags.
-from rev80.collector import _write_channel_group, role_of_sample  # noqa: E402
+from rev80.collector import _write_channel_group, role_of_sample, write_layout_attrs  # noqa: E402
 
 
 def _frame_speed(results: list) -> tuple[float, bool]:
@@ -185,6 +185,8 @@ class MonitorWriterThread:
             meta_grp.attrs['session_id']   = session.session_id
             meta_grp.attrs['start_time']   = session.start_time.isoformat()
             meta_grp.attrs['interval_s']   = float(session.interval_s)
+            # The layout at the start: charts are locked during a recording.
+            write_layout_attrs(meta_grp, session.chart_layout)
 
             # /metadata/acquisition
             acq_grp = meta_grp.create_group('acquisition')

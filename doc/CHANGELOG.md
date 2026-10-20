@@ -38,6 +38,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   and a note at the top of the tab. Only the chart on screen draws its
   series; the cards update on each frame. A tab change draws the new chart
   at once.
+- **The chart layout and the Rev80 version are in each data file.**
+  Measurement files are version 6 and sessions are version 7; the
+  `/metadata` group has `chart_layout_json` and `rev80_version`. A
+  measurement file stores the layout at Save; a session stores the layout
+  at the start of the recording (`MonitorSession.chart_layout`, from
+  `session_from()`), and its captures and bursts use it. A load sets the
+  layout. A file with no layout or an invalid one gets the default layout
+  and a warning. Headless uses `charts.yaml` when the file exists, else the
+  default layout.
 
 #### Changed
 - **One unit rule.** `DataCollector._reachable()` uses

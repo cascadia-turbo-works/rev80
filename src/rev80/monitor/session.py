@@ -21,6 +21,7 @@ class MonitorSession:
     acq_snapshot: dict = field(default_factory=dict)      # AcquisitionSettings.to_dict()
     channel_snapshot: dict = field(default_factory=dict)  # {ch: {name, unit, ...}}
     sensor_snapshot: dict = field(default_factory=dict)   # {sensor_id: ScopeSensor.to_dict()}
+    chart_layout: dict = field(default_factory=dict)      # ChartSet.to_dict() at the start
 
     @property
     def session_h5(self) -> Path:
@@ -101,7 +102,8 @@ def session_from(*, collector, session_id: str, interval_s: float,
     """Build the `MonitorSession` for a run: the one constructor for both front ends.
 
     Computes `pre_buffer_frames` from `pre_buffer_s` and the frame period, and
-    takes the acquisition, channel and sensor snapshots from `collector`.
+    takes the acquisition, channel and sensor snapshots and the chart layout
+    in effect from `collector`.
     `output_dir` is the parent directory; the session gets a `session_id`
     subdirectory in it. None means `data_dir()/monitor`. Callers read
     `max_burst_s` from acquisition.yaml. Keyword-only arguments.
@@ -132,4 +134,5 @@ def session_from(*, collector, session_id: str, interval_s: float,
         acq_snapshot=cfg.to_dict(),
         channel_snapshot=channel_snapshot_for(cfg, collector),
         sensor_snapshot=sensor_snapshot_for(collector),
+        chart_layout=collector.chart_layout().to_dict(),
     )

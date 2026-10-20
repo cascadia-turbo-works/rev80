@@ -144,6 +144,42 @@ def _write_channel_group(h5_grp, ch: int, sample: 'rev80.VibeSample',
     cg.attrs['degraded']   = bool(sample.degraded)
 
 
+def write_layout_attrs(meta_grp, layout: dict) -> None:
+    """Store the chart layout and the writing Rev80 version in a /metadata group.
+
+    `layout` is `ChartSet.to_dict()`, the same dict as charts.yaml. Both
+    file types use this one writer.
+    """
+    import json as _json
+    meta_grp.attrs['chart_layout_json'] = _json.dumps(layout)
+    meta_grp.attrs['rev80_version'] = str(rev80.__version__)
+
+
+def read_layout_attr(meta_grp, name: str):
+    """The ChartSet stored in a /metadata group, or None with a warning.
+
+    None for a missing attribute, invalid JSON, or a layout with no valid
+    chart. The caller then uses the default layout.
+    """
+    import json as _json
+    from rev80 import charts
+    raw = meta_grp.attrs.get('chart_layout_json', None)
+    if raw is None:
+        log.warning('%s: no chart layout stored; the default chart layout is used', name)
+        return None
+    try:
+        cs = charts.ChartSet.from_dict(_json.loads(raw))
+    except (TypeError, ValueError) as exc:
+        log.warning('%s: the stored chart layout is not valid (%s); '
+                    'the default chart layout is used', name, exc)
+        return None
+    if not cs.charts:
+        log.warning('%s: the stored chart layout has no valid chart; '
+                    'the default chart layout is used', name)
+        return None
+    return cs
+
+
 def _session_file_version() -> int:
     """The newest monitor-session file version this build writes.
 
@@ -245,6 +281,8 @@ class DataCollector:
         # The chart layout in effect (rev80.charts.ChartSet). None: the
         # default layout of this configuration (chart_layout()).
         self.chart_set = None
+        # A loaded file had no valid layout: _post_load() sets the default.
+        self._default_layout_pending = False
         # Per-channel tachometer calibration, keyed like scope_sensors. A
         # channel with role 'tachometer' and no entry uses TachSettings()
         # defaults.
@@ -1623,12 +1661,12 @@ class DataCollector:
     # /metadata, shared trend time axis, frames in the recorded unit. v4:
     # frames in mV, per-channel trend with an (M, 5) orders matrix. v5:
     # channel role; tachometer channels store edge times, no 'data'.
-    _FILE_VERSION = 5
+    _FILE_VERSION = 6
 
     def save_data(self, target: Path):
         """Save the frame cache and trend history to an HDF5 measurement file.
 
-        Writes version `_FILE_VERSION` (5). Frames are raw-rate and in mV.
+        Writes version `_FILE_VERSION` (6). Frames are raw-rate and in mV.
         Only enabled channels are written. Layout: README.md, "Data files".
         """
         frames = list(self.data["frame_cache"])
@@ -1643,6 +1681,8 @@ class DataCollector:
             meta_grp = f.create_group("metadata")
             meta_grp.attrs["version"] = self._FILE_VERSION
             meta_grp.attrs["notes"] = self.notes
+            # The layout in effect at Save.
+            write_layout_attrs(meta_grp, self.chart_layout().to_dict())
 
             # /metadata/acquisition — scalar acq settings only (channel dicts in /metadata/channels)
             acq_grp = meta_grp.create_group("acquisition")
@@ -1904,6 +1944,10 @@ class DataCollector:
                 else:
                     self._loaded_channel_sensor_configs[ch] = {}
 
+        # The stored layout; None gives the default layout in _post_load(),
+        # when the loaded channels are known.
+        self.chart_set = read_layout_attr(meta_grp, Path(f.filename).name)
+        self._default_layout_pending = self.chart_set is None
         return version
 
     def _loaded_channel_units(self, f: 'h5py.File') -> dict[int, str]:
@@ -2008,6 +2052,12 @@ class DataCollector:
 
         if all_channels:
             self.config.enabled_channels = sorted(all_channels)
+
+        if self._default_layout_pending:
+            from rev80 import charts
+            self.chart_set = charts.default_layout(self.config.vibration_channels,
+                                                   self.default_view_of)
+            self._default_layout_pending = False
 
         self.init_trend_channels()
         self.reprocess_last_block()

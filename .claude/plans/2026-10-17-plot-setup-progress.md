@@ -38,7 +38,7 @@ Update this file in the same commit as each step. Status: 🔲 TODO,
 | D5 | Envelope chart with SI scale and mode | 🔲 TODO | | |
 | D6 | Trend y2: shaft speed | 🔲 TODO | | |
 | D7 | XY chart | 🔲 TODO | | |
-| E1 | Layout in data files; versions 6 and 7; headless layout; stored mV orders for each capture (load without DSP) | 🔲 TODO | | round trip; load time against E22; loaded trend = live overall within 0.5 % for every order at a 2 Hz edge, 1 Hz bins, off-bin 0.6 Hz content (fixes the A3 replay-filter error found in R1) |
+| E1 | Layout in data files; versions 6 and 7; headless layout; stored mV orders for each capture (load without DSP) | 🔄 In progress | (this commit) | E1a done: layout and Rev80 version in both files, a load sets the layout, missing or bad layout gives the default and a warning, headless reads charts.yaml (`test_file_layout.py`, 11 tests). Found: headless assigns no scope sensor (R73, not in this work). E1b (stored orders) next. round trip; load time against E22; loaded trend = live overall within 0.5 % for every order at a 2 Hz edge, 1 Hz bins, off-bin 0.6 Hz content (fixes the A3 replay-filter error found in R1) |
 | E2 | Exact-version reading; older and newer refused; old reader removed | 🔲 TODO | | revert checks |
 | E3 | `scripts/convert-0x` | 🔲 TODO | | converted files equal; source unchanged |
 | R4 | Docs, reviews, merge chain, tag `v1.0.0` | 🔲 TODO | | |

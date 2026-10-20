@@ -240,8 +240,8 @@ The evidence is in CONTRIBUTING.md, "E21. Device loss".
   `save_data()` and `MonitorWriterThread`. Pass `role=role_of_sample(sample)`
   at every call: the parameter defaults to `'vibration'`, which stores a
   tachometer's whole waveform.
-- `DataCollector._FILE_VERSION` = 5 (measurement files);
-  `monitor.writer._FILE_VERSION` = 6 (`session.h5`). Each loader checks its
+- `DataCollector._FILE_VERSION` = 6 (measurement files);
+  `monitor.writer._FILE_VERSION` = 7 (`session.h5`). Each loader checks its
   own limit (`_restore_metadata(f, max_version=...)`).
 - `None` in the acquisition attributes is stored as `''` and read back as
   `None`.
