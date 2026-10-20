@@ -7,6 +7,7 @@ import pytest
 import numpy as np
 import rev80 as vc
 from rev80.scope_sensor import ScopeSensor
+from pipeline_helpers import view_of
 
 tone_step = 500
 tol = 1e-4
@@ -54,7 +55,7 @@ def test_tone_vel(freq):
         return
     stream_local.source = (vc.GenerateTone, acc_ampl, freq, 0)
     sample = dc_local.collect_sample()[0]
-    result = dc_local.process_sample(0, sample)
+    result = view_of(dc_local, 0, sample)
     dc_local.disconnect_sensor()
 
     assert result is not None
@@ -76,7 +77,7 @@ def test_tone_acc(freq):
         return
     stream_local.source = (vc.GenerateTone, acc_ampl, freq, 0)
     sample = dc_local.collect_sample()[0]
-    result = dc_local.process_sample(0, sample)
+    result = view_of(dc_local, 0, sample)
     dc_local.disconnect_sensor()
 
     assert result is not None
@@ -103,7 +104,7 @@ def test_integration_acc_to_displacement(freq):
         return
     stream_local.source = (vc.GenerateTone, acc_ampl, freq, 0)
     sample = dc_local.collect_sample()[0]
-    result = dc_local.process_sample(0, sample)
+    result = view_of(dc_local, 0, sample)
     dc_local.disconnect_sensor()
 
     assert result is not None
@@ -129,7 +130,7 @@ def test_integration_vel_to_displacement(freq):
         return
     stream_local.source = (vc.GenerateTone, vel_ampl, freq, 0)
     sample = dc_local.collect_sample()[0]
-    result = dc_local.process_sample(0, sample)
+    result = view_of(dc_local, 0, sample)
     dc_local.disconnect_sensor()
 
     assert result is not None
@@ -155,7 +156,7 @@ def test_differentiation_vel_to_acc(freq):
         return
     stream_local.source = (vc.GenerateTone, vel_ampl, freq, 0)
     sample = dc_local.collect_sample()[0]
-    result = dc_local.process_sample(0, sample)
+    result = view_of(dc_local, 0, sample)
     dc_local.disconnect_sensor()
 
     assert result is not None
@@ -206,8 +207,8 @@ def test_unit_conversion_acc_spectrum(target_unit, factor, freq):
     sample_g = dc_g.collect_sample()[0]
     sample_t = dc_t.collect_sample()[0]
 
-    result_g = dc_g.process_sample(0, sample_g)
-    result_t = dc_t.process_sample(0, sample_t)
+    result_g = view_of(dc_g, 0, sample_g)
+    result_t = view_of(dc_t, 0, sample_t)
 
     dc_g.disconnect_sensor()
     dc_t.disconnect_sensor()
@@ -247,9 +248,9 @@ def test_amplitude_modes_ratio(freq):
     sample_0p  = dc_0p.collect_sample()[0]
     sample_pp  = dc_pp.collect_sample()[0]
 
-    r_rms = dc_rms.process_sample(0, sample_rms)
-    r_0p  = dc_0p.process_sample(0, sample_0p)
-    r_pp  = dc_pp.process_sample(0, sample_pp)
+    r_rms = view_of(dc_rms, 0, sample_rms)
+    r_0p  = view_of(dc_0p, 0, sample_0p)
+    r_pp  = view_of(dc_pp, 0, sample_pp)
 
     for dc in [dc_rms, dc_0p, dc_pp]:
         dc.disconnect_sensor()
@@ -288,7 +289,7 @@ def test_cross_modality_time_series(freq):
         return
     stream_local.source = (vc.GenerateTone, acc_ampl, freq, 0)
     sample = dc_local.collect_sample()[0]
-    result = dc_local.process_sample(0, sample)
+    result = view_of(dc_local, 0, sample)
     dc_local.disconnect_sensor()
 
     assert result is not None
@@ -325,7 +326,7 @@ def test_integration_zeroes_bin1(freq, highpass_enabled):
         return
     stream_local.source = (vc.GenerateTone, acc_ampl, freq, 0)
     sample = dc_local.collect_sample()[0]
-    result = dc_local.process_sample(0, sample)
+    result = view_of(dc_local, 0, sample)
     dc_local.disconnect_sensor()
 
     assert result is not None
@@ -355,7 +356,7 @@ def test_differentiation_does_not_zero_bin1(highpass_enabled):
         return
     stream_local.source = (vc.GenerateTone, vel_ampl, freq, 0)
     sample = dc_local.collect_sample()[0]
-    result = dc_local.process_sample(0, sample)
+    result = view_of(dc_local, 0, sample)
     dc_local.disconnect_sensor()
 
     assert result is not None
@@ -375,7 +376,7 @@ def test_passthrough_does_not_zero_bin1():
         return
     stream_local.source = (vc.GenerateTone, acc_ampl, freq, 0)
     sample = dc_local.collect_sample()[0]
-    result = dc_local.process_sample(0, sample)
+    result = view_of(dc_local, 0, sample)
     dc_local.disconnect_sensor()
 
     assert result is not None
@@ -401,7 +402,7 @@ def test_causal_highpass_no_severe_edge_overshoot():
         return
     stream_local.source = (vc.GenerateTone, acc_ampl, freq, 0)
     sample = dc_local.collect_sample()[0]
-    result = dc_local.process_sample(0, sample)
+    result = view_of(dc_local, 0, sample)
     dc_local.disconnect_sensor()
 
     assert result is not None

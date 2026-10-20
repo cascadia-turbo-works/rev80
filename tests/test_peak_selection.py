@@ -14,6 +14,7 @@ import scipy.ndimage
 import scipy.signal
 
 from rev80 import peaks as pk
+from pipeline_helpers import tick
 
 # ---------------------------------------------------------------------------
 # Synthetic spectrum construction
@@ -501,7 +502,7 @@ def blower4_ch2():
     import rev80
     col = rev80.DataCollector()
     col.load_data(CORPUS / 'blower 4 - bearing DE.h5')
-    result = next(r for r in col.process_samples() if r.channel == 2)
+    result = next(r for r in tick(col) if r.channel == 2)
     return result
 
 
@@ -552,7 +553,7 @@ class TestOldCastleCorpusWide:
         for path in sorted(CORPUS.glob('*.h5')):
             col = rev80.DataCollector()
             col.load_data(path)
-            for result in col.process_samples():
+            for result in tick(col):
                 out.append(result)
         return out
 

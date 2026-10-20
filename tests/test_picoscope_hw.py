@@ -15,6 +15,7 @@ import rev80 as vc
 import rev80.sample
 from rev80 import tach as rev80_tach
 from rev80.picoscope import _TIMEBASE_NS, PicoScopeStream
+from pipeline_helpers import tick, view_of
 
 # ---------------------------------------------------------------------------
 # Signal generator parameters  (siggen output → Channel A loopback)
@@ -149,7 +150,7 @@ class TestPicoScopeHardwareStream:
         """Dominant FFT peak must land within FREQ_TOL_HZ of SIGGEN_FREQ_HZ."""
         cfg = _make_stream_config()
         dc = vc.DataCollector(config=cfg)
-        result = dc.process_sample(0, self.sample)
+        result = view_of(dc, 0, self.sample)
         assert result is not None, 'process_sample() returned None'
         assert len(result.peaks) > 0, 'No peaks found in FFT'
 
@@ -454,7 +455,7 @@ class TestPicoScopeTachometer:
         """A tachometer channel gives no ChannelResult (no overall, spectrum or kurtosis)."""
         _, dc = _capture_tach(30.0, channels=(0, 1))
         assert dc is not None
-        results = dc.process_samples()
+        results = tick(dc)
         assert all(r.channel != 0 for r in results)
 
     def test_four_channels_with_a_tach_stream_cleanly(self):

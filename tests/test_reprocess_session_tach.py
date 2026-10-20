@@ -16,6 +16,7 @@ import numpy as np
 import rev80 as vc
 from rev80 import simulation as sim
 from rev80.monitor import MonitorController, MonitorSession
+from pipeline_helpers import tick
 
 RUNNING_RATE_HZ = 30.0
 
@@ -56,7 +57,7 @@ def _record_session(tmp_path):
     ctrl.start(session)
     for i in range(8):
         dc.receive_data(_frame(cfg, i))
-        ctrl.on_results(dc.process_samples(), dc.data['frame_cache'])
+        ctrl.on_results(tick(dc), dc.data['frame_cache'])
         if i == 2:
             ctrl.trigger_burst()
         time.sleep(0.06)

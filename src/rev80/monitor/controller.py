@@ -18,9 +18,9 @@ class MonitorController:
     Lifecycle: start(session, anomaly_hook) / stop(). The hook given to
     start() is active for the whole session; there is no arm step.
 
-    Call ``on_results(results, frame_cache)`` after each call to
-    ``collector.process_samples()``, from the same thread (the GUI render
-    loop or the headless loop).
+    Call ``on_results(results, frame_cache)`` once for each new frame, with
+    the record results of the tick's snapshot (``collector.results_for``),
+    from the same thread (the GUI render loop or the headless loop).
     """
 
     def __init__(self) -> None:
@@ -241,7 +241,7 @@ class MonitorController:
             log.debug('resource trail failed', exc_info=True)
 
     def on_results(self, results: list, frame_cache: deque) -> None:
-        """Handle one frame's results. Call after process_samples(). Does not block."""
+        """Handle one frame's record results (`results_for`). Does not block."""
         if not self._recording or not results:
             return
 

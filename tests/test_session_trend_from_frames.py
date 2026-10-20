@@ -21,6 +21,7 @@ from rev80 import simulation as sim
 from rev80.monitor import MonitorController
 from rev80.monitor.session import session_from
 from rev80.scope_sensor import ScopeSensor
+from pipeline_helpers import tick, view_of
 
 RUNNING_RATE_HZ = 29.37
 N_FRAMES = 6
@@ -65,7 +66,7 @@ def session_h5(tmp_path_factory):
     ctrl.start(session)
     for i in range(N_FRAMES):
         _feed(dc, i)
-        ctrl.on_results(dc.process_samples(), dc.data['frame_cache'])
+        ctrl.on_results(tick(dc), dc.data['frame_cache'])
         if i == 2:
             ctrl.trigger_burst()
         time.sleep(0.03)
@@ -117,7 +118,7 @@ def test_every_unit_shows_a_value_not_zero(session_h5, unit, steps):
     # Each point equals that frame's overall, processed in the new unit.
     frames = list(dc.data['frame_cache'])
     for v, frame in zip(values, frames):
-        ref = dc.process_sample(0, frame[0])
+        ref = view_of(dc, 0, frame[0])
         assert v == pytest.approx(ref.overall, rel=1e-9)
 
 

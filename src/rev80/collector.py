@@ -172,8 +172,9 @@ class DataCollector:
 
     The stream thread calls `receive_data` once for each frame: one mV
     `VibeSample` per channel, appended to `data["frame_cache"]`, then
-    `new_frame_event` is set. The main thread calls `process_samples`, which
-    converts mV to engineering units. All consumers read `frame_cache`.
+    `new_frame_event` is set. For each new frame the main thread takes one
+    `snapshot()`, calls `advance_frame()` once, and reads its views with
+    `result_view()` / `results_for()`, which convert mV to engineering units.
     """
 
     def __init__(
@@ -207,6 +208,13 @@ class DataCollector:
         # Latched speed-gate reference, used when config.speed_gate_rpm is None.
         self._speed_ref_rpm: float | None = None
         self._cache_cursor: int = 0
+        # Memo of result_view() for one snapshot (one render tick), keyed by
+        # sample identity, unit, mode, N and peaks; cleared on a new snapshot.
+        self._memo: dict = {}
+        self._memo_snapshot: 'FrameSnapshot | None' = None
+        # The last frame advance_frame() trended, so a redisplay adds no point.
+        self._advanced_frame: dict | None = None
+        self._unreachable_logged: set = set()
         self.siggen_config: dict | None = None
         self._last_frame_t: float | None = None  # arrival time of previous frame
         self._lag_warn_t: float = 0.0  # wall time of last lag warning
@@ -512,30 +520,37 @@ class DataCollector:
             self.trend[ch] = self._empty_trend()
         log.debug("Trend data cleared.")
 
-    def get_trend_for_display(self) -> dict[int, tuple[list[float], list[float]]]:
-        """Return {ch: (rel_times, displayed_values)} scaled to current display settings.
+    def get_trend_for_display(self, unit: 'str | None' = None,
+                              amplitude_mode: 'str | None' = None,
+                              channels: 'list[int] | None' = None,
+                              ) -> dict[int, tuple[list[float], list[float]]]:
+        """Return {ch: (rel_times, values)} in `unit` and `amplitude_mode`.
 
-        All unit/sensitivity/amplitude-mode conversion is handled here so the
-        GUI never needs to import unit-conversion utilities.
+        None for `unit` or `amplitude_mode` is each channel's record view
+        (`default_view_of`); `channels` None is every vibration channel. A
+        channel that cannot reach `unit` gives ([], []). All unit conversion
+        is here, so the GUI imports no unit-conversion utilities.
         """
         from rev80.util import UNIT_TO_SI, amplitude_scale, integration_steps
         out: dict[int, tuple[list[float], list[float]]] = {}
         # Vibration channels only -- a tachometer has no engineering unit and
         # nothing here (sensitivity, SI, amplitude mode, integration) applies
         # to a shaft speed. RPM is trended by get_rpm_trend().
-        for ch in self.config.vibration_channels:
+        vib = self.config.vibration_channels
+        for ch in (vib if channels is None else [c for c in channels if c in vib]):
             td        = self.trend.get(ch, {})
             rel_times = td.get("rel_times", np.empty(0))
             orders    = td.get("orders",    np.empty((0, 5)))
-            if len(rel_times) == 0:
+            rec_unit, rec_mode = self.default_view_of(ch)
+            target_unit = unit or rec_unit
+            amp_mode    = amplitude_mode or rec_mode
+            if len(rel_times) == 0 or not self._reachable(ch, target_unit):
                 out[ch] = ([], [])
                 continue
 
             scope_sensor   = self.scope_sensors.get(ch)
             sensor_eu      = scope_sensor.engineering_units if scope_sensor else 'mV'
             sensitivity_mv = scope_sensor.sensitivity       if scope_sensor else 1.0
-            target_unit    = self.get_active_eu(ch)
-            amp_mode       = self.config.amplitude_mode_for(ch) or '0-P'
 
             n_steps    = integration_steps(sensor_eu, target_unit)
             amp_factor = amplitude_scale(amp_mode)
@@ -716,7 +731,7 @@ class DataCollector:
             col  = min(i, data_arr.shape[1] - 1)
             data = np.ascontiguousarray(data_arr[:, col], dtype=np.float64)
             # Filter here: this is the one place that sees each block once,
-            # in stream order. process_sample runs many times on one frame and
+            # in stream order. The views run many times on one frame and
             # in any order when browsing, so it must not advance the state.
             if self.config.role_for(ch) == 'tachometer':
                 # No high-pass: its overshoot re-crosses the threshold, and an
@@ -773,8 +788,8 @@ class DataCollector:
         to the maxfreq-driven display rate, for Spectrum-tab Welch input.
 
         Cached on the sample the same way psd_mv is: decimate_to_rate is real
-        compute (FIR filter + polyphase resample) and process_sample can be
-        called many times on one frame (browsing, unit changes).
+        compute (FIR filter + polyphase resample) and the views can be
+        computed many times on one frame (browsing, unit changes).
         """
         target_rate = self.config.samplerate
         key = (sample.samplerate, target_rate, sample._filter_config_key)
@@ -976,14 +991,18 @@ class DataCollector:
         _, psd = self._psd_and_overalls_for(ch, sample)
         return psd
 
-    def process_sample(self, ch: int, sample: 'rev80.VibeSample',
-                       history: 'list | None' = None,
-                       snapshot: 'FrameSnapshot | None' = None) -> 'rev80.ChannelResult | None':
-        """Filter, compute PSD, 5-order mV overalls, and convert to display units.
+    def _view_of_sample(self, ch: int, sample: 'rev80.VibeSample', unit: str,
+                        amp_mode: str, history: 'list | tuple' = (),
+                        n_averages: int = 1,
+                        snapshot: 'FrameSnapshot | None' = None,
+                        peaks: bool = True) -> 'rev80.ChannelResult | None':
+        """Stage 2 for one sample: the view in `unit` and `amp_mode`.
 
-        Side-effects on sample (cached after first call per config):
-          - psd_mv / freq_hz / _psd_config_key
-          - overall_ampl_by_integration_order — (5,) RMS overalls in mV, orders −2…+2
+        Stage 1 (filter, decimate, PSD, five mV overalls) is cached on the
+        sample and does not depend on the unit. `history`: earlier valid
+        frames of this channel, oldest first, for an average of up to
+        `n_averages`. `snapshot` gives the shaft speed; None gives no
+        reading. The caller checks that `unit` is reachable (`_reachable`).
         """
         from rev80.util import UNIT_TO_SI, amplitude_scale, integration_steps
 
@@ -993,9 +1012,7 @@ class DataCollector:
         scope_sensor   = self.scope_sensors.get(ch)
         sensor_eu      = scope_sensor.engineering_units if scope_sensor else 'mV'
         sensitivity_mv = scope_sensor.sensitivity       if scope_sensor else 1.0
-        amp_mode       = self.config.amplitude_mode_for(ch) or '0-P'
-        target_unit    = self.get_active_eu(ch)
-        effective_tgt  = target_unit if target_unit else sensor_eu
+        effective_tgt  = unit
         config         = self.config
 
         # ── 1. Butterworth filter ─────────────────────────────────────
@@ -1043,7 +1060,7 @@ class DataCollector:
         # per-frame RMS values, for the same reason.
         n_avg = 1
         overalls = sample.overall_ampl_by_integration_order
-        if config.averaging_enabled:
+        if n_averages > 1:
             # Newest first. The displayed frame is in the average only if it
             # is valid (not overflow, not degraded). A flagged frame still
             # supplies the waveform, the scalars and the flag.
@@ -1055,7 +1072,7 @@ class DataCollector:
             psd_sum   = None
             order_sum = None
             count     = 0
-            want      = config.n_averages_effective
+            want      = int(n_averages)
             for frame_sample in candidates:
                 if count >= want:
                     break
@@ -1085,7 +1102,7 @@ class DataCollector:
         n_steps = integration_steps(sensor_eu, effective_tgt)
         if abs(n_steps) > 2:
             log.error(
-                f'process_sample ch={ch}: integration steps {n_steps} out of range [-2, 2] '
+                f'_view_of_sample ch={ch}: integration steps {n_steps} out of range [-2, 2] '
                 f'({sensor_eu!r} → {effective_tgt!r}); skipping frame'
             )
             return None
@@ -1123,13 +1140,16 @@ class DataCollector:
         seg_len    = min(config.nperseg, len(filtered_mv))
         seg_step   = max(1, seg_len - min(seg_len - 1, int(seg_len * config.welch_overlap)))
         n_segments = 1 + max(0, len(filtered_mv) - seg_len) // seg_step
-        with _profile.timed(_profile.PROC_PEAKS):
-            peaks = rev80_peaks.select_peaks(
-                spectrum_amp,
-                window=config.fft_window,
-                threshold_db=config.peak_threshold_db,
-                n_segments=n_segments,
-            )
+        if peaks:
+            with _profile.timed(_profile.PROC_PEAKS):
+                peak_idx = rev80_peaks.select_peaks(
+                    spectrum_amp,
+                    window=config.fft_window,
+                    threshold_db=config.peak_threshold_db,
+                    n_segments=n_segments,
+                )
+        else:
+            peak_idx = np.array([], dtype=int)
 
         # ── 7. Overall amplitude in target unit ───────────────────────
         # Reuse the IFFT-based mV RMS cached in step 3; apply unit scale + amp mode.
@@ -1164,13 +1184,16 @@ class DataCollector:
             time_signal = np.fft.irfft(rfft_tukey, n=N)[keep] * eu_scale
             time_vec    = decimated_time_vec[keep]
 
-        rpm = self.current_rpm(snapshot)
-        usable_rpm = self.current_rpm(snapshot, usable_only=True)
+        if snapshot is not None:
+            rpm = self.current_rpm(snapshot)
+            usable_rpm = self.current_rpm(snapshot, usable_only=True)
+        else:
+            rpm = usable_rpm = None
         return rev80.ChannelResult(
             channel=ch, unit=effective_tgt, overflow=sample.overflow,
             degraded=sample.degraded,
             time_data=time_signal, time_vec=time_vec, samplerate=samplerate,
-            freq=freq_hz, spectrum=spectrum_amp, peaks=peaks, overall=overall,
+            freq=freq_hz, spectrum=spectrum_amp, peaks=peak_idx, overall=overall,
             band_fmin=band_fmin, band_fmax=band_fmax,
             # From the returned trace, not from the Hann-tapered array. Never
             # averaged: these statistics must catch the one frame that is not
@@ -1350,80 +1373,153 @@ class DataCollector:
             newer = older
         return frames[::-1], False
 
-    def process_samples(self) -> list['rev80.ChannelResult']:
-        """Process the current frame; return one ChannelResult per vibration channel.
+    # ------------------------------------------------------------------
+    # Views of a snapshot
+    # ------------------------------------------------------------------
 
-        Uses the latest frame when streaming, `_cache_cursor` when browsing.
-        Tachometer channels get no ChannelResult. Trends only when streaming.
+    def display_n_averages(self) -> int:
+        """Frames the display averages: the configured N when averaging is on, else 1."""
+        return self.config.n_averages_effective if self.config.averaging_enabled else 1
+
+    def default_view_of(self, ch: int) -> 'tuple[str, str]':
+        """(unit, amplitude mode) of a channel's record view.
+
+        The channel's target unit, then the sensor EU ('mV' with no sensor);
+        the channel's mode, then '0-P'.
+        """
+        return self.get_active_eu(ch), self.config.amplitude_mode_for(ch) or '0-P'
+
+    def _reachable(self, ch: int, unit: str) -> bool:
+        """Can channel `ch` be shown in `unit`? Logs once for each (ch, unit) if not.
+
+        No sensor: 'mV' only. With a sensor: an engineering unit within two
+        integration steps of the sensor EU.
+        """
+        from rev80.util import integration_steps
+        sensor = self.scope_sensors.get(ch)
+        if sensor is None:
+            ok, why = unit == 'mV', 'no sensor'
+        elif unit == 'mV':
+            ok, why = False, 'a sensor is assigned; mV is not an engineering unit'
+        else:
+            try:
+                ok = abs(integration_steps(sensor.engineering_units, unit)) <= 2
+                why = f'more than two integration steps from {sensor.engineering_units}'
+            except ValueError:
+                ok, why = False, 'unknown unit'
+        if not ok and (ch, unit) not in self._unreachable_logged:
+            self._unreachable_logged.add((ch, unit))
+            log.warning(f'ch={ch} cannot be shown in {unit!r}: {why}')
+        return ok
+
+    def result_view(self, snapshot: FrameSnapshot, ch: int, unit: 'str | None' = None,
+                    amplitude_mode: 'str | None' = None, n_averages: int = 1,
+                    peaks: bool = True) -> 'rev80.ChannelResult | None':
+        """One channel of the snapshot's displayed frame, in `unit` and `amplitude_mode`.
+
+        None for `unit` or `amplitude_mode` is the record view
+        (`default_view_of`). Averaging: power average over the contiguous
+        valid frames among the `n_averages` most recent. No side effects
+        except the stage-1 cache. Memoised for the tick. Returns None for a
+        channel that is not in the frame or cannot reach `unit`.
+        """
+        sample = snapshot.frame.get(ch)
+        if sample is None or sample.blocksize <= 1:
+            return None
+        rec_unit, rec_mode = self.default_view_of(ch)
+        unit = unit or rec_unit
+        mode = amplitude_mode or rec_mode
+        n = max(1, int(n_averages))
+        if not self._reachable(ch, unit):
+            return None
+
+        if snapshot is not self._memo_snapshot:
+            self._memo.clear()
+            self._memo_snapshot = snapshot
+        key = (id(sample), ch, unit, mode, n, bool(peaks))
+        hit = self._memo.get(key)
+        if hit is not None and hit[0] is sample:
+            return hit[1]
+
+        history: list = []
+        gap = False
+        if n > 1:
+            frames, gap = self._contiguous_history(snapshot.frames, snapshot.index, n)
+            # A clipped or degraded frame is not a measurement: keep it out
+            # of the average. The displayed frame is always shown, flagged.
+            history = [f[ch] for f in frames
+                       if f.get(ch) is not None
+                       and not (f[ch].overflow or f[ch].degraded)]
+        result = self._view_of_sample(ch, sample, unit, mode, history=history,
+                                      n_averages=n, snapshot=snapshot, peaks=peaks)
+        if result is not None and gap:
+            result = dataclasses.replace(result, averaging_gap=True)
+        self._memo[key] = (sample, result)
+        return result
+
+    def _record_view_of_sample(self, ch: int, sample: 'rev80.VibeSample') -> 'rev80.ChannelResult | None':
+        """The record view of a sample that is not in a snapshot (session reprocess)."""
+        unit, mode = self.default_view_of(ch)
+        if not self._reachable(ch, unit):
+            return None
+        return self._view_of_sample(ch, sample, unit, mode, peaks=False)
+
+    def results_for(self, snapshot: FrameSnapshot, unit: 'str | None' = None,
+                    amplitude_mode: 'str | None' = None,
+                    n_averages: int = 1) -> list['rev80.ChannelResult']:
+        """One `ChannelResult` for each vibration channel of the snapshot. No side effects.
+
+        Tachometer channels get no ChannelResult: a pulse train gives
+        kurtosis 15.94 through this path.
         """
         with _profile.timed(_profile.PROC_TOTAL):
-            return self._process_samples()
+            results = []
+            for ch in self.config.vibration_channels:
+                r = self.result_view(snapshot, ch, unit, amplitude_mode, n_averages)
+                if r is not None:
+                    results.append(r)
+            return results
 
-    def _process_samples(self) -> list['rev80.ChannelResult']:
-        snap = self.snapshot()
-        if not snap.frames:
-            return []
-        frame = snap.frame
+    def advance_frame(self, snapshot: FrameSnapshot) -> None:
+        """The side effects of a new live frame: one trend point and one RPM point.
 
-        # Frames before the displayed one, oldest first, for averaging. One
-        # rule for live and browse: the N most recent valid frames up to and
-        # including the displayed frame, contiguous in time. So replay shows
-        # what the live display showed.
-        history: list = []
-        averaging_gap = False
-        if self.config.averaging_enabled:
-            want = self.config.n_averages_effective
-            history, averaging_gap = self._contiguous_history(snap.frames, snap.index, want)
-
-        # Record shaft speed for this frame before the vibration channels,
-        # so a consumer reading results has current_rpm() already updated.
-        if snap.is_live:
-            for tch in self.config.tach_channels:
-                tsample = frame.get(tch)
-                if tsample is None:
-                    continue
-                tres = self.tach_for(tch, tsample)
-                # Trend only a usable reading, as for the speed gate.
-                if tres.rpm is not None and tres.is_usable:
-                    self._update_tach_trend(tch, tres.rel_time, tres.rpm)
-
-        results: list[rev80.ChannelResult] = []
-        # Vibration channels only. A tachometer has no spectrum, overall or
-        # engineering unit; through this path a pulse train gives kurtosis
-        # 15.94.
+        Call once for each tick that shows a new frame. Does nothing for a
+        browsed frame, or for a frame that was already advanced (a redisplay
+        after a settings change). The trend holds the five mV orders of the
+        record view, crest factor and kurtosis (never averaged). A clipped or
+        degraded frame is not trended; only a usable shaft speed is.
+        """
+        frame = snapshot.frame
+        if not snapshot.is_live or not frame or frame is self._advanced_frame:
+            return
+        self._advanced_frame = frame
+        for tch in self.config.tach_channels:
+            tsample = frame.get(tch)
+            if tsample is None:
+                continue
+            tres = self.tach_for(tch, tsample)
+            if tres.rpm is not None and tres.is_usable:
+                self._update_tach_trend(tch, tres.rel_time, tres.rpm)
         for ch in self.config.vibration_channels:
             sample = frame.get(ch)
             if sample is None or sample.blocksize <= 1:
                 continue
-            # A clipped or degraded frame is not a measurement: keep it out of
-            # the average. The displayed frame is always shown, flagged.
-            ch_history = [
-                f[ch] for f in history
-                if ch in f and f[ch] is not None
-                and not (f[ch].overflow or f[ch].degraded)
-            ]
-            result = self.process_sample(ch, sample, history=ch_history, snapshot=snap)
+            result = self.result_view(snapshot, ch)
             if result is None:
                 continue
-            if averaging_gap:
-                result = dataclasses.replace(result, averaging_gap=True)
-            if snap.is_live:
-                # Do not trend a clipped or degraded frame: the trend would show
-                # a step that did not occur on the machine, and an alarm could
-                # follow. The frame is still returned for display, flagged.
-                if result.overflow or result.degraded:
-                    log.debug(
-                        f'ch={ch} frame at rel_time={result.rel_time:.3f}s excluded '
-                        f'from trend (overflow={result.overflow}, '
-                        f'degraded={result.degraded})'
-                    )
-                else:
-                    self.update_trend(ch, result.rel_time,
-                                      sample.overall_ampl_by_integration_order,
-                                      crest_factor=result.crest_factor,
-                                      kurtosis=result.kurtosis)
-            results.append(result)
-        return results
+            if result.overflow or result.degraded:
+                # The trend would show a step that did not occur on the
+                # machine, and an alarm could follow.
+                log.debug(
+                    f'ch={ch} frame at rel_time={result.rel_time:.3f}s excluded '
+                    f'from trend (overflow={result.overflow}, '
+                    f'degraded={result.degraded})'
+                )
+                continue
+            self.update_trend(ch, result.rel_time,
+                              sample.overall_ampl_by_integration_order,
+                              crest_factor=result.crest_factor,
+                              kurtosis=result.kurtosis)
 
     # ------------------------------------------------------------------
     # Persistence
@@ -1979,8 +2075,8 @@ class DataCollector:
                                  progress_cb=None) -> int:
         """Re-derive overall_json for every /monitor/N/ using the current config.
 
-        Reads stored raw-mV arrays, runs process_sample() with the currently wired
-        sensor config, and overwrites the overall_json attr on each capture group.
+        Reads stored raw-mV arrays, computes the record view with the currently
+        wired sensor config, and overwrites the overall_json attr on each capture group.
         Call after saving new sensor/channel config to keep the trend consistent.
         Returns the number of captures processed.
         """
@@ -2015,7 +2111,7 @@ class DataCollector:
                         samplerate=sr, unit="mV", overflow=False, data=data,
                     )
                     try:
-                        result = self.process_sample(ch, sample)
+                        result = self._record_view_of_sample(ch, sample)
                     except Exception as exc:
                         log.warning(f"reprocess_session_trend: skipped cap={key} ch={ch}: {exc}")
                         continue
@@ -2049,7 +2145,7 @@ class DataCollector:
                                 samplerate=sr, unit="mV", overflow=False, data=data,
                             )
                             try:
-                                result = self.process_sample(ch, sample)
+                                result = self._record_view_of_sample(ch, sample)
                             except Exception as exc:
                                 log.warning(f"reprocess_session_trend: skipped burst={burst_id} fi={fi_str} ch={ch}: {exc}")
                                 continue

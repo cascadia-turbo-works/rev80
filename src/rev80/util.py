@@ -120,7 +120,7 @@ EU_OPTIONS: list = [
 #   P-P  = 0-P * 2
 # TODO: add 'PSD' (eu²/Hz) and 'ASD' (eu/√Hz) density modes.  These require
 #   switching scipy.welch to scaling='density' and adjusting the amplitude
-#   pipeline in DataCollector.process_sample() — do not mix spectrum and
+#   pipeline in DataCollector._view_of_sample() — do not mix spectrum and
 #   density normalization in the same AMPLITUDE_SCALE lookup.
 AMPLITUDE_MODES: list = ['RMS', '0-P', 'P-P']
 AMPLITUDE_SCALE: dict = {

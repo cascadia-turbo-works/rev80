@@ -222,7 +222,10 @@ DataCollector.receive_data()
     tachometer: edge detection, no high-pass
   frame_cache.append(frame)
   new_frame_event.set()  ───────────────▶  wait for new_frame_event
-                                           DataCollector.process_samples()
+                                           snap = DataCollector.snapshot()
+                                           DataCollector.advance_frame(snap)
+                                             one trend point, one RPM point
+                                           DataCollector.results_for(snap, ...)
                                              decimate to display rate, Welch PSD,
                                              integration, band, peaks, overall,
                                              crest factor, kurtosis
@@ -241,9 +244,19 @@ DataCollector.receive_data()
   `acquisition.yaml` holds 15, and both front ends load that file.
 - When the main thread is slower than the data, it processes only the newest
   frame. Earlier frames stay in the cache for browsing.
-- `DataCollector.current_frame()` returns the same frame that
-  `process_samples()` processes, for consumers that need the raw
-  `VibeSample` (the Envelope tab).
+- **One snapshot for each render tick.** `DataCollector.snapshot()` returns
+  a `FrameSnapshot` (the cache as a tuple, the displayed index, live or
+  browse). Every view of the tick takes it: the frame advance, the record
+  results, the display results, the shaft speed, the Envelope tab's raw
+  `VibeSample` (`snap.frame`). The acquisition thread appends between calls,
+  so a view that reads the cache again can see another frame.
+- **Frame side effects are only in `advance_frame(snapshot)`**: one trend
+  point and one RPM point for each new live frame, none for a browsed frame
+  or a redisplay. `result_view()` and `results_for()` have no side effects
+  except the stage-1 cache, and are memoised for the tick.
+- The record results (the channel's target unit and mode, never averaged)
+  go to the monitor. The display uses the configured averaging
+  (`display_n_averages()`).
 - The GUI gives results to the monitor only for live frames
   (`GUI._monitor_accepts_frames()`). During a recording, the GUI refuses a
   file load, a session browse and a cache clear.
@@ -299,13 +312,14 @@ Rules:
    the causal Butterworth high-pass (`filter_block(stateful=True)`), once for
    each frame and in stream order. A tachometer channel gets edge detection
    and no high-pass (4.4).
-4. **Decimation** (`process_sample`, main thread). `decimate_to_rate()`
+4. **Decimation** (stage 1, main thread). `decimate_to_rate()`
    resamples the filtered block to the display rate with a
    denominator-bounded ratio (E7). The result is cached on the sample.
 5. **Spectrum.** Welch PSD with one segment (`nperseg == blocksize`), so the
    line count and bin width are those that the UI states.
-6. **Averaging** (optional). Power-domain average of the N most recent valid
-   frames, up to and including the displayed frame. Overflow and degraded
+6. **Averaging** (optional, display only). Power-domain average of the N
+   most recent valid frames, up to and including the displayed frame, that
+   are contiguous in time (no gap above 1.5 frame periods). Overflow and degraded
    frames are not averaged in. The overall is `sqrt(mean(squares))`.
 7. **Integration and units.** The PSD is multiplied by (2 pi f)^(2n) for
    integration order n, divided by the sensitivity squared, and scaled to the
@@ -322,7 +336,7 @@ Rules:
     to the same band. It uses a Tukey overlap-save window, so integrated or
     band-limited traces show the middle 50 % of the block. Crest factor and
     kurtosis come from this trace and are never averaged.
-12. **Trend.** During streaming, valid frames go to the trend. Overflow and
+12. **Trend.** During streaming, `advance_frame()` puts each new valid frame in the trend. Overflow and
     degraded frames are shown with a flag, but they are not trended, not
     averaged, and not used by the anomaly hooks.
 
@@ -331,13 +345,13 @@ filtered signal in the sensor's own EU **at the raw rate**. It does not
 decimate, so a low `maxfreq` does not limit the envelope bandwidth. It
 raises `ValueError` for a tachometer channel.
 
-**Replay.** A loaded file goes through the same `process_sample()`. Two
+**Replay.** A loaded file goes through the same `result_view()`. Two
 rules make replay show what the live display showed:
 
 - High-pass state: replay filters each frame without carried state, from an
   initial condition seeded from the block mean (`_seed_zi`, E8.2).
 - Averaging: one rule for live and browse, the N most recent valid frames up
-  to and including the displayed frame.
+  to and including the displayed frame, contiguous in time.
 
 ### 4.4 Tachometer channels in the pipeline
 
@@ -347,7 +361,7 @@ in the vibration path gives a plausible wrong result, not an error. Thus:
 - `receive_data` runs edge detection (`tach.tach_result`) in place of the
   high-pass. The high-pass overshoot on each falling edge adds false edges
   (E14.1).
-- `process_samples()` iterates `config.vibration_channels`, not
+- `results_for()` iterates `config.vibration_channels`, not
   `enabled_channels`. A tachometer channel produces no `ChannelResult`.
 - Shaft speed goes to `tach_trend` (`get_rpm_trend()`), never through
   `UNIT_TO_SI`, `amplitude_scale` or `integration_steps`.
@@ -392,8 +406,8 @@ in the vibration path gives a plausible wrong result, not an error. Thus:
 
 ### 4.6 Monitor Mode internals
 
-`MonitorController.on_results()` runs on the main thread after each
-`process_samples()`. `IntervalGate` decides if a frame is an interval
+`MonitorController.on_results()` runs on the main thread once for each new
+frame, with the record results of the tick's snapshot. `IntervalGate` decides if a frame is an interval
 capture. The anomaly hook decides if a burst starts. A burst keeps the
 pre-trigger frames from the frame cache, the trigger frame, and the frames
 that follow. `MonitorWriterThread` writes all of it to one `session.h5`.
@@ -511,7 +525,7 @@ logged and skipped, and the other entries are kept. The keys are those of
 | `tach` | `TachResult` on a tachometer channel, else `None` |
 
 **`ChannelResult`** (`sample.py`): frozen display result for one channel and
-one frame, made by `DataCollector.process_sample()`.
+one frame, made by `DataCollector.result_view()`.
 
 | Field | Meaning |
 |---|---|
@@ -929,7 +943,7 @@ included. A Butterworth designed at the edge is -3 dB (x0.707) there: 29 % low
 at the frequency that the standard names as the bottom of the band.
 
 **Why a lower knee is safe.** The overall is band-limited in the frequency
-domain (the band mask in `process_sample`). The mask removes sub-band energy
+domain (the band mask in `_view_of_sample`). The mask removes sub-band energy
 exactly, so the 1/omega**2 increase that a higher knee guards against cannot
 reach the integrated result.
 
@@ -944,7 +958,7 @@ reach the integrated result.
 
 ### E9. Tapers for integration
 
-**Problem.** `process_sample` converts between acceleration, velocity and
+**Problem.** `_view_of_sample` converts between acceleration, velocity and
 displacement: it multiplies the rFFT of the block by `(j*omega)**n` and
 transforms back. The DFT treats the block as periodic. Unless the signal is
 exactly periodic in N samples, the block has a step at the wrap point. The
@@ -1013,13 +1027,13 @@ block.
 **Bin 1 on integration.** `_dsp.integrate_rfft` zeroes bin 0 always, and bin
 1 for n < 0. One time-domain high-pass pass cannot stop residual near-DC
 energy from growing as 1/f**n. On hardware, bin 1 otherwise dominated the
-spectrum. `process_sample` zeroes the same bin in the integrated PSD.
+spectrum. `_view_of_sample` zeroes the same bin in the integrated PSD.
 
 ### E10. Band RMS
 
 **Decision.** The overall does not use Parseval's theorem on an untapered
 rFFT (the sum of the masked bin powers, with weight 2 for each bin except DC
-and, for even n, the Nyquist bin). `DataCollector.process_sample` computes
+and, for even n, the Nyquist bin). `DataCollector._view_of_sample` computes
 the overall on the Hann-tapered, band-masked rFFT of E9. There is no separate
 band RMS function.
 
@@ -1411,11 +1425,11 @@ high on hardware at the 41666.5 Hz rate and correct in CI (E5).
 
 **Decision.** `DataCollector.receive_data` finds the edges of a tachometer
 channel on the raw mV block. The Butterworth high-pass does not run on that
-channel, and `process_samples()` makes no `ChannelResult` for it.
+channel, and `results_for()` makes no `ChannelResult` for it.
 
 **Why no vibration processing.** A pulse train through the vibration path
 does not raise an error. It gives a plausible wrong answer. On a 5 % duty
-square wave through `DataCollector.process_sample`: overall 1515 mV, crest
+square wave through `DataCollector._view_of_sample`: overall 1515 mV, crest
 factor 5.00, kurtosis 15.94, 63 "peaks". This reads as a failing bearing.
 
 **Why no high-pass.** A 5.00 V pulse train, 1.0 s block, edges at a 2.5 V
@@ -1842,7 +1856,7 @@ dt = 1 s it is 0.967.
   to its own mean.
 - The probability that one of about 2000 bins exceeds 1.5x its mean is
   about 1.0 on healthy data. `consecutive_n` then only delays the trigger.
-- `DataCollector.process_sample` sets bins 0 and 1 to zero for integration,
+- `DataCollector._view_of_sample` sets bins 0 and 1 to zero for integration,
   so on a velocity or displacement channel they deviate by about 1e12 and
   fire on every frame.
 

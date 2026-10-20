@@ -83,9 +83,10 @@ def test_an_appended_frame_does_not_change_a_result_of_the_snapshot():
     dc = _collector()
     _feed(dc, 25.0, 0, amp=1.0)
     snap = dc.snapshot()
-    first = dc.process_sample(0, snap.frame[0], snapshot=snap)
+    first = dc.result_view(snap, 0)
     _feed(dc, 40.0, 1, amp=3.0)
-    again = dc.process_sample(0, snap.frame[0], snapshot=snap)
+    dc._memo.clear()                           # compute it again
+    again = dc.result_view(snap, 0)
     assert again.overall == first.overall
     assert again.rpm == first.rpm
     np.testing.assert_array_equal(again.spectrum, first.spectrum)

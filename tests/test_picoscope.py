@@ -15,6 +15,7 @@ import pytest
 import rev80 as vc
 import rev80.picoscope as pico_module
 from rev80.picoscope import PicoScopeStream, _DRIVER_BUFFER_SAMPLES
+from pipeline_helpers import view_of
 
 
 # ---------------------------------------------------------------------------
@@ -527,7 +528,7 @@ class TestMvPassthrough:
         )
         collector = vc.DataCollector()
         collector.config.highpass_enabled = False
-        result = collector.process_sample(0, sample)
+        result = view_of(collector, 0, sample)
         assert result is not None
         assert len(result.time_data) == n
         assert np.allclose(result.time_data, data)

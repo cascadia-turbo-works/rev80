@@ -14,6 +14,7 @@ import pytest
 import rev80 as vc
 from rev80 import simulation as sim
 from rev80 import tach
+from pipeline_helpers import tick
 
 RUNNING_RATE = 29.37       # off-grid on purpose
 RPM = RUNNING_RATE * 60.0
@@ -98,7 +99,7 @@ def test_tach_channel_produces_no_channel_result():
     it has no overall, no spectrum, no crest factor and no kurtosis."""
     dc = _collector()
     _feed(dc)
-    results = dc.process_samples()
+    results = tick(dc)
     assert [r.channel for r in results] == [0]
     assert all(isinstance(r, vc.ChannelResult) for r in results)
 
@@ -107,7 +108,7 @@ def test_vibration_result_is_unchanged_by_the_presence_of_a_tach_channel():
     """The tach path must be inert for vibration, to floating-point equality."""
     dc_with = _collector()
     _feed(dc_with)
-    with_tach = dc_with.process_samples()[0]
+    with_tach = tick(dc_with)[0]
 
     cfg = vc.AcquisitionSettings()
     cfg.maxfreq, cfg.binsize = 1000.0, 0.5
@@ -120,7 +121,7 @@ def test_vibration_result_is_unchanged_by_the_presence_of_a_tach_channel():
         'timestamp': datetime(2026, 9, 1), 'rel_time': 0.0,
         'samplerate': cfg.raw_samplerate, 'overflow_mask': 0, 'degraded': False,
     })
-    without_tach = dc_without.process_samples()[0]
+    without_tach = tick(dc_without)[0]
     assert np.allclose(with_tach.spectrum, without_tach.spectrum)
     assert with_tach.overall == pytest.approx(without_tach.overall)
 
@@ -144,7 +145,7 @@ def test_tach_channel_gets_no_amplitude_trend_line():
     next to in/s -- a fifth trend line tracking LED brightness."""
     dc = _collector()
     _feed(dc)
-    dc.process_samples()
+    tick(dc)
     assert 1 not in dc.get_trend_for_display()
 
 
@@ -155,7 +156,7 @@ def test_rpm_is_trended_separately():
     dc = _collector(streaming=True)
     for i in range(3):
         _feed(dc, seed=5 + i)
-        dc.process_samples()
+        tick(dc)
     times, rpms = dc.get_rpm_trend()[1]
     assert len(rpms) == 3
     assert all(r == pytest.approx(RPM, rel=5e-3) for r in rpms)

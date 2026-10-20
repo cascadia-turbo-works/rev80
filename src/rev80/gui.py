@@ -609,7 +609,7 @@ class GUI:
         time = result.time_vec * 1000.0  # convert s → ms (axis label is "Time, ms")
         signal = result.time_data
         # Integrated and differentiated traces cover only the middle of the
-        # block (overlap-save, see collector.process_sample), so the trace can
+        # block (overlap-save, see collector._view_of_sample), so the trace can
         # start after t=0. Keep the start, so that autoscale shows data.
         if len(time):
             self._last_time_x0_ms = float(time[0])
@@ -1285,7 +1285,7 @@ class GUI:
             if dpg.does_item_exist(tag):
                 dpg.configure_item(tag, show=(ch in enabled))
             # A tachometer's card shows its rate; the vibration fields on it
-            # would never be populated, because process_samples produces no
+            # would never be populated, because results_for produces no
             # ChannelResult for that channel -- they would sit at their
             # construction defaults and read as a real measurement of zero.
             is_tach = self.collector.config.role_for(ch) == 'tachometer'
@@ -1319,8 +1319,16 @@ class GUI:
             self._set_stream_status("active")
             self._schedule_status_timeout()
 
-        results = self.collector.process_samples()
-        raw_frame = self.collector.current_frame()
+        # One snapshot for every view of this tick. advance_frame() adds the
+        # trend point once for each new live frame. The record results go to
+        # the monitor and are never averaged; the display uses the
+        # configured averaging.
+        snap = self.collector.snapshot()
+        self.collector.advance_frame(snap)
+        record = self.collector.results_for(snap)
+        results = self.collector.results_for(
+            snap, n_averages=self.collector.display_n_averages())
+        raw_frame = snap.frame
 
         n_overflow = 0
         for result in results:
@@ -1342,7 +1350,7 @@ class GUI:
             )
 
         if self._monitor_accepts_frames():
-            self._monitor.on_results(results, self.collector.data["frame_cache"])
+            self._monitor.on_results(record, self.collector.data["frame_cache"])
 
         self._update_trend_plot()
         self._update_browse_label()
@@ -1486,7 +1494,7 @@ class GUI:
         """Push the significance threshold into the config and reprocess.
 
         This is not a display-only setting: it changes which lines are
-        selected, so the frame goes through process_sample again.
+        selected, so the frame goes through the views again.
         """
         value = float(dpg.get_value(ui.FFT_PEAK_THRESHOLD_DB))
         self.collector.config.peak_threshold_db = max(0.0, value)

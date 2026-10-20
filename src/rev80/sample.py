@@ -140,7 +140,7 @@ class AcquisitionSettings:
     def vibration_channels(self) -> list:
         """Enabled channels carrying vibration -- everything not a tachometer.
 
-        This is what `process_samples` iterates. A tachometer channel has no
+        This is what `results_for` iterates. A tachometer channel has no
         spectrum, no overall and no engineering unit, so it must never reach
         the paths that assume all three.
         """
@@ -401,7 +401,7 @@ class VibeSample:
     rel_time: float = field(default=0)
     label: str = field(default='')
 
-    # Cached by DataCollector.process_sample on first call; keyed to Welch/filter config
+    # Cached by DataCollector._psd_and_overalls_for on first call; keyed to Welch/filter config
     psd_mv: np.ndarray | None     = field(default=None, repr=False)
     freq_hz: np.ndarray | None    = field(default=None, repr=False)
     _psd_config_key: tuple | None = field(default=None, repr=False)
@@ -413,7 +413,7 @@ class VibeSample:
     _filter_config_key: tuple | None    = field(default=None, repr=False)
 
     # filtered_mv decimated to the display rate, for the Spectrum-tab Welch
-    # input. Cached: process_sample runs many times on one frame (browse).
+    # input. Cached: the views run many times on one frame (browse).
     decimated_mv: np.ndarray | None        = field(default=None, repr=False)
     decimated_samplerate: float | None     = field(default=None, repr=False)
     _decimation_config_key: tuple | None   = field(default=None, repr=False)
@@ -457,7 +457,7 @@ class ChannelResult:
     """Pre-computed display result for one channel at one capture instant.
 
     All arrays are in `unit` (the target display unit).  Constructed by
-    DataCollector.process_sample(); never mutated after creation.
+    DataCollector.result_view(); never mutated after creation.
     """
     channel:    int
     unit:       str              # target display unit, e.g. 'in/s', 'g', 'mV'

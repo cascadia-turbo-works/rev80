@@ -14,6 +14,7 @@ import rev80 as vc
 from rev80.scope_sensor import ScopeSensor
 
 from test_measurement_validity import make_collector, tone
+from pipeline_helpers import tick
 
 
 def feed(dc, block, rel_time=0.0, overflow=False, degraded=False):
@@ -86,8 +87,8 @@ def test_averaging_reduces_noise_floor_scatter():
         feed(single, blk, rel_time=i * FRAME_S)
         feed(avgd, blk, rel_time=i * FRAME_S)
 
-    r1 = single.process_samples()[0]
-    r16 = avgd.process_samples()[0]
+    r1 = tick(single)[0]
+    r16 = tick(avgd)[0]
 
     band = (r1.freq > 400) & (r1.freq < 900)      # noise only, no tone
     cv1 = float(np.std(r1.spectrum[band]) / np.mean(r1.spectrum[band]))
@@ -109,8 +110,8 @@ def test_averaging_leaves_a_coherent_line_alone():
         feed(single, blk, rel_time=i * FRAME_S)
         feed(avgd, blk, rel_time=i * FRAME_S)
 
-    r1 = single.process_samples()[0]
-    r16 = avgd.process_samples()[0]
+    r1 = tick(single)[0]
+    r16 = tick(avgd)[0]
     near = np.abs(r1.freq - 300.0) < 6
     assert float(np.max(r16.spectrum[near])) == pytest.approx(
         float(np.max(r1.spectrum[near])), rel=0.15)
@@ -130,7 +131,7 @@ def test_averaging_improves_line_to_floor_ratio():
         band = (r.freq > 400) & (r.freq < 900)
         return float(np.max(r.spectrum[near])) / float(np.max(r.spectrum[band]))
 
-    assert snr(avgd.process_samples()[0]) > 1.5 * snr(single.process_samples()[0])
+    assert snr(tick(avgd)[0]) > 1.5 * snr(tick(single)[0])
 
 
 def test_disabled_averaging_is_a_true_passthrough():
@@ -140,8 +141,8 @@ def test_disabled_averaging_is_a_true_passthrough():
         blk = noisy(dc_off, 300.37, 1.0, seed=i)
         feed(dc_off, blk, rel_time=i * FRAME_S)
         feed(dc_on, blk, rel_time=i * FRAME_S)
-    a = dc_off.process_samples()[0]
-    b = dc_on.process_samples()[0]
+    a = tick(dc_off)[0]
+    b = tick(dc_on)[0]
     assert np.allclose(a.spectrum, b.spectrum)
     assert a.n_averages == 1 and b.n_averages == 1
 
@@ -155,7 +156,7 @@ def test_reported_count_is_what_was_actually_averaged():
     dc = averaging_collector(n=16)
     for i in range(5):
         feed(dc, noisy(dc, 300.37, 1.0, seed=i), rel_time=i * FRAME_S)
-    assert dc.process_samples()[0].n_averages == 5
+    assert tick(dc)[0].n_averages == 5
 
 
 def test_count_grows_to_the_configured_n_and_stops():
@@ -163,7 +164,7 @@ def test_count_grows_to_the_configured_n_and_stops():
     seen = []
     for i in range(8):
         feed(dc, noisy(dc, 300.37, 1.0, seed=i), rel_time=i * FRAME_S)
-        seen.append(dc.process_samples()[0].n_averages)
+        seen.append(tick(dc)[0].n_averages)
     assert seen == [1, 2, 3, 4, 4, 4, 4, 4]
 
 
@@ -175,7 +176,7 @@ def test_invalid_frames_are_excluded_and_lower_the_count():
     for i in range(8):
         feed(dc, noisy(dc, 300.37, 1.0, seed=i), rel_time=i * FRAME_S,
              overflow=(i in (2, 5)))
-    r = dc.process_samples()[0]
+    r = tick(dc)[0]
     assert r.n_averages == 6
 
 
@@ -185,7 +186,7 @@ def test_the_displayed_frame_is_included_even_when_invalid():
     for i in range(4):
         feed(dc, noisy(dc, 300.37, 1.0, seed=i), rel_time=i * FRAME_S)
     feed(dc, noisy(dc, 300.37, 1.0, seed=99), rel_time=4 * FRAME_S, overflow=True)
-    r = dc.process_samples()[0]
+    r = tick(dc)[0]
     assert r.overflow is True
     assert r.n_averages == 4      # the four clean predecessors, not the clipped one
 
@@ -200,17 +201,17 @@ def test_browsing_averages_the_frames_preceding_the_cursor():
     for i in range(10):
         feed(dc, noisy(dc, 300.37, 1.0, seed=i), rel_time=i * FRAME_S)
 
-    live_last = dc.process_samples()[0].spectrum.copy()
+    live_last = tick(dc)[0].spectrum.copy()
 
     from types import SimpleNamespace
     dc.sensor = None
     dc.stream = SimpleNamespace(active=False)
     dc._cache_cursor = 0
-    assert np.allclose(dc.process_samples()[0].spectrum, live_last)
+    assert np.allclose(tick(dc)[0].spectrum, live_last)
 
     # Three frames back the average must cover frames 4..6, not 7..9.
     dc._cache_cursor = 3
-    back = dc.process_samples()[0]
+    back = tick(dc)[0]
     assert back.n_averages == 4
     assert not np.allclose(back.spectrum, live_last)
 
@@ -223,7 +224,7 @@ def test_browsing_near_the_start_uses_a_partial_average():
     dc.sensor = None
     dc.stream = SimpleNamespace(active=False)
     dc._cache_cursor = 9                      # the oldest frame
-    assert dc.process_samples()[0].n_averages == 1
+    assert tick(dc)[0].n_averages == 1
 
 
 def test_averaging_survives_the_hdf5_round_trip_and_recomputes(tmp_path):
@@ -245,7 +246,7 @@ def test_averaging_survives_the_hdf5_round_trip_and_recomputes(tmp_path):
     dc2.config.averaging_enabled = True
     dc2.config.n_averages = 8
     dc2._cache_cursor = 0
-    r = dc2.process_samples()[0]
+    r = tick(dc2)[0]
     assert r.n_averages == 8
 
 
@@ -253,9 +254,9 @@ def test_changing_n_after_load_recomputes_without_reloading():
     dc = averaging_collector(n=8)
     for i in range(8):
         feed(dc, noisy(dc, 300.37, 1.0, seed=i), rel_time=i * FRAME_S)
-    wide = dc.process_samples()[0]
+    wide = tick(dc)[0]
     dc.config.n_averages = 2
-    narrow = dc.process_samples()[0]
+    narrow = tick(dc)[0]
     assert wide.n_averages == 8 and narrow.n_averages == 2
     assert not np.allclose(wide.spectrum, narrow.spectrum)
 
@@ -269,12 +270,12 @@ def test_overall_is_averaged_with_the_spectrum():
     dc = averaging_collector(n=8)
     for i in range(8):
         feed(dc, noisy(dc, 300.37, 1.0, seed=i), rel_time=i * FRAME_S)
-    r = dc.process_samples()[0]
+    r = tick(dc)[0]
     singles = []
     for s in list(dc.data['frame_cache'])[-8:]:
         d2 = averaging_collector(enabled=False)
         feed(d2, s[0].data, rel_time=0.0)
-        singles.append(d2.process_samples()[0].overall)
+        singles.append(tick(d2)[0].overall)
     expected = float(np.sqrt(np.mean(np.square(singles))))
     assert r.overall == pytest.approx(expected, rel=0.02)
 
@@ -291,7 +292,7 @@ def test_impulsiveness_scalars_are_not_averaged():
     spiky[len(spiky) // 2] = 60.0
     feed(dc, spiky, rel_time=7 * FRAME_S)
 
-    r = dc.process_samples()[0]
+    r = tick(dc)[0]
     assert r.n_averages == 8            # the spectrum IS averaged
     assert r.kurtosis > 6.0             # the scalars are not
     assert r.crest_factor > 8.0
@@ -317,14 +318,14 @@ def test_the_average_is_taken_in_the_power_domain():
         blocks.append(blk)
         feed(dc, blk, rel_time=i * FRAME_S)
 
-    averaged = dc.process_samples()[0]
+    averaged = tick(dc)[0]
     assert averaged.n_averages == 24
 
     singles = []
     for blk in blocks:
         d = averaging_collector(enabled=False)
         feed(d, blk, rel_time=0.0)
-        singles.append(d.process_samples()[0].spectrum)
+        singles.append(tick(d)[0].spectrum)
     singles = np.array(singles)
 
     power_avg = np.sqrt(np.mean(singles ** 2, axis=0))   # correct
@@ -349,13 +350,13 @@ def test_averaged_overall_is_combined_in_the_power_domain_too():
         blk = tone(dc, 300.37, amp=0.5 + 0.4 * i) + rng.standard_normal(dc.config.blocksize)
         blocks.append(blk)
         feed(dc, blk, rel_time=i * FRAME_S)
-    got = dc.process_samples()[0].overall
+    got = tick(dc)[0].overall
 
     singles = []
     for blk in blocks:
         d = averaging_collector(enabled=False)
         feed(d, blk, rel_time=0.0)
-        singles.append(d.process_samples()[0].overall)
+        singles.append(tick(d)[0].overall)
 
     rms_combined = float(np.sqrt(np.mean(np.square(singles))))
     mean_combined = float(np.mean(singles))
@@ -371,7 +372,7 @@ def test_averaged_overall_is_combined_in_the_power_domain_too():
 def _browse_newest(dc):
     """Results for the newest frame of a stopped collector (browse mode)."""
     dc._cache_cursor = 0
-    return dc.process_samples()[0]
+    return tick(dc)[0]
 
 
 def test_session_captures_are_not_averaged():

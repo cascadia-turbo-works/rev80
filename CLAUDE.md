@@ -75,16 +75,19 @@ chain, stage by stage". The facts that an agent gets wrong most often:
   `DataCollector.receive_data` directly. `VibeSensor._callback` serves
   `SimulatedSensor` only.
 - **`receive_data` keeps the samples in mV.** `VibeSample.unit` is always
-  `'mV'`. The mV-to-EU divide occurs in `process_sample()`. The fixed-mV tach
+  `'mV'`. The mV-to-EU divide occurs in the views (`_view_of_sample()`). The fixed-mV tach
   threshold depends on this.
 - **`receive_data` applies the high-pass**, causal `sosfilt` with the state
   carried from block to block, once for each frame in stream order. There is
-  no zero-phase path. `process_sample()` filters again only for replay or
+  no zero-phase path. The views filter again only for replay or
   after a filter-config change (stateless, seeded from the block mean).
-- **Main thread.** `process_samples()` decimates to the display rate, runs
-  Welch with one segment (`nperseg == blocksize`), integrates, finds peaks and
-  returns one `ChannelResult` for each vibration channel.
-  `MonitorController.on_results()` follows. The acquisition thread never
+- **Main thread.** For each new frame: one `snapshot()`, one
+  `advance_frame(snapshot)` (the only place a trend point is added), then
+  `results_for(snapshot, ...)` / `result_view()`: decimate to the display
+  rate, Welch with one segment (`nperseg == blocksize`), integrate, find
+  peaks, one `ChannelResult` for each vibration channel. Every view of the
+  tick uses the same snapshot. `MonitorController.on_results()` gets the
+  record results, never averaged. The acquisition thread never
   touches a widget. `collector.py`, `sample.py`, `picoscope.py` and `monitor/`
   do not import dearpygui.
 - The frame cache is a `deque` of `cache_frames` frames: 32 for an
@@ -162,7 +165,7 @@ pipeline", and README.md, "Tachometer".
   high-pass.** The high-pass overshoot adds edges: 31 become 108 at 15 %
   duty, and 1800 RPM reads 6270 RPM. "E14.1. No high-pass on a tachometer
   channel".
-- **A tachometer channel produces no `ChannelResult`.** `process_samples()`
+- **A tachometer channel produces no `ChannelResult`.** `results_for()`
   iterates `config.vibration_channels`, not `enabled_channels`. Shaft speed
   never goes through `UNIT_TO_SI`, `amplitude_scale` or `integration_steps`.
 - **`rpm` is `None`, never `0.0`,** when there is no reading. "No signal" and

@@ -13,6 +13,7 @@ import pytest
 import rev80 as vc
 from rev80 import gui
 from rev80.scope_sensor import ScopeSensor
+from pipeline_helpers import view_of
 
 
 def _spectrum(maxfreq: float, binsize: float, overlap: float) -> np.ndarray:
@@ -30,7 +31,7 @@ def _spectrum(maxfreq: float, binsize: float, overlap: float) -> np.ndarray:
     sample = vc.VibeSample(
         status='OKAY', _timestamp=datetime.now(), samplerate=cfg.raw_samplerate,
         unit='mV', overflow=False, degraded=False, data=data, rel_time=0.0)
-    return np.asarray(dc.process_sample(0, sample).spectrum)
+    return np.asarray(view_of(dc, 0, sample).spectrum)
 
 
 @pytest.mark.parametrize('maxfreq', [500.0, 2000.0, 10000.0])

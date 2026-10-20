@@ -71,6 +71,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   the displayed frame again for the shaft speed, so a frame that the
   acquisition thread appended between two calls could give a result the
   shaft speed of another frame.
+- **Frame side effects split from the views.** `advance_frame(snapshot)`
+  adds the trend point and the RPM point, once for each new live frame.
+  `results_for(snapshot, unit, mode, n_averages)` and
+  `result_view(snapshot, ch, unit, mode, n_averages, peaks)` have no side
+  effects and are memoised for the tick, so the GUI and headless can ask for
+  more than one view of a frame. `get_trend_for_display(unit, mode,
+  channels)` takes a unit. `process_samples()` and `process_sample()` are
+  removed; `_view_of_sample()` holds stage 2. A channel that cannot reach a
+  unit gives no view and one warning. Equality: `result_view()` gives the
+  arrays of the old `process_samples()` bit for bit in 16 cases (every unit,
+  three modes, no sensor, averaging N = 4; reference in `tests/reference/`).
+- **The monitor gets the record results, never averaged.** With **Average
+  spectrum** on, the GUI gave the averaged overall to the anomaly hooks and
+  stored it in the session captures. The display still averages.
+
+#### Fixed (part B)
+- **A redisplay while streaming added a second trend point** for the same
+  frame (a settings change sets `new_frame_event`). `advance_frame()` skips
+  a frame it already trended.
 
 ## [0.1.4] - 2026-09-30
 

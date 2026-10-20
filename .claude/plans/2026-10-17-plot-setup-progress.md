@@ -17,9 +17,9 @@ Update this file in the same commit as each step. Status: 🔲 TODO,
 | A3a | Progress bar while a session or burst loads (native dearpygui `add_progress_bar`) | 🔲 TODO | | owner request 2026-10-19: a 1440-capture load takes about 3 s with no sign of activity |
 | A4 | Averaging on contiguous frames only | ✅ Done | 1417ccb | session k = 1; live and burst k = N; restart stops the walk; 1.5-period limit; revert check (`test_spectral_averaging.py`) |
 | B0 | Reference results from the old path | ✅ Done | 5413dbf | `tests/reference/result_view_reference.npz`, 16 cases |
-| B1 | `FrameSnapshot`; `current_rpm(snapshot)` | ✅ Done | B1 | append between calls (`test_frame_snapshot.py`) |
-| B2 | `advance_frame()`, `results_for()`; `process_samples()` removed | 🔲 TODO | | one trend point per tick |
-| B3 | `result_view()`, tick memo, unit-parameterised trend | 🔲 TODO | | equality; off-bin conversion; revert check |
+| B1 | `FrameSnapshot`; `current_rpm(snapshot)` | ✅ Done | da8667e | append between calls (`test_frame_snapshot.py`) |
+| B2 | `advance_frame()`, `results_for()`; `process_samples()` removed | ✅ Done | B2+B3 | one trend point per tick; redisplay adds none (`test_frame_views.py`) |
+| B3 | `result_view()`, tick memo, unit-parameterised trend | ✅ Done | B2+B3 | equality bit for bit, 16 cases (`test_result_view_equality.py`); off-bin conversion with revert check (`test_measurement_validity.py`) |
 | C1 | `ResultViews`; RMS hook unit and mode; fixed-limit modes; capture stores the record view | 🔲 TODO | | stored record unit; empty keys bit for bit |
 | C2 | Fixed-limit sustain time `fixed_s` (default 0 s) | 🔲 TODO | | 0 s = one frame |
 | C3 | Monitor-tab controls; both hook builders; headless | 🔲 TODO | | defaults agree; Pi 3 cost |

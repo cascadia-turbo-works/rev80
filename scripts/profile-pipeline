@@ -123,7 +123,7 @@ def _connect(cfg, args: argparse.Namespace):
 
     dc = rev80.DataCollector(config=cfg)
     dc.connect_sensor(sensor)
-    # Every channel needs a ScopeSensor or process_sample stays in mV and skips
+    # Every channel needs a ScopeSensor or the record view stays in mV and skips
     # the unit conversion the real GUI always does.
     acc = ScopeSensor(name="profile-accel", sensitivity=100.0, engineering_units="g")
     for ch in cfg.enabled_channels:
@@ -164,7 +164,12 @@ def _run_one(n_channels: int, args: argparse.Namespace) -> dict:
             for s in frame.values():
                 overflow        += bool(getattr(s, "overflow", False))
                 degraded_frames += bool(getattr(s, "degraded", False))
-            dc.process_samples()
+            # The GUI's tick: one snapshot, the frame advance, the record
+            # results and the display results (the same with no averaging).
+            snap = dc.snapshot()
+            dc.advance_frame(snap)
+            dc.results_for(snap)
+            dc.results_for(snap, n_averages=dc.display_n_averages())
         stream_stats["eff_rate"] = getattr(dc.stream, "effective_samplerate", None)
         stream_stats["degraded"] = bool(dc.stream_degraded)
     finally:

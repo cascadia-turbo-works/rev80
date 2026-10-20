@@ -18,6 +18,7 @@ import rev80
 from rev80 import config as cfg_mod
 from rev80 import simulation as sim
 from rev80.gui import GUI
+from pipeline_helpers import tick
 
 RUNNING_RATE = 29.37
 
@@ -96,7 +97,7 @@ def _measurement_file(tmp_path, maxfreq=1000.0):
     dc = _live_collector(maxfreq)
     for i in range(3):
         _feed(dc, seed=5 + i, rel_time=float(i))
-        dc.process_samples()
+        tick(dc)
     path = tmp_path / 'm.h5'
     dc.save_data(path)
     return path
@@ -106,7 +107,7 @@ def _streamed(app, frames=3):
     dc = _live_collector()
     for i in range(frames):
         _feed(dc, seed=20 + i, rel_time=float(i))
-        dc.process_samples()
+        tick(dc)
     app.collector = dc
     return dc
 

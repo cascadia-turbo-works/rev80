@@ -641,7 +641,11 @@ def run(args: argparse.Namespace) -> int:
             continue
         collector.new_frame_event.clear()
 
-        results = collector.process_samples()
+        # One snapshot for the tick. The record results are never averaged:
+        # the hooks and the stored captures must see each frame alone.
+        frame_snap = collector.snapshot()
+        collector.advance_frame(frame_snap)
+        results = collector.results_for(frame_snap)
         if results:
             monitor.on_results(results, collector.data["frame_cache"])
             _print_status(results)

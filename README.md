@@ -445,6 +445,8 @@ lower the noise floor. Use it to see a small line in a rough floor.
 - **Avg. Window** shows N × frame time: the time for which the machine must
   be steady.
 - If the speed changes during the window, lines spread across bins.
+- Averaging changes only the display. Monitor Mode stores, trends and alarms
+  on each frame alone.
 
 Crest factor and kurtosis are never averaged.
 
