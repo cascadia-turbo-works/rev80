@@ -13,9 +13,9 @@ Update this file in the same commit as each step. Status: 🔲 TODO,
 |---|---|---|---|---|
 | A1 | Visible disabled state for locked controls | ✅ Done | 85d630c | lock and unlock test (`test_gui_locked_controls.py`) |
 | A2 | A new `DataCollector` for every load and connect; `_on_data_source_changed()` | ✅ Done | 1e28e05 | no stale state; refused load leaves state; connect uses `acquisition.yaml`; revert check (`test_gui_collector_swap.py`) |
-| A3 | Session and burst trends from stored frames (no stage-1 arrays kept); NaN; RPM trend | ✅ Done | A3 | zero trend reproduced on the old code (g, mil 0.0), then fixed; equality with `overall_json` 7.4e-5; load time and memory measured (`test_session_trend_from_frames.py`) |
+| A3 | Session and burst trends from stored frames (no stage-1 arrays kept); NaN; RPM trend | ✅ Done | 56fc4c2 | zero trend reproduced on the old code (g, mil 0.0), then fixed; equality with `overall_json` 7.4e-5; load time and memory measured (`test_session_trend_from_frames.py`) |
 | A3a | Progress bar while a session or burst loads (native dearpygui `add_progress_bar`) | 🔲 TODO | | owner request 2026-10-19: a 1440-capture load takes about 3 s with no sign of activity |
-| A4 | Averaging on contiguous frames only | 🔲 TODO | | session k = 1 |
+| A4 | Averaging on contiguous frames only | ✅ Done | A4 | session k = 1; live and burst k = N; restart stops the walk; 1.5-period limit; revert check (`test_spectral_averaging.py`) |
 | B1 | `FrameSnapshot`; `current_rpm(snapshot)` | 🔲 TODO | | append between calls |
 | B2 | `advance_frame()`, `results_for()`; `process_samples()` removed | 🔲 TODO | | one trend point per tick |
 | B3 | `result_view()`, tick memo, unit-parameterised trend | 🔲 TODO | | equality; off-bin conversion; revert check |

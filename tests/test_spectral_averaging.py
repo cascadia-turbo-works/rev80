@@ -31,6 +31,11 @@ def noisy(dc, freq, amp, seed, noise=1.0):
     return tone(dc, freq, amp=amp) + noise * rng.standard_normal(dc.config.blocksize)
 
 
+#: Frame period of `averaging_collector`: blocksize / samplerate = 1 / binsize.
+#: Averaging uses contiguous frames only, so the feeds step by this period.
+FRAME_S = 0.5
+
+
 def averaging_collector(n=8, enabled=True, **kw):
     dc = make_collector(eu='mm/s2', target_unit='mm/s2', amp_mode='RMS',
                         maxfreq=1000, binsize=2.0, **kw)
@@ -78,8 +83,8 @@ def test_averaging_reduces_noise_floor_scatter():
 
     for i in range(16):
         blk = noisy(single, 300.37, 1.0, seed=i)
-        feed(single, blk, rel_time=i * 1.0)
-        feed(avgd, blk, rel_time=i * 1.0)
+        feed(single, blk, rel_time=i * FRAME_S)
+        feed(avgd, blk, rel_time=i * FRAME_S)
 
     r1 = single.process_samples()[0]
     r16 = avgd.process_samples()[0]
@@ -101,8 +106,8 @@ def test_averaging_leaves_a_coherent_line_alone():
     avgd = averaging_collector(n=16, enabled=True)
     for i in range(16):
         blk = noisy(single, 300.0, 1.0, seed=i)
-        feed(single, blk, rel_time=i * 1.0)
-        feed(avgd, blk, rel_time=i * 1.0)
+        feed(single, blk, rel_time=i * FRAME_S)
+        feed(avgd, blk, rel_time=i * FRAME_S)
 
     r1 = single.process_samples()[0]
     r16 = avgd.process_samples()[0]
@@ -117,8 +122,8 @@ def test_averaging_improves_line_to_floor_ratio():
     avgd = averaging_collector(n=16, enabled=True)
     for i in range(16):
         blk = noisy(single, 300.0, 0.35, seed=100 + i, noise=1.0)
-        feed(single, blk, rel_time=i * 1.0)
-        feed(avgd, blk, rel_time=i * 1.0)
+        feed(single, blk, rel_time=i * FRAME_S)
+        feed(avgd, blk, rel_time=i * FRAME_S)
 
     def snr(r):
         near = np.abs(r.freq - 300.0) < 6
@@ -133,8 +138,8 @@ def test_disabled_averaging_is_a_true_passthrough():
     dc_on = averaging_collector(n=1, enabled=True)
     for i in range(4):
         blk = noisy(dc_off, 300.37, 1.0, seed=i)
-        feed(dc_off, blk, rel_time=i * 1.0)
-        feed(dc_on, blk, rel_time=i * 1.0)
+        feed(dc_off, blk, rel_time=i * FRAME_S)
+        feed(dc_on, blk, rel_time=i * FRAME_S)
     a = dc_off.process_samples()[0]
     b = dc_on.process_samples()[0]
     assert np.allclose(a.spectrum, b.spectrum)
@@ -149,7 +154,7 @@ def test_reported_count_is_what_was_actually_averaged():
     """Fewer frames than N are available early on. Say so -- do not claim N."""
     dc = averaging_collector(n=16)
     for i in range(5):
-        feed(dc, noisy(dc, 300.37, 1.0, seed=i), rel_time=i * 1.0)
+        feed(dc, noisy(dc, 300.37, 1.0, seed=i), rel_time=i * FRAME_S)
     assert dc.process_samples()[0].n_averages == 5
 
 
@@ -157,7 +162,7 @@ def test_count_grows_to_the_configured_n_and_stops():
     dc = averaging_collector(n=4)
     seen = []
     for i in range(8):
-        feed(dc, noisy(dc, 300.37, 1.0, seed=i), rel_time=i * 1.0)
+        feed(dc, noisy(dc, 300.37, 1.0, seed=i), rel_time=i * FRAME_S)
         seen.append(dc.process_samples()[0].n_averages)
     assert seen == [1, 2, 3, 4, 4, 4, 4, 4]
 
@@ -168,7 +173,7 @@ def test_invalid_frames_are_excluded_and_lower_the_count():
     A clipped frame reads high, with harmonic distortion."""
     dc = averaging_collector(n=8)
     for i in range(8):
-        feed(dc, noisy(dc, 300.37, 1.0, seed=i), rel_time=i * 1.0,
+        feed(dc, noisy(dc, 300.37, 1.0, seed=i), rel_time=i * FRAME_S,
              overflow=(i in (2, 5)))
     r = dc.process_samples()[0]
     assert r.n_averages == 6
@@ -178,8 +183,8 @@ def test_the_displayed_frame_is_included_even_when_invalid():
     """An invalid frame on display is shown with its flag, but is not averaged."""
     dc = averaging_collector(n=8)
     for i in range(4):
-        feed(dc, noisy(dc, 300.37, 1.0, seed=i), rel_time=i * 1.0)
-    feed(dc, noisy(dc, 300.37, 1.0, seed=99), rel_time=5.0, overflow=True)
+        feed(dc, noisy(dc, 300.37, 1.0, seed=i), rel_time=i * FRAME_S)
+    feed(dc, noisy(dc, 300.37, 1.0, seed=99), rel_time=4 * FRAME_S, overflow=True)
     r = dc.process_samples()[0]
     assert r.overflow is True
     assert r.n_averages == 4      # the four clean predecessors, not the clipped one
@@ -193,7 +198,7 @@ def test_browsing_averages_the_frames_preceding_the_cursor():
     """Stepping back through the cache must show what live showed then."""
     dc = averaging_collector(n=4)
     for i in range(10):
-        feed(dc, noisy(dc, 300.37, 1.0, seed=i), rel_time=i * 1.0)
+        feed(dc, noisy(dc, 300.37, 1.0, seed=i), rel_time=i * FRAME_S)
 
     live_last = dc.process_samples()[0].spectrum.copy()
 
@@ -213,7 +218,7 @@ def test_browsing_averages_the_frames_preceding_the_cursor():
 def test_browsing_near_the_start_uses_a_partial_average():
     dc = averaging_collector(n=8)
     for i in range(10):
-        feed(dc, noisy(dc, 300.37, 1.0, seed=i), rel_time=i * 1.0)
+        feed(dc, noisy(dc, 300.37, 1.0, seed=i), rel_time=i * FRAME_S)
     from types import SimpleNamespace
     dc.sensor = None
     dc.stream = SimpleNamespace(active=False)
@@ -228,7 +233,7 @@ def test_averaging_survives_the_hdf5_round_trip_and_recomputes(tmp_path):
     """
     dc = averaging_collector(n=1, enabled=False)
     for i in range(8):
-        feed(dc, noisy(dc, 300.0, 0.4, seed=i), rel_time=i * 1.0)
+        feed(dc, noisy(dc, 300.0, 0.4, seed=i), rel_time=i * FRAME_S)
     target = tmp_path / 'avg.h5'
     dc.save_data(target)
 
@@ -247,7 +252,7 @@ def test_averaging_survives_the_hdf5_round_trip_and_recomputes(tmp_path):
 def test_changing_n_after_load_recomputes_without_reloading():
     dc = averaging_collector(n=8)
     for i in range(8):
-        feed(dc, noisy(dc, 300.37, 1.0, seed=i), rel_time=i * 1.0)
+        feed(dc, noisy(dc, 300.37, 1.0, seed=i), rel_time=i * FRAME_S)
     wide = dc.process_samples()[0]
     dc.config.n_averages = 2
     narrow = dc.process_samples()[0]
@@ -263,7 +268,7 @@ def test_overall_is_averaged_with_the_spectrum():
     """The overall is averaged over the same frames as the spectrum."""
     dc = averaging_collector(n=8)
     for i in range(8):
-        feed(dc, noisy(dc, 300.37, 1.0, seed=i), rel_time=i * 1.0)
+        feed(dc, noisy(dc, 300.37, 1.0, seed=i), rel_time=i * FRAME_S)
     r = dc.process_samples()[0]
     singles = []
     for s in list(dc.data['frame_cache'])[-8:]:
@@ -281,10 +286,10 @@ def test_impulsiveness_scalars_are_not_averaged():
     dc = averaging_collector(n=8)
     rng = np.random.default_rng(0)
     for i in range(7):
-        feed(dc, rng.standard_normal(dc.config.blocksize), rel_time=i * 1.0)
+        feed(dc, rng.standard_normal(dc.config.blocksize), rel_time=i * FRAME_S)
     spiky = rng.standard_normal(dc.config.blocksize)
     spiky[len(spiky) // 2] = 60.0
-    feed(dc, spiky, rel_time=8.0)
+    feed(dc, spiky, rel_time=7 * FRAME_S)
 
     r = dc.process_samples()[0]
     assert r.n_averages == 8            # the spectrum IS averaged
@@ -310,7 +315,7 @@ def test_the_average_is_taken_in_the_power_domain():
         rng = np.random.default_rng(500 + i)
         blk = rng.standard_normal(dc.config.blocksize)
         blocks.append(blk)
-        feed(dc, blk, rel_time=i * 1.0)
+        feed(dc, blk, rel_time=i * FRAME_S)
 
     averaged = dc.process_samples()[0]
     assert averaged.n_averages == 24
@@ -343,7 +348,7 @@ def test_averaged_overall_is_combined_in_the_power_domain_too():
         rng = np.random.default_rng(700 + i)
         blk = tone(dc, 300.37, amp=0.5 + 0.4 * i) + rng.standard_normal(dc.config.blocksize)
         blocks.append(blk)
-        feed(dc, blk, rel_time=i * 1.0)
+        feed(dc, blk, rel_time=i * FRAME_S)
     got = dc.process_samples()[0].overall
 
     singles = []
@@ -357,3 +362,78 @@ def test_averaged_overall_is_combined_in_the_power_domain_too():
     assert got == pytest.approx(rms_combined, rel=1e-6)
     # Deliberately spread the amplitudes so the two differ measurably.
     assert not np.isclose(got, mean_combined, rtol=0.01)
+
+
+# ===========================================================================
+# Contiguous frames only
+# ===========================================================================
+
+def _browse_newest(dc):
+    """Results for the newest frame of a stopped collector (browse mode)."""
+    dc._cache_cursor = 0
+    return dc.process_samples()[0]
+
+
+def test_session_captures_are_not_averaged():
+    """Captures 600 s apart: an average would span 80 min under one label."""
+    dc = averaging_collector(n=8)
+    for i in range(8):
+        feed(dc, noisy(dc, 300.37, 1.0, seed=i), rel_time=i * 600.0)
+    r = _browse_newest(dc)
+    assert r.n_averages == 1
+    assert r.averaging_gap is True
+
+
+def test_contiguous_frames_average_to_n():
+    dc = averaging_collector(n=8)
+    for i in range(8):
+        feed(dc, noisy(dc, 300.37, 1.0, seed=i), rel_time=i * FRAME_S)
+    r = _browse_newest(dc)
+    assert r.n_averages == 8
+    assert r.averaging_gap is False
+
+
+def test_burst_frames_rebased_to_the_trigger_average_to_n():
+    """A burst's rel_times are negative before the trigger; still contiguous."""
+    dc = averaging_collector(n=4)
+    for i in range(4):
+        feed(dc, noisy(dc, 300.37, 1.0, seed=i), rel_time=(i - 2) * FRAME_S)
+    assert _browse_newest(dc).n_averages == 4
+
+
+def test_a_stream_restart_inside_the_window_stops_the_walk():
+    dc = averaging_collector(n=8)
+    for i in range(5):
+        feed(dc, noisy(dc, 300.37, 1.0, seed=i), rel_time=10.0 + i * FRAME_S)
+    for i in range(3):                       # new stream: rel_time starts again
+        feed(dc, noisy(dc, 300.37, 1.0, seed=50 + i), rel_time=i * FRAME_S)
+    r = _browse_newest(dc)
+    assert r.n_averages == 3
+    assert r.averaging_gap is True
+
+
+def test_the_gap_limit_is_one_and_a_half_achieved_periods():
+    dc = averaging_collector(n=2)
+    feed(dc, noisy(dc, 300.37, 1.0, seed=1), rel_time=0.0)
+    feed(dc, noisy(dc, 300.37, 1.0, seed=2), rel_time=1.5 * FRAME_S)
+    assert _browse_newest(dc).n_averages == 2
+    dc = averaging_collector(n=2)
+    feed(dc, noisy(dc, 300.37, 1.0, seed=1), rel_time=0.0)
+    feed(dc, noisy(dc, 300.37, 1.0, seed=2), rel_time=1.51 * FRAME_S)
+    assert _browse_newest(dc).n_averages == 1
+
+
+def test_count_text_says_why_frames_were_not_averaged(monkeypatch):
+    pytest.importorskip("dearpygui")
+    import dearpygui.dearpygui as dpg
+    from rev80.gui import GUI
+    shown = {}
+    monkeypatch.setattr(dpg, 'does_item_exist', lambda tag: True)
+    monkeypatch.setattr(dpg, 'set_value', lambda tag, v: shown.update(text=v))
+    dc = averaging_collector(n=8)
+    for i in range(3):
+        feed(dc, noisy(dc, 300.37, 1.0, seed=i), rel_time=i * 600.0)
+    app = GUI.__new__(GUI)
+    app.collector = dc
+    app._update_avg_count_text(_browse_newest(dc))
+    assert shown['text'] == "averaging 1 of 8 frames (frames not contiguous)"

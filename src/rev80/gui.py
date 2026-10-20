@@ -1096,7 +1096,8 @@ class GUI:
         want = cfg.n_averages_effective
         got = int(result.n_averages)
         suffix = "" if got >= want else f" of {want}"
-        dpg.set_value(ui.FFT_AVG_COUNT_TEXT, f"averaging {got}{suffix} frames")
+        reason = " (frames not contiguous)" if got < want and result.averaging_gap else ""
+        dpg.set_value(ui.FFT_AVG_COUNT_TEXT, f"averaging {got}{suffix} frames{reason}")
 
     def _update_peak_count_text(self, n_found: int, cap: int):
         """Say how many lines passed the gate, and whether the cap is hiding any.

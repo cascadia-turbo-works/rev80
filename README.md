@@ -437,6 +437,10 @@ lower the noise floor. Use it to see a small line in a rough floor.
 
 - The average uses the N most recent valid frames up to the frame on the
   screen. Overflow and degraded frames are skipped.
+- The frames must be contiguous in time. The average stops at the first
+  gap larger than 1.5 frame periods, or at a new stream. Session captures
+  (600 s apart by default) are therefore not averaged. The label then says
+  "averaging 1 of 8 frames (frames not contiguous)".
 - N is limited by **Cache Frames**.
 - **Avg. Window** shows N × frame time: the time for which the machine must
   be steady.

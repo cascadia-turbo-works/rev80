@@ -482,6 +482,9 @@ class ChannelResult:
     kurtosis:     float = 3.0
     # Frames averaged into `spectrum` and `overall`; 1 = no averaging.
     n_averages:   int = 1
+    # True when a gap in time stopped the averaging walk before N frames:
+    # the frames before the gap are not contiguous with this one.
+    averaging_gap: bool = False
     # Shaft speed in RPM; None = no tachometer reading, never 0.0.
     rpm:        float | None = None
     # False when the frame is outside the speed window: shown and stored, but

@@ -49,6 +49,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   had no shaft-speed trend). Measurement files keep their stored trends.
   Load time of a 1440-capture, 4-channel session (`SimulatedSensor` frames,
   i7-1260P): 1.7 s before, 3.0 s now; peak memory 778 MB before, 783 MB now.
+- **Averaging joined frames that were far apart in time.** A session's
+  captures are 600 s apart by default, so an average of N = 8 spanned 80 min
+  under the label "averaging 8 frames". The walk back now stops at the first
+  frame that is not contiguous with the next one: 0 < delta `rel_time` <=
+  1.5 x the achieved frame period (`raw_blocksize / sample.samplerate`). A
+  new stream (negative delta) is also a gap. The label says "averaging 1 of
+  8 frames (frames not contiguous)" (`ChannelResult.averaging_gap`). The
+  averaging tests fed frames 1.0 s apart with a 0.5 s frame period; they now
+  step by the frame period.
 - **The session reprocess thread changed the collector on screen** while the
   render loop read it. The thread now loads its own collector and the render
   thread swaps the result in (part of R50).

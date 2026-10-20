@@ -1,5 +1,6 @@
 # Data Collector
 
+import dataclasses
 import threading
 from collections import deque
 from datetime import datetime
@@ -1278,6 +1279,50 @@ class DataCollector:
         filtered_mv = self.filtered_data_for(ch, sample)
         return filtered_mv / sensitivity_mv, sample.samplerate, sensor_eu
 
+    #: Largest step of `rel_time`, in frame periods, between two frames that
+    #: are averaged together. A session's captures are 600 s apart by default;
+    #: an average of them is not a measurement of one machine state.
+    _CONTIGUOUS_GAP_PERIODS = 1.5
+
+    @staticmethod
+    def _frame_timing(frame: dict) -> 'tuple[float, float] | None':
+        """(rel_time, achieved frame period) of a frame, from a sample with data."""
+        for k, smp in frame.items():
+            if (isinstance(k, int) and smp is not None and smp.blocksize > 1
+                    and smp.samplerate > 0):
+                return float(smp.rel_time), smp.blocksize / float(smp.samplerate)
+        return None
+
+    def _frames_contiguous(self, older: dict, newer: dict) -> bool:
+        """True when `newer` follows `older` in one stream, with no gap.
+
+        0 < delta rel_time <= 1.5 x the achieved frame period
+        (raw_blocksize / sample.samplerate), not config.acquisition_period. A
+        negative delta is a new stream.
+        """
+        a, b = self._frame_timing(older), self._frame_timing(newer)
+        if a is None or b is None:
+            return False
+        delta = b[0] - a[0]
+        return 0.0 < delta <= self._CONTIGUOUS_GAP_PERIODS * b[1]
+
+    def _contiguous_history(self, cache, stop: int, want: int) -> 'tuple[list, bool]':
+        """Frames before `cache[stop]`, oldest first, for an average of `want`.
+
+        The walk back stops at the first frame that is not contiguous with
+        the next one. Returns (frames, gap): `gap` is True when a gap, not the
+        start of the cache, stopped the walk.
+        """
+        frames: list = []
+        newer = cache[stop]
+        for j in range(stop - 1, max(-1, stop - want), -1):
+            older = cache[j]
+            if not self._frames_contiguous(older, newer):
+                return frames[::-1], True
+            frames.append(older)
+            newer = older
+        return frames[::-1], False
+
     def process_samples(self) -> list['rev80.ChannelResult']:
         """Process the current frame; return one ChannelResult per vibration channel.
 
@@ -1299,13 +1344,14 @@ class DataCollector:
 
         # Frames before the displayed one, oldest first, for averaging. One
         # rule for live and browse: the N most recent valid frames up to and
-        # including the displayed frame. So replay shows what the live
-        # display showed.
+        # including the displayed frame, contiguous in time. So replay shows
+        # what the live display showed.
         history: list = []
+        averaging_gap = False
         if self.config.averaging_enabled:
             stop = len(cache) + idx              # index of the displayed frame
             want = self.config.n_averages_effective
-            history = list(cache)[max(0, stop - want + 1):stop]
+            history, averaging_gap = self._contiguous_history(cache, stop, want)
 
         # Record shaft speed for this frame before the vibration channels,
         # so a consumer reading results has current_rpm() already updated.
@@ -1337,6 +1383,8 @@ class DataCollector:
             result = self.process_sample(ch, sample, history=ch_history)
             if result is None:
                 continue
+            if averaging_gap:
+                result = dataclasses.replace(result, averaging_gap=True)
             if self.is_streaming:
                 # Do not trend a clipped or degraded frame: the trend would show
                 # a step that did not occur on the machine, and an alarm could
