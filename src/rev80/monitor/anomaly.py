@@ -181,8 +181,12 @@ class RmsThresholdHook:
         """Update EWMA state without checking for trigger events.
 
         Called during burst frames so the baseline keeps adapting while
-        suppressing spurious retriggers.
+        suppressing spurious retriggers. A burst frame ends every streak, as
+        in the other hooks: after the burst, the count starts again.
         """
+        self._consec_above = {ch: 0 for ch in self._consec_above}
+        self._streak_start_time.clear()
+        self._streak_start_rel.clear()
         for r in self._view(views):
             ch = r.channel
             current = r.overall
@@ -331,7 +335,11 @@ class SpectralThresholdHook:
         return mask
 
     def update_baseline(self, views) -> None:
-        """Update EWMA state without checking for trigger events."""
+        """Update EWMA state without checking for trigger events.
+
+        Called during burst frames. A burst frame ends every streak.
+        """
+        self._consec_above = {ch: 0 for ch in self._consec_above}
         for r in valid_results(as_views(views).record):
             self._update_channel(r.channel, np.array(r.spectrum, dtype=float))
 

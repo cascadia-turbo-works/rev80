@@ -266,3 +266,36 @@ def test_front_ends_give_the_monitor_the_snapshot_history(front_end):
                else src.index('rev80.FrameViews('):]
     call = call[:call.index('\n\n')]
     assert '.history' in call and 'frame_cache' not in call
+
+
+# --- A burst frame ends the streak of every hook type -------------------------
+
+def test_a_burst_frame_ends_the_rms_streak():
+    dc = _collector(record_unit='g')
+    hook = RmsThresholdHook(rms_threshold_pct=50.0, consecutive_n=2, baseline_alpha=0.999,
+                            min_baseline_samples=3, unit='g', amplitude_mode='RMS')
+    for i in range(3):
+        _feed(dc, i)
+        assert hook.on_results(_views(dc), None) is None
+    _feed(dc, 3, hf_g=2.0)
+    assert hook.on_results(_views(dc), None) is None   # 1 of 2
+    _feed(dc, 4, hf_g=2.0)
+    hook.update_baseline(_views(dc))                   # a burst frame
+    _feed(dc, 5, hf_g=2.0)
+    assert hook.on_results(_views(dc), None) is None   # 1 of 2 again
+    _feed(dc, 6, hf_g=2.0)
+    assert hook.on_results(_views(dc), None) is not None
+
+
+def test_a_burst_frame_ends_the_spectral_streak():
+    from rev80.monitor.anomaly import SpectralThresholdHook
+    dc = _collector(record_unit='g')
+    hook = SpectralThresholdHook(spectral_threshold_pct=50.0, consecutive_n=2,
+                                 baseline_alpha=0.999, min_baseline_samples=3)
+    for i in range(3):
+        _feed(dc, i)
+        hook.on_results(_views(dc), None)
+    hook._consec_above[0] = 1                          # one frame into a streak
+    _feed(dc, 3)
+    hook.update_baseline(_views(dc))
+    assert hook._consec_above[0] == 0

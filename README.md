@@ -822,7 +822,8 @@ A burst starts from an anomaly or from **Record Burst**:
    starts.
 
 During a burst, anomaly detection does not trigger, but the baseline
-continues to adapt. A burst holds its frames in memory until it ends;
+continues to adapt. A burst ends the sustained count of every detector:
+after the burst, the count starts again from zero. A burst holds its frames in memory until it ends;
 `max_burst_s` limits that memory.
 
 ### Anomaly detection

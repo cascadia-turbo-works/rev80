@@ -30,6 +30,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   in 0-P add 4.5 ms, 0.9 % of one core. Not measured on a Raspberry Pi 3.
 
 #### Changed
+- **A burst ends the sustained count of every detector.** Before, the RMS
+  and the spectral detector kept the count of frames beyond the threshold
+  across a burst, so one frame after the burst could complete a streak that
+  started before it. The fixed-level trigger already started again.
 - **One frame snapshot for each render tick.** `DataCollector.snapshot()`
   returns a `FrameSnapshot`: the frame cache as a tuple, the index of the
   displayed frame and whether it is live. It is the one place the displayed
