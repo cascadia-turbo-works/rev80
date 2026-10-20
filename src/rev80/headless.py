@@ -669,7 +669,7 @@ def run(args: argparse.Namespace) -> int:
         results = collector.results_for(frame_snap)
         if results:
             monitor.on_results(rev80.FrameViews(collector, frame_snap, results),
-                               collector.data["frame_cache"])
+                               frame_snap.history)
             _print_status(results)
 
         if not ceiling_logged:

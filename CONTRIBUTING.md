@@ -250,12 +250,12 @@ DataCollector.receive_data()
   results, the display results, the shaft speed, the Envelope tab's raw
   `VibeSample` (`snap.frame`). The acquisition thread appends between calls,
   so a view that reads the cache again can see another frame.
-- Three readers do not use the tick's snapshot. The tachometer result cards
+- Two readers do not use the tick's snapshot: the tachometer result cards
   and the Tachometer tab call `current_frame()`, which takes a new snapshot.
-  `MonitorController.on_results()` gets the live cache and stores the
-  waveform of `frame_cache[-1]` with the record results of `snap.frame`.
-  When a frame arrives between `snapshot()` and `on_results()`, the stored
-  waveform and the stored overall come from different frames.
+  `MonitorController.on_results()` gets `snapshot.history` (the frames up
+  to and including the displayed frame), not the live cache. A frame that
+  arrives after the snapshot is then not stored with the results of the
+  snapshot frame.
 - **Frame side effects are only in `advance_frame(snapshot)`**: one trend
   point and one RPM point for each new live frame, none for a browsed frame
   or a redisplay. `result_view()` and `results_for()` have no side effects

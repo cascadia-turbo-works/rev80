@@ -218,3 +218,51 @@ def test_a_burst_frame_ends_the_streak():
     assert hook.on_results(a, None) is None
     hook.update_baseline(b)
     assert hook.on_results(c, None) is None
+
+
+# --- The capture stores the frame of its results -------------------------------
+
+def test_a_frame_appended_after_the_snapshot_is_not_stored(tmp_path):
+    """The acquisition thread can append between snapshot() and on_results()."""
+    dc = _collector(record_unit='in/s')
+    session = session_from(
+        collector=dc, session_id='c4', interval_s=0.01, pre_buffer_s=1.0,
+        burst_duration_s=1.0, max_burst_s=5.0, output_dir=tmp_path,
+        start_time=datetime.now(timezone.utc))
+    ctrl = MonitorController()
+    ctrl.start(session, anomaly_hook=None)
+    _feed(dc, 0)
+    snap = dc.snapshot()
+    dc.advance_frame(snap)
+    shown = snap.frame[0]
+    _feed(dc, 1, hf_g=2.0)                     # appended after the snapshot
+    ctrl.on_results(FrameViews(dc, snap), snap.history)
+    ctrl.stop()
+    for _ in range(100):
+        if session.session_h5.exists():
+            break
+        time.sleep(0.05)
+    with h5py.File(session.session_h5, 'r') as f:
+        (key,) = f['monitor'].keys()
+        stored = f['monitor'][key]['0']['data'][()]
+    np.testing.assert_array_equal(stored, shown.data)
+
+
+def test_snapshot_history_ends_at_the_displayed_frame():
+    dc = _collector()
+    for i in range(3):
+        _feed(dc, i)
+    snap = dc.snapshot()
+    assert snap.history == snap.frames
+    browse = dataclasses.replace(snap, index=1, is_live=False)
+    assert browse.history == snap.frames[:2]
+
+
+@pytest.mark.parametrize('front_end', ['gui.py', 'headless.py'])
+def test_front_ends_give_the_monitor_the_snapshot_history(front_end):
+    from pathlib import Path
+    src = (Path(vc.__file__).parent / front_end).read_text()
+    call = src[src.index('on_results(rev80.FrameViews') if 'on_results(rev80.FrameViews' in src
+               else src.index('rev80.FrameViews('):]
+    call = call[:call.index('\n\n')]
+    assert '.history' in call and 'frame_cache' not in call

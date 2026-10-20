@@ -167,3 +167,13 @@ def test_trend_in_another_unit_equals_the_view_in_that_unit():
     assert values[-1] == pytest.approx(view.overall, rel=1e-12)
     assert dc.get_trend_for_display('in/s', channels=[1, 5]) == {}
     assert dc.get_trend_for_display('mV')[0] == ([], [])
+
+
+def test_a_sensor_with_source_eu_mv_keeps_its_record_view():
+    """The Source EU combo offers 'mV'; such a channel must not disappear."""
+    dc = _collector()
+    dc.config.channel_target_units = {}
+    dc.set_scope_sensor(0, ScopeSensor(name='raw', engineering_units='mV', sensitivity=1.0))
+    _feed(dc, 0)
+    (rec,) = dc.results_for(dc.snapshot())
+    assert rec.unit == 'mV' and rec.overall > 0

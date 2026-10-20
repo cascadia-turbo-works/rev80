@@ -166,6 +166,16 @@ class FrameSnapshot:
         """The displayed frame {ch: VibeSample}, or {} if the cache was empty."""
         return self.frames[self.index] if self.frames else {}
 
+    @property
+    def history(self) -> tuple:
+        """The frames up to and including the displayed frame.
+
+        Give it to `MonitorController.on_results()` in place of the live
+        cache: a frame that arrives after the snapshot is then not stored
+        with the results of this one.
+        """
+        return self.frames[:self.index + 1]
+
 
 class FrameViews:
     """The `monitor.anomaly.ResultViews` of one snapshot, for the hooks and the writer.
@@ -1420,13 +1430,16 @@ class DataCollector:
     def _reachable(self, ch: int, unit: str) -> bool:
         """Can channel `ch` be shown in `unit`? Logs once for each (ch, unit) if not.
 
-        No sensor: 'mV' only. With a sensor: an engineering unit within two
-        integration steps of the sensor EU.
+        No sensor: 'mV' only. With a sensor: the sensor EU itself (the Source
+        EU combo offers 'mV'), or an engineering unit within two integration
+        steps of it.
         """
         from rev80.util import integration_steps
         sensor = self.scope_sensors.get(ch)
         if sensor is None:
             ok, why = unit == 'mV', 'no sensor'
+        elif unit == sensor.engineering_units:
+            ok, why = True, ''
         elif unit == 'mV':
             ok, why = False, 'a sensor is assigned; mV is not an engineering unit'
         else:

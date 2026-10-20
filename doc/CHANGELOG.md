@@ -120,15 +120,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   converted with a factor only. The hook now gets the overall calculated in
   its own unit and mode from the same frame. A channel with no sensor gives
   `mV` only and is skipped with one warning.
+- **A channel disappeared when its sensor's Source EU was `mV`.** The
+  Source EU combo offers `mV`, but the record view refused `mV` for a
+  channel with a sensor, so the channel had no display, trend, capture or
+  alarm, and one log warning. The sensor EU is now always a reachable unit.
+- **A capture could store a waveform and an overall of different frames.**
+  The front ends gave the monitor the live frame cache, and the controller
+  stored the waveform of the newest frame. A frame that arrived after the
+  tick's snapshot was stored with the results of the frame before it. Both
+  front ends now pass `FrameSnapshot.history`, the frames up to and
+  including the displayed frame. This was also true before this branch.
 
 #### Notes for the next person
 - **Not every reader uses the tick's snapshot.** The tachometer result
   cards and the Tachometer tab call `current_frame()`, which takes a new
-  snapshot. `MonitorController.on_results()` gets the live frame cache and
-  stores the waveform of `frame_cache[-1]` beside the record results of
-  `snap.frame`. A frame that arrives between the two calls makes the stored
-  waveform and the stored overall come from different frames. This was
-  also true before this branch.
+  snapshot.
 - **The session reprocess thread still calls dearpygui** (the button label)
   and adds sensors to the sensor registry from the worker thread (R50,
   R59).

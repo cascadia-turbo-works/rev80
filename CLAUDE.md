@@ -88,8 +88,9 @@ chain, stage by stage". The facts that an agent gets wrong most often:
   peaks, one `ChannelResult` for each vibration channel. Every view in
   `_display_frame()` uses the same snapshot; the tachometer cards and the
   Tachometer tab call `current_frame()`. `MonitorController.on_results()`
-  gets the record results, never averaged, and stores the waveform of the
-  live `frame_cache[-1]`. The acquisition thread never
+  gets the record results, never averaged, and `snapshot.history`, not the
+  live cache, so it stores the waveform of the frame of its results. The
+  acquisition thread never
   touches a widget. `collector.py`, `sample.py`, `picoscope.py` and `monitor/`
   do not import dearpygui.
 - The frame cache is a `deque` of `cache_frames` frames: 32 for an
@@ -296,10 +297,6 @@ Read these before you change the code nearby. The status is in
   cache while the main thread reads it. The session reprocess thread loads
   its own collector, but it calls dearpygui and the sensor registry from
   the worker thread. Tracked as R59 and R50.
-- **The monitor can store a waveform and an overall of different frames.**
-  It gets `snap.frame`'s results and the live cache, and stores
-  `frame_cache[-1]`. A frame that arrives between `snapshot()` and
-  `on_results()` causes the mismatch.
 - **Headless does not close the device on an exception** in its loop.
   Tracked as R52.
 - **A burst can exceed the memory of a small board.** Burst frames stay in

@@ -254,8 +254,8 @@ class MonitorController:
             return
 
         # For trigger_burst(): the cache, its newest frame, and the results.
-        # The newest frame is not always the frame of the results: a frame
-        # can arrive after the caller's snapshot.
+        # The front ends pass FrameSnapshot.history, so the newest frame is
+        # the frame of the results. A live deque gives no such guarantee.
         self._last_frame_cache = frame_cache
         self._last_frame       = frame_cache[-1] if frame_cache else None
         self._last_results     = list(results)
