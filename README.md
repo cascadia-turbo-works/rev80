@@ -266,8 +266,9 @@ The main window has three columns.
 
 **Center column (charts):**
 
-One tab for each chart of the chart layout. Each chart has one unit and one
-amplitude mode for all its series. The unit and mode on the Channels tab are
+One tab for each chart of the chart layout. **Charts**, above the tabs,
+opens the Charts tab of the configuration dialog. Each chart has one unit
+and one amplitude mode for all its series. The unit and mode on the Channels tab are
 the record unit: what Rev80 stores and trends.
 
 - **Time waveform**: the band-limited waveform in the chart unit.
@@ -281,9 +282,9 @@ the record unit: what Rev80 stores and trends.
 
 The default layout has a Time waveform and a Spectrum chart, with all
 vibration channels, in the record unit and mode of the first. It has no
-Trend chart; the Charts tab (in work, R70) adds one. **Envelope
-analysis** on the Acquisition tab adds an Envelope chart. **Average
-spectrum** sets the averaging of the Spectrum chart.
+Trend chart; use the Charts tab to add one. Until you edit the layout,
+**Envelope analysis** on the Acquisition tab adds an Envelope chart and
+**Average spectrum** sets the averaging of the Spectrum chart.
 
 A channel that cannot show the chart unit has an empty series. Its legend
 label gives the reason, for example "Ch B: no sensor, cannot show in/s".
@@ -317,7 +318,7 @@ Rev80 draws its chart at once from the frame on screen.
 
 ### Configuration dialog
 
-The dialog has seven tabs. When you open the dialog, Rev80 stops the stream.
+The dialog has eight tabs. When you open the dialog, Rev80 stops the stream.
 **Close** (or `Esc`) applies all tabs, saves them, reconnects the device
 once, and starts the stream again if it was running.
 
@@ -326,6 +327,7 @@ once, and starts the stream again if it was running.
 | Device | Detected devices, **Connect** / **Disconnect**, refresh. |
 | Channels | For each channel: **Enable**, **Name**, **Coupling** (AC/DC), **Range** (±10 mV to ±20 V), **Sensor**, **Unit**, **Amplitude** (RMS, 0-P, P-P). A tachometer channel shows read-only. |
 | Tachometer | **Channel**, **Polarity**, **Threshold** (adaptive/fixed), **Level (mV)**, **Min ampl. (mV)**, **Rate units**, **Reflector (mm)**, **Pulses/rev**, **Start**/**Stop**, and a live plot of the tach signal. See [Tachometer](#tachometer). |
+| Charts | The chart layout: one row for each chart. See [Charts tab](#charts-tab). |
 | Sensors | **Sensor Library** list, **Add**, **Delete**. For the selected sensor: **Name**, **Source EU**, **Sensitivity (mV/eu)**, **Notes**. |
 | Acquisition | **Freq. Range**, **Freq. Resolution**, **Highpass** and its **Hz**, **Average spectrum**, **Averages**, **Envelope/Demodulation (bearing analysis)**, **Overall Band** with **min** and **max Hz**, **Cache Frames**, **Welch Overlap %**, **FFT Window**. Read-only: **Sample Rate**, **Spectral Lines**, **Acq. Time**, **Avg. Window**, **Rec. Window**, **Memory**. |
 | Generate | Signal generator. See [Signal generator](#signal-generator). |
@@ -334,10 +336,47 @@ once, and starts the stream again if it was running.
 Settings with no widget are in the YAML files only. See
 [Configuration files](#configuration-files).
 
+### Charts tab
+
+The Charts tab sets which channels show on which chart, in which unit. The
+table has one row for each chart, in the order of the main-window tabs:
+
+| Column | Content |
+|---|---|
+| **-** | Removes the chart. The last chart cannot be removed. |
+| Type | Time waveform, Spectrum, Trend, Envelope or XY. |
+| Name | The tab label. |
+| Channels | One checkbox for each vibration channel, in the channel colour. An XY chart has an **X** and a **Y** channel and **Swap**. |
+| Unit | The unit and amplitude mode of every series on the chart. |
+| Options | Trend: **Shaft speed** on a second y axis, and the tachometer channel. Spectrum: **Average**, the number of frames, and the time that they cover. |
+
+To add a chart, select its type below the table and click **+**. A new
+chart has the record unit of the first vibration channel and every channel
+that can show that unit. An Envelope chart has the sensor unit, 0-P.
+
+The unit list has only the units that every checked channel can show: the
+sensor unit and the units within two integration steps of it. A channel
+with no sensor shows mV only. An Envelope chart shows the sensor quantity
+only. A channel that cannot show the chart unit has its checkbox disabled,
+and its tooltip gives the reason. A tachometer channel is never a series;
+select it as the shaft speed of a Trend chart.
+
+The table does not remove a channel that is not in the data now. The
+channel stays checked, with "(not present)", and shows again when it is
+present.
+
+**Close** applies the layout:
+
+- With live data, Rev80 also saves the layout to `charts.yaml`.
+- With a file, a session or a burst on screen, Close changes the layout of
+  what is on screen only. **Save** then stores it in the measurement file.
+  To use the layout for live data too, click **Use for live data**. This
+  button shows only when a file is on screen.
+
 ### Locks during a recording
 
 While a Monitor Mode recording runs, these controls are disabled: all
-**Setup** buttons, **Sensor**, **Load**, **Load Session** and
+**Setup** buttons, **Charts**, **Sensor**, **Load**, **Load Session** and
 **Clear Cache**. A disabled control is drawn in muted colours, and its
 tooltip says "Stop the recording to change this." `Ctrl+O` is refused, and
 the log records why. Stop the recording to use them again.
@@ -1127,6 +1166,7 @@ exist. It does not change existing files.
 ~/.config/rev80/                        (%APPDATA%\rev80\ on Windows)
   acquisition.yaml                      acquisition and Monitor Mode settings
   scope_sensors.yaml                    IEPE sensor library
+  charts.yaml                           chart layout for live data
   devices/
     picoscope-defaults.yaml             channel template for a new device
     picoscope-4424A-JY123.yaml          channels and signal generator of one device
@@ -1286,6 +1326,30 @@ by hand. `rev80 --list-sensors` lists it.
 The key is `sensitivity`. When you assign a sensor to a channel, Rev80
 divides the signal in mV by `sensitivity` to get the engineering unit. The
 display unit and amplitude mode are channel settings, not sensor settings.
+
+### `charts.yaml`
+
+The chart layout for live data. The **Charts** tab writes it when you close
+the dialog with live data on screen. Headless reads it and stores the
+layout in each session. If the file does not exist, Rev80 uses the default
+layout (a Time waveform and a Spectrum). If the file cannot be read or has
+no valid chart, Rev80 logs a warning, uses the default layout and does not
+change the file. Rev80 skips an invalid chart entry and logs it.
+
+```yaml
+version: 1
+charts:
+- chart_id: c1              # stable; do not change it
+  chart_type: spectrum      # waveform, spectrum, trend, envelope, xy
+  name: Spectrum
+  channels: [0, 1]          # xy: [x, y]
+  unit: in/s
+  amplitude_mode: RMS       # '' for waveform and xy
+  show_rpm: false           # trend: shaft speed on y2
+  tach_channel: null
+  averaging: true           # spectrum
+  n_averages: 8
+```
 
 ### Logging
 

@@ -308,3 +308,113 @@ def save_chart_set(path: Path, chart_set: ChartSet) -> None:
     """Write `chart_set` to `path` atomically."""
     from rev80.config import _atomic_yaml_write
     _atomic_yaml_write(Path(path), chart_set.to_dict())
+
+
+# ---------------------------------------------------------------------------
+# Charts-tab edits (pure; the widgets are in gui_charts_tab.py)
+# ---------------------------------------------------------------------------
+
+def unit_label(unit: str, mode: str) -> str:
+    """The text of a unit combo item: 'in/s RMS', or 'g' for a chart with no mode."""
+    return f'{unit} {mode}' if mode else unit
+
+
+def parse_unit_label(label: str) -> tuple[str, str]:
+    """(unit, mode) of a `unit_label()` text."""
+    unit, _, mode = label.partition(' ')
+    return unit, mode
+
+
+def vibration_channels_of(roles: Mapping[int, str]) -> list[int]:
+    """The present channels that can be a series, in channel order."""
+    return sorted(ch for ch, role in roles.items() if role != 'tachometer')
+
+
+def unit_choices(spec: ChartSpec, roles: Mapping[int, str],
+                 sensor_eus: Mapping[int, str | None]) -> list[str]:
+    """The unit combo items of `spec`.
+
+    The units that every checked, present channel can show; with none
+    checked, those of every present vibration channel. The current unit
+    and mode stay in the list, so the combo never changes them by itself.
+    """
+    checked = [ch for ch in spec.channels if ch in roles and roles[ch] != 'tachometer']
+    eus = [sensor_eus.get(ch) for ch in (checked or vibration_channels_of(roles))]
+    if not eus:
+        units = list(UNITS)
+    else:
+        units = [u for u in UNITS
+                 if all(unit_reachable(eu, u, spec.chart_type) for eu in eus)]
+    items = [unit_label(u, m) for u in units for m in modes_for(spec.chart_type)]
+    current = unit_label(spec.unit, spec.amplitude_mode)
+    if current not in items:
+        items.insert(0, current)
+    return items
+
+
+def with_channel(spec: ChartSpec, ch: int, on: bool) -> ChartSpec:
+    """`spec` with `ch` checked or not. Checked channels stay in channel order."""
+    channels = set(spec.channels)
+    if on:
+        channels.add(ch)
+    else:
+        channels.discard(ch)
+    return spec.evolve(channels=tuple(sorted(channels)))
+
+
+def with_xy(spec: ChartSpec, axis: int, ch: int) -> ChartSpec:
+    """An XY chart with channel `ch` on axis 0 (X) or 1 (Y).
+
+    An empty slot takes `ch` too, so the channel stays on its axis; the
+    chart then says that XY needs two different channels.
+    """
+    pair = list(spec.channels[:2]) + [None] * (2 - len(spec.channels[:2]))
+    pair[axis] = ch
+    return spec.evolve(channels=tuple(ch if c is None else c for c in pair))
+
+
+def swapped_xy(spec: ChartSpec) -> ChartSpec:
+    return spec.evolve(channels=tuple(reversed(spec.channels[:2])))
+
+
+def _free_name(chart_set: ChartSet, base: str) -> str:
+    names = {c.name for c in chart_set.charts}
+    if base not in names:
+        return base
+    n = 2
+    while f'{base} {n}' in names:
+        n += 1
+    return f'{base} {n}'
+
+
+def new_chart(chart_set: ChartSet, chart_type: str, roles: Mapping[int, str],
+              sensor_eus: Mapping[int, str | None],
+              record_unit_of: Callable[[int], tuple[str, str]]) -> ChartSpec:
+    """A new chart of `chart_type` for the present channels, ready to edit.
+
+    Unit and mode: the record unit of the first vibration channel; for an
+    envelope chart, its sensor EU, 0-P. Channels: every vibration channel
+    that can show that unit; for XY, the first two. A trend gets the shaft
+    speed of the first tachometer channel, if there is one.
+    """
+    if chart_type not in CHART_TYPES:
+        raise ValueError(f'unknown chart type {chart_type!r}')
+    vib = vibration_channels_of(roles)
+    if chart_type == 'envelope':
+        eu = sensor_eus.get(vib[0]) if vib else None
+        unit, mode = (eu or 'mV'), '0-P'
+    else:
+        unit, mode = record_unit_of(vib[0]) if vib else ('mV', '0-P')
+        mode = (mode or '0-P') if chart_type in MODE_CHART_TYPES else ''
+    channels = tuple(ch for ch in vib
+                     if unit_reachable(sensor_eus.get(ch), unit, chart_type))
+    if chart_type == 'xy':
+        channels = channels[:2]
+    tachs = sorted(ch for ch, role in roles.items() if role == 'tachometer')
+    is_trend = chart_type == 'trend'
+    return ChartSpec(
+        chart_id=chart_set.new_chart_id(), chart_type=chart_type,
+        name=_free_name(chart_set, CHART_TYPE_LABELS[chart_type]),
+        channels=channels, unit=unit, amplitude_mode=mode,
+        show_rpm=is_trend and bool(tachs),
+        tach_channel=tachs[0] if is_trend and tachs else None)

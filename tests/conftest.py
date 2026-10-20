@@ -11,7 +11,7 @@ from pathlib import Path
 HAS_DEARPYGUI = importlib.util.find_spec("dearpygui") is not None
 
 _GUI_IMPORT = re.compile(
-    r"^(import dearpygui|from rev80\.gui(_charts)? |import rev80\.gui|from rev80 import gui)",
+    r"^(import dearpygui|from rev80\.gui(_\w+)? |import rev80\.gui|from rev80 import gui)",
     re.MULTILINE,
 )
 

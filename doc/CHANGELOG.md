@@ -47,6 +47,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   layout. A file with no layout or an invalid one gets the default layout
   and a warning. Headless uses `charts.yaml` when the file exists, else the
   default layout.
+- **Charts tab in the configuration dialog, `rev80.gui_charts_tab`.** One
+  row for each chart: remove, type, name, channel checkboxes (XY: X and Y
+  selectors and Swap), unit and mode, and options (trend shaft speed and
+  tachometer; spectrum averaging, N and the time it covers). A type combo
+  and **+** add a chart in the record unit of the first vibration channel.
+  The unit list has only the units that every checked channel can show; a
+  channel that cannot show the unit is disabled with the reason; an absent
+  channel stays checked. A **Charts** button above the main-window tabs
+  opens the tab; it is locked during a recording. Close applies an edited
+  layout; with live data it also saves `charts.yaml`, with a file on
+  screen it does not, and **Use for live data** saves it. The edit rules
+  are pure functions in `rev80.charts`. A connect while the dialog is open
+  drops the edits, so the layout of one data source never reaches another
+  or `charts.yaml`. The last chart cannot be removed.
 
 #### Changed
 - **One unit rule.** `DataCollector._reachable()` uses
@@ -59,7 +73,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Layout until the Charts tab exists.** `chart_layout()` gives the
   default (time waveform and spectrum, all vibration channels, the record
   unit of the first); "Envelope analysis" adds an envelope chart and "Average spectrum" sets the spectrum
-  averaging. A collector swap keeps the layout of the old collector.
+  averaging. A live collector takes `charts.yaml`; a collector swap does
+  not carry the layout over, so a file's layout does not become the live
+  layout.
 - **Peaks table pushes only changes.** The pool is keyed by (chart,
   channel) and pushes only the changed cells and the rows whose show state
   changes. Six charts, 8 channels: 26.0 to 26.3 ms for each frame before,

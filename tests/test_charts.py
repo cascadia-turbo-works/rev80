@@ -267,3 +267,78 @@ def test_collector_layout_is_the_default_until_one_is_set():
     own = ChartSet((_spec(channels=(0,)),))
     dc.chart_set = own
     assert dc.chart_layout() is own
+
+
+# ---------------------------------------------------------------------------
+# Charts-tab edits
+# ---------------------------------------------------------------------------
+
+_ROLES = {0: 'vibration', 1: 'vibration', 2: 'tachometer', 3: 'vibration'}
+_EUS = {0: 'g', 1: 'g', 2: None, 3: None}
+
+
+def _record(ch):
+    return {0: ('in/s', 'RMS'), 1: ('g', '0-P')}.get(ch, ('mV', '0-P'))
+
+
+def test_unit_labels_round_trip():
+    assert charts.unit_label('in/s', 'RMS') == 'in/s RMS'
+    assert charts.unit_label('g', '') == 'g'
+    assert charts.parse_unit_label('in/s RMS') == ('in/s', 'RMS')
+    assert charts.parse_unit_label('g') == ('g', '')
+
+
+def test_unit_choices_are_the_units_every_checked_channel_can_show():
+    spec = _spec(channels=(0, 1), unit='g', amplitude_mode='0-P')
+    items = charts.unit_choices(spec, _ROLES, _EUS)
+    assert 'in/s RMS' in items and 'g P-P' in items
+    assert not any(i.startswith('mV') for i in items)
+    mixed = charts.unit_choices(spec.evolve(channels=(0, 3)), _ROLES, _EUS)
+    assert mixed == ['g 0-P']              # no unit reaches both; the current one stays
+
+
+def test_unit_choices_of_a_waveform_have_no_mode_and_an_envelope_no_integration():
+    wf = ChartSpec('c9', 'waveform', 'W', channels=(0,), unit='g')
+    assert 'in/s' in charts.unit_choices(wf, _ROLES, _EUS)
+    env = ChartSpec('c9', 'envelope', 'E', channels=(0,), unit='g', amplitude_mode='0-P')
+    units = {charts.parse_unit_label(i)[0] for i in charts.unit_choices(env, _ROLES, _EUS)}
+    assert 'g' in units and 'in/s' not in units
+    assert all(charts.unit_reachable('g', u, 'envelope') for u in units)
+
+
+def test_channel_toggles_keep_channel_order():
+    spec = _spec(channels=(3,))
+    spec = charts.with_channel(spec, 0, True)
+    assert spec.channels == (0, 3)
+    assert charts.with_channel(spec, 3, False).channels == (0,)
+
+
+def test_xy_selectors_and_swap():
+    xy = ChartSpec('c9', 'xy', 'XY', channels=(0, 1), unit='g')
+    assert charts.swapped_xy(xy).channels == (1, 0)
+    assert charts.with_xy(xy, 1, 3).channels == (0, 3)
+    # An empty slot takes the channel too, so Y stays Y.
+    assert charts.with_xy(ChartSpec('c9', 'xy', 'XY'), 1, 3).channels == (3, 3)
+
+
+@pytest.mark.parametrize('chart_type, unit, mode, channels', [
+    ('spectrum', 'in/s', 'RMS', (0, 1)),
+    ('waveform', 'in/s', '', (0, 1)),
+    ('envelope', 'g', '0-P', (0, 1)),
+    ('xy', 'in/s', '', (0, 1)),
+])
+def test_a_new_chart_takes_the_record_unit_and_the_channels_that_reach_it(
+        chart_type, unit, mode, channels):
+    cs = charts.default_layout([0, 1, 3], _record)
+    spec = charts.new_chart(cs, chart_type, _ROLES, _EUS, _record)
+    assert (spec.unit, spec.amplitude_mode, spec.channels) == (unit, mode, channels)
+    assert spec.chart_id not in {'c1', 'c2'}
+    assert 2 not in spec.channels                     # never a tachometer
+
+
+def test_a_new_trend_takes_the_first_tachometer_and_a_free_name():
+    cs = ChartSet((ChartSpec('c1', 'trend', 'Trend'),))
+    spec = charts.new_chart(cs, 'trend', _ROLES, _EUS, _record)
+    assert (spec.show_rpm, spec.tach_channel, spec.name) == (True, 2, 'Trend 2')
+    no_tach = charts.new_chart(cs, 'trend', {0: 'vibration'}, _EUS, _record)
+    assert (no_tach.show_rpm, no_tach.tach_channel) == (False, None)

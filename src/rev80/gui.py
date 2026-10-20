@@ -13,6 +13,8 @@ from rev80 import _profile
 from rev80.gui_charts import (  # noqa: F401 (envelope_search_fmax: re-export)
     DEFAULT_PEAK_DISPLAY_CAP, ChartsView, envelope_search_fmax,
 )
+from rev80.gui_charts_tab import ChartsTab
+from rev80 import charts as rev80_charts
 from rev80 import peaks as rev80_peaks
 import rev80.config as _cfg
 import rev80.icons as icons
@@ -324,6 +326,8 @@ class GUI:
         self._tach_implicit_enable: int | None = None
         # The chart tabs and the spectrum result cards. See gui_charts.py.
         self._charts = ChartsView(self)
+        # The Charts tab of the configuration dialog. See gui_charts_tab.py.
+        self._charts_tab = ChartsTab(self)
         # Axes that _autoscale_plots locked; released one frame later.
         self._autoscale_locked: list[str] = []
         # The snapshot of the last displayed frame, for a tab change.
@@ -874,7 +878,7 @@ class GUI:
     #: Controls that are disabled while a monitor recording runs.
     _RECORDING_LOCKED_CONTROLS = (
         ui.BTN_DEVICE_SETUP, ui.BTN_CHANNELS_SETUP, ui.BTN_SPECTRUM_SETUP,
-        ui.BTN_SENSOR_SETUP, ui.BTN_MONITOR_SETUP,
+        ui.BTN_SENSOR_SETUP, ui.BTN_MONITOR_SETUP, ui.BTN_CHARTS_SETUP,
         ui.FILE_LOAD, ui.BTN_MONITOR_BROWSE, ui.ACQ_CLEAR_CACHE,
     )
 
@@ -1422,8 +1426,6 @@ class GUI:
             return False
         if new is not self.collector:
             self._release_device()
-            if new.chart_set is None:
-                new.chart_set = self.collector.chart_set
             self.collector = new
         try:
             if setup is not None:
@@ -1479,8 +1481,26 @@ class GUI:
         acq_dict = _cfg.load_acquisition_config().get("acquisition", {})
         config = AcquisitionSettings.from_dict(acq_dict) if acq_dict else None
         new = rev80.DataCollector(config=config)
+        new.chart_set = self._live_chart_set()
         new.connect_sensor(sensor)
         return new
+
+    @staticmethod
+    def _live_chart_set() -> 'rev80_charts.ChartSet | None':
+        """The layout for live data: charts.yaml, or None for the default.
+
+        None lets `DataCollector.chart_layout()` make the default of the
+        collector's own channels. A bad file is logged and not changed.
+        """
+        cs, found = rev80_charts.load_chart_set(_cfg.charts_config_path(),
+                                                lambda: rev80_charts.ChartSet(()))
+        return cs if found else None
+
+    def _live_data_on_screen(self) -> bool:
+        """True unless a file, a session or a burst is on screen with no device."""
+        if self.collector.sensor is not None:
+            return True
+        return self._browse_context.get('type', 'live') == 'live'
 
     def _connect_device(self, sensor) -> bool:
         """Close the old device, then connect `sensor` in a new collector.
@@ -1554,6 +1574,7 @@ class GUI:
         # Always sync spectrum widgets so they reflect current config
         # regardless of which tab was used to open the dialog.
         self._populate_acq_tab()
+        self._charts_tab.populate()
         if tab_tag == ui.CONFIG_TAB_DEVICE:
             self._start_device_discovery()
         elif tab_tag == ui.CONFIG_TAB_CHANNELS:
@@ -2307,6 +2328,16 @@ class GUI:
 
     # ------------------------------------------------------------------
 
+    def _on_config_tab_change(self, sender=None, app_data=None):
+        """The Charts tab shows the channels and sensors of the other tabs now."""
+        try:
+            alias = dpg.get_item_alias(app_data) if app_data else ''
+        except Exception:                                    # noqa: BLE001
+            return
+        if alias == ui.CONFIG_TAB_CHARTS:
+            self._apply_channel_assignments_from_widgets()
+            self._charts_tab.refresh()
+
     def _on_config_close(self, sender=None, data=None):
         """Apply all tab settings, do a single reconnect, then hide the dialog.
 
@@ -2337,6 +2368,7 @@ class GUI:
         self._refresh_assigned_sensors()
         self._update_connection_summary()
         self._update_spectrum_info()
+        self._charts_tab.apply()
         self._charts.rebuild()
         self._update_results_section_visibility()
         self.collector.init_trend_channels()
@@ -3288,7 +3320,7 @@ class GUI:
                     with dpg.tooltip(parent=target):
                         dpg.add_text(text, wrap=320)
 
-                with dpg.tab_bar(tag=ui.CONFIG_TAB_BAR):
+                with dpg.tab_bar(tag=ui.CONFIG_TAB_BAR, callback=self._on_config_tab_change):
                     # ── Device tab ─────────────────────────────────────────
                     with dpg.tab(label="Device", tag=ui.CONFIG_TAB_DEVICE):
                         with dpg.child_window(autosize_x=True, height=-1):
@@ -3480,6 +3512,12 @@ class GUI:
                                                         tag=ui.TACH_PLOT_THRESH)
                                     dpg.add_scatter_series([], [], label="edges",
                                                            tag=ui.TACH_PLOT_EDGES)
+
+                    # ── Charts tab ─────────────────────────────────────────
+                    # Which channels show on which chart, in which unit.
+                    with dpg.tab(label="Charts", tag=ui.CONFIG_TAB_CHARTS):
+                        with dpg.child_window(autosize_x=True, height=-1):
+                            self._charts_tab.build()
 
                     # ── Sensors tab ────────────────────────────────────────
                     with dpg.tab(label="Sensors", tag=ui.CONFIG_TAB_SENSORS):
@@ -4229,6 +4267,10 @@ class GUI:
                                 dpg.add_theme_color(dpg.mvPlotCol_MarkerOutline, color, category=dpg.mvThemeCat_Plots)
                         self._peak_themes.append(pt)
 
+                    dpg.add_button(
+                        label=f'{icons.IC["settings"]}  Charts', tag=ui.BTN_CHARTS_SETUP,
+                        callback=lambda: self._open_config_dialog(ui.CONFIG_TAB_CHARTS),
+                    )
                     # One tab for each chart of the layout in effect.
                     # ChartsView.rebuild() fills it.
                     dpg.add_tab_bar(tag=ui.MAIN_CHART_TAB_BAR,
@@ -4428,6 +4470,7 @@ class GUI:
         self._setup_keyboard_handlers()
         self._update_spectrum_info()
         self._update_connection_summary()
+        self.collector.chart_set = self._live_chart_set()
         self._charts.rebuild()
         self._refresh_registry_dialog_list()
         self._set_stream_status("idle")  # apply initial toggle button theme

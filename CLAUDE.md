@@ -100,6 +100,10 @@ chain, stage by stage". The facts that an agent gets wrong most often:
   series; the cards of every spectrum chart update on each frame. A
   channel that cannot show the chart unit gets an empty series and the
   reason in its legend, never mV under an engineering-unit axis.
+  The Charts tab (`gui_charts_tab.ChartsTab`) edits a working copy; Close
+  saves `charts.yaml` with live data only. **A file's layout must never
+  reach `charts.yaml` or the next live collector**, except by "Use for
+  live data".
 - The frame cache is a `deque` of `cache_frames` frames: 32 for an
   `AcquisitionSettings()` made in code, 15 from a seeded `acquisition.yaml`.
   Both front ends load that file.

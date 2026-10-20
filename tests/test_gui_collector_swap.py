@@ -227,3 +227,33 @@ def test_reprocess_thread_does_not_use_the_collector_on_screen():
     src = inspect.getsource(GUI._on_sb_reprocess)
     assert 'self.collector' not in src
     assert 'self._pending_collector = fresh' in src
+
+
+def test_connect_after_a_file_load_uses_charts_yaml_not_the_file_layout(app, tmp_path):
+    """The layout of a file is the layout of that file only."""
+    from rev80 import charts
+    from rev80.charts import ChartSet, ChartSpec
+    path = _measurement_file(tmp_path)
+    assert app._on_load_file(path)
+    assert app.collector.chart_set is not None     # the file's layout
+    sensor = rev80.VibeSensor.simulated()
+    assert app._connect_device(sensor)
+    assert app.collector.chart_set is None         # no charts.yaml: the default
+    app.collector.disconnect_sensor()
+
+    live = ChartSet((ChartSpec('c7', 'spectrum', 'Live', channels=(0,), unit='mV',
+                               amplitude_mode='RMS'),))
+    cfg_mod.ensure_config_dir()
+    charts.save_chart_set(cfg_mod.charts_config_path(), live)
+    assert app._on_load_file(path)
+    assert app._connect_device(rev80.VibeSensor.simulated())
+    assert app.collector.chart_set == live
+    app.collector.disconnect_sensor()
+
+
+def test_live_data_on_screen(app, tmp_path):
+    assert app._live_data_on_screen()              # start: nothing loaded
+    assert app._on_load_file(_measurement_file(tmp_path))
+    assert not app._live_data_on_screen()          # a file, no device
+    app.collector.sensor = object()
+    assert app._live_data_on_screen()              # a device is connected

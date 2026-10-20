@@ -315,6 +315,7 @@ class UI_Elements:
     SPECTRUM_INFO_TEXT = 'SPECTRUM_INFO_TEXT'  # readonly multi-line text
     SPECTRUM_DEGRADED_WARNING = 'SPECTRUM_DEGRADED_WARNING'  # shown only when stream is rate-degraded
     BTN_SPECTRUM_SETUP = 'BTN_SPECTRUM_SETUP'
+    BTN_CHARTS_SETUP   = 'BTN_CHARTS_SETUP'
 
     # ── Acquisition section ────────────────────────────────────────────────
     STREAM_STATUS      = 'STREAM_STATUS'       # drawlist tag
@@ -350,6 +351,23 @@ class UI_Elements:
     CONFIG_TAB_MONITOR   = 'CONFIG_TAB_MONITOR'
     # Tachometer tab -- owns the tach role and its calibration.
     CONFIG_TAB_TACH      = 'CONFIG_TAB_TACH'
+    # Charts tab -- edits the chart layout (gui_charts_tab.py).
+    CONFIG_TAB_CHARTS    = 'CONFIG_TAB_CHARTS'
+    CHARTS_TAB_TABLE_GROUP = 'CHARTS_TAB_TABLE_GROUP'
+    CHARTS_TAB_ADD_TYPE  = 'CHARTS_TAB_ADD_TYPE'
+    CHARTS_TAB_ADD       = 'CHARTS_TAB_ADD'
+    CHARTS_TAB_USE_LIVE  = 'CHARTS_TAB_USE_LIVE'
+    CHARTS_TAB_STATUS    = 'CHARTS_TAB_STATUS'
+
+    @staticmethod
+    def charts_row(cid: str, part: str) -> str:
+        """A widget of a Charts-tab row: 'row', 'remove', 'name', 'unit', 'xy0',
+        'xy1', 'swap', 'rpm', 'tach', 'avg', 'n' or 'window'."""
+        return f'CHARTS_ROW_{cid}_{part.upper()}'
+
+    @staticmethod
+    def charts_row_ch(cid: str, ch: int) -> str:
+        return f'CHARTS_ROW_{cid}_CH{ch}'
     TACH_CHANNEL         = 'TACH_CHANNEL'
     TACH_POLARITY        = 'TACH_POLARITY'
     TACH_THRESH_MODE     = 'TACH_THRESH_MODE'

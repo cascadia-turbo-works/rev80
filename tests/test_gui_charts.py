@@ -248,6 +248,7 @@ def test_the_arm_pattern_leaves_out_a_gui_charts_import():
     """tests/conftest.py must leave out a test module that imports gui_charts."""
     from conftest import _GUI_IMPORT
     for line in ('from rev80.gui_charts import ChartsView',
+                 'from rev80.gui_charts_tab import ChartsTab',
                  'import rev80.gui_charts',
                  'from rev80 import gui_charts',
                  'from rev80.gui import GUI'):

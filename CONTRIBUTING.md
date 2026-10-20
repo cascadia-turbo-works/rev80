@@ -194,6 +194,7 @@ doc/
 | `peaks.py` | Spectral peak selection against a local noise floor |
 | `envelope.py` | Envelope (demodulation) spectrum and `suggest_band()` |
 | `gui.py` | `GUI`: dearpygui layout, render loop, dialogs, file I/O, monitor card, session browser |
+| `gui_charts_tab.py` | `ChartsTab`: the Charts tab of the configuration dialog; edits a working copy of the layout, applied at Close |
 | `gui_charts.py` | `ChartsView`: one main-window tab for each chart of `DataCollector.chart_layout()`, the result cards of each spectrum chart, the renderers for each chart type, the envelope band controls |
 | `headless.py` | `rev80 headless` / `rev80-headless`: the interval datalogger with no GUI |
 | `monitor/session.py` | `MonitorSession` and the shared session factory: `session_from()`, `channel_snapshot_for()`, `sensor_snapshot_for()`, `pre_buffer_frames_for()`, `required_cache_frames()` |
@@ -278,8 +279,17 @@ DataCollector.receive_data()
 - The layout in effect is `DataCollector.chart_layout()`: `chart_set`, else
   the default (`charts.default_layout()`) passed through
   `charts.legacy_layout()`, which adds the "Envelope analysis" and
-  "Average spectrum" settings. A collector swap
-  keeps the `chart_set` of the old collector when the new one has none.
+  "Average spectrum" settings. A file load sets `chart_set` from the file
+  (default layout if the file has none). A live collector
+  (`GUI._build_live_collector`, and the first collector at startup) takes
+  `charts.yaml`, else `None`. A collector swap does not carry the layout
+  over, so the layout of a file never becomes the live layout.
+- **The Charts tab** (`gui_charts_tab.ChartsTab`) edits a working copy,
+  made at each dialog open. The rules of an edit are pure functions in
+  `charts.py` (`unit_choices`, `new_chart`, `with_channel`, `with_xy`).
+  Close calls `apply()`: an edited copy becomes `collector.chart_set`, and
+  with live data on screen (`GUI._live_data_on_screen()`) it is also
+  saved to `charts.yaml`. An unedited copy changes nothing.
 - The GUI gives results to the monitor only for live frames
   (`GUI._monitor_accepts_frames()`). During a recording, the GUI refuses a
   file load, a session browse and a cache clear.
