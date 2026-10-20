@@ -19,6 +19,17 @@ def ewma_alpha_from_time(ewma_time_s: float, dt: float) -> float:
     return math.exp(-dt / ewma_time_s)
 
 
+def frames_for_seconds(seconds: float, period: float) -> int:
+    """Consecutive frames for a sustained time: round(seconds / period) + 1.
+
+    0 s is one frame. A period of 0 or less (no frame period known) is one
+    frame. Both front ends use it for `rms_s` and `fixed_s`.
+    """
+    if period <= 0:
+        return 1
+    return max(1, round(seconds / period) + 1)
+
+
 @dataclass(frozen=True)
 class AnomalyEvent:
     """An anomaly that a hook reports.

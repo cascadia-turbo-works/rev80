@@ -21,8 +21,8 @@ Update this file in the same commit as each step. Status: 🔲 TODO,
 | B2 | `advance_frame()`, `results_for()`; `process_samples()` removed | ✅ Done | fc655b4 | one trend point per tick; redisplay adds none (`test_frame_views.py`) |
 | B3 | `result_view()`, tick memo, unit-parameterised trend | ✅ Done | fc655b4 | equality bit for bit, 16 cases (`test_result_view_equality.py`); off-bin conversion with revert check (`test_measurement_validity.py`) |
 | C1 | `ResultViews`; RMS hook unit and mode; fixed-limit modes; capture stores the record view | ✅ Done | 8b2b260 | RMS hook in g fires on an in/s channel; capture stores in/s; 0-P limit on a P-P channel; velocity limit on a g channel; no sensor warns once; empty keys give the record list itself; revert check 4 of 6 fail (`test_hook_views.py`) |
-| C2 | Fixed-limit sustain time `fixed_s` (default 0 s) | ✅ Done | (this commit) | hook `sustain_frames`: 1 fires on one frame; 3 needs 3 frames and reports the first; a dropped frame and a burst frame end the streak; revert checks 3 and 2 fail (`test_hook_views.py`). The `fixed_s` key and widget are in C3 |
-| C3 | Monitor-tab controls; both hook builders; headless | 🔲 TODO | | defaults agree; Pi 3 cost |
+| C2 | Fixed-limit sustain time `fixed_s` (default 0 s) | ✅ Done | c8b1fa6 | hook `sustain_frames`: 1 fires on one frame; 3 needs 3 frames and reports the first; a dropped frame and a burst frame end the streak; revert checks 3 and 2 fail (`test_hook_views.py`). The `fixed_s` key and widget are in C3 |
+| C3 | Monitor-tab controls; both hook builders; headless | ✅ Done | (this commit) | defaults agree, keys reach both builders, config round trip; revert check 2 fail (`test_anomaly_hook_build.py`, `test_gui_monitor_config.py`). Cost on the PC: +4.5 ms per frame against 12.5 ms (8 ch). Pi 3 cost not measured |
 | R1 | Docs, vibration-engineer review (A3, A4, B, C), technical-writer audit | 🔲 TODO | | |
 | R2 | Merge to `develop`; field test | 🔲 TODO | | field-test notes |
 | R3 | Merge to `main`; tag `v0.1.5` | 🔲 TODO | | draft release built |

@@ -146,6 +146,19 @@ def derive_acquisition_preview(maxfreq: float, binsize: float) -> dict:
 # this module use them, so that the GUI, the config file and headless agree.
 _MON_SEED = _cfg._BUILTIN_ACQ['monitor']
 _ANOM_SEED = _MON_SEED['anomaly']
+
+# The combo label of an empty hook unit or mode: each channel's own.
+_CHANNEL_VIEW_LABEL = 'Channel'
+
+
+def _view_label(key) -> str:
+    """The combo label of a stored hook unit or mode ('' is the channel's own)."""
+    return str(key) if key else _CHANNEL_VIEW_LABEL
+
+
+def _view_key(label) -> str:
+    """The stored hook unit or mode of a combo label."""
+    return '' if not label or label == _CHANNEL_VIEW_LABEL else str(label)
 # The seed has no EWMA times. These are the widget values when the config
 # has none.
 _EWMA_TIME_DEFAULTS = {'rms_ewma_time': 60.0, 'spec_ewma_time': 300.0}
@@ -3171,6 +3184,8 @@ class GUI:
         _sv(ui.MON_ANOM_RMS_S,        float(anom.get("rms_s",         _ANOM_SEED["rms_s"])))
         _sv(ui.MON_ANOM_RMS_EWMA_TIME, float(anom.get("rms_ewma_time", _EWMA_TIME_DEFAULTS["rms_ewma_time"])))
         _sv(ui.MON_ANOM_RMS_WARMUP,   int(anom.get("warmup",          _ANOM_SEED["warmup"])))
+        _sv(ui.MON_ANOM_RMS_UNIT,     _view_label(anom.get("rms_unit",           _ANOM_SEED["rms_unit"])))
+        _sv(ui.MON_ANOM_RMS_MODE,     _view_label(anom.get("rms_amplitude_mode", _ANOM_SEED["rms_amplitude_mode"])))
         _sv(ui.MON_ANOM_SPEC_PCT,     float(anom.get("spec_pct",      _ANOM_SEED["spec_pct"])))
         _sv(ui.MON_ANOM_SPEC_N,       int(anom.get("spec_n",          _ANOM_SEED["spec_n"])))
         _sv(ui.MON_ANOM_SPEC_FMIN,    float(anom.get("spec_fmin") or  0.0))
@@ -3183,6 +3198,9 @@ class GUI:
         _sv(ui.MON_ANOM_FIXED_LOWER_ENABLED, bool(anom.get("fixed_lower_enabled", False)))
         _sv(ui.MON_ANOM_FIXED_LOWER_VALUE,   float(anom.get("fixed_lower_value",  0.05)))
         _sv(ui.MON_ANOM_FIXED_LOWER_UNIT,    str(anom.get("fixed_lower_unit",     "in/s")))
+        _sv(ui.MON_ANOM_FIXED_UPPER_MODE,    _view_label(anom.get("fixed_upper_mode", _ANOM_SEED["fixed_upper_mode"])))
+        _sv(ui.MON_ANOM_FIXED_LOWER_MODE,    _view_label(anom.get("fixed_lower_mode", _ANOM_SEED["fixed_lower_mode"])))
+        _sv(ui.MON_ANOM_FIXED_S,             float(anom.get("fixed_s",            _ANOM_SEED["fixed_s"])))
 
         _sv(ui.MON_ANOM_COOLDOWN_ENABLED, bool(anom.get("cooldown_enabled", False)))
         _sv(ui.MON_ANOM_COOLDOWN_S,       float(anom.get("cooldown_s",      300.0)))
@@ -3235,6 +3253,8 @@ class GUI:
             'rms_pct':       float(_get(ui.MON_ANOM_RMS_PCT,        _ANOM_SEED['rms_pct'])),
             'rms_s':         float(_get(ui.MON_ANOM_RMS_S,          _ANOM_SEED['rms_s'])),
             'warmup':        int(_get(ui.MON_ANOM_RMS_WARMUP,        _ANOM_SEED['warmup'])),
+            'rms_unit':      _view_key(_get(ui.MON_ANOM_RMS_UNIT, _ANOM_SEED['rms_unit'])),
+            'rms_amplitude_mode': _view_key(_get(ui.MON_ANOM_RMS_MODE, _ANOM_SEED['rms_amplitude_mode'])),
             'spec_pct':      float(_get(ui.MON_ANOM_SPEC_PCT,        _ANOM_SEED['spec_pct'])),
             'spec_n':        int(_get(ui.MON_ANOM_SPEC_N,            _ANOM_SEED['spec_n'])),
             'spec_fmin':     _get(ui.MON_ANOM_SPEC_FMIN, None) or None,
@@ -3247,6 +3267,9 @@ class GUI:
             'fixed_lower_enabled': bool(_get(ui.MON_ANOM_FIXED_LOWER_ENABLED, False)),
             'fixed_lower_value':   float(_get(ui.MON_ANOM_FIXED_LOWER_VALUE,  0.05)),
             'fixed_lower_unit':    str(_get(ui.MON_ANOM_FIXED_LOWER_UNIT,     'in/s')),
+            'fixed_upper_mode':    _view_key(_get(ui.MON_ANOM_FIXED_UPPER_MODE, _ANOM_SEED['fixed_upper_mode'])),
+            'fixed_lower_mode':    _view_key(_get(ui.MON_ANOM_FIXED_LOWER_MODE, _ANOM_SEED['fixed_lower_mode'])),
+            'fixed_s':             float(_get(ui.MON_ANOM_FIXED_S,            _ANOM_SEED['fixed_s'])),
         })
         not_stored = getattr(self, '_ewma_time_not_stored', {})
         for key, tag in (('rms_ewma_time', ui.MON_ANOM_RMS_EWMA_TIME),
@@ -3408,6 +3431,7 @@ class GUI:
         from rev80.monitor.anomaly import (
             RmsThresholdHook, SpectralThresholdHook, FixedThresholdHook,
             CompositeAnomalyHook, NullAnomalyHook, ewma_alpha_from_time,
+            frames_for_seconds,
         )
         def _get(tag, default):
             return dpg.get_value(tag) if dpg.does_item_exist(tag) else default
@@ -3417,6 +3441,9 @@ class GUI:
             pre_buffer_s = float(_get(ui.MON_DLG_PRE_BUFFER, _MON_SEED['pre_burst_s']))
 
         hooks = []
+        # Bound before the hook branches: the RMS, the spectral and the fixed
+        # branch all read `period`.
+        period = self.collector.config.acquisition_period
 
         # ── EWMA-based hooks (RMS / Spectral) — gated by the main Enable switch
         if _get(ui.MON_ANOM_ENABLED, _ANOM_SEED['enabled']):
@@ -3424,13 +3451,10 @@ class GUI:
             # The seed value, the same as headless
             # (tests/test_anomaly_hook_build.py compares the two copies).
             warmup    = int(_get(ui.MON_ANOM_RMS_WARMUP, _ANOM_SEED['warmup']))
-            # Bound before the hook_type branches: the spectral branch reads
-            # `period` too.
-            period    = self.collector.config.acquisition_period
 
             if hook_type in ('rms', 'both'):
                 rms_s  = float(_get(ui.MON_ANOM_RMS_S, _ANOM_SEED['rms_s']))
-                consecutive_n = max(1, round(rms_s / period) + 1) if period > 0 else 1
+                consecutive_n = frames_for_seconds(rms_s, period)
                 if rms_s > 0.25 * pre_buffer_s:
                     log.warning(
                         "Monitor anomaly: RMS sustained time %.3gs exceeds 25%% of the "
@@ -3447,6 +3471,8 @@ class GUI:
                     baseline_alpha       = rms_alpha,
                     min_baseline_samples = warmup,
                     burst_duration_s     = burst_dur,
+                    unit                 = _view_key(_get(ui.MON_ANOM_RMS_UNIT, _ANOM_SEED['rms_unit'])),
+                    amplitude_mode       = _view_key(_get(ui.MON_ANOM_RMS_MODE, _ANOM_SEED['rms_amplitude_mode'])),
                 ))
 
             # Not reachable from the GUI: GUI_ANOMALY_HOOK_TYPES excludes
@@ -3478,6 +3504,10 @@ class GUI:
                 upper_unit  = str(_get(ui.MON_ANOM_FIXED_UPPER_UNIT,    'in/s')),
                 lower_limit = float(_get(ui.MON_ANOM_FIXED_LOWER_VALUE, 0.05)) if lower_on else None,
                 lower_unit  = str(_get(ui.MON_ANOM_FIXED_LOWER_UNIT,    'in/s')),
+                upper_mode  = _view_key(_get(ui.MON_ANOM_FIXED_UPPER_MODE, _ANOM_SEED['fixed_upper_mode'])),
+                lower_mode  = _view_key(_get(ui.MON_ANOM_FIXED_LOWER_MODE, _ANOM_SEED['fixed_lower_mode'])),
+                sustain_frames = frames_for_seconds(
+                    float(_get(ui.MON_ANOM_FIXED_S, _ANOM_SEED['fixed_s'])), period),
                 burst_duration_s = burst_dur,
             ))
 
@@ -4485,6 +4515,22 @@ class GUI:
                                      "Number of frames collected to build the initial baseline "
                                      "before anomaly detection activates. Increase if the machine "
                                      "takes a while to reach steady-state after startup.")
+                                _view_units = [_CHANNEL_VIEW_LABEL] + sorted(UNIT_TO_SI.keys())
+                                _view_modes = [_CHANNEL_VIEW_LABEL] + list(rev80.AMPLITUDE_MODES)
+                                _rms_unit_w = dpg.add_combo(
+                                    label="Unit", tag=ui.MON_ANOM_RMS_UNIT, items=_view_units,
+                                    default_value=_CHANNEL_VIEW_LABEL, width=_mon_w)
+                                _tip(_rms_unit_w,
+                                     "The unit of the overall that the baseline follows. "
+                                     "Channel: the unit of each channel. Example: g on a "
+                                     "channel in in/s finds a high-frequency change sooner. "
+                                     "The recording stores the channel unit in all cases.")
+                                _rms_mode_w = dpg.add_combo(
+                                    label="Amplitude", tag=ui.MON_ANOM_RMS_MODE, items=_view_modes,
+                                    default_value=_CHANNEL_VIEW_LABEL, width=_mon_w)
+                                _tip(_rms_mode_w,
+                                     "The amplitude mode of the overall that the baseline "
+                                     "follows. Channel: the mode of each channel.")
 
                             with dpg.group(tag=ui.MON_ANOM_SPEC_GROUP, show=False):
                                 _spec_hdr = dpg.add_text("Spectral settings  (?)", color=_c("ON_SURFACE"))
@@ -4516,20 +4562,31 @@ class GUI:
                             dpg.add_separator()
                             _fixed_hdr = dpg.add_text("Fixed Level Trigger  (?)")
                             _tip(_fixed_hdr,
-                                 "Fires immediately on a fixed overall-amplitude level — "
-                                 "no baseline or warmup. Channels without a sensor/EU "
-                                 "assigned cannot be evaluated.")
+                                 "Fires on a fixed overall level, with no baseline and no "
+                                 "warm-up. Each limit has its own unit and amplitude mode: "
+                                 "a limit in in/s works on a channel in g. A channel with no "
+                                 "sensor gives mV only, so a limit in another unit skips it.")
                             _unit_items = sorted(UNIT_TO_SI.keys())
                             with dpg.group(horizontal=True):
                                 _upper_chk = dpg.add_checkbox(label="Upper limit", tag=ui.MON_ANOM_FIXED_UPPER_ENABLED, default_value=False)
                                 dpg.add_input_float(tag=ui.MON_ANOM_FIXED_UPPER_VALUE, default_value=1.0, step=0.0, width=90)
                                 dpg.add_combo(tag=ui.MON_ANOM_FIXED_UPPER_UNIT, items=_unit_items, default_value='in/s', width=80)
+                                dpg.add_combo(tag=ui.MON_ANOM_FIXED_UPPER_MODE, items=_view_modes, default_value=_CHANNEL_VIEW_LABEL, width=80)
                             _tip(_upper_chk, "Burst when overall vibration rises above this level.")
                             with dpg.group(horizontal=True):
                                 _lower_chk = dpg.add_checkbox(label="Lower limit", tag=ui.MON_ANOM_FIXED_LOWER_ENABLED, default_value=False)
                                 dpg.add_input_float(tag=ui.MON_ANOM_FIXED_LOWER_VALUE, default_value=0.05, step=0.0, width=90)
                                 dpg.add_combo(tag=ui.MON_ANOM_FIXED_LOWER_UNIT, items=_unit_items, default_value='in/s', width=80)
+                                dpg.add_combo(tag=ui.MON_ANOM_FIXED_LOWER_MODE, items=_view_modes, default_value=_CHANNEL_VIEW_LABEL, width=80)
                             _tip(_lower_chk, "Burst when overall vibration drops below this level.")
+                            _fixed_s_w = dpg.add_input_float(
+                                label="Sustained (s)", tag=ui.MON_ANOM_FIXED_S,
+                                default_value=0.0, min_value=0.0, max_value=3600.0,
+                                step=1.0, width=_mon_w)
+                            _tip(_fixed_s_w,
+                                 "The overall must stay beyond a limit for this many "
+                                 "seconds of consecutive valid frames. 0 fires on the "
+                                 "first frame.")
 
                             # ── Cooldown ────────────────────────────────
                             dpg.add_spacer(height=8)

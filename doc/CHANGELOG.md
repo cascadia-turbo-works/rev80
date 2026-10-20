@@ -113,7 +113,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   after N consecutive valid frames beyond a limit; the trigger time is the
   first frame of the streak. A frame that `valid_results()` drops, a frame
   inside the limit and a burst frame end the streak. N = 1 is the behaviour
-  before. The `fixed_s` setting follows with the Monitor-tab controls.
+  before.
+- **Monitor-tab controls and settings for the hook views.** The RMS section
+  has **Unit** and **Amplitude** combos (`rms_unit`, `rms_amplitude_mode`).
+  Each fixed limit has a mode combo beside its unit (`fixed_upper_mode`,
+  `fixed_lower_mode`), and the fixed level has **Sustained (s)**
+  (`fixed_s`, default 0 s). `''`, shown as **Channel**, is each channel's
+  own unit or mode. Both hook builders (GUI and headless) read the keys;
+  `frames_for_seconds()` converts `rms_s` and `fixed_s` to frames for both.
+  The headless start summary shows the RMS view and a `Fixed` line.
+  Cost on the PC (i7-1260P, 8 channels, 0.5 s frames, rate 25591.8 Hz): the
+  record view takes 12.5 ms per frame; an RMS view in `g` and a fixed limit
+  in 0-P add 4.5 ms, 0.9 % of one core. Not measured on a Raspberry Pi 3.
 
 ## [0.1.4] - 2026-09-30
 
