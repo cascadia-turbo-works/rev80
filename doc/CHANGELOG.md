@@ -149,6 +149,59 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   when `speed_gate_rpm` is not set. The first reading that a view sees is
   the reference.
 
+### fix/device-loss-recovery — survive the loss of the PicoScope (2026-10-15)
+
+#### Fixed
+- **A lost scope crashed the process.** On 2026-10-14 a Raspberry Pi 5 with a
+  4824A lost the scope three times in 13 minutes (USB over-current, 3 A
+  supply). Two losses ended in SIGSEGV and SIGBUS in `ps4000aCloseUnit`,
+  called by the old recovery on the lost handle. On 2026-10-15 the GUI
+  crashed after: stop, unplug, start. The start failed, and the error path
+  closed the lost handle. A probe (`scripts/pico-loss-probe.py`, CONTRIBUTING
+  "E21. Device loss") showed that `Stop` and `CloseUnit` on a lost handle
+  crash in 4/5 and 3/5 runs with the scope absent, and in 2/2 after a
+  physical replug. No crash without a teardown call (10/10).
+  Now a lost handle gets no driver call. Recovery opens a new handle by
+  serial, instead of 3 attempts of 1 s after a teardown. It waits with no
+  time limit by default; `device_wait_s` in `acquisition.yaml` sets one. An
+  idle handle is checked with `PingUnit` before a start or a close. At 4 lost
+  handles in one process, the stream stops: the safe number is not measured
+  (R68).
+- **A user stop during a recovery ran driver calls in parallel** with the
+  recovery: `stop()` waited 3 s for the poll thread and then called `Stop`.
+  One lock now serialises every driver call, and `stop()` waits for the
+  thread to leave the driver.
+- **`PICO_NOT_RESPONDING` was 14** (that is `PICO_INVALID_TIMEBASE`) in both
+  open helpers, so the longer wait after "not responding" never applied.
+  Status values now come from the picosdk table.
+- **The rate watchdog called a 0 Hz window a bandwidth limit.** No sample is
+  a lost scope; the silence watchdog handles it.
+- **Headless did not notice a dead stream.** It waited for frames for ever,
+  with no log line. It now exits with code 3, also when the stream does not
+  start.
+- **A start error was logged after the teardown**, so the failing status was
+  not in the log when the teardown crashed.
+
+#### Changed
+- After a recovery the high-pass state is reset, because the first block is
+  a new signal. The frames are flagged degraded for 2 / `highpass_fc`
+  seconds, at least 1 frame. With one flagged frame, at fc 2 Hz and 0.5 s
+  frames, the second frame read 1.3 % off (`DataCollector`, simulation).
+- `stop()` checks the data age after the poll thread has exited, so a
+  recovery that ends during the stop is stopped on its new handle. `start()`
+  refuses to run while an old poll thread is still in the driver.
+- The GUI shows **Device lost — waiting** and the time since the loss while
+  the stream waits, and **Device lost** with the cause when it gives up or a
+  start fails. Headless logs "still waiting" every 5 min.
+- Verified on an x86-64 PC with a 4824A by physical unplug, GUI: stop,
+  unplug, start (the crash case) gives "Device lost" and no crash; stop,
+  unplug, replug, start streams on a new handle; a loss during a stream
+  recovered 4.1 s and 13.2 s after the loss; quit after an idle loss exits
+  cleanly. No entry in `faulthandler.log`. Before the fix the same PC
+  crashed in `CloseUnit` twice on 2026-10-15 (idle loss, and loss during a
+  stream).
+- The poll logs each non-OK, non-BUSY driver status once.
+
 ## [0.1.4] - 2026-09-30
 
 ### feature/headless-siggen — headless starts the signal generator (2026-09-30)

@@ -67,6 +67,8 @@ class AcquisitionSettings:
     speed_gate_enabled: bool = False
     speed_gate_rpm: float | None = None   # None = latch from the first valid frame
     speed_gate_tolerance_pct: float = 3.0
+    # Seconds a stream waits for a lost scope to come back. None = no limit.
+    device_wait_s: float | None = None
     # Display unit for every shaft-rate readout. A preference, never a property
     # of stored data -- TachResult.rpm and the HDF5 files stay in RPM.
     rotation_unit: str = DEFAULT_ROTATION_UNIT
@@ -194,6 +196,7 @@ class AcquisitionSettings:
             # speed into the config -- the trap band_fmin/band_fmax also guard.
             'speed_gate_rpm':   self.speed_gate_rpm,
             'speed_gate_tolerance_pct': self.speed_gate_tolerance_pct,
+            'device_wait_s':    self.device_wait_s,
             'rotation_unit':    self.rotation_unit,
             'trend_max_points': self.trend_max_points,
             'cache_frames':     self.cache_frames,
@@ -221,6 +224,7 @@ class AcquisitionSettings:
         if 'speed_gate_enabled' in d: obj.speed_gate_enabled = bool(d['speed_gate_enabled'])  # noqa: E701
         if 'speed_gate_rpm'   in d: obj.speed_gate_rpm    = _opt_float(d['speed_gate_rpm'])  # noqa: E701
         if 'speed_gate_tolerance_pct' in d: obj.speed_gate_tolerance_pct = float(d['speed_gate_tolerance_pct'])  # noqa: E701
+        if 'device_wait_s'    in d: obj.device_wait_s     = _opt_float(d['device_wait_s'])  # noqa: E701
         if 'rotation_unit'    in d: obj.rotation_unit    = str(d['rotation_unit'])   # noqa: E701
         if 'trend_max_points' in d: obj.trend_max_points = int(d['trend_max_points'])  # noqa: E701
         if 'cache_frames'     in d: obj.cache_frames     = int(d['cache_frames'])           # noqa: E701

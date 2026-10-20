@@ -129,6 +129,11 @@ dearpygui 2.0.0 has no Linux ARM package. Use the headless datalogger
 Verified on a Raspberry Pi 3 Model B (Debian 13, Python 3.13) with a
 PicoScope 4824A.
 
+**Power.** A Raspberry Pi 5 with a supply that is not the 5 A type limits
+all USB ports together to 600 mA. A PicoScope 4824A declares 896 mA. The
+port then fails with over-current, and the scope disconnects. Use the
+official 27 W supply or a powered USB 3 hub.
+
 #### CPU and memory on a Raspberry Pi 3
 
 Measured with `rev80 headless` on a Raspberry Pi 3 Model B Rev 1.2
@@ -499,6 +504,7 @@ average, anomaly detection and the anomaly baseline:
 |---|---|---|
 | Overflow | The ADC clipped. The overall reads high and the spectrum has false harmonics. | "Overvoltage Ch X" in **Channel Warnings** |
 | Degraded | The USB stream delivered less than the requested rate for a sustained time. | "rate degraded" in the Acquisition card |
+| Degraded (after a gap) | The frames after the scope was lost and came back, while the high-pass settles: 2 / `highpass_fc` seconds, at least 1 frame. For example 2 frames at 2 Hz with 0.5 s frames. | A jump in the frame time |
 | Out of speed window | The shaft speed is outside the speed gate. The amplitude is correct but not comparable. | `[off-speed]` in the headless status line |
 
 Rev80 stores the overflow and degraded flags with each frame, and reads them
@@ -528,6 +534,33 @@ block has no usable pulses. **Stopped** means the shaft does not turn. Rev80
 cannot yet tell them apart from a flat block (tracked as R45 in
 [doc/PROGRESS.md](doc/PROGRESS.md)). Check the machine before you record it
 as stopped.
+
+### When the scope is lost
+
+A cable, a hub, a power fault or an ESD event can disconnect the scope.
+
+During a stream:
+
+1. After 5 s with no data, Rev80 takes the scope as lost.
+2. It tries to open the scope again every 2 s. By default there is no time
+   limit. The GUI Device card shows **Device lost — waiting** and the time
+   since the loss. Headless logs "still waiting" every 5 min.
+3. When the scope is back, streaming continues. The gap is about 5 s plus
+   the time the scope was away, plus 3 s to open it. The frames after the
+   gap are flagged degraded while the high-pass settles (see "Frames that
+   are not used").
+4. To stop the wait, stop the stream or change the acquisition settings.
+   To give it a limit, set `device_wait_s` in `acquisition.yaml`. At the
+   limit, streaming stops, the GUI shows **Device lost** and the cause, and
+   headless exits with code 3.
+
+While the stream is stopped, Rev80 checks the scope before the next start.
+If the scope is not there, the start fails, and the Device card shows
+**Device lost**. Connect the scope, then select it again in **Setup**.
+
+After 4 losses in one run of the program, Rev80 does not open the scope
+again. Restart the program. Each loss leaves a handle in the driver that
+cannot be released, and the safe number is not measured yet.
 
 ### Accuracy and limits
 
@@ -938,7 +971,7 @@ Click **Load Session** to open the session browser.
   > 1 Hz bins and 5 mV at 0.6 Hz. At a 10 Hz edge with 5 Hz bins, the
   > error is +0.3 % with no signal below the edge and +5.8 % with 5 mV at
   > 3 Hz. The alarms and the stored `overall_json` use the live value.
-  > Tracked as R67.
+  > Tracked as R70.
 - Click a burst to load its frames. The trend starts at the trigger.
 - **Save Config** writes the current channel names, sensors, units and
   amplitude modes into the session file. Then it reprocesses the trend.
@@ -1007,6 +1040,14 @@ During the run:
 - `Ctrl+C` or `SIGTERM` stops the recording, flushes the file and closes the
   device. This works with systemd `Restart=on-failure`.
 - A write error stops the run.
+- If the scope is lost, headless waits for it and logs "still waiting"
+  every 5 min. Headless logs the cause, closes the session file and exits
+  with code 3 in these cases:
+  - the stream does not start;
+  - the scope does not come back within `device_wait_s` (when you set it);
+  - the scope was lost 4 times in one run.
+
+  Use systemd `Restart=on-failure` to start it again.
 
 Headless writes a v6 `session.h5`. Open it with the GUI session browser or
 with `rev80 --from-file`.
@@ -1092,6 +1133,7 @@ headless use the same file.
 | `speed_gate_enabled` | | `false` | YAML only | Speed gate on or off |
 | `speed_gate_rpm` | RPM | `null` | YAML only | Reference speed. `null` = first reading |
 | `speed_gate_tolerance_pct` | % | 3.0 | YAML only | Allowed deviation from the reference |
+| `device_wait_s` | s | `null` | YAML only | How long a stream waits for a lost scope. `null` = no limit |
 | `rotation_unit` | | `RPM` | Rate units | `RPM`, `Hz`, `rad/s`, `deg/s` |
 | `averaging_enabled` | | (false) | Average spectrum | Spectral averaging on or off |
 | `n_averages` | frames | (8) | Averages | Frames to average |

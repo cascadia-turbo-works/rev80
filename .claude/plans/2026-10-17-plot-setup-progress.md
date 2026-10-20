@@ -2,7 +2,7 @@
 
 Plan: `.claude/plans/2026-10-17-plot-setup.md` (revision 7, 2026-10-20).
 Review: `.claude/plans/2026-10-19-plot-setup-review.md`.
-Branch: `feat/plot-setup`. Requirement: R67 in `doc/PROGRESS.md`.
+Branch: `feat/plot-setup`. Requirement: R70 in `doc/PROGRESS.md`.
 
 Update this file in the same commit as each step. Status: 🔲 TODO,
 🔄 In progress, ✅ Done, ⏸ Blocked.
@@ -38,7 +38,7 @@ Update this file in the same commit as each step. Status: 🔲 TODO,
 | D5 | Envelope chart with SI scale and mode | 🔲 TODO | | |
 | D6 | Trend y2: shaft speed | 🔲 TODO | | |
 | D7 | XY chart | 🔲 TODO | | |
-| E1 | Layout in data files; versions 6 and 7; headless layout; stored mV orders for each capture (load without DSP) | 🔲 TODO | | round trip; load time against E21; loaded trend = live overall within 0.5 % for every order at a 2 Hz edge, 1 Hz bins, off-bin 0.6 Hz content (fixes the A3 replay-filter error found in R1) |
+| E1 | Layout in data files; versions 6 and 7; headless layout; stored mV orders for each capture (load without DSP) | 🔲 TODO | | round trip; load time against E22; loaded trend = live overall within 0.5 % for every order at a 2 Hz edge, 1 Hz bins, off-bin 0.6 Hz content (fixes the A3 replay-filter error found in R1) |
 | E2 | Exact-version reading; older and newer refused; old reader removed | 🔲 TODO | | revert checks |
 | E3 | `scripts/convert-0x` | 🔲 TODO | | converted files equal; source unchanged |
 | R4 | Docs, reviews, merge chain, tag `v1.0.0` | 🔲 TODO | | |
@@ -48,7 +48,7 @@ Update this file in the same commit as each step. Status: 🔲 TODO,
 | Item | Tracked as |
 |---|---|
 | Polar chart and 1x phase measurement | R24 |
-| Anomaly triggers as a configurable table (trigger type per row; fixed triggers with > or <) | R68 |
+| Anomaly triggers as a configurable table (trigger type per row; fixed triggers with > or <) | R71 |
 | Split panes, more than one chart on screen | R33 |
 
 ## Decisions
@@ -69,7 +69,7 @@ section 5.
 | Date | What | Method | Result |
 |---|---|---|---|
 | 2026-10-19 | Session trend rebuilt from `overall_json`, accelerometer 100 mV/g, recorded in in/s, shown in in/s / g / mil | synthetic trend, `get_trend_for_display()` (scratchpad `trendcols.py`) | 273.0, 283.9, 278.5 / 0.0 x3 / 0.0 x3: defect, A3 |
-| 2026-10-19 | Session load time and peak memory, 1440 captures, 4 channels, before and after A3 | `SimulatedSensor` frames copied to 1440 captures, i7-1260P (scratchpad `mksession.py`, `loadsession.py`) | 1.7 s, 778 MB before; 5.3 s, 779 MB one call for each frame; 3.0 s, 783 MB with 2-D chunks of 16. CONTRIBUTING.md E21 |
+| 2026-10-19 | Session load time and peak memory, 1440 captures, 4 channels, before and after A3 | `SimulatedSensor` frames copied to 1440 captures, i7-1260P (scratchpad `mksession.py`, `loadsession.py`) | 1.7 s, 778 MB before; 5.3 s, 779 MB one call for each frame; 3.0 s, 783 MB with 2-D chunks of 16. CONTRIBUTING.md E22 |
 | | Extra time for the hook views during a recording, 8 channels | Raspberry Pi 3 headless; GUI PC | |
 | | GUI time for each frame, 1 to 8 channels, before D2 | `scripts/profile-pipeline` | |
 | | GUI time for each frame, 6 charts, 1 on screen, after D2 | `scripts/profile-pipeline` | |

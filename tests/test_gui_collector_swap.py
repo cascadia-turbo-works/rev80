@@ -55,6 +55,8 @@ def app(monkeypatch, tmp_path):
     a._status_deadline = None
     a.registry = _NoRegistry()
     a.collector = rev80.DataCollector()
+    a._waiting_text = None
+    a._device_fault = None
     for name in _WIDGET_METHODS:
         monkeypatch.setattr(a, name, lambda *args, **kw: None)
     return a

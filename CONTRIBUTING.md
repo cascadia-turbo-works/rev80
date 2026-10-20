@@ -2055,7 +2055,116 @@ an EWMA baseline with alpha 0.97 affects the reference for about 33 frames
 (the time constant). A baseline that learns from it is as wrong as an alarm
 on it.
 
-### E21. Loaded trends from the stored frames
+### E21. Device loss
+
+**Decision.** After the scope is lost, `PicoScopeStream` makes no driver
+call on the old handle. It abandons the handle and opens a new one by
+serial. An idle handle is checked with `ps4000aPingUnit` before any other
+call. One lock (`_driver_lock`) lets one thread at a time into the driver.
+Buffers and callbacks of an abandoned handle stay referenced for the life of
+the stream object.
+
+**Why.** `ps4000aStop` and `ps4000aCloseUnit` on a lost handle crash the
+process with SIGSEGV or SIGBUS. A `try/except` cannot catch a native crash,
+and the ctypes call returns a status, it does not raise. The crash also
+occurs after the scope is plugged in again: a real replug puts the scope on
+a new USB node, and the old handle still refers to the old one.
+
+**Measurement.** `scripts/pico-loss-probe.py`. Each run is a child process,
+so a crash is recorded as an exit signal with the driver call in progress.
+x86-64 Linux, 8-channel PicoScope 4000A (s/n 13290/0013), `libps4000a`
+2.2.257, 8 channels at 13025 ns, 2026-10-15.
+
+Loss during a stream (`authorized` = sysfs de-authorise for 3 s, 5 runs;
+"unplug" = physical, about 5 s):
+
+| After the loss | `authorized` | Unplug |
+|---|---|---|
+| No driver call; exit 10 s later | 5/5 clean | — |
+| `GetStreamingLatestValues` for 5 s | 5/5 clean, `PICO_OK` | — |
+| `Stop`, scope absent | 4/5 SIGSEGV | — |
+| `CloseUnit`, scope absent | 3/5 SIGSEGV | — |
+| `Stop` + `CloseUnit`, scope back | 5/5 clean | 2/2 SIGSEGV in `CloseUnit` |
+| `PingUnit` | 10/10 clean, `PICO_BUSY` | — |
+| `OpenUnit` by serial, scope back, old handle not closed | 5/5 `PICO_HARDWARE_VERSION_NOT_SUPPORTED` for 60 s | 2/2 `PICO_OK` at the first attempt |
+
+Loss while idle (`Stop` while present, then a physical unplug, 3 runs each,
+all clean):
+
+| After the loss | Result |
+|---|---|
+| No loss (control) | `PingUnit` `PICO_OK` in 0.2 to 0.4 ms. `EnumerateUnits` does not list the scope that this process holds open |
+| Scope absent | `PingUnit` `PICO_NOT_RESPONDING` |
+| Scope back (new USB node) | `PingUnit` `PICO_NOT_RESPONDING`; `OpenUnit` by serial `PICO_OK` at the first attempt |
+| Start calls on the old handle | `SetChannel` `PICO_OK`; `SetSigGenBuiltIn` and `RunStreaming` `PICO_NOT_RESPONDING`; no crash |
+
+Other facts from the probe:
+
+- The poll returns `PICO_OK` after a loss, with no data. Only the silence
+  shows the loss, so the 5 s silence watchdog is the detector.
+- `PingUnit` returns `PICO_BUSY` while streaming, also on a good scope. It
+  is a check for an idle handle only.
+- Process exit with an abandoned handle is clean (17 runs).
+- `OpenUnit` takes 2.8 to 3.0 s when the scope is present, 35 ms when absent.
+  After a 3 s loss the serial is listed again after 4.1 to 4.2 s.
+
+**The `authorized` method is not a real unplug.** It keeps the USB device
+node, so the old handle still owns the scope when it comes back. That is the
+`PICO_HARDWARE_VERSION_NOT_SUPPORTED` case. Only in that case does recovery
+call `Stop` and `CloseUnit` on the old handle (10/10 clean). Verify a change
+with a physical unplug.
+
+**Constants.**
+
+- `device_wait_s` (`acquisition.yaml`) = no limit by default. A replug took
+  up to 8.2 s, and an open 2.9 s, but a scope can come back days later. The
+  wait adds no handle: an attempt with the scope absent is one failed
+  `OpenUnit` (35 ms, `PICO_NOT_FOUND`) every `_RECOVERY_POLL_MAX_S` = 2 s.
+  Whether many failed opens leak memory in the driver is not measured.
+- `_MAX_ABANDONED_HANDLES` = 4, for the whole process (`_ABANDONED`, also
+  across stream objects: a reconnect makes a new one). How many lost
+  handles one process can hold is not measured. At the limit, the stream
+  stops with a fault, and headless exits for a restart. The buffers and
+  callbacks of each lost handle stay in `_RETIRED` for the life of the
+  process.
+- `_FRESH_DATA_S` = 1 s: `stop()` does not call `Stop` when the last data is
+  older. A stop in the 5 s before the watchdog fires is then safe.
+- `_HP_SETTLE_PERIODS` = 2 (`collector.py`): after a gap the high-pass is
+  reset, and the frames are flagged degraded for 2 / `highpass_fc` seconds,
+  at least 1 frame. Measured with `DataCollector` (simulation, 25600 Hz):
+  a tone between 1.1 and 3 x fc with a harmonic, noise and random phase,
+  reset state against continuous state, worst of 8 trials:
+
+  | fc | Frame | Frame 0 error (acc / vel / disp) | Frame 1 | Frame 2 |
+  |---|---|---|---|---|
+  | 2 Hz | 0.5 s | 10.6 / 11.2 / 11.5 % | 1.3 % | 0.27 % |
+  | 2 Hz | 1.0 s | 2.1 / 4.5 / 8.3 % | ≤ 0.1 % | 0 |
+  | 5 Hz | 0.5 s | 3.4 / 4.1 / 4.3 % | ≤ 0.03 % | 0 |
+  | 10 Hz | 0.5 s | 0.1 % | 0 | 0 |
+
+  This covers the digital filter only. The analog settling of the AC-coupled
+  input after the scope powers up again is not measured (see R47).
+
+**Rejected alternatives.**
+
+- Close the handle at each stop, so that an idle stream holds no handle. The
+  GUI reads device data from the open scope while idle.
+- Run the driver in a child process. Not necessary while recovery by a new
+  handle works in the process. Reconsider it if the abandoned-handle limit is
+  low.
+- `EnumerateUnits` as the liveness check. It never lists the scope that this
+  process holds, so "not listed" does not mean "absent".
+
+**Probe usage.**
+
+```bash
+python scripts/pico-loss-probe.py --method manual -s S8b S8c --repeat 3
+sudo python scripts/pico-loss-probe.py --method authorized -s S0 S3a --repeat 5
+```
+
+Each scenario is described in the script's docstring.
+
+### E22. Loaded trends from the stored frames
 
 **Decision.** A session or burst load computes the trend from the stored
 waveforms: the five mV orders of each frame, so the trend shows a value in

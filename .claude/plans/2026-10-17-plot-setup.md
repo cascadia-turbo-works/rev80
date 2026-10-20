@@ -3,9 +3,9 @@
 Branch: `feat/plot-setup`, from `main` @ `ee72064` (v0.1.4).
 Progress tracker: `.claude/plans/2026-10-17-plot-setup-progress.md`.
 Review of revision 6: `.claude/plans/2026-10-19-plot-setup-review.md`.
-Requirement: R67 in `doc/PROGRESS.md`. Related: R24 (polar), R33 (split
+Requirement: R70 in `doc/PROGRESS.md`. Related: R24 (polar), R33 (split
 panes), R42 (crest and kurtosis trend), R43 remainder (RPM on the trend),
-R50 and R59 (collector thread safety), R68 (anomaly-trigger table).
+R50 and R59 (collector thread safety), R71 (anomaly-trigger table).
 
 ## Revisions
 
@@ -15,7 +15,7 @@ R50 and R59 (collector thread safety), R68 (anomaly-trigger table).
 | 2 | 2026-10-19 | Q1, Q2, Q4, Q5, Q7 decided; spectrum averaging moves to each spectrum chart |
 | 3 | 2026-10-19 | Q2 and Q3 revised (cards belong to a spectrum chart); Q6, Q8 decided; `history` leaves `result_view()`; visible disabled state |
 | 4 | 2026-10-19 | Data loaded from a file; session zero-trend defect found |
-| 5 | 2026-10-19 | Q9, Q10 decided; R68 recorded |
+| 5 | 2026-10-19 | Q9, Q10 decided; R71 recorded |
 | 6 | 2026-10-19 | Q11 to Q13 decided: chart layout in data files, new file versions, Rev80 1.0.0 |
 | 7 | 2026-10-20 | Review findings applied. Q14 to Q16 decided. Work split into parts A to E and two releases. A new `DataCollector` for every load and connect. Each anomaly hook has its own unit. Converter script for 0.x files. Default layout: one time waveform and one spectrum |
 
@@ -63,7 +63,7 @@ have no effect for some commits.
    **Average spectrum** controls.
 7. Every data file stores its chart layout. A load sets the layout.
 8. Out of scope: split panes (R33), polar (R24), the anomaly-trigger table
-   (R68).
+   (R71).
 
 ## 3. Current state (facts the design depends on)
 
@@ -499,7 +499,7 @@ in/s"). Never mV under an engineering-unit axis.
 - Each session capture and burst frame stores the five mV orders of each
   vibration channel (`orders_json`, orders −2 to +2). A session or burst
   load then reads the trend and does no DSP: today the A3 rebuild adds
-  about 1.3 s to a 1440-capture, 4-channel load (CONTRIBUTING.md E21). The
+  about 1.3 s to a 1440-capture, 4-channel load (CONTRIBUTING.md E22). The
   converter (E3) computes them from the stored waveforms.
 - Measurement: the layout in effect at Save. Session: the layout at the
   start of the recording (charts are locked during a recording).
@@ -630,7 +630,7 @@ CHANGELOG, PROGRESS and README in the same commit.
 | — | Averaging state | Chart owns the setting; the collector derives history from the snapshot |
 | Q9 | Cards of charts not on screen | Always shown and updated; collapsing header per chart |
 | Q10 | Fixed-limit sustain time | `fixed_s`, default 0 s |
-| — | Anomaly-trigger table | R68, not in this work |
+| — | Anomaly-trigger table | R71, not in this work |
 | Q11 | Layout in data files | Stored; a load sets it; old versions refused |
 | Q12 | Averaging on non-contiguous frames | Contiguous only (A4) |
 | Q13 | Loaded trends from frames | Yes, shaft speed included; sessions and bursts only (A3) |

@@ -14,6 +14,8 @@ from datetime import datetime
 
 import numpy as np
 import scipy.signal
+# Pure Python: imports without the native driver.
+from picosdk.constants import PICO_STATUS
 
 from rev80._pico_loader import ensure_pico_dlls_loadable
 ensure_pico_dlls_loadable()
@@ -58,7 +60,28 @@ _TIMEBASE_NS = 12.5
 
 # Streaming watchdog / recovery tuning
 _WATCHDOG_TIMEOUT_S     = 5.0   # seconds of silence → assume device hung
-_MAX_RECONNECT_ATTEMPTS = 3     # recovery attempts before giving up
+
+# Device-loss recovery. A lost handle gets no driver call: recover by a new
+# handle. How long to wait is config.device_wait_s (None = no limit).
+# Evidence: CONTRIBUTING.md, "E21. Device loss".
+_RECOVERY_POLL_MIN_S   = 0.5    # first wait between open attempts; doubles each time
+_RECOVERY_POLL_MAX_S   = 2.0    # an attempt with the scope absent takes 35 ms
+_RECOVERY_LOG_EVERY_S  = 300.0  # "still waiting" log interval
+_MAX_ABANDONED_HANDLES = 4      # lost handles one process may hold; the limit is not measured yet
+_STOP_JOIN_S           = 10.0   # recovery checks stop between attempts; one open takes 2.9 s
+_FRESH_DATA_S          = 1.0    # data older than this at stop(): the scope may be gone, no Stop call
+
+# Lost handles of this process, with their buffers and callbacks. The driver
+# can still hold them, so they are never released, also when the stream
+# object that made them is gone. _ABANDONED counts against the limit;
+# _RETIRED keeps the references.
+_ABANDONED: list = []
+_RETIRED: list = []
+
+
+def abandoned_handle_count() -> int:
+    """Lost handles held by this process (the limit is _MAX_ABANDONED_HANDLES)."""
+    return len(_ABANDONED)
 
 # Maximum ADC rate per channel for continuous USB streaming. Above about
 # 100 kHz a 4424A drops samples with status 'OKAY' and no overflow bit. The ADC
@@ -75,56 +98,73 @@ _RATE_DEGRADED_THRESHOLD   = 0.9   # effective/requested ratio below this = degr
 _RATE_DEGRADED_CONSECUTIVE = 2     # consecutive bad windows before flagging (~4s)
 
 
-def _open_unit(chandle) -> bool:
-    """
-    Call ps4000aOpenUnit with USB-2 power-source handling and up to
-    _MAX_OPEN_ATTEMPTS retries.  Returns True on success, False on failure.
-    Leaves chandle populated on success.
+# Driver status values, from the picosdk table.
+PICO_OK = PICO_STATUS['PICO_OK']
+PICO_BUSY = PICO_STATUS['PICO_BUSY']
+PICO_NOT_RESPONDING = PICO_STATUS['PICO_NOT_RESPONDING']
+PICO_NOT_SUPPORTED_BY_THIS_DEVICE = PICO_STATUS['PICO_NOT_SUPPORTED_BY_THIS_DEVICE']
+# OpenUnit while a lost handle of this process still owns the scope (the scope
+# stayed on the same USB node). Evidence: CONTRIBUTING.md, "E21. Device loss".
+PICO_HARDWARE_VERSION_NOT_SUPPORTED = PICO_STATUS['PICO_HARDWARE_VERSION_NOT_SUPPORTED']
+# OpenUnit found the scope, but it must be told to run on USB power only.
+_USB_POWER_ONLY = (PICO_STATUS['PICO_POWER_SUPPLY_NOT_CONNECTED'],
+                   PICO_STATUS['PICO_USB3_0_DEVICE_NON_USB3_0_PORT'])
+_STATUS_NAMES = {value: name for name, value in PICO_STATUS.items()}
 
-    After any partially-successful open (status 282/286), the driver holds
-    the handle open even if ChangePowerSource fails.  We must call CloseUnit
-    before retrying, otherwise subsequent OpenUnit calls return PICO_NOT_FOUND.
-    """
-    # PICO_NOT_RESPONDING status value (14 = 0x0E hex in picosdk error table)
-    _PICO_NOT_RESPONDING = 14
 
+def status_name(status: int) -> str:
+    """The picosdk name of a driver status, for example 'PICO_NOT_RESPONDING'."""
+    return _STATUS_NAMES.get(status, f'status {status:#x}')
+
+
+def status_kind(status: int) -> str:
+    """'ok', 'busy' or 'error' for a driver status."""
+    if status == PICO_OK:
+        return 'ok'
+    if status == PICO_BUSY:
+        return 'busy'
+    return 'error'
+
+
+def _open_once(chandle, serial: str = '') -> int:
+    """One ps4000aOpenUnit with the USB-power handling. Returns the final status.
+
+    serial '' opens the first scope found. After a partly successful open
+    (a USB-power status), the driver holds the handle also when
+    ChangePowerSource fails. Close it then, or the next OpenUnit gives
+    PICO_NOT_FOUND. That handle is new and the scope is present, so the close
+    is safe.
+    """
+    serial_arg = serial.encode('utf-8') if serial else None
+    status = ps.ps4000aOpenUnit(ctypes.byref(chandle), serial_arg)
+    if status not in _USB_POWER_ONLY:
+        return status
+    changed = ps.ps4000aChangePowerSource(chandle, status)
+    if changed != PICO_OK:
+        log.warning(f'PicoScope: power-source change failed after {status_name(status)}: '
+                    f'{status_name(changed)}')
+        ps.ps4000aCloseUnit(chandle)
+    return changed
+
+
+def _open_with_retry(chandle, serial: str = '') -> bool:
+    """Open with up to _MAX_OPEN_ATTEMPTS attempts. True on success."""
+    label = f'PicoScope {serial}' if serial else 'PicoScope'
     for attempt in range(1, _MAX_OPEN_ATTEMPTS + 1):
-        raw_status = ps.ps4000aOpenUnit(ctypes.byref(chandle), None)
-
-        if raw_status in (282, 286):
-            # 282 = PICO_USB3_0_DEVICE_NON_USB3_0_PORT
-            # 286 = PICO_POWER_SUPPLY_NOT_CONNECTED
-            # Device was found but needs to be told to run on USB power only.
-            chg = ps.ps4000aChangePowerSource(chandle, raw_status)
-            try:
-                assert_pico_ok(chg)
-                return True
-            except Exception as e:
-                log.warning(
-                    f'PicoScope: power-source change failed '
-                    f'(attempt {attempt}/{_MAX_OPEN_ATTEMPTS}, open_status={raw_status}): {e}'
-                )
-                # Release the partially-open handle so the next OpenUnit succeeds.
-                try:
-                    ps.ps4000aCloseUnit(chandle)
-                except Exception:
-                    pass
-                delay = _NOT_RESPONDING_DELAY_S if chg == _PICO_NOT_RESPONDING else _OPEN_RETRY_DELAY_S
-        else:
-            try:
-                assert_pico_ok(raw_status)
-                return True
-            except Exception as e:
-                log.info(
-                    f'PicoScope: open failed '
-                    f'(attempt {attempt}/{_MAX_OPEN_ATTEMPTS}, status={raw_status}): {e}'
-                )
-            delay = _OPEN_RETRY_DELAY_S
-
+        status = _open_once(chandle, serial)
+        if status == PICO_OK:
+            return True
+        log.info(f'{label}: open failed (attempt {attempt}/{_MAX_OPEN_ATTEMPTS}): '
+                 f'{status_name(status)}')
         if attempt < _MAX_OPEN_ATTEMPTS:
-            time.sleep(delay)
-
+            time.sleep(_NOT_RESPONDING_DELAY_S if status == PICO_NOT_RESPONDING
+                       else _OPEN_RETRY_DELAY_S)
     return False
+
+
+def _open_unit(chandle) -> bool:
+    """Open the first scope found. True on success."""
+    return _open_with_retry(chandle)
 
 
 def _probe_channel_count(chandle) -> int:
@@ -171,37 +211,8 @@ def _enumerate_serials() -> list[str]:
 
 
 def _open_unit_by_serial(chandle, serial: str) -> bool:
-    """Open a specific PS4000A by serial number with USB-power handling."""
-    _PICO_NOT_RESPONDING = 14
-    serial_bytes = serial.encode('utf-8')
-
-    for attempt in range(1, _MAX_OPEN_ATTEMPTS + 1):
-        raw_status = ps.ps4000aOpenUnit(ctypes.byref(chandle), serial_bytes)
-
-        if raw_status in (282, 286):
-            chg = ps.ps4000aChangePowerSource(chandle, raw_status)
-            try:
-                assert_pico_ok(chg)
-                return True
-            except Exception as e:
-                log.warning(f'PicoScope {serial}: power-source change failed (attempt {attempt}): {e}')
-                try:
-                    ps.ps4000aCloseUnit(chandle)
-                except Exception:
-                    pass
-                delay = _NOT_RESPONDING_DELAY_S if chg == _PICO_NOT_RESPONDING else _OPEN_RETRY_DELAY_S
-        else:
-            try:
-                assert_pico_ok(raw_status)
-                return True
-            except Exception as e:
-                log.info(f'PicoScope {serial}: open failed (attempt {attempt}, status={raw_status}): {e}')
-            delay = _OPEN_RETRY_DELAY_S
-
-        if attempt < _MAX_OPEN_ATTEMPTS:
-            time.sleep(delay)
-
-    return False
+    """Open the scope with this serial number. True on success."""
+    return _open_with_retry(chandle, serial)
 
 
 def FindPicoScope() -> list:
@@ -323,7 +334,15 @@ class PicoScopeStream:
     Same interface as SimulatedSensor: `active`, `start()`, `stop()`, and
     `close()` (call it after `stop()`). The callback gets one dict for each
     `raw_blocksize` samples per channel, in mV, at the achieved raw rate.
-    After 5 s without data the poll thread reopens the device (3 attempts).
+    After 5 s without data the poll thread takes the scope as lost and opens a
+    new handle, for up to config.device_wait_s (None = no limit).
+    `lost_since` is set while it waits. When it gives up, `fault` holds the
+    reason and `active` goes False.
+
+    A lost handle gets no driver call: Stop or CloseUnit on it can crash the
+    process (SIGSEGV), and a try/except cannot catch that. An idle handle is
+    checked with PingUnit before use. One lock serialises every driver call.
+    Evidence: CONTRIBUTING.md, "E21. Device loss".
     `degraded` is True while the delivered rate stays below 90 % of the
     requested rate. ADC overflow is logged once per channel until it stops.
     """
@@ -349,6 +368,20 @@ class PicoScopeStream:
         self._device_open  = False
         self._stop_event   = threading.Event()
         self._thread: threading.Thread | None = None
+        # One thread in the driver at a time (start, stop, close, poll, recovery).
+        self._driver_lock  = threading.RLock()
+        # The C callback of the current handle; made in _start_streaming.
+        self._c_callback = None
+        # Handles this stream abandoned (the process registry is _ABANDONED).
+        self._abandoned: list[ctypes.c_int16] = []
+        # Why the stream stopped by itself; None while it runs or after a stop().
+        self.fault: str | None = None
+        # time.monotonic() of the loss while a recovery waits, else None.
+        self.lost_since: float | None = None
+        # The first block after a recovery is marked 'gap' (see _streaming_callback).
+        self._gap_pending = False
+        # Non-OK poll statuses already logged (once for each value).
+        self._poll_status_logged: set[int] = set()
 
         # The ADC runs at effective_osr x raw_samplerate; the callback path
         # filters and decimates back to raw_samplerate. See _choose_osr.
@@ -401,32 +434,38 @@ class PicoScopeStream:
         return self._active
 
     def start(self):
+        """Open the scope if necessary, configure it and start the poll thread.
+
+        Raises RuntimeError when the scope cannot be opened or started.
+        """
         if self._active:
             log.warning('PicoScopeStream.start() called while already active')
             return
+        if self._thread is not None and self._thread.is_alive():
+            # A stop() that timed out: the old thread is still in the driver.
+            raise RuntimeError('PicoScope: the previous poll thread is still in the driver; '
+                               'restart the program')
 
-        self._open_device()
-        self._configure_channel()
-        self._setup_siggen()
-        self._start_streaming()
+        with self._driver_lock:
+            self.fault = None
+            # An idle handle can be lost (unplugged while stopped). Check it
+            # first: a failed start must not lead to CloseUnit on a lost handle.
+            if self._device_open and not self._handle_responds():
+                self._abandon_handle('it does not respond after an idle period')
+            self._open_device()
+            try:
+                self._configure_channel()
+                self._setup_siggen()
+                self._start_streaming()
+            except Exception:
+                if not self._handle_responds():
+                    self._abandon_handle('the start failed and it does not respond')
+                raise
 
-        # Reset accumulator and watchdog state
-        N = len(self._enabled_channels)
-        self._acc_ptr         = 0
-        self._accumulator     = np.zeros(
-            (self.config.raw_blocksize * self._effective_osr * 2, N), dtype=np.float64)
-        self._stream_start    = time.monotonic()
-        self._last_data_time  = time.monotonic()
+        self._reset_stream_state()
         self._overflow_warned = set()   # reset per-channel overflow inhibit on each stream start
-        self._overflow_latch = 0
-
-        # Reset streaming-rate watchdog state
-        self._rate_window_samples = 0
-        self._rate_window_start   = time.monotonic()
-        self._rate_last_check     = time.monotonic()
-        self._rate_bad_windows    = 0
-        self.degraded              = False
-        self.effective_samplerate  = 0.0
+        self._stream_start = time.monotonic()
+        self._poll_status_logged = set()
 
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._poll_loop, daemon=True,
@@ -436,33 +475,114 @@ class PicoScopeStream:
         log.debug('PicoScopeStream started')
 
     def stop(self):
+        """Stop the poll thread, then stop the scope if it is still present.
+
+        Waits for the poll thread to leave the driver, also during a recovery.
+        A handle with no data for _FRESH_DATA_S is not stopped but abandoned:
+        Stop on a lost handle can crash the process.
+        """
         if not self._active:
             log.warning('PicoScopeStream.stop() called while not active')
             return
 
+        t_stop = time.monotonic()
         self._stop_event.set()
         if self._thread is not None:
-            self._thread.join(timeout=3.0)
+            self._thread.join(timeout=_STOP_JOIN_S)
             if self._thread.is_alive():
-                log.warning('PicoScopeStream poll thread did not exit cleanly')
+                log.error(f'PicoScopeStream: poll thread still in the driver after '
+                          f'{_STOP_JOIN_S:.0f} s; its handle is abandoned')
+                self._active = False
+                self._abandon_handle('the poll thread did not exit')
+                return
 
         self._active = False
-        try:
-            ps.ps4000aStop(self._chandle)
-        except Exception as e:
-            log.warning(f'PicoScopeStream: ps4000aStop error: {e}')
+        # Read after the join: a recovery that finished during it streams on a
+        # new handle with fresh data, and that handle must be stopped.
+        data_age_s = t_stop - self._last_data_time
+        with self._driver_lock:
+            if not self._device_open:
+                pass                    # recovery abandoned the handle: nothing to stop
+            elif data_age_s > _FRESH_DATA_S:
+                self._abandon_handle(f'no data for {data_age_s:.1f} s before the stop')
+            else:
+                status = ps.ps4000aStop(self._chandle)
+                if status != PICO_OK:
+                    log.warning(f'PicoScopeStream: ps4000aStop: {status_name(status)}')
         log.debug('PicoScopeStream stopped')
 
     def close(self):
+        """Stop, then close the scope if the handle responds; else abandon it."""
         if self._active:
             self.stop()
-        if self._device_open:
-            try:
-                ps.ps4000aCloseUnit(self._chandle)
-            except Exception as e:
-                log.warning(f'PicoScopeStream: ps4000aCloseUnit error: {e}')
-            self._device_open = False
+        with self._driver_lock:
+            if self._device_open:
+                if self._handle_responds():
+                    status = ps.ps4000aCloseUnit(self._chandle)
+                    if status != PICO_OK:
+                        log.warning(f'PicoScopeStream: ps4000aCloseUnit: {status_name(status)}')
+                    self._device_open = False
+                else:
+                    self._abandon_handle('it does not respond at close')
         log.debug('PicoScopeStream closed')
+
+    # ------------------------------------------------------------------
+    # Handle state
+    # ------------------------------------------------------------------
+
+    def _handle_responds(self) -> bool:
+        """PingUnit on an idle handle: PICO_OK only for a present, owned scope.
+
+        Not while streaming: then PingUnit returns PICO_BUSY on a good scope.
+        Evidence: CONTRIBUTING.md, "E21. Device loss".
+        """
+        status = ps.ps4000aPingUnit(self._chandle)
+        if status != PICO_OK:
+            log.warning(f'PicoScopeStream: handle {self._chandle.value} PingUnit: '
+                        f'{status_name(status)}')
+            return False
+        return True
+
+    def _abandon_handle(self, reason: str) -> None:
+        """Stop using the current handle, with no driver call on it.
+
+        Its buffers and callback stay referenced. The next open makes a new
+        handle with new buffers and a new callback.
+        """
+        self._abandoned.append(self._chandle)
+        _ABANDONED.append(self._chandle)
+        _RETIRED.append((self._chandle, self._driver_buffers, self._c_callback))
+        log.warning(f'PicoScopeStream: handle {self._chandle.value} abandoned: {reason}. '
+                    f'No driver call uses it again '
+                    f'({len(_ABANDONED)}/{_MAX_ABANDONED_HANDLES} abandoned in this process).')
+        self._chandle = ctypes.c_int16()
+        self._driver_buffers = {
+            ch: np.zeros(_DRIVER_BUFFER_SAMPLES, dtype=np.int16)
+            for ch in self._enabled_channels
+        }
+        self._c_callback = None
+        self._device_open = False
+
+    def _check_abandoned_limit(self) -> None:
+        if len(_ABANDONED) >= _MAX_ABANDONED_HANDLES:
+            raise RuntimeError(
+                f'PicoScope lost {len(_ABANDONED)} times in this process; '
+                f'restart the program')
+
+    def _reset_stream_state(self) -> None:
+        """Fresh accumulator and watchdogs, for a start or a recovery."""
+        N = len(self._enabled_channels)
+        self._acc_ptr         = 0
+        self._accumulator     = np.zeros(
+            (self.config.raw_blocksize * self._effective_osr * 2, N), dtype=np.float64)
+        self._last_data_time  = time.monotonic()
+        self._overflow_latch  = 0
+        self._rate_window_samples = 0
+        self._rate_window_start   = time.monotonic()
+        self._rate_last_check     = time.monotonic()
+        self._rate_bad_windows    = 0
+        self.degraded              = False
+        self.effective_samplerate  = 0.0
 
     # ------------------------------------------------------------------
     # Device setup (called from start() and _try_recover())
@@ -480,16 +600,20 @@ class PicoScopeStream:
     def _open_device(self):
         if self._device_open:
             return
-        ok = (_open_unit_by_serial(self._chandle, self._serial) if self._serial
-              else _open_unit(self._chandle))
-        if not ok:
-            raise RuntimeError(
-                f'PicoScope: could not open device after {_MAX_OPEN_ATTEMPTS} attempts'
-            )
+        self._check_abandoned_limit()
+        if not _open_with_retry(self._chandle, self._serial):
+            name = f'PicoScope {self._serial}' if self._serial else 'PicoScope'
+            raise RuntimeError(f'{name} not connected: could not open it '
+                               f'after {_MAX_OPEN_ATTEMPTS} attempts')
+        self._after_open()
+
+    def _after_open(self):
+        """Read maxADC and set the resolution on a handle that just opened."""
+        self._device_open = True
         assert_pico_ok(ps.ps4000aMaximumValue(self._chandle,
                                                ctypes.byref(self._maxADC)))
-        self._device_open = True
-        log.debug(f'PicoScope opened, maxADC={self._maxADC.value}')
+        log.debug(f'PicoScope opened (handle {self._chandle.value}), '
+                  f'maxADC={self._maxADC.value}')
         self._set_max_resolution()
 
     def _set_max_resolution(self):
@@ -501,8 +625,6 @@ class PicoScopeStream:
         PICO_NOT_SUPPORTED_BY_THIS_DEVICE. maxADC stays 32767 at every
         resolution, so _adc_to_mv() needs no new _maxADC.
         """
-        _PICO_NOT_SUPPORTED = 0x11F   # PICO_NOT_SUPPORTED_BY_THIS_DEVICE
-
         n_ch = len(self._enabled_channels)
         if n_ch <= 1:
             candidates = [self._RES_16BIT, self._RES_14BIT, self._RES_12BIT, self._RES_8BIT]
@@ -517,7 +639,7 @@ class PicoScopeStream:
                 log.info(f'PicoScope resolution: {self._RES_BITS[res]}-bit '
                          f'({n_ch} channel(s) enabled)')
                 return
-            if raw == _PICO_NOT_SUPPORTED:
+            if raw == PICO_NOT_SUPPORTED_BY_THIS_DEVICE:
                 # Device has fixed resolution (e.g. 4824 is always 12-bit)
                 res_out = ctypes.c_int32()
                 ps.ps4000aGetDeviceResolution(self._chandle, ctypes.byref(res_out))
@@ -625,6 +747,10 @@ class PicoScopeStream:
         target_ns = 1e9 / raw_samplerate
         grid_ns   = round(target_ns / _TIMEBASE_NS) * _TIMEBASE_NS
         sample_interval_ns = ctypes.c_int32(max(1, math.ceil(grid_ns)))
+
+        if self._c_callback is None:
+            # One callback for each handle. _abandon_handle keeps the old one.
+            self._c_callback = ps.StreamingReadyType(self._streaming_callback)
 
         assert_pico_ok(ps.ps4000aRunStreaming(
             self._chandle,
@@ -778,6 +904,10 @@ class PicoScopeStream:
             block_overflow = self._overflow_latch
             self._overflow_latch = 0
             status   = 'OVERFLOW' if block_overflow else 'OKAY'
+            # The first block after a recovery starts a new signal: the
+            # collector resets its filter state, and the frame is flagged.
+            gap = self._gap_pending
+            self._gap_pending = False
 
             samp = {
                 'status':        status,
@@ -788,7 +918,8 @@ class PicoScopeStream:
                 'channels':      list(self._enabled_channels),
                 'data':          block,           # shape (raw_blocksize, N), mV
                 'samplerate':    self._actual_samplerate,
-                'degraded':      self.degraded,
+                'degraded':      self.degraded or gap,
+                'gap':           gap,
             }
             try:
                 self._app_callback(samp)
@@ -796,88 +927,130 @@ class PicoScopeStream:
                 log.error(f'PicoScopeStream: app callback error: {e}')
 
     def _try_recover(self) -> bool:
+        """Recover from a lost scope by a new handle. True when streaming again.
+
+        The old handle gets no driver call. Open by serial until the deadline:
+        - PICO_OK: the scope re-enumerated; stream on the new handle.
+        - PICO_HARDWARE_VERSION_NOT_SUPPORTED: the old handle still owns the
+          scope (same USB node). Only then Stop and CloseUnit it, and open again.
+        - other: the scope is not back yet; wait and try again.
+        Returns False, with `fault` set, at config.device_wait_s or the
+        abandoned-handle limit; also False, with no fault, when stop() was
+        requested. Evidence: CONTRIBUTING.md, "E21. Device loss".
         """
-        Attempt to stop, close, reopen, and restart streaming after a hang or
-        driver error.  Returns True if streaming was successfully restarted.
+        t_loss = time.monotonic()
+        self.lost_since = t_loss
+        try:
+            return self._recover_from(t_loss)
+        finally:
+            self.lost_since = None
+
+    def _recover_from(self, t_loss: float) -> bool:
+        wait_s = self.config.device_wait_s
+        deadline = t_loss + wait_s if wait_s else math.inf
+        with self._driver_lock:
+            self._abandon_handle('no data: the scope is taken as lost')
+        log.warning('PicoScopeStream: waiting for the scope to come back '
+                    + (f'(up to {wait_s:.0f} s)' if wait_s else '(no time limit)'))
+        delay = _RECOVERY_POLL_MIN_S
+        next_log = t_loss + _RECOVERY_LOG_EVERY_S
+        statuses_seen: set[int] = set()
+        while True:
+            if len(_ABANDONED) >= _MAX_ABANDONED_HANDLES:
+                return self._give_up(f'device lost {len(_ABANDONED)} times; '
+                                     f'restart the program')
+            if self._stop_event.wait(delay):
+                log.info('PicoScopeStream: recovery cancelled by stop()')
+                return False
+            now = time.monotonic()
+            if now >= deadline:
+                return self._give_up(f'device lost: not back within {wait_s:.0f} s')
+            if now >= next_log:
+                next_log = now + _RECOVERY_LOG_EVERY_S
+                log.warning(f'PicoScopeStream: still waiting for the scope, '
+                            f'lost {(now - t_loss) / 60:.0f} min ago')
+            delay = min(delay * 2, _RECOVERY_POLL_MAX_S)
+            with self._driver_lock:
+                status = _open_once(self._chandle, self._serial)
+                if status == PICO_HARDWARE_VERSION_NOT_SUPPORTED and self._abandoned:
+                    old = self._abandoned.pop()
+                    _ABANDONED[:] = [h for h in _ABANDONED if h is not old]
+                    self._release_owned_handle(old)
+                    continue
+                if status != PICO_OK:
+                    if status not in statuses_seen:
+                        statuses_seen.add(status)
+                        log.info(f'PicoScopeStream: scope not back yet: {status_name(status)}')
+                    continue
+                try:
+                    self._after_open()
+                    self._configure_channel()
+                    self._setup_siggen()
+                    self._start_streaming()
+                except Exception as e:
+                    log.warning(f'PicoScopeStream: start on the new handle failed: {e}')
+                    if self._handle_responds():
+                        ps.ps4000aCloseUnit(self._chandle)
+                        self._device_open = False
+                    else:
+                        self._abandon_handle('the start failed and it does not respond')
+                    continue
+            self._reset_stream_state()
+            self._overflow_warned = set()
+            self._gap_pending = True
+            log.warning(f'PicoScopeStream: recovered on handle {self._chandle.value} '
+                        f'{time.monotonic() - t_loss:.1f} s after the loss')
+            return True
+
+    def _release_owned_handle(self, old: ctypes.c_int16) -> None:
+        """Stop and close a lost handle that still owns the scope (same USB node).
+
+        Safe only in this case: the open of a new handle said so.
         """
-        log.warning('PicoScopeStream: attempting recovery...')
+        log.warning(f'PicoScopeStream: handle {old.value} still owns the scope; closing it')
+        status = ps.ps4000aStop(old)
+        log.info(f'PicoScopeStream: ps4000aStop(handle {old.value}): {status_name(status)}')
+        status = ps.ps4000aCloseUnit(old)
+        log.info(f'PicoScopeStream: ps4000aCloseUnit(handle {old.value}): {status_name(status)}')
 
-        # Tear down current state
-        try:
-            ps.ps4000aStop(self._chandle)
-        except Exception:
-            pass
-        try:
-            ps.ps4000aCloseUnit(self._chandle)
-        except Exception:
-            pass
-        self._device_open = False
-
-        for attempt in range(1, _MAX_RECONNECT_ATTEMPTS + 1):
-            log.info(f'PicoScopeStream: reconnect attempt '
-                     f'{attempt}/{_MAX_RECONNECT_ATTEMPTS}')
-            time.sleep(1.0)
-            try:
-                self._open_device()   # calls _set_max_resolution internally
-                self._configure_channel()
-                self._setup_siggen()
-                self._start_streaming()
-                # Reset accumulator so stale partial data isn't carried forward
-                N = len(self._enabled_channels)
-                self._acc_ptr         = 0
-                self._accumulator     = np.zeros(
-                    (self.config.raw_blocksize * self._effective_osr * 2, N),
-                    dtype=np.float64)
-                self._last_data_time  = time.monotonic()
-                self._overflow_warned = set()   # settings changed — re-arm overflow warnings
-                # Reset streaming-rate watchdog state too — a fresh connection
-                # deserves a fresh measurement window, not one polluted by the
-                # gap during recovery.
-                self._rate_window_samples = 0
-                self._rate_window_start   = time.monotonic()
-                self._rate_last_check     = time.monotonic()
-                self._rate_bad_windows    = 0
-                log.info('PicoScopeStream: recovery successful')
-                return True
-            except Exception as e:
-                log.warning(f'PicoScopeStream: reconnect attempt {attempt} failed: {e}')
-
-        log.error(
-            f'PicoScopeStream: recovery failed after {_MAX_RECONNECT_ATTEMPTS} attempts'
-        )
+    def _give_up(self, reason: str) -> bool:
+        self.fault = reason
+        log.error(f'PicoScopeStream: {reason}. Streaming stopped.')
         return False
+
+    def _poll(self) -> int:
+        with self._driver_lock:
+            with _profile.timed(_profile.USB_POLL):
+                return ps.ps4000aGetStreamingLatestValues(self._chandle, self._c_callback, None)
+
+    def _note_poll_status(self, status: int) -> None:
+        """Log each non-OK, non-BUSY poll status once. The poll still returns
+        PICO_OK after a loss, so the silence watchdog is the loss detector."""
+        if status_kind(status) == 'error' and status not in self._poll_status_logged:
+            self._poll_status_logged.add(status)
+            log.warning(f'PicoScopeStream: ps4000aGetStreamingLatestValues: '
+                        f'{status_name(status)}')
 
     def _poll_loop(self):
         """Background thread: poll driver for new streaming data."""
-        c_func_ptr = ps.StreamingReadyType(self._streaming_callback)
         log.debug('PicoScopeStream poll loop started')
 
         while not self._stop_event.is_set():
-            # Poll the driver
             try:
-                with _profile.timed(_profile.USB_POLL):
-                    ps.ps4000aGetStreamingLatestValues(self._chandle, c_func_ptr, None)
+                self._note_poll_status(self._poll())
             except Exception as e:
                 log.error(f'PicoScopeStream: GetStreamingLatestValues error: {e}')
-                if not self._try_recover():
-                    self._active = False
-                    break
-                # Recovery re-registered buffers; rebuild the C callback pointer
-                c_func_ptr = ps.StreamingReadyType(self._streaming_callback)
-                continue
+                self._last_data_time = -math.inf     # recover now
 
-            # Watchdog: if the callback hasn't fired in a while, the device
-            # has silently stopped (e.g. internal reset after overvoltage).
+            # Watchdog: no callback data for a while means the scope is lost
+            # (unplugged, power fault, internal reset).
             silent_s = time.monotonic() - self._last_data_time
             if silent_s > _WATCHDOG_TIMEOUT_S:
-                log.error(
-                    f'PicoScopeStream: no data for {silent_s:.1f}s — '
-                    f'device appears hung, triggering recovery'
-                )
+                log.error(f'PicoScopeStream: no data for {silent_s:.1f} s — '
+                          f'device lost, starting recovery')
                 if not self._try_recover():
                     self._active = False
                     break
-                c_func_ptr = ps.StreamingReadyType(self._streaming_callback)
                 continue
 
             # Streaming-rate watchdog: detects sustained-but-not-silent
@@ -902,6 +1075,14 @@ class PicoScopeStream:
         """
         now = time.monotonic()
         if now - self._rate_last_check < _RATE_CHECK_INTERVAL_S:
+            return
+
+        if self._rate_window_samples == 0:
+            # No sample at all is a lost scope, not a bandwidth limit. The
+            # silence watchdog owns that case.
+            self.effective_samplerate = 0.0
+            self._rate_window_start = now
+            self._rate_last_check   = now
             return
 
         elapsed = now - self._rate_window_start
