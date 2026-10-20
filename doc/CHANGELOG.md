@@ -9,6 +9,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### feat/plot-setup — release 1.0.0 work: charts (2026-10-20)
+
+#### Added
+- **Chart model, `rev80.charts`.** `ChartSpec` (one chart: type, name,
+  channels, unit and mode, trend shaft speed, spectrum averaging) and
+  `ChartSet` (the charts in tab order) are frozen; each edit returns a new
+  set. `to_dict()` and `from_dict()` give the dict that `charts.yaml` and
+  the data files will hold; `from_dict()` skips a bad entry and logs it.
+  `unit_reachable()`, `allowed_units()`, `channel_selectable()` and
+  `problems()` hold the unit rules: no sensor gives `mV` only; a sensor
+  gives its EU and the units within two integration steps; an envelope
+  chart gives the sensor quantity only; a tachometer channel is never a
+  series. `default_layout()` is one time waveform and one spectrum with all
+  vibration channels, in the record unit of the first. `load_chart_set()`
+  uses the default for a missing, unreadable or invalid file and never
+  writes it. `config.charts_config_path()` is `charts.yaml` in the config
+  directory.
+
+#### Changed
+- **One unit rule.** `DataCollector._reachable()` uses
+  `charts.unit_reachable()`, so a view and the Charts tab agree on what a
+  channel can show.
+
 ### feat/plot-setup — release 0.1.5 work (2026-10-19)
 
 #### Added

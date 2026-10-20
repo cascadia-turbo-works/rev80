@@ -180,6 +180,11 @@ def acquisition_config_path() -> Path:
     return config_dir() / 'acquisition.yaml'
 
 
+def charts_config_path() -> Path:
+    """Return the path to the chart layout for live data (`rev80.charts`)."""
+    return config_dir() / 'charts.yaml'
+
+
 # ---------------------------------------------------------------------------
 # Atomic YAML write
 # ---------------------------------------------------------------------------

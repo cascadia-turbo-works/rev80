@@ -186,7 +186,8 @@ doc/
 | `simulation.py` | `SimulatedSensor` and the signal generators |
 | `scope_sensor.py` | `ScopeSensor`: IEPE sensor name, sensitivity (mV per EU), engineering units, UUID, notes |
 | `scope_sensor_registry.py` | `ScopeSensorRegistry`: the YAML sensor library |
-| `config.py` | Config directory, YAML load and save (atomic), built-in defaults, `channel_role_state()` |
+| `charts.py` | The chart layout: `ChartSpec`, `ChartSet`, the unit rule `unit_reachable()` (also used by the collector views), `problems()`, `default_layout()`, `charts.yaml` load and save. No dearpygui import |
+| `config.py` | Config directory, YAML load and save (atomic), built-in defaults, `channel_role_state()`, `charts_config_path()` |
 | `sample.py` | `AcquisitionSettings`, `VibeSample`, `ChannelResult` |
 | `collector.py` | `DataCollector`: stream lifecycle, ingestion, high-pass, frame cache, processing, trend, HDF5 save and load; `decimate_to_rate()`; `_write_channel_group()` |
 | `tach.py` | Tachometer edge detection and shaft-speed estimate: `TachSettings`, `TachResult` |

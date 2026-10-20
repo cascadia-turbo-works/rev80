@@ -1469,27 +1469,17 @@ class DataCollector:
     def _reachable(self, ch: int, unit: str) -> bool:
         """Can channel `ch` be shown in `unit`? Logs once for each (ch, unit) if not.
 
-        No sensor: 'mV' only. With a sensor: the sensor EU itself (the Source
-        EU combo offers 'mV'), or an engineering unit within two integration
-        steps of it.
+        The rule is `charts.unit_reachable()`, the same as the Charts tab:
+        no sensor gives 'mV' only; a sensor gives its EU and the units within
+        two integration steps of it.
         """
-        from rev80.util import integration_steps
+        from rev80.charts import unit_reachable, unreachable_reason
         sensor = self.scope_sensors.get(ch)
-        if sensor is None:
-            ok, why = unit == 'mV', 'no sensor'
-        elif unit == sensor.engineering_units:
-            ok, why = True, ''
-        elif unit == 'mV':
-            ok, why = False, 'a sensor is assigned; mV is not an engineering unit'
-        else:
-            try:
-                ok = abs(integration_steps(sensor.engineering_units, unit)) <= 2
-                why = f'more than two integration steps from {sensor.engineering_units}'
-            except ValueError:
-                ok, why = False, 'unknown unit'
+        eu = sensor.engineering_units if sensor is not None else None
+        ok = unit_reachable(eu, unit)
         if not ok and (ch, unit) not in self._unreachable_logged:
             self._unreachable_logged.add((ch, unit))
-            log.warning(f'ch={ch} cannot be shown in {unit!r}: {why}')
+            log.warning(f'ch={ch} cannot be shown in {unit!r}: {unreachable_reason(eu, unit)}')
         return ok
 
     def result_view(self, snapshot: FrameSnapshot, ch: int, unit: 'str | None' = None,

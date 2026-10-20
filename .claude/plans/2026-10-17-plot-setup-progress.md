@@ -24,14 +24,14 @@ Update this file in the same commit as each step. Status: 🔲 TODO,
 | C2 | Fixed-limit sustain time `fixed_s` (default 0 s) | ✅ Done | c8b1fa6 | hook `sustain_frames`: 1 fires on one frame; 3 needs 3 frames and reports the first; a dropped frame and a burst frame end the streak; revert checks 3 and 2 fail (`test_hook_views.py`). The `fixed_s` key and widget are in C3 |
 | C3 | Monitor-tab controls; both hook builders; headless | ✅ Done | 35b0ffe | defaults agree, keys reach both builders, config round trip; revert check 2 fail (`test_anomaly_hook_build.py`, `test_gui_monitor_config.py`). Cost on the PC: +4.5 ms per frame against 12.5 ms (8 ch). Pi 3 cost not measured |
 | R1 | Docs, vibration-engineer review (A3, A4, B, C), technical-writer audit | ✅ Done | ffadbc6, 98bbf83, 46f3c94, 30c60ed | Docs audit (ffadbc6). Fixed: sensor EU `mV` unreachable; capture stored the newest frame, not the snapshot frame (98bbf83); a burst frame ends the streak of every hook (46f3c94); no "Channel" choice, explicit unit and mode for each hook (30c60ed). Owner decisions 2026-10-19: the A3 band-edge error of the loaded trend (+92 % velocity at a 2 Hz edge with 0.6 Hz content) is fixed with E1, not in 0.1.5; `rel_time` jitter is accepted (frame periods are 0.5 to 2 s); ISO modes are the user's choice |
-| R2 | Merge to `develop`; field test | 🔲 TODO | | field-test notes |
+| R2 | Merge to `develop`; field test | 🔄 In progress | f723972 | merged to `develop` 2026-10-19 (local; not pushed). Field test: owner |
 | R3 | Merge to `main`; tag `v0.1.5` | 🔲 TODO | | draft release built |
 
 ## Release 1.0.0 — parts D, E
 
 | Step | Content | Status | Commit | Verification |
 |---|---|---|---|---|
-| D1 | `charts.py`; default layout = time waveform + spectrum | 🔲 TODO | | |
+| D1 | `charts.py`; default layout = time waveform + spectrum | ✅ Done | (this commit) | round trip of every type through YAML; bad entry skipped; bad file not overwritten (3 cases); unit rules; tachometer refused; XY needs two; default = waveform + spectrum; collector uses the same rule (`test_charts.py`) |
 | D2 | Main window from `chart_set`; cards with collapsing headers; `gui_charts.py`; ARM pattern | 🔲 TODO | | profiling before and after |
 | D3 | Charts tab; XY swap; file-loaded edits and "Use for live data" | 🔲 TODO | | |
 | D4 | Acquisition-tab controls and fields removed; YAML migration | 🔲 TODO | | |
