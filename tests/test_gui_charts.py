@@ -277,7 +277,7 @@ def test_the_main_window_shows_the_charts_of_the_collector(monkeypatch, tmp_path
         app.collector = dc
         app._on_data_source_changed()
         app._display_frame_inner()
-        assert _tab_ids() == ['c1', 'c2', 'c3']
+        assert _tab_ids() == ['c1', 'c2']
         snap = dc.snapshot()
         r = dc.result_view(snap, 0, *dc.default_view_of(0), peaks=True)
         assert dpg.get_value(ui.card('c2', 0, 'overall')) == f'{r.overall:.4f}'

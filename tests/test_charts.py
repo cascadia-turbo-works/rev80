@@ -239,32 +239,19 @@ def test_legacy_settings_add_an_envelope_chart_and_spectrum_averaging():
     base = charts.default_layout([0, 1], lambda ch: ('in/s', '0-P'))
     cs = charts.legacy_layout(base, envelope_enabled=True, envelope_unit='g',
                               averaging_enabled=True, n_averages=6)
-    assert [c.chart_type for c in cs.charts] == ['waveform', 'spectrum', 'trend', 'envelope']
-    env = cs.charts[3]
+    assert [c.chart_type for c in cs.charts] == ['waveform', 'spectrum', 'envelope']
+    env = cs.charts[2]
     assert (env.channels, env.unit, env.amplitude_mode) == ((0, 1), 'g', '0-P')
-    assert len({c.chart_id for c in cs.charts}) == 4
+    assert env.chart_id not in {'c1', 'c2'}
     sp = cs.charts[1]
     assert (sp.averaging, sp.n_averages) == (True, 6)
 
 
-def test_legacy_layout_keeps_the_trend_of_the_old_screen():
-    """The 0.1.x window always had a Trend tab."""
-    base = charts.default_layout([0, 2], lambda ch: ('in/s', 'RMS'))
-    cs = charts.legacy_layout(base, envelope_enabled=False, envelope_unit='g',
-                              averaging_enabled=False, n_averages=8)
-    assert cs.charts[:2] == base.charts
-    trend = cs.charts[2]
-    assert (trend.chart_type, trend.channels, trend.unit, trend.amplitude_mode) == (
-        'trend', (0, 2), 'in/s', 'RMS')
-    assert trend.chart_id not in {'c1', 'c2'}
-
-
-def test_legacy_layout_adds_no_second_trend():
+def test_legacy_settings_off_change_nothing():
+    """No trend is added: the default layout is a waveform and a spectrum."""
     base = charts.default_layout([0], lambda ch: ('in/s', '0-P'))
-    once = charts.legacy_layout(base, envelope_enabled=False, envelope_unit='g',
-                                averaging_enabled=False, n_averages=8)
-    assert charts.legacy_layout(once, envelope_enabled=False, envelope_unit='g',
-                                averaging_enabled=False, n_averages=8) == once
+    assert charts.legacy_layout(base, envelope_enabled=False, envelope_unit='g',
+                                averaging_enabled=False, n_averages=8) == base
 
 
 def test_collector_layout_is_the_default_until_one_is_set():
@@ -275,8 +262,8 @@ def test_collector_layout_is_the_default_until_one_is_set():
     dc = vc.DataCollector(config=cfg)
     assert dc.chart_set is None
     default = dc.chart_layout()
-    assert [c.channels for c in default.charts] == [(0,), (0,), (0,)]
-    assert [c.chart_type for c in default.charts] == ['waveform', 'spectrum', 'trend']
+    assert [c.channels for c in default.charts] == [(0,), (0,)]
+    assert [c.chart_type for c in default.charts] == ['waveform', 'spectrum']
     own = ChartSet((_spec(channels=(0,)),))
     dc.chart_set = own
     assert dc.chart_layout() is own

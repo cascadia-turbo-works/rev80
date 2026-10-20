@@ -260,24 +260,18 @@ def default_layout(vibration_channels: Iterable[int],
 
 def legacy_layout(base: ChartSet, *, envelope_enabled: bool, envelope_unit: str,
                   averaging_enabled: bool, n_averages: int) -> ChartSet:
-    """`base` with the screen and the settings that came before the Charts tab.
+    """`base` with the settings that came before the Charts tab.
 
-    The 0.1.x window always had a Trend tab: a trend chart with the channels,
-    unit and mode of the first spectrum is added if `base` has none.
     "Envelope analysis" on adds an envelope chart with the channels of the
     first spectrum, in `envelope_unit` (the sensor EU) 0-P. "Average
     spectrum" on sets the averaging of every spectrum chart to `n_averages`.
     """
     cs = base
-    spectrum = next((c for c in cs.charts if c.chart_type == 'spectrum'), None)
-    if spectrum is not None and not any(c.chart_type == 'trend' for c in cs.charts):
-        cs = cs.with_chart(ChartSpec(cs.new_chart_id(), 'trend', CHART_TYPE_LABELS['trend'],
-                                     spectrum.channels, spectrum.unit,
-                                     spectrum.amplitude_mode))
     if averaging_enabled:
         cs = ChartSet(tuple(c.evolve(averaging=True, n_averages=n_averages)
                             if c.chart_type == 'spectrum' else c for c in cs.charts))
     if envelope_enabled and not any(c.chart_type == 'envelope' for c in cs.charts):
+        spectrum = next((c for c in cs.charts if c.chart_type == 'spectrum'), None)
         channels = spectrum.channels if spectrum is not None else ()
         cs = cs.with_chart(ChartSpec(cs.new_chart_id(), 'envelope',
                                      CHART_TYPE_LABELS['envelope'], channels,

@@ -1465,9 +1465,8 @@ class DataCollector:
         """The chart layout in effect: `chart_set`, else the default of this config.
 
         The default is one time waveform and one spectrum with every vibration
-        channel, in the record view of the first, plus the trend of the old
-        screen and the "Envelope analysis" and "Average spectrum" settings
-        (`charts.legacy_layout`).
+        channel, in the record view of the first, plus the "Envelope analysis"
+        and "Average spectrum" settings (`charts.legacy_layout`).
         """
         from rev80 import charts
         if self.chart_set is not None:

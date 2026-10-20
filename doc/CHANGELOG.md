@@ -49,13 +49,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   Channels tab sets what is stored and trended, and the default layout.
 - **Layout until the Charts tab exists.** `chart_layout()` gives the
   default (time waveform and spectrum, all vibration channels, the record
-  unit of the first) plus the trend of the old window; "Envelope analysis"
-  adds an envelope chart and "Average spectrum" sets the spectrum
+  unit of the first); "Envelope analysis" adds an envelope chart and "Average spectrum" sets the spectrum
   averaging. A collector swap keeps the layout of the old collector.
 - **Peaks table pushes only changes.** The pool is keyed by (chart,
   channel) and pushes only the changed cells and the rows whose show state
   changes. Six charts, 8 channels: 26.0 to 26.3 ms for each frame before,
   23.2 to 23.8 ms after (i7-1260P, simulated frames, no viewport).
+- **The Trend tab is not in the default layout** (owner decision,
+  2026-10-20): the default is a time waveform and a spectrum. Until the
+  Charts tab exists, the main window has no trend chart.
 - **The time-series plot below the tabs and the second y axes are
   removed.** The envelope band fields are on each envelope chart; the auto
   band is cached for each chart.

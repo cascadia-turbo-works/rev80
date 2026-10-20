@@ -277,8 +277,8 @@ DataCollector.receive_data()
   view that two charts share cost one computation.
 - The layout in effect is `DataCollector.chart_layout()`: `chart_set`, else
   the default (`charts.default_layout()`) passed through
-  `charts.legacy_layout()`, which adds the trend of the old screen and the
-  "Envelope analysis" and "Average spectrum" settings. A collector swap
+  `charts.legacy_layout()`, which adds the "Envelope analysis" and
+  "Average spectrum" settings. A collector swap
   keeps the `chart_set` of the old collector when the new one has none.
 - The GUI gives results to the monitor only for live frames
   (`GUI._monitor_accepts_frames()`). During a recording, the GUI refuses a

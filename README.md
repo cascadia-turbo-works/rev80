@@ -279,8 +279,9 @@ the record unit: what Rev80 stores and trends.
 - **Envelope**: the envelope spectrum of a demodulation band. See
   [Envelope analysis](#envelope-analysis).
 
-The layout has a Time waveform, a Spectrum and a Trend chart, with all
-vibration channels, in the record unit and mode of the first. **Envelope
+The default layout has a Time waveform and a Spectrum chart, with all
+vibration channels, in the record unit and mode of the first. It has no
+Trend chart; the Charts tab (in work, R70) adds one. **Envelope
 analysis** on the Acquisition tab adds an Envelope chart. **Average
 spectrum** sets the averaging of the Spectrum chart.
 
