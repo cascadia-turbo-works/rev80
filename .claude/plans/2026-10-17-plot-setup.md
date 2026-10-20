@@ -1,772 +1,657 @@
-# Plot setup — wire channels to charts (phase 1)
+# Plot setup — wire channels to charts
 
 Branch: `feat/plot-setup`, from `main` @ `ee72064` (v0.1.4).
 Progress tracker: `.claude/plans/2026-10-17-plot-setup-progress.md`.
-Requirement: R67 in `doc/PROGRESS.md`. Related open work: R24
-(multi-channel plots; the polar chart stays there), R33 (flexible layout),
-R42 (crest and kurtosis trend), R43 remainder (RPM on the trend plot).
+Review of revision 6: `.claude/plans/2026-10-19-plot-setup-review.md`.
+Requirement: R67 in `doc/PROGRESS.md`. Related: R24 (polar), R33 (split
+panes), R42 (crest and kurtosis trend), R43 remainder (RPM on the trend),
+R50 and R59 (collector thread safety), R68 (anomaly-trigger table).
 
-Revision 2 (2026-10-19): owner decisions Q1, Q2, Q4, Q5 and Q7 applied;
-spectrum averaging moves from the Acquisition tab to each spectrum chart.
-Revision 6 (2026-10-19): Q11 decided: the chart layout is stored in every
-data file and a load sets it; new file versions (measurement 6, session 7)
-with no reader for older ones; ships as Rev80 1.0.0 (3.9.2). Q12 and Q13
-decided (tachometer trends included). New questions Q14 to Q16.
-Revision 5 (2026-10-19): Q9 decided (all cards always shown and updated);
-Q10 decided (a sustain time for the fixed-limit alarm, default 0 s). A
-table of anomaly triggers is recorded as later work (R68), not in scope.
-Revision 4 (2026-10-19): section 3.11, data loaded from a file; a defect
-found (a session trend reads 0.0 in any other unit); Q11 to Q13.
-Revision 3 (2026-10-19): Q2 and Q3 revised (result cards and the peaks
-table belong to a spectrum chart, in its unit); Q6 and Q8 decided; the
-`history` argument leaves the public `result_view()` (3.2.1); the
-recording lock gets a visible disabled state (3.7). New open question: Q9.
+## Revisions
 
-## 1. Request
+| Rev | Date | Change |
+|---|---|---|
+| 1 | 2026-10-17 | First plan |
+| 2 | 2026-10-19 | Q1, Q2, Q4, Q5, Q7 decided; spectrum averaging moves to each spectrum chart |
+| 3 | 2026-10-19 | Q2 and Q3 revised (cards belong to a spectrum chart); Q6, Q8 decided; `history` leaves `result_view()`; visible disabled state |
+| 4 | 2026-10-19 | Data loaded from a file; session zero-trend defect found |
+| 5 | 2026-10-19 | Q9, Q10 decided; R68 recorded |
+| 6 | 2026-10-19 | Q11 to Q13 decided: chart layout in data files, new file versions, Rev80 1.0.0 |
+| 7 | 2026-10-20 | Review findings applied. Q14 to Q16 decided. Work split into parts A to E and two releases. A new `DataCollector` for every load and connect. Each anomaly hook has its own unit. Converter script for 0.x files. Default layout: one time waveform and one spectrum |
 
-1. Add a **Charts** tab to the configuration dialog. It shows a table with
-   one row for each active chart.
-2. Below the table: a combo of chart types and a **+** button. The button
-   adds a row for the selected type. Phase-1 types: time waveform, trend,
-   spectrum, envelope, XY (two channels). Polar is deferred (R24, see 3.6).
-3. Columns of each row:
-   - **−** button: remove the chart.
-   - Chart type (read-only).
-   - Chart name (editable). The main-window tab uses this name.
-   - Channels: one checkbox for each available channel. This is the main
-     feature: it selects which channels a chart shows. XY: two ordered
-     selectors (X, Y) and a swap button.
-   - Y-axis unit and amplitude mode, for example `in/s 0-P` or `mils P-P`.
-     This sets the one y axis of the chart. One channel can show on two
-     charts in two units. An XY chart uses the same unit on x and y.
-   - Options. Trend: shaft speed from a tachometer channel on a second
-     y axis. Spectrum: an **Average** checkbox and an integer **N**.
-4. The chart set sets the main-window layout: one tab for each chart, named
-   for the chart.
-5. Only the chart on screen is processed and drawn, as the Envelope tab does
-   now (`_envelope_on_screen()`).
-6. Remove the time-waveform plot that shows all channels below the tabs. The
-   tab bar fills the full middle pane.
-7. Retire from the Acquisition tab: the **Envelope analysis** checkbox (an
-   envelope chart replaces it) and the **Average spectrum** checkbox with
-   its **Averages** and **Avg. Window** fields (they move to each spectrum
-   chart).
-8. Out of scope for phase 1: split panes and more than one chart on screen
-   (R33); the polar chart (R24).
+## 1. Releases and parts
 
-## 2. Current state (facts that the design depends on)
+| Part | Content | Release |
+|---|---|---|
+| A | Defects in 0.1.4: visible disabled state; a new `DataCollector` for each load and connect; session and burst trends from the stored frames; averaging on contiguous frames only | 0.1.5 |
+| B | Measurement-path refactor: one frame snapshot for each render tick; frame side effects split from the views; `result_view()` | 0.1.5 |
+| C | Anomaly hooks: each hook has its own unit and amplitude mode; fixed-limit sustain time | 0.1.5 |
+| D | Charts: Charts tab, one main-window tab for each chart, result cards for each spectrum chart, chart-driven units | 1.0.0 |
+| E | Chart layout in the data files, new file versions, converter for 0.x files | 1.0.0 |
+
+Release flow:
+
+1. Parts A, B and C on `feat/plot-setup`, in that order, until complete.
+2. Merge `feat/plot-setup` into `develop` for the field test.
+3. Merge `develop` into `main` and tag `v0.1.5`. The tag runs
+   `.github/workflows/release.yml` and makes a draft release.
+4. Parts D and E continue on `feat/plot-setup`, then the same chain, tag
+   `v1.0.0`.
+
+Each part leaves the suite green at its last commit. Between the steps of
+one part the branch is work in progress (owner decision): a control can
+have no effect for some commits.
+
+## 2. Request (parts D and E)
+
+1. A **Charts** tab in the configuration dialog with a table, one row for
+   each chart. Below the table: a chart-type combo and a **+** button.
+   Types in this work: time waveform, trend, spectrum, envelope, XY. Polar
+   is deferred to R24.
+2. Columns: **−** (remove), type (read-only), name (editable; the tab
+   label), channels (a checkbox for each channel; XY: two ordered
+   selectors X and Y and a swap button), unit and amplitude mode, options.
+3. **The chart sets the unit of every series on it.** Each chart has one
+   y axis. One channel can show on two charts in two units. XY uses one
+   unit on x and y. Trend: shaft speed on a second y axis. Spectrum: an
+   **Average** checkbox and an integer **N**.
+4. One main-window tab for each chart, named for the chart. The tab bar
+   fills the middle pane. The time-series plot below the tabs is removed.
+5. Plot series are drawn only for the chart on screen. The result cards of
+   every spectrum chart update on each frame (Q9).
+6. The Acquisition tab loses the **Envelope analysis** checkbox and the
+   **Average spectrum** controls.
+7. Every data file stores its chart layout. A load sets the layout.
+8. Out of scope: split panes (R33), polar (R24), the anomaly-trigger table
+   (R68).
+
+## 3. Current state (facts the design depends on)
 
 | Fact | Where |
 |---|---|
-| Unit and amplitude mode are per channel: `channel_target_units`, `channel_amplitude_modes`. An empty unit means the sensor EU (`get_active_eu`) | `sample.py:61-62`, `collector.py:227` |
-| The Channels tab sets them with two combos for each channel | `gui.py` `_rebuild_device_channel_rows`, `_apply_channel_assignments_from_widgets` |
-| `process_sample()` reads both, integrates the mV PSD and scales to the target unit. The mV PSD and the five mV overalls (orders −2 to +2) are cached on the sample and do not depend on the unit | `collector.py:843-1050`, `_psd_and_overalls_for` |
-| Callers of `process_sample()`: `_process_samples`, the session reprocess path (two calls), `scripts/advanced_plots.py` | `collector.py:1221`, `1918`, `1952` |
-| Spectrum averaging: `averaging_enabled`, `n_averages` in `AcquisitionSettings`; a linear power average over the N most recent frames up to the displayed frame; overflow and degraded frames in that window are dropped, not replaced. It also averages `ChannelResult.overall`, which the anomaly hooks read | `sample.py:78-81`, `collector.py` step 3b |
-| `n_averages_effective` clamps N to `cache_frames` | `sample.py:292` |
-| The trend stores the five mV overalls for each frame, not averaged. The unit and mode are applied at display time | `update_trend`, `get_trend_for_display()` |
-| Crest factor and kurtosis come from `ChannelResult.time_data`, the trace in the target unit. They change with the integration order | `process_sample` step 8 |
-| Shaft speed has its own trend and never goes through unit scaling | `get_rpm_trend()`, `tach_trend` |
-| `process_samples()` runs once for each displayed frame. It updates the trend and gives the results to `MonitorController.on_results()` and the result cards | `gui.py` `_display_frame_inner` |
-| The RMS hook has a sustain time (`rms_s`, converted to `consecutive_n` frames). `FixedThresholdHook` has none: it fires on one frame | `headless.py:139-141`, `anomaly.py:356` |
-| Anomaly hooks read `ChannelResult.overall` and `.unit`. `FixedThresholdHook` converts each limit's unit to the result unit through `UNIT_TO_SI`. It does not compare amplitude modes: a `0-P` limit is compared with a `P-P` reading without correction | `monitor/anomaly.py:347-435` |
-| `_build_anomaly_hook` has two copies, GUI and headless (R58) | `gui.py:3292`, `headless.py:117` |
-| The main pane is a fixed tab bar (Spectrum, Envelope, Trend) with a time-series plot of all channels below it, height `TIME_PLOT_HEIGHT` = 300 px | `gui.py:4708-4786` |
-| Two units at most: a second y axis on each plot, assigned by `_update_axis_assignment()` | `gui.py:454-536` |
-| Series tags are global for each channel: `plt_freq_series(ch)`, `plt_time_series(ch)`, `plt_env_series(ch)`, `plt_trend_series(ch)` | `util.UI_Elements` |
-| The Envelope tab shows when `envelope_enabled` is true. The chain is skipped when the plot is not on screen (about 2.8 ms for each channel and frame) | CONTRIBUTING.md, "E19. GUI render cost" |
-| dearpygui has no polar plot type. No 1x phase measurement exists | `.claude/plans/2026-09-01-tachometer.md`, section 1.3 |
+| Unit and mode are per channel (`channel_target_units`, `channel_amplitude_modes`); an empty unit is the sensor EU | `sample.py:61-62`, `collector.py:227` |
+| `process_sample()` scales the cached mV PSD and the five mV overalls (orders −2 to +2) to the target unit. Stage 1 (filter, decimate, PSD, overalls) is cached on the sample | `collector.py:770-1050` |
+| Stage 1 keeps `filtered_mv` at the raw length and `decimated_mv` on each sample | `collector.py:455`, `765` |
+| `_process_samples()` resolves the displayed frame once, appends to the trend and to the RPM trend when streaming, and returns the results | `collector.py:1174-1235` |
+| `current_rpm()` resolves the displayed frame again | `collector.py:1134` |
+| The acquisition thread appends to the frame cache; `DataCollector` has no lock | CLAUDE.md, R59 |
+| `MonitorController.on_results(results, frame_cache)` gives one list to the hooks, to `update_baseline()` and to the capture writer. The writer stores `overall_json`, `peaks_json` and `scalars_json` from it | `controller.py:243-280`, `479-480`; `writer.py:52-65` |
+| `valid_results()` applies the overflow, degraded and speed-gate filter; `CompositeAnomalyHook` calls it | `anomaly.py:42-53`, `449-455` |
+| `FixedThresholdHook` converts each limit to the result unit by `UNIT_TO_SI` only (same quantity), ignores the amplitude mode, and fires on one frame | `anomaly.py:347-435` |
+| The config seed and the GUI save `fixed_upper_unit` and `fixed_lower_unit` (`'in/s'`) whether or not a limit is enabled | `config.py:121-124`, `gui.py:3138-3141` |
+| `speed_ok()` latches `_speed_ref_rpm` from the first reading; nothing resets it | `collector.py:1114-1118` |
+| The GUI makes one `DataCollector` in `__init__` and reuses it for every load and connect | `gui.py:325` |
+| `load_data()` and the session loaders clear the cache before they read the file version | `collector.py:1371-1378`, `1650-1660` |
+| Session and burst loaders rebuild the trend from `overall_json` (one value, record unit) into one order column; the other columns stay 0.0 | `collector.py:1689-1725`, `1849-1870`; reproduced, see A3 |
+| Measurement files store `/trend` (five orders, up to `trend_max_points` = 500) and `/tach_trend`; the cache holds 32 frames (15 seeded) | `collector.py:1331-1360`, `sample.py:74` |
+| Session captures are `interval_s` apart (default 600 s) | `config.py:98` |
+| The envelope spectrum is in the sensor EU, scaled so a modulation of depth d on carrier A reads d·A/2 (0-P of the sideband) | `collector.py:1144-1163`, `envelope.py:43-46` |
+| `tests/conftest.py` excludes GUI test modules on ARM by the pattern `from rev80\.gui ` (with a space) | `tests/conftest.py:14` |
+| dearpygui 2.0.0 frees a tag when its item is deleted; a tab bar rebuilt with the same tags works | checked, scratchpad `dpgalias.py` |
 
-## 3. Design
+## 4. Part A — defects in 0.1.4
 
-### 3.1 Chart model — new module `src/rev80/charts.py`
+### A1. Locked controls look disabled
 
-No dearpygui import, so the model is testable on ARM.
+`_set_recording_lock()` disables the controls, but `gui.py` binds no theme
+for the disabled state, so a disabled button looks enabled. A user pressed
+the acquisition setup button during a recording and saw nothing happen.
+
+- One global theme with `dpg.theme_component(..., enabled_state=False)`
+  for buttons, combos, checkboxes, input fields and sliders, in muted
+  colours (`_c("MUTED")`). Bound once in `_create_gui()`.
+- While locked, each control in `_RECORDING_LOCKED_CONTROLS` has the
+  tooltip "Stop the recording to change this."
+- Test (GUI context): the theme has a disabled-state component for
+  `mvButton`; lock and unlock toggle every locked control.
+
+### A2. A new `DataCollector` for every load and every connect
+
+Owner decision (review D1). Stale state survives today: the latched speed
+reference, the RPM trend, the stage-1 caches, the cache depth, the cursor.
+Replacing the collector removes the class of defect instead of resetting
+each field.
+
+- `GUI._replace_collector(new)`: the one place `self.collector` changes
+  after `__init__`. Order: refuse during a recording (the load and connect
+  controls are already locked); stop the stream; close the old device
+  (`disconnect_sensor()`) before a new one opens, or the next open fails
+  with `PICO_NOT_FOUND`; assign; call `_on_data_source_changed()`.
+- **Load.** Build a new `DataCollector`, load the file into it, and swap
+  only when the load succeeds. A refused or failed file leaves the old
+  collector and the screen unchanged. This replaces the plan-6 rule "check
+  the version before any state is cleared": the old state is never cleared.
+- **Connect.** Build a new `DataCollector` with the settings from
+  `acquisition.yaml`, connect the sensor, restore the device YAML
+  (channels, siggen), assign the sensors from the registry and the
+  tachometer settings. The same code as now, moved into one builder,
+  `_build_live_collector(sensor)`.
+- **Session reprocess** (`_on_sb_reprocess`): the thread builds and loads
+  its own collector and hands it to the render thread, which swaps it. The
+  thread no longer touches the collector on screen (part of R50).
+- Disconnect without a new device keeps the collector and its data, as
+  now.
+- `_on_data_source_changed()` is the one GUI hook after a swap. In part A
+  it does what the load paths do now (series, axis assignment, cards,
+  connection summary, spectrum info, notes, autoscale). Part D extends it
+  to the charts. `_on_load_file()`, `_load_from_path()`,
+  `_on_session_list_select()`, `_on_burst_list_select()` and the device
+  connect paths call it instead of their own copies.
+- No GUI code may keep a reference to `self.collector`, its `data` dict or
+  its cache across a swap. Search for bound methods of the collector given
+  as callbacks.
+- Tests: load a file after live frames with a latched speed reference and
+  an RPM trend; neither survives. A refused file leaves the frame cache
+  identical. A connect after a file load uses the `acquisition.yaml`
+  settings, not the file's.
+- Headless keeps one collector for its run.
+
+### A3. Session and burst trends from the stored frames
+
+Defect: `load_monitor_session()` and `load_monitor_burst()` rebuild the
+trend from `overall_json` into one order column; the other four stay 0.0.
+Reproduced 2026-10-19 (scratchpad `trendcols.py`, an accelerometer at
+100 mV/g, recorded in in/s): in/s 273.0, 283.9, 278.5; g 0.0, 0.0, 0.0;
+mil 0.0, 0.0, 0.0. Reachable now by a channel-unit change after a session
+load.
+
+- Sessions and bursts: compute the five mV orders of each loaded frame
+  from its stored waveform. **Use a path that does not keep `filtered_mv`
+  and `decimated_mv` on the sample** (review C6): a 1440-capture,
+  4-channel session at 1 s blocks holds 1.18 GB of raw float64 (computed),
+  and the cached copies would add about as much again. Keep the five
+  orders on the sample.
+- A frame with no waveform (tachometer, damaged group): NaN in all five
+  columns, never 0.0.
+- Shaft-speed trend for sessions and bursts from the loaded tachometer
+  samples (each has a `TachResult` from its edge times), usable readings
+  only.
+- **Measurement files keep their stored `/trend` and `/tach_trend`**
+  (review C5): they hold up to 500 points; the frames are 32 at most.
+- Equality test: in the record unit, the rebuilt trend equals
+  `overall_json` to float tolerance (for sessions written with the same
+  averaging state). Reproduce the zero trend first, then fix it; revert
+  check.
+- Measure load time and peak memory of a 1440-capture, 4-channel
+  `SimulatedSensor` session. Record it in the tracker, then CONTRIBUTING.md
+  section 5.
+
+### A4. Averaging on contiguous frames only
+
+A session's captures are 600 s apart by default; an average of N = 8
+spans 80 min and is labelled "averaging 8 frames".
+
+- The walk back stops at the first frame that is not contiguous with the
+  next: contiguous when 0 < Δ`rel_time` ≤ 1.5 × the frame period. The frame
+  period is the achieved one, `raw_blocksize / sample.samplerate`, not
+  `config.acquisition_period` (review D7). A negative Δ (a new stream) is a
+  gap.
+- The count line says why: "averaging 1 of 8 frames (frames not
+  contiguous)".
+- Tests: a session gives k = 1; a burst and a live cache give k = N; a
+  stream restart inside the window stops the walk.
+
+## 5. Part B — measurement-path refactor
+
+### B1. One frame snapshot for each render tick
+
+Review C3. Every view in one tick must come from the same frame.
+
+```python
+@dataclass(frozen=True)
+class FrameSnapshot:
+    frames: tuple          # tuple(cache) at the time of the snapshot
+    index: int             # position of the displayed frame in `frames`
+    is_live: bool          # streaming (newest frame) or browsing (cursor)
+
+def snapshot(self) -> FrameSnapshot     # DataCollector
+```
+
+- The render loop takes one snapshot for each new frame. Every call in
+  that tick uses it: the frame advance, the record results, the hook
+  views, the display, `current_rpm()`.
+- `current_rpm(snapshot)` and the speed gate read the tachometer sample of
+  the snapshot frame.
+- History for averaging is taken from `snapshot.frames`.
+
+### B2. Frame side effects split from the views
+
+Review C1.
+
+- `advance_frame(snapshot)`: once for each new live frame. Appends the
+  five mV orders, crest factor and kurtosis (record unit) to the trend and
+  the usable shaft speed to the RPM trend. Nothing else changes state.
+- `results_for(snapshot, unit=None, mode=None, n_averages=1)`: one
+  `ChannelResult` for each vibration channel. No side effects. Callable any
+  number of times.
+- `process_samples()` is removed. Callers: the GUI render loop, headless
+  (`headless.py:644`), the tests.
+
+### B3. `result_view()`
+
+```python
+def result_view(self, snapshot, ch, unit=None, amplitude_mode=None,
+                n_averages=1, peaks=True) -> ChannelResult | None
+```
+
+- `unit=None`: the channel's target unit, then the sensor EU.
+  `amplitude_mode=None`: the channel's mode, then `0-P`.
+- Returns None for a channel that cannot reach `unit` (no sensor, another
+  quantity, more than ±2 integration steps). It logs once for each
+  (channel, unit).
+- Stage 1 (cached, unit-independent) does not change.
+- Stage 2: power average over the contiguous valid frames among the N most
+  recent (A4; invalid frames are dropped, not replaced); integration;
+  sensitivity; SI factor; amplitude scale; F_max truncation; peaks; the
+  overlap-save trace; crest factor and kurtosis of that trace.
+- `process_sample()` is removed. A private
+  `_view_of_sample(ch, sample, unit, mode, history=())` holds stage 2. The
+  session reprocess calls it for a sample that is not in a snapshot.
+  `scripts/advanced_plots.py` uses `result_view()`.
+- Memo for one tick, keyed by (sample identity, unit, mode, N, peaks). Not
+  keyed by cache index (review C3). Cleared with each new snapshot.
+- `get_trend_for_display(unit=None, amplitude_mode=None, channels=None)`.
+- In 0.1.5 the display uses the record unit and the config averaging
+  (`averaging_enabled`, `n_averages`), as now. The record results and the
+  hook views are never averaged (Q8).
+
+Tests:
+
+- Equality: for each shipped unit pair and mode, `result_view()` gives
+  arrays equal to `process_sample()` before the change (reference captured
+  first).
+- Conversion (`tests/test_measurement_validity.py`): off-bin tone, non-zero
+  phase; in/s and g views agree through `v = a / (2 π f)`; the three modes
+  agree through `amplitude_scale()`. Revert check.
+- One tick, record and display views: the trend grows by one point.
+- Snapshot: a frame appended between two `result_view()` calls with the
+  same snapshot does not change the result.
+- `tests/test_spectral_averaging.py` moves to the `n_averages` argument.
+
+## 6. Part C — anomaly hooks
+
+### C1. Each hook asks for its own view
+
+Review C2 and C4; owner decision: the RMS (EWMA baseline) hook has its own
+unit and mode, separate from the fixed-limit units.
+
+```python
+class ResultViews(Protocol):           # in monitor/anomaly.py; no collector import
+    def results(self, unit: str | None, mode: str | None) -> list: ...
+    @property
+    def record(self) -> list: ...      # record unit and mode, never averaged
+```
+
+- `MonitorController.on_results(views, frame_cache)`. The capture writer
+  stores `views.record` (record unit, as the channel snapshot says). The
+  hooks and `update_baseline()` get `views`.
+- The collector supplies `FrameViews(collector, snapshot)`: `results()`
+  calls `results_for(snapshot, unit, mode)`, memoised for the tick, then
+  `valid_results()`. `valid_results()` stays the one place the gate is
+  applied.
+- `RmsThresholdHook(unit, mode, ...)`: reads `views.results(unit, mode)`.
+  Config keys `rms_unit`, `rms_amplitude_mode`; empty means the record unit
+  and mode (today's behaviour). Baselines are kept in that unit.
+- `FixedThresholdHook`: the upper limit reads
+  `views.results(fixed_upper_unit, fixed_upper_mode)`, the lower limit
+  `views.results(fixed_lower_unit, fixed_lower_mode)`. New keys
+  `fixed_upper_mode`, `fixed_lower_mode`; empty means the record mode
+  (today's comparison). The `UNIT_TO_SI` conversion goes: the view is in
+  the limit's unit. A velocity limit on an accelerometer now works (today
+  it is skipped as another quantity). A channel with no sensor is skipped
+  with one warning, as now.
+- No migration is needed: every new key is empty by default, which is
+  today's behaviour (review C4 does not arise).
+- `SpectralThresholdHook` (headless only, R39): `views.record`, unchanged.
+- `MonitorController` builds the burst pre-trigger `overall_json` from the
+  stored mV orders and the record unit, as now.
+
+### C2. Fixed-limit sustain time
+
+Owner decision Q10. Key `fixed_s`, default 0 s = one frame (today). Frames
+= `round(fixed_s / period) + 1`, as for `rms_s`. A frame that
+`valid_results()` drops resets the count. Its own field beside the fixed
+limits.
+
+### C3. Both front ends
+
+- Monitor tab: unit and mode combos in the RMS section; a mode combo
+  beside each fixed-limit unit combo; the `fixed_s` field.
+- Both `_build_anomaly_hook` copies (`gui.py`, `headless.py`) and the
+  config seed change in the same commit. `tests/test_anomaly_hook_build.py`
+  checks that their defaults agree.
+- Tests: RMS hook in g on a channel recorded in in/s fires on the g
+  overall; the stored `overall_json` is in in/s (review C2); upper limit
+  in in/s 0-P with the record mode P-P compares 0-P values; `fixed_s` = 0
+  fires on one frame (equality with today); `fixed_s` > 0 needs
+  consecutive valid frames; empty keys give today's results bit for bit.
+- Cost: measure the extra views during a recording on a Raspberry Pi 3
+  with 8 channels (headless) and on the GUI PC.
+
+## 7. Part D — charts
+
+### D1. Chart model — `src/rev80/charts.py`
+
+No dearpygui import.
 
 ```python
 CHART_TYPES = ('waveform', 'trend', 'spectrum', 'envelope', 'xy')
 
 @dataclass
 class ChartSpec:
-    chart_id: str             # stable, e.g. 'c3'; tags derive from it, never from the name
-    chart_type: str           # one of CHART_TYPES
-    name: str                 # tab label; editable; need not be unique
+    chart_id: str             # stable; tags derive from it, never from the name
+    chart_type: str
+    name: str
     channels: list[int]       # display order; xy: [x, y]
-    unit: str                 # always explicit: one chart, one y axis
-    amplitude_mode: str       # 'RMS' | '0-P' | 'P-P'; ignored by waveform and xy
-    show_rpm: bool = False    # trend only: shaft speed on y2
-    tach_channel: int | None = None   # trend with show_rpm
-    averaging: bool = False   # spectrum only
-    n_averages: int = 8       # spectrum only; clamped to cache_frames at use
+    unit: str                 # explicit: the chart sets the unit of every series
+    amplitude_mode: str       # spectrum, trend, envelope; not waveform or xy
+    show_rpm: bool = False    # trend
+    tach_channel: int | None = None
+    averaging: bool = False   # spectrum
+    n_averages: int = 8       # spectrum; clamped to the cache depth at use
 
 @dataclass
 class ChartSet:
     charts: list[ChartSpec]
     def to_dict(self) -> dict
     @classmethod
-    def from_dict(cls, d) -> 'ChartSet'     # skips a bad entry, logs it
-    @classmethod
-    def default_for(cls, config, sensors) -> 'ChartSet'   # see 3.9
+    def from_dict(cls, d) -> 'ChartSet'      # skips a bad entry, logs it
+
+def default_layout(vibration_channels: list[int],
+                   record_unit_of: Callable[[int], tuple[str, str]]) -> ChartSet
 ```
 
-Validation functions (pure, unit-tested):
+- **Default layout** (Q15): one time waveform and one spectrum, with all
+  vibration channels: the default before this feature. Unit and mode: the
+  record unit of the first vibration channel. A channel that cannot reach
+  it stays on the chart with a legend note (D4). `default_layout()` takes
+  plain data, so the converter (E3) and headless can call it.
+- Validation (pure): `allowed_units(chart_type, sensor_eus)` and
+  `channel_selectable(spec, ch, roles, sensor_eus)`.
+  - Spectrum, waveform, trend, XY: units within ±2 integration steps of
+    every checked channel's sensor EU.
+  - Envelope: units with 0 integration steps from the sensor EU (same
+    quantity, SI scale only; review D4). Mode: `0-P` is the native
+    sideband amplitude; RMS and P-P by `amplitude_scale()` relative to
+    `0-P`.
+  - A channel with no sensor: `mV` charts only.
+  - Tachometer: only as `tach_channel` of a trend. Never in `channels`.
+  - XY: two different channels.
+- A chart with no usable channel stays in the set and says why on its tab.
 
-- `allowed_units(chart_type, sensor_eus)`: the units that every checked
-  channel can reach from its sensor EU through `integration_steps()`, within
-  ±2 steps. Envelope: acceleration units only (the envelope chain reads
-  `eu_scaled_raw()`, sensor EU, no integration), or `mV` with no sensor.
-- `channel_selectable(spec, ch, ...)`: False for a channel whose sensor EU
-  cannot reach `spec.unit`, and for a channel with no sensor on a chart in an
-  engineering unit (only `mV` is honest there). The dialog shows the reason
-  in a tooltip.
-- Tachometer channels: selectable only as `tach_channel` on a trend chart.
-  Never in `channels`. A pulse train in the vibration path gives overall
-  1515 mV, crest 5.00 and kurtosis 15.94.
-- XY: exactly two different channels.
-- A chart with no selectable channel stays in the set and shows "no
-  channel" on its tab. A disconnected device must not erase the layout.
+### D2. Chart-driven units (owner decision, review D3 and D4)
 
-### 3.2 `result_view()`: the one path to a channel result in a unit
+The chart sets the unit and mode of every series on it, for every chart
+type, in the Charts tab. The record unit (Channels tab) sets only what is
+stored and the trend's stored scalars. The envelope path gets the SI scale
+step for D1's envelope units, with a test against the sensor-EU result.
 
-Owner decision: channels keep their target unit, which defaults to the
-sensor EU. `collector.result_view()` becomes the main path for a channel
-signal in a target unit and mode. Every consumer goes through it: the
-record path, each chart, the alarm view and the session reprocess.
+### D3. Rendering
 
-```python
-def result_view(self, ch, unit=None, amplitude_mode=None, n_averages=1,
-                index=None, peaks=True) -> ChannelResult | None
-```
+For each new frame, after part B's always-run work:
 
-- `index=None` is the displayed frame: the newest when streaming, the browse
-  cursor when stopped (the rule `process_samples()` uses now). Otherwise a
-  position in the frame cache.
-- `peaks=False` skips peak selection, for a caller that needs the overall
-  and the scalars only (see 3.3).
-- The averaging history is found inside the collector, not passed in. See
-  3.2.1.
+1. For the chart on screen: one `result_view()` for each channel in the
+   chart's unit, mode and N, and `set_value` on its series. A spectrum
+   chart also updates its cards.
+2. For every other spectrum chart: one `result_view()` for each channel,
+   peaks included, and the cards only (Q9). No series update.
 
-- `unit=None` gives the channel's target unit, then the sensor EU
-  (`get_active_eu`). `amplitude_mode=None` gives the channel's mode, then
-  `0-P`.
-- Stage 1, cached on the sample, unit-independent (no change): high-pass,
-  decimation to the display rate, mV PSD, five mV overalls.
-- Stage 2, the view: power average of the N most recent valid frames
-  (`n_averages > 1`, same rule as now, so replay shows what live showed);
-  integration factor; sensitivity; SI factor; amplitude scale; F_max
-  truncation; peak selection; overlap-save time trace; crest factor and
-  kurtosis of that trace.
-- `process_sample()` is removed. A private
-  `_view_of_sample(ch, sample, unit, mode, history=())` holds the stage-2
-  code. `result_view()` finds the sample and its history in the cache and
-  calls it. The session reprocess path calls it directly for a sample that
-  is not in the cache, with no history. `scripts/advanced_plots.py` uses
-  `result_view()`.
-- `process_samples(unit=None, amplitude_mode=None)` returns one result for
-  each vibration channel through `result_view()`, never averaged (Q8). It
-  updates the trend as now; the trend stores mV orders, so it is unit-
-  independent.
-- `get_trend_for_display(unit=None, amplitude_mode=None, channels=None)`:
-  the same conversion, with the unit and mode given by the chart.
-- View cache for the displayed frame, keyed
-  `(frame index, ch, unit, mode, n_averages, config key)`, render thread
-  only. A tab change while stopped does not recompute.
+- On-screen test: `_chart_on_screen(cid)`, from `_envelope_on_screen()`,
+  failing open.
+- A tab change renders the new chart at once from the current snapshot.
+- Measure: 6 charts with 1 on screen against today's 3 tabs; 2 spectrum
+  charts × 8 channels of cards. E19 in CONTRIBUTING.md.
 
-Tests:
-
-- **Equality test** (structure change on a measurement path): for each
-  shipped unit pair and mode, `result_view()` with the channel's unit gives
-  arrays equal to the current `process_sample()`. Capture the reference
-  output before the refactor.
-- **Conversion test** in `tests/test_measurement_validity.py`: an off-bin
-  tone with a non-zero phase, one channel, two views (in/s and g). The
-  overall and the line amplitude agree through `v = a / (2 π f)`, and the
-  `P-P`/`0-P`/`RMS` views agree through `amplitude_scale()`. Revert check:
-  break the view's integration factor; the test must fail.
-- `tests/test_spectral_averaging.py` (26 references to the config fields)
-  moves to the `n_averages` argument. The averaging rule does not change.
-
-#### 3.2.1 Where the averaging state lives
-
-What `history` is now: a list of `VibeSample` objects for one channel,
-oldest first. `_process_samples()` takes the frames before the displayed
-frame from the frame cache (`list(cache)[stop - N + 1 : stop]`) and drops
-the overflow and degraded ones. Stage 2 then walks the displayed frame and
-the history newest first, sums `_psd_for()` and the squared mV overalls of
-each, and stops at N frames or at the first frame whose PSD has a
-different shape (a settings change). `_psd_for()` reads the PSD cached on
-each sample, so an average costs one addition for each frame, not a
-transform. The history is a window on the shared frame cache; nothing is
-copied and no state is kept between calls.
-
-Two places for the averaging state:
-
-| | Chart keeps its own ring of past spectra | Collector derives the history from the frame cache (recommended) |
-|---|---|---|
-| Browse and replay | The ring holds what was displayed, in display order. Stepping back through the cache shows a different average than live showed. Breaks "replay shows what the live display showed" | Same rule live and browse: the N most recent frames up to the displayed one |
-| Hidden charts | Only the chart on screen renders, so a hidden chart's ring has gaps. On a tab change it shows an average of stale frames | The cache has every frame; a chart that comes on screen gets a full average at once |
-| Overflow, degraded, settings change | The chart needs the sample flags and the transform shape, so it needs the samples anyway | Already handled |
-| Memory | A second copy of up to N spectra for each chart and channel | None: views on the existing cache |
-| Units | Ring in mV² to stay unit-agnostic, or flushed on a unit change | Averaged in mV², converted after |
-| Signature | `result_view(ch, sample, unit, mode)`, no history | `result_view(ch, unit, mode, n_averages, index)`, no history |
-
-Decision for this plan: the chart owns the *setting* (Average on, N); the
-collector owns the *data*. The chart stays agnostic: it asks for a view of
-the displayed frame with its unit, mode and N, and draws what it gets.
-`history` leaves the public signature, which is the simplification asked
-for, without a second store of past frames. N is clamped to the cache
-depth (`cache_frames`), and the chart row says when it is.
-
-One behaviour to state in the README: the window is the N most recent
-frames, and invalid frames in it are dropped, not replaced. So the count
-can be below N after an overflow. `ChannelResult.n_averages` gives the
-count, and the chart shows "averaging k of N frames".
-
-### 3.3 Record unit, alarm unit, crest factor and kurtosis
-
-- **Record unit** = the channel's target unit (Channels tab, as now; empty
-  means the sensor EU). It sets: the monitor capture, the measurement file
-  attributes, the trend's stored crest factor and kurtosis, the headless
-  results. It does not set the result cards (see below). No change to
-  files, sessions or headless input.
-- **Alarm unit** (owner decision Q1): the Monitor tab anomaly section gets a
-  unit and mode selector. The front end calls
-  `process_samples(unit=alarm_unit, amplitude_mode=alarm_mode)` and gives
-  those results to the anomaly hooks. Stage 1 is cached, so the extra cost
-  is stage 2 only. Measure it (3.4).
-  - **Alarms always use unaveraged results** (owner decision Q8).
-    `process_samples()` never averages. The anomaly sustain time (`rms_s`,
-    converted to `consecutive_n` frames) is the debounce, not an average.
-    Today a hook sees an averaged overall when averaging is on; that ends.
-  - `FixedThresholdHook` has no sustain time: one frame over the limit
-    fires it. With averaging on, the average hid single-frame spikes from
-    it; unaveraged, it does not. **It gets its own sustain time** (owner
-    decision Q10): config key `fixed_s`, default 0 s, which is one frame,
-    the current behaviour. It converts to frames as `rms_s` does
-    (`round(s / period) + 1`), and it has its own field in the anomaly
-    section beside the fixed limits. It is separate from the RMS sustain
-    time (default 3 s), because the defaults differ. A frame that fails the
-    speed gate or is flagged resets the count, as for the RMS hook. Both
-    `_build_anomaly_hook` copies and headless change; the hook-build test
-    checks that the defaults agree.
-  - Config keys `alarm_unit` and `alarm_amplitude_mode` in the
-    `monitor.anomaly` block of `acquisition.yaml`. Headless reads the same
-    keys. Empty means each channel's record unit (today's behaviour).
-  - A channel that cannot reach the alarm unit (no sensor, other quantity)
-    is skipped by the hooks with one warning, as `FixedThresholdHook` does
-    now for a unit it cannot convert.
-  - `FixedThresholdHook`: the limits are in the alarm unit and mode. The
-    per-limit unit fields go. Migration: when `alarm_unit` is absent and
-    `fixed_upper_unit` is set, use it as the alarm unit. This also removes
-    the amplitude-mode mismatch in the table above.
-  - `RmsThresholdHook` is a % deviation, but the unit still matters: a
-    velocity overall weights low frequencies more than an acceleration
-    overall. The alarm unit sets which.
-  - The speed gate does not change: `rpm` and `speed_ok` are on every
-    result, and `valid_results()` stays the one place that applies it.
-  - Both copies of `_build_anomaly_hook` change in the same commit;
-    `tests/test_anomaly_hook_build.py` checks that their defaults agree.
-  - Where the alarm view is built: one shared helper,
-    `monitor.anomaly.alarm_view(anom_cfg)` → `(unit, mode)`, called by both
-    front ends. No copy in a front end.
-- **Result cards and the peaks table** (owner decisions Q2 and Q3,
-  revision 3): a card belongs to a (spectrum chart, channel) pair, not to a
-  channel. Its overall, crest factor, kurtosis, 1x level and peaks table
-  are in that chart's unit and mode, from the same `result_view()` that
-  draws the chart. A channel on two spectrum charts has two cards, possibly
-  in two units. Each value has its unit on the card, for example
-  `Crest 3.10 (in/s)`.
-  - The overall on a card of an averaging chart is the averaged overall,
-    labelled "avg k". Crest factor and kurtosis are never averaged: they
-    come from the displayed frame's trace in the chart unit.
-  - The cards are grouped under a header with the chart name.
-  - A tachometer channel keeps one shaft-speed card for each channel, not
-    for each chart. A shaft speed has no unit view.
-  - The overflow warning stays one line for each channel at the top of the
-    column. It is a fact of the frame, not of a view.
-  - **All cards always show and update** (owner decision Q9): every
-    spectrum chart's cards, expanded, peaks table included, on every frame,
-    whichever tab is on screen. Only the plot series of a chart that is not
-    on screen are skipped. So for a spectrum chart, "process only the chart
-    on screen" applies to drawing, not to the `result_view()` calls.
-- The trend keeps storing crest factor and kurtosis of the record-unit
-  trace, from step 1 of 3.4.
-
-### 3.4 Processing: the always-run part and the on-screen part
-
-Each new frame, whatever the selected tab:
-
-1. `process_samples()` in the record unit, unaveraged: trend update,
-   tachometer trend, speed gate, overflow flags, monitor capture.
-2. When recording with an alarm unit different from a channel's record
-   unit: `process_samples(alarm unit)` for the hooks.
-
-Steps 1 and 2 must not depend on the selected tab, or a recording made with
-the Spectrum tab selected differs from one made with the Trend tab
-selected.
-
-Then, only for the chart on screen:
-
-3. `_render_chart(spec)`: one `result_view()` for each checked channel in
-   the chart unit, mode and N (cache hit when it equals step 1), then
-   `set_value` on that chart's series. For a spectrum chart, the same
-   results update its result cards.
-4. The cards of every other spectrum chart (Q9): one `result_view()` for
-   each of their channels, peaks included, and the card widgets. No
-   `set_value` on their plot series. Cost: one view for each (spectrum
-   chart, channel) for each frame. The peaks-table widget pool (E19) keeps
-   the widget traffic to the rows that change. Measure it (2 spectrum
-   charts, 8 channels); if it is too slow, the fallback is a one-line
-   summary for the cards of a chart not on screen, updated with
-   `peaks=False`.
-
-On-screen test: `dpg.is_item_visible(plot_tag)`, failing open, as
-`_envelope_on_screen()` does now. Generalise it to `_chart_on_screen(cid)`.
-
-A tab change (tab-bar callback) renders the new chart at once from the
-current frame. Without it, the tab stays blank for up to one acquisition
-period (4 s at 0.25 Hz/bin).
-
-Cost: measure before and after with `scripts/profile-pipeline`
-(hardware-realistic `--raw-rate`) and the `_profile` counters, 1 to 8
-channels: today's 3 tabs against 6 charts with 1 on screen, recording with
-and without a separate alarm unit. Record the table in CONTRIBUTING.md,
-"E19. GUI render cost".
-
-### 3.5 Chart types
+### D4. Chart types
 
 | Type | Data | X axis | Y axis | Notes |
 |---|---|---|---|---|
-| Time waveform | `result_view(...).time_data`, display rate | Time, ms | chart unit (a trace has no amplitude mode; the label gives the unit only) | Replaces the bottom plot. Integrated traces start after t = 0 (overlap-save); keep `_last_time_x0_ms` for each chart |
-| Spectrum | `result_view(..., n_averages)`: spectrum, peaks, 1x marker | Frequency, Hz | `unit mode` | Average checkbox and N for each chart. Info line "averaging k of N frames" for each chart. Avg. window (N × acquisition period) shown in the Charts table row. Owns the result cards and peaks tables of its channels (3.3) |
-| Trend | `get_trend_for_display(unit, mode, channels)` | Time, s | `Overall, unit mode, band` | y2: shaft speed from `get_rpm_trend()` in the user's rotation unit (`rotation_from_rpm`); usable readings only. Browse cursor for each trend chart. Never averaged |
-| Envelope | `eu_scaled_raw()`, `envelope_spectrum()` | Modulation frequency, Hz | acceleration unit | Band controls and the Auto button move into the chart tab. Auto-band cache key becomes `(chart_id, ch, rate)` |
-| XY | two traces of the same frame, chart unit | channel X | channel Y | Same frame, same clock, same anti-alias and high-pass, so the phase between the two is kept. Equal axis scale. Trim both traces to the same span |
+| Time waveform | `result_view().time_data` | Time, ms | chart unit | Integrated traces start after t = 0; keep `_last_time_x0_ms` for each chart |
+| Spectrum | `result_view(n_averages)`: spectrum, peaks, 1x | Frequency, Hz | unit mode | Average and N per chart; "averaging k of N frames"; window N × frame period in the Charts row; owns its cards |
+| Trend | `get_trend_for_display(unit, mode, channels)` | Time, s | Overall, unit mode, band | y2: shaft speed (`rotation_from_rpm`), usable readings only; browse cursor per chart; NaN is a gap |
+| Envelope | `eu_scaled_raw()` × SI scale, `envelope_spectrum()` | Modulation frequency, Hz | unit mode | Band controls in the chart tab; auto-band cache key `(chart_id, ch, rate)` |
+| XY | two traces of one frame | channel X | channel Y | Same unit; equal axis scale; same span |
 
-### 3.6 Polar chart — deferred to R24
+A channel that cannot reach the chart unit, or is not in the data: empty
+series with the reason in the legend ("Ch B: no sensor, cannot show
+in/s"). Never mV under an engineering-unit axis.
 
-Owner decision Q4. Not in the phase-1 type combo. It needs a new
-measurement: the phase of the 1x component relative to a once-per-revolution
-tachometer edge, with the anti-alias FIR and high-pass group delay at 1x
-corrected, verified by AWG loopback over 300 to 10200 RPM, and reviewed by
-the vibration-engineer agent. dearpygui has no polar axes, so the plot is
-drawn on an equal-aspect plot. R24 in `doc/PROGRESS.md` holds this.
+### D5. Result cards
 
-### 3.7 Configuration dialog
+- One card for each (spectrum chart, channel): overall, crest factor,
+  kurtosis, 1x level and peaks table in the chart's unit and mode. Each
+  value has its unit. The overall of an averaging chart is averaged
+  ("avg k"); crest factor and kurtosis never are.
+- Cards are grouped under a **collapsing header** for each spectrum chart,
+  named for the chart (review D8). The user opens and closes a group; the
+  cards update either way (Q9).
+- A tachometer channel has one shaft-speed card for each channel. The
+  overflow warning stays one line for each channel.
+- The peaks-table widget pool (E19) is keyed by (chart_id, ch).
 
-**Charts tab** (`CONFIG_TAB_CHARTS`, after Channels and Tachometer):
+### D6. Charts tab
 
-- `dpg.table`, columns: `−`, Type, Name, Channels, Unit, Options.
-  - Channels: a horizontal group of checkboxes, one for each enabled
-    vibration channel, labelled with `name_for(ch)` in the channel colour.
-    A channel that the chart unit cannot use is disabled, with the reason in
-    a tooltip.
-  - XY (owner decision Q5): two combos, X and Y, and a swap button (⇄)
-    between them.
-  - Unit: one combo of `unit mode` items from `allowed_units()`. Waveform
-    and XY show the unit only.
-  - Options: trend — "Shaft speed on y2" checkbox and a tachometer combo,
-    shown only when a tachometer channel exists. Spectrum — "Average"
-    checkbox, N input (1 to `cache_frames`), and the averaging window in
-    seconds, read-only.
-- Below the table: type combo and `+` button.
-- Edits go to a working copy of the `ChartSet`. Close applies it: save
-  `charts.yaml`, rebuild the main tab bar, render the selected chart.
-- Rebuild the table when a channel is enabled or disabled, a sensor is
-  assigned, or the tachometer role changes.
-- Opened from a **Charts** button in a new strip above the tab bar of the
-  middle pane (`BTN_CHARTS_SETUP`), and from the dialog's tab bar.
-- **Recording lock** (owner decision Q6): chart setup is locked during a
-  recording, like every acquisition window. `BTN_CHARTS_SETUP` goes into
-  `_RECORDING_LOCKED_CONTROLS`.
+- `CONFIG_TAB_CHARTS`, after Channels and Tachometer. Opened also from a
+  **Charts** button above the tab bar (`BTN_CHARTS_SETUP`, in
+  `_RECORDING_LOCKED_CONTROLS`; Q6).
+- `dpg.table`: `−`, Type, Name, Channels, Unit, Options. Channels: a
+  checkbox for each vibration channel in the channel colour; a channel the
+  unit cannot use is disabled with the reason in a tooltip; a checked
+  channel that is not present shows greyed "not present" and stays checked.
+  **The table never removes a channel because it is absent now.** XY: X and
+  Y combos and a swap button (Q5). Unit: `unit mode` items from
+  `allowed_units()`. Options: trend — shaft speed on y2 and a tachometer
+  combo; spectrum — Average, N (1 to cache depth), window in seconds.
+- Below the table: type combo and `+`.
+- Edits go to a working copy. Close applies it to the layout in effect
+  (`collector.chart_set`) and rebuilds the tabs.
+- **Q14**: with live data, Close also saves `charts.yaml`. With a file
+  loaded, Close changes the layout in effect only; a later Save of a
+  measurement stores it. A **Use for live data** button, shown only with a
+  file loaded, copies the layout to `charts.yaml`.
 
-**Recording lock: visible disabled state (reported bug).** A user pressed
-the acquisition setup button during a recording and nothing happened. The
-button was disabled by `_set_recording_lock()`, but it looked the same as
-an enabled button: `gui.py` binds no theme for the disabled state, and
-dearpygui draws a disabled button with the normal colours. Fix:
+### D7. Main window
 
-- One global theme with `dpg.theme_component(..., enabled_state=False)`
-  for buttons, combos, checkboxes, input fields and sliders: muted text and
-  frame colours from the existing palette (`_c("MUTED")`). Bind it once in
-  `_create_gui()`, so every disabled widget in the app is visibly disabled,
-  not only the locked ones.
-- A tooltip on each locked control while it is locked: "Stop the recording
-  to change this."
-- Test (GUI context): the theme exists with a disabled-state component for
-  `mvButton`; `_set_recording_lock(True)` disables every control in
-  `_RECORDING_LOCKED_CONTROLS`, `BTN_CHARTS_SETUP` included, and
-  `_set_recording_lock(False)` enables them again.
-- This is a separate commit (S0b) ahead of the chart work, because it is a
-  defect in the released version. CHANGELOG entry under Fixed.
-
-**Acquisition tab:** remove `ACQ_DLG_ENV_ENABLED`, `ACQ_DLG_AVG_ENABLED`,
-`ACQ_DLG_AVG_N`, `ACQ_DLG_AVG_TIME` and their callbacks and tooltips.
-
-**Channels tab:** no change. The target unit and amplitude mode combos
-stay; they set the record unit.
-
-**Monitor tab:** add the alarm unit and mode combos to the anomaly section.
-Remove the unit combos beside the fixed upper and lower limits.
-
-### 3.8 Main window
-
-- Delete the bottom `PLT_SAMPLE` plot and `TIME_PLOT_HEIGHT`. The tab bar
-  fills the middle pane.
-- Delete the second-y-axis logic (`_update_axis_assignment`,
-  `_reassign_series_to_axis`, `PLT_FREQ_AX_2`, `PLT_SAMPLE_AX_ACCEL_2`,
-  `PLT_TREND_AX_OVERALL_2`). Each chart has one unit and one y axis. The
-  trend's y2 is shaft speed.
-- Tags from `chart_id`, never from the editable name:
-  `ui.chart_tab(cid)`, `ui.chart_plot(cid)`, `ui.chart_axis(cid, 'x'|'y'|'y2')`,
-  `ui.chart_series(cid, ch)`, `ui.chart_peaks(cid, ch)`, `ui.chart_one_x(cid, ch)`.
-- `_build_chart_tabs()` deletes and rebuilds the tab-bar children from the
-  `ChartSet`. It keeps the selected tab when its `chart_id` still exists,
-  else it selects the first tab.
-- Update every consumer of the old global tags: `_ensure_legends`,
+- Delete `PLT_SAMPLE`, `TIME_PLOT_HEIGHT`, `_update_axis_assignment`,
+  `_reassign_series_to_axis` and the second y axes.
+- Tags from `chart_id`: `ui.chart_tab(cid)`, `ui.chart_plot(cid)`,
+  `ui.chart_axis(cid, 'x'|'y'|'y2')`, `ui.chart_series(cid, ch)`,
+  `ui.chart_peaks(cid, ch)`, `ui.chart_one_x(cid, ch)`.
+- `_build_chart_tabs()` rebuilds the tab-bar children from
+  `collector.chart_set`; keeps the selected `chart_id` if it exists, else
+  selects the first tab.
+- `_on_data_source_changed()` (A2) also rebuilds the tabs and the cards.
+- Update every consumer of the old tags: `_ensure_legends`,
   `_autoscale_plots`, `_unlock_autoscaled_axes`, `_update_trend_cursor`,
-  `_add_channel_series` / `_remove_channel_series`, `_redraw_all_channels`,
+  `_add_channel_series`, `_remove_channel_series`, `_redraw_all_channels`,
   `_refresh_channel_names`, `_update_avg_count_text`, the keyboard
-  handlers, the session-browser display path.
-- Results column: the channel result sections (`ch_result_section(ch)`,
-  `ch_overall_value(ch)`, `ch_scalars_text(ch)`, `ch_one_x_text(ch)`, the
-  peaks-table pool keyed by channel) become sections keyed by
-  `(chart_id, ch)`, grouped under a header for each spectrum chart. The
-  peaks-table widget pool (E19) is kept, keyed the same way. Tachometer
-  cards and the overflow warning stay keyed by channel.
-- Put the chart builders and renderers in a new module `gui_charts.py`, so
-  `gui.py` (R61) gets shorter.
+  handlers, the session-browser path.
+- New module `gui_charts.py` for the chart builders and renderers. Update
+  the ARM pattern in `tests/conftest.py` to match `rev80.gui_charts` in the
+  same commit (review D5), with a test of the pattern.
 
-### 3.9 Persistence and migration
+### D8. Live layout and configuration
 
-#### 3.9.1 The live layout: `charts.yaml`
+- `charts.yaml` through `config.charts_config_path()`. Unreadable or
+  invalid: log it, use the default layout, do not overwrite the file.
+- The collector holds the layout in effect: `DataCollector.chart_set`. A
+  live collector (A2) takes it from `charts.yaml`.
+- `acquisition.yaml` migration, once: `envelope_enabled: true` adds an
+  envelope chart; `averaging_enabled` and `n_averages` set the averaging of
+  the default spectrum.
+- Remove `envelope_enabled`, `averaging_enabled`, `n_averages`,
+  `n_averages_effective` from `AcquisitionSettings` and the Acquisition-tab
+  controls (`ACQ_DLG_ENV_ENABLED`, `ACQ_DLG_AVG_*`).
+- Channels tab: unchanged; the target unit and mode are the record unit.
 
-- `charts.yaml` in the config directory, through a new
-  `config.charts_config_path()` (uses `config_dir()`). Not in
-  `acquisition.yaml` and not in the device YAML.
-- A chart refers to a channel by index. A device with fewer channels gives
-  charts with the missing channels unchecked, not an error.
-- An unreadable or invalid `charts.yaml`: log it, use the default set, and
-  do not overwrite the file.
-- Default set when no file exists, equal to today's layout: Spectrum, Trend
-  (shaft speed on y2 when a tachometer exists) and Time waveform, all
-  vibration channels, unit and mode of the first enabled channel's record
-  unit. Channels that cannot use that unit go on a second chart of the same
-  type.
-- One-time migration from `acquisition.yaml`: `envelope_enabled: true` adds
-  an Envelope chart; `averaging_enabled` and `n_averages` set the averaging
-  of the default Spectrum chart. (The configuration files keep a migration;
-  the data files do not, see 3.9.2.)
-- `AcquisitionSettings`: remove `envelope_enabled`, `averaging_enabled`,
-  `n_averages` and `n_averages_effective`. `from_dict` ignores the keys in
-  old YAML; `to_dict` stops writing them. Update `tests/test_config.py` and
-  `tests/test_config_contract.py`.
+## 8. Part E — chart layout in the data files
 
-#### 3.9.2 The layout in the data files (owner decision Q11)
+### E1. Format
 
-Every data file stores the chart layout that was in effect when it was
-written. Loading a file sets the chart layout to the stored one. Channel
-indices in the stored layout match the stored channel configuration,
-because both were written from the same state.
-
-**New file versions, and no reader for older ones.** This ships as Rev80
-1.0.0.
-
-| File | Writer | Version now | Version in 1.0.0 |
+| File | Writer | 0.1.x | 1.0.0 |
 |---|---|---|---|
-| Measurement file | `DataCollector.save_data()`, `DataCollector._FILE_VERSION` | 5 | 6 |
-| Monitor session (`session.h5`) | `MonitorWriterThread`, `monitor.writer._FILE_VERSION` | 6 | 7 |
+| Measurement | `DataCollector.save_data()`, `_FILE_VERSION` | 5 | 6 |
+| Session `session.h5` | `MonitorWriterThread`, `monitor.writer._FILE_VERSION` | 6 | 7 |
 
-Layout in the file:
+- `/metadata` attribute `chart_layout_json` = `json.dumps(ChartSet.to_dict())`,
+  the same dict as `charts.yaml`.
+- `/metadata` attribute `rev80_version` = `rev80.__version__`.
+- Measurement: the layout in effect at Save. Session: the layout at the
+  start of the recording (charts are locked during a recording).
+- **Headless** (Q15): `charts.yaml` from its config directory if present,
+  else `default_layout()`.
 
-- `/metadata` attribute `chart_layout_json`: `json.dumps(ChartSet.to_dict())`,
-  the same dict as `charts.yaml`, through the same serializer. One string,
-  so the reader and `charts.yaml` cannot drift apart.
-- `/metadata` attribute `rev80_version`: the package version that wrote the
-  file (`rev80.__version__`). Not used to read the file; it makes a future
-  refusal message exact.
-- Measurement file: the layout at the time of Save. Session file: the
-  layout at the start of the recording. Chart edits are locked during a
-  recording (Q6), so one layout holds for the whole session, its captures
-  and its bursts.
-- Headless writes session files too and has no charts: Q15.
+### E2. Reading
 
-Reading:
+- `_restore_metadata(f, version)` accepts exactly the current version of
+  its file type.
+- Older (Q11): refuse, ERROR: "<name>: data file version 5 was written by
+  Rev80 0.x. Rev80 1.0.0 reads version 6. Open it with Rev80 0.1.5, or
+  convert it with `scripts/convert-0x`."
+- Newer (Q16): refuse, ERROR: "<name>: data file version 7 was written by
+  Rev80 <rev80_version>. Update Rev80."
+- A refused file changes nothing: it loads into a new collector (A2) that
+  is discarded.
+- No `chart_layout_json`, or an invalid one: warning and `default_layout()`.
+  The stored layout is validated (D1); a chart that does not validate says
+  why on its tab.
+- Remove the old-format reader code: the v3 frame path in
+  `_read_frame_group()`, the v3 shared trend axis in `load_data()`,
+  `_loaded_channel_units()` if unused.
+- The same check in every reader: `_scan_session_dirs()` lists a 0.x
+  session as "Rev80 0.x session: convert or open with 0.1.5";
+  `reprocess_session_trend()`, `_on_sb_save_config()`,
+  `scripts/advanced_plots.py`.
 
-- `_restore_metadata(f, min_version, max_version)`. **The version check is
-  the first read, before the frame cache or the trend is cleared.** Today
-  `load_data()` clears the cache and then reads the version; a refused file
-  must leave the data on screen as it was.
-- A file older than the minimum: refuse, log at ERROR, load nothing:
-  "<name>: data file version 5 was written by Rev80 0.x. Rev80 1.0.0 reads
-  version 6 and later. Open this file with Rev80 0.1.4." (Measurement
-  version 5 and session version 6 are the 0.1.x formats.) Return a status
-  so that the GUI does not go on to rebuild charts for a load that did not
-  happen.
-- A file newer than this build: as now, a warning, and the file loads.
-  (Q16: refuse it too?)
-- A file of the right version with no `chart_layout_json`, or an invalid
-  one: log it, and use `ChartSet.default_for(loaded config)`. This is a
-  damaged file, not a migration path.
-- The stored layout is validated against the loaded configuration with the
-  same functions as the Charts tab (3.1). A chart that does not validate
-  (a hand-edited file) shows "no channel" with the reason; the load does
-  not fail.
-- Remove the reader code for old formats: the v3 path in
-  `_read_frame_group()` (frames in the recorded unit), the v3 shared trend
-  axis in `load_data()` (order 0 only), and `_loaded_channel_units()` if
-  nothing else uses it. This also removes the v3 case of 3.11.1.
-- Every other reader of these files gets the same check: the session
-  browser scan (`_scan_session_dirs()`) lists an old session with "Rev80
-  0.x session: open with Rev80 0.1.4" and does not open it;
-  `reprocess_session_trend()` refuses to write into an old file;
-  `_on_sb_save_config()`; `scripts/advanced_plots.py`.
+### E3. Converter for 0.x files (review D9)
 
-The live layout and the file layout:
+`scripts/convert-0x <file or session dir> [--out DIR]`. A script, not app
+code.
 
-- The collector holds the layout in effect: `DataCollector.chart_set`
-  (`charts.py` has no dearpygui import, so the collector can hold it).
-  `save_data()` and the session writer read it from there; a load sets it.
-- A load replaces the layout in effect, not `charts.yaml`. When the user
-  goes back to live data (device connect or Start), the live layout from
-  `charts.yaml` comes back. This is the same as the acquisition settings
-  now: a load replaces them, a device connect restores them.
-- Edits in the Charts tab while a file is loaded: Q14.
+- Reads with `h5py` only, and writes a **copy**, never in place: a
+  measurement `<name>.v6.h5`; a session directory copy with `session.h5`
+  at version 7.
+- Accepts measurement version 4 and 5, session version 6. Version 3 is
+  refused: "open it in Rev80 0.1.5 and save it again". (v3 frames are in
+  the recorded unit, not mV.)
+- Copies every group and attribute, sets the version, writes
+  `rev80_version` = "convert-0x <version>" and `chart_layout_json` from
+  `default_layout()` (Q15), using the stored channel roles and record
+  units.
+- Tests: a v5 file and a v6 session (written by the current writer, then
+  the new attributes removed and the version set back) convert, then load
+  in 1.0.0 with the default layout and frames and trends equal to the
+  source. The source file is unchanged (checksum).
 
-Tests (`tests/test_file_version_check.py` and a new
-`tests/test_chart_layout_persistence.py`):
+### E4. Tests
 
-- Round trip, both file types: save with a layout, load, the layout is
-  equal; bursts and single captures get the session's layout.
-- A version-5 measurement file and a version-6 session are refused, the
-  ERROR names the file version and Rev80 0.1.4, and the frame cache and
-  trend that were loaded before are unchanged.
-- A file with no `chart_layout_json` loads with the default layout and a
-  warning.
-- A newer file still warns.
-- Revert check: remove the version check; the refusal test must fail.
+- Round trip, both file types; bursts and single captures get the
+  session's layout.
+- Older and newer versions refused with the messages above; the screen
+  state unchanged; revert check on each refusal.
+- Missing layout: default layout and a warning.
 
-### 3.10 Headless
-
-Reads `alarm_unit`, `alarm_amplitude_mode` and `fixed_s` and builds the
-alarm view with the shared helper. No charts on screen. Its results are
-not averaged (Q8). Writes session version 7 with a chart layout (Q15).
-
-### 3.11 Data loaded from a file
-
-Five entry points load data into the frame cache:
-
-| Entry point | Collector call | Frames | Trend source |
-|---|---|---|---|
-| File > Load, `--from-file` with a measurement file | `load_data()` | the saved frame cache: contiguous frames | `/trend`: all five mV orders |
-| Session browser, `--from-file` with a session | `load_monitor_session()` | every interval capture; the cache grows to hold all N | `overall_json`: one value for each capture, in the record unit |
-| Session browser, one capture | `load_monitor_capture()` | one capture | none |
-| Session browser, one burst | `load_monitor_burst()` | contiguous burst frames, `rel_time` rebased to the trigger | `overall_json` for each frame, in the record unit |
-| Session reprocess (thread) | `reprocess_session_trend()`, then `load_monitor_session()` | as the session load | rewritten `overall_json`, record unit |
-
-What a load does now, and what it means for charts:
-
-1. **The acquisition settings come from the file.** `_restore_metadata()`
-   replaces `collector.config` with the file's settings: F_max, bin size,
-   band, high-pass, and the per-channel names, target units, amplitude
-   modes, roles and tachometer calibration. `_wire_session_sensors()`
-   assigns the file's sensors. `_post_load()` sets `enabled_channels` to
-   the channels in the frames.
-2. **The chart set comes from the file** (owner decision Q11, 3.9.2). The
-   stored layout was written with the stored channel configuration, so the
-   channel indices match.
-
-Consequences and the rule for each. With the layout from the file most of
-these do not occur for a valid file; the rules are for a damaged or
-hand-edited file, and for the Charts tab.
-
-| Case | Rule |
-|---|---|
-| A chart's channel is not in the file | The series is empty. The legend entry reads "Ch C: not in this file". The channel stays in the chart. |
-| A file channel cannot reach the chart unit | The series is empty, with the reason in the legend. Never a value in mV under an in/s axis. |
-| A tachometer in a vibration channel list | `channel_selectable()` uses the loaded roles. A tachometer is never drawn as vibration. |
-| The Charts tab is opened while a file is loaded | The table shows the file's layout and the loaded channels (Q14 for what an edit does). **The table never removes a channel from a chart because it is absent now.** |
-| The record unit | From the file (`target_unit` attribute). It sets the stored trend's unit and the session `overall_json`; it does not limit the charts. |
-
-One GUI hook replaces the per-path series code. `_on_load_file()`,
-`_load_from_path()` (session branch), `_on_session_list_select()` and
-`_on_burst_list_select()` each remove and add series and call
-`_update_axis_assignment()` in their own way now. Replace this with one
-`_on_data_source_changed()`, called after every load and after a device
-connect: it takes the layout in effect from `collector.chart_set` (the
-file's layout after a load, the live layout after a connect), rebuilds the
-tab bar, re-evaluates each chart against the loaded channels, units and
-roles, rebuilds the series and the legend notes, rebuilds the cards (3.3),
-and renders the chart on screen.
-
-#### 3.11.1 Defect: a session trend shows zeros in any other unit
-
-`load_monitor_session()` and `load_monitor_burst()` rebuild the trend from
-`overall_json`, a single value in the record unit. They back-scale it to mV
-and put it in the one order column of that unit. The other four columns
-stay `0.0`. `get_trend_for_display()` then gives `0.0` for every point in
-any unit with another integration order.
-
-Reproduced (2026-10-19, scratchpad `trendcols.py`, an accelerometer at
-100 mV/g, trend rebuilt as the session loader does, recorded in in/s):
-
-| Display unit | Trend values |
-|---|---|
-| in/s | 273.0, 283.9, 278.5 |
-| g | 0.0, 0.0, 0.0 |
-| mil | 0.0, 0.0, 0.0 |
-
-Today this is reachable by a change of the channel unit after a session
-load. With per-chart units, any trend chart in another unit shows it: a
-flat zero line that reads as a measured value. (v3 measurement files had
-the same defect; 1.0.0 does not read them, 3.9.2.)
-
-Fix (step S2b), in order of preference:
-
-1. **Rebuild the trend from the stored frames.** Every capture and burst
-   frame stores its raw-rate mV waveform, and the loader already reads all
-   of them into the cache. Stage 1 of `result_view()` gives the five mV
-   orders of each frame (cached on the sample). The trend is then exact in
-   every unit. Equality test: in the record unit, the rebuilt trend equals
-   the `overall_json` values to float tolerance. Measure the load time of a
-   long session (for example 1440 captures, 4 channels).
-2. **Where a frame has no waveform** (a tachometer channel, a damaged
-   group): NaN in the missing columns, never 0.0. A NaN point is a gap on
-   the plot.
-3. **Shaft speed** from the loaded tachometer samples: each frame has a
-   `TachResult` from its stored edge times. Today a session load builds no
-   RPM trend, so a trend chart with y2 is empty for a session. Rebuild the
-   RPM trend from the usable readings, with the frame `rel_time`. Also:
-   neither `load_data()` nor `load_monitor_session()` clears `tach_trend`,
-   and `init_trend_channels()` keeps the entries of every channel that is a
-   tachometer in the loaded config. So a session with a tachometer on the
-   same channel as the live setup keeps the live RPM trend beside the
-   session's vibration trend. Found by reading the code, not reproduced;
-   a measurement file without a tachometer channel drops it correctly
-   (checked, scratchpad `tachleak.py`). Clear `tach_trend` at the start of
-   every load.
-
-`overall_json` stays in the file for older readers, and
-`reprocess_session_trend()` keeps writing it in the record unit.
-
-#### 3.11.2 Averaging on loaded data
-
-The averaging rule takes "the N most recent frames up to the displayed
-frame". That is correct for contiguous frames: a live cache, a measurement
-file, a burst. A monitor session is not contiguous: its captures are
-`interval_s` apart (default 600 s). A spectrum chart with N = 8 on a session
-averages 8 captures over 80 min and labels it "averaging 8 frames". That is
-a different measurement, and on a machine that changes speed or load it
-smears lines.
-
-Rule: the average uses contiguous frames only. A frame is contiguous with
-the next when the difference of their `rel_time` is at most 1.5 x the
-acquisition period. The walk back stops at the first gap, as it stops now
-at a settings change. On a session, k = 1 and the chart says "averaging 1
-of 8 frames (captures are not contiguous)". `rel_time` is in every stored
-frame.
-
-#### 3.11.3 Other loaded-data points
-
-- **Envelope and XY** need only the raw-rate frame, which every file
-  stores. No change.
-- **1x marker and cards:** `current_rpm()` reads the tachometer sample of
-  the displayed frame, so a loaded frame shows its own shaft speed. No
-  change.
-- **The session reprocess thread** (`_on_sb_reprocess`) calls
-  `load_monitor_session()` off the render thread (R50). The view cache and
-  `_on_data_source_changed()` are render-thread only; the thread must hand
-  the result back to the render thread, not call them.
-
-## 4. Invariants to keep (checklist for each step)
+## 9. Invariants (check at each step)
 
 - [ ] Tachometer channels: no `ChannelResult`, no unit scaling, never in
       `ChartSpec.channels`.
-- [ ] `rpm` stays `None` with no reading; only usable readings on the trend
-      y2.
-- [ ] Overflow and degraded frames: shown and flagged on every chart type,
-      not trended, not averaged.
-- [ ] Replay shows what the live display showed: browse renders the same
-      `result_view()` with the same averaging rule.
-- [ ] Power-domain averaging only. The view never averages magnitudes.
-- [ ] Crest factor and kurtosis: from the record-unit trace, never averaged.
-- [ ] Monitor results, alarms and trends do not depend on the selected tab.
-- [ ] The speed gate is applied in `valid_results()` only.
-- [ ] Achieved rate, not `config.samplerate`, in every view.
-- [ ] A load sets the layout from the file; it never writes `charts.yaml`.
-      The Charts tab never drops a checked channel because it is absent now.
-- [ ] A refused file changes nothing: the version check comes before any
-      state is cleared.
-- [ ] No trend value is 0.0 because it was not recorded: NaN, a gap.
-- [ ] An average uses contiguous frames only.
+- [ ] `rpm` is `None` with no reading; only usable readings on a trend.
+- [ ] Overflow and degraded frames: shown and flagged, never trended,
+      averaged or alarmed on.
+- [ ] One snapshot per tick; every view of the tick uses it.
+- [ ] Frame side effects only in `advance_frame()`, once per live frame.
+- [ ] The capture stores the record view; hooks use their own views.
+- [ ] `valid_results()` is the only place the speed gate is applied.
+- [ ] Power-domain averaging over contiguous valid frames only.
+- [ ] Crest factor and kurtosis are never averaged. Cards: chart unit.
+      Trend: record unit.
+- [ ] Monitor results, alarms and trends do not depend on the tab on
+      screen.
+- [ ] Achieved rate and achieved frame period, never the config values.
+- [ ] No trend value is 0.0 because it was not recorded.
+- [ ] A load or connect makes a new collector; a refused file changes
+      nothing.
+- [ ] A load never writes `charts.yaml`; the Charts tab never drops a
+      checked channel because it is absent now.
 - [ ] No dearpygui import in `charts.py`, `collector.py`, `sample.py`,
       `monitor/`.
 - [ ] Source-inspection rules for `gui.py` and `headless.py` text.
-- [ ] No viewport in tests. GUI tests make a context only.
+- [ ] No viewport in tests.
 - [ ] `max_burst_s` and `compression_level` keep their saved values.
 
-## 5. Work breakdown
+## 10. Work breakdown
 
-Each step: tests first where the step changes behaviour, a revert check for
-each fix, `ruff check src/ tests/`, the full suite without the hardware
-file. One commit for each step. CHANGELOG, PROGRESS and README in the same
-commit as the code.
+Each step: tests first where behaviour changes, a revert check for each
+fix, `ruff check src/ tests/`, the suite without the hardware file, and
+CHANGELOG, PROGRESS and README in the same commit.
 
 | Step | Content | Tests |
 |---|---|---|
-| S0 | Branch, plan, tracker, R67 | — |
-| S0b | Fix: locked controls show a disabled state during a recording, with a tooltip | disabled-state theme bound; lock and unlock of every locked control |
-| S1 | `charts.py`: model, validation, `default_for`, YAML load/save, `charts_config_path()` | `tests/test_charts.py`: round trip; bad entry skipped; bad file not overwritten; allowed units; tachometer refused; XY needs two; default set equals today's layout |
-| S2 | `result_view()` (no `history` argument); `_view_of_sample()`; `process_sample()` removed; `process_samples(unit, mode)` unaveraged; unit-parameterised `get_trend_for_display()`; view cache | equality test (reference captured before the change); conversion test (off-bin, phase ≠ 0); revert check; `test_spectral_averaging.py` moved to the argument |
-| S2b | Loaded trends (Q13): rebuild the five orders from the stored frames for sessions and bursts; NaN where no waveform; RPM trend rebuilt from the loaded tachometer samples (sessions, bursts, measurement files); `tach_trend` cleared at the start of every load; contiguous-frame averaging rule (Q12) | reproduce the zero trend first (3.11.1), then the fix; equality with `overall_json` in the record unit; NaN gap; a session gives k = 1; revert checks; session load time measured |
-| S3 | Alarm view: Monitor-tab unit and mode, `alarm_view()` helper, both `_build_anomaly_hook` copies, headless, fixed-limit migration, fixed-limit sustain time `fixed_s` | hook fires on the alarm-unit overall; `fixed_s` = 0 fires on one frame (today's behaviour, equality); `fixed_s` > 0 needs consecutive frames and a flagged frame resets the count; channel that cannot convert is skipped; migration from `fixed_upper_unit`; GUI and headless defaults agree |
-| S4 | Main window: dynamic tab bar; Charts button; `_on_data_source_changed()` for every load path and device connect; bottom plot and second-y-axis code removed; waveform, spectrum (with per-chart averaging) and trend renderers; result cards and peaks tables for each (spectrum chart, channel); on-screen-only rendering; render on tab change | GUI-context tests: tabs from a set; rebuild keeps the selection; a load with a missing channel and a channel with no sensor gives empty series with a legend note; hidden chart not rendered (patch `is_item_visible`); tags by `chart_id` |
-| S5 | Charts tab in the dialog: add, remove, rename, checkboxes, XY selectors with swap, unit combo, options | GUI-context tests: add and remove rows; incompatible channel disabled; swap; close saves and rebuilds |
-| S6 | Acquisition tab: Envelope and averaging controls removed; settings fields removed; `acquisition.yaml` migration | old YAML loads; migration adds the envelope chart and the averaging |
-| S6b | Data files: chart layout stored (`chart_layout_json`, `rev80_version`); measurement version 6, session version 7; version check before any state is cleared; old versions refused with the 0.1.4 message; old-format reader code removed; every reader checked; headless writes a layout | 3.9.2 tests; revert check on the version refusal |
-| S7 | Envelope chart: band controls for each chart | `test_envelope.py` passes; chain runs only on screen |
-| S8 | Trend y2: shaft speed | usable readings only; no point for `None`; no unit scaling |
-| S9 | XY chart | two traces, same span and length; same unit |
-| S10 | Profiling table (E19), README (Charts tab, Data files layouts v6 and v7, "files from 0.x need Rev80 0.1.4"), CONTRIBUTING (4.1, 4.3, 4.5, 4.6, 4.8, E19), CLAUDE.md (file versions), CHANGELOG under 1.0.0 with a Breaking section | technical-writer audit; vibration-engineer review of S2, S3, S4, S8 |
+| A1 | Visible disabled state | disabled-state theme; lock and unlock |
+| A2 | `_replace_collector()`, `_build_live_collector()`, load into a new collector, reprocess thread hands over, `_on_data_source_changed()` | no stale speed reference or RPM trend; refused load leaves state; connect uses `acquisition.yaml` |
+| A3 | Session and burst trends from frames, without the stage-1 arrays; NaN; RPM trend; measurement files keep stored trends | reproduce, then fix; equality with `overall_json`; NaN gap; load time and memory measured |
+| A4 | Contiguous-frame averaging | session k = 1; burst and live k = N; restart stops the walk |
+| B1 | `FrameSnapshot`, `snapshot()`, `current_rpm(snapshot)` | append between calls does not change a result |
+| B2 | `advance_frame()`, `results_for()`; `process_samples()` removed; GUI and headless callers | trend grows by one point per tick |
+| B3 | `result_view()`, `_view_of_sample()`, tick memo, unit-parameterised trend | equality; conversion; revert check; averaging tests moved |
+| C1 | `ResultViews`, `FrameViews`, `on_results(views, ...)`, RMS unit and mode, fixed-limit modes | stored `overall_json` in the record unit with an RMS hook in g; empty keys give today's results |
+| C2 | `fixed_s` | 0 s fires on one frame; > 0 needs consecutive frames |
+| C3 | Monitor-tab controls; both hook builders; headless; seed | defaults agree; Pi 3 cost measured |
+| — | Release 0.1.5: CHANGELOG, README, CONTRIBUTING; vibration-engineer review of A3, A4, B, C; technical-writer audit; merge to `develop`, field test, merge to `main`, tag `v0.1.5` | |
+| D1 | `charts.py`: model, validation, `default_layout()`, YAML | round trip; bad entry skipped; bad file not overwritten; units; tachometer refused; XY needs two; default = waveform + spectrum |
+| D2 | Main window: tab bar from `chart_set`, Charts button, renderers for waveform, spectrum, trend; cards per spectrum chart with collapsing headers; on-screen drawing; tab-change render; `gui_charts.py`; conftest pattern | tabs from a set; selection kept; hidden chart not drawn; legend notes; ARM pattern |
+| D3 | Charts tab: rows, checkboxes, XY selectors and swap, unit combo, options; Q14 apply and "Use for live data" | add, remove, swap; disabled channel; file-loaded edits do not write `charts.yaml` |
+| D4 | Acquisition-tab controls and settings fields removed; `acquisition.yaml` migration | old YAML migrates |
+| D5 | Envelope chart with SI scale and mode | equals the sensor-EU result times the SI factor; only on screen |
+| D6 | Trend y2: shaft speed | usable only; `None` no point; no unit scaling |
+| D7 | XY chart | two traces, same span; same unit |
+| E1 | Layout and `rev80_version` written; versions 6 and 7; headless layout | round trip |
+| E2 | Exact-version reading, older and newer refused, old reader code removed, every reader | messages; state unchanged; revert checks |
+| E3 | `scripts/convert-0x` | converted files load equal; source unchanged; v3 refused |
+| — | Release 1.0.0: profiling table (E19), README (Charts tab, Data files v6 and v7, converter), CONTRIBUTING, CLAUDE.md (file versions, collector replacement, snapshot rule), CHANGELOG with a Breaking section; reviews; merge chain; tag `v1.0.0` | |
 
-## 6. Decisions
+## 11. Decisions
 
 | # | Question | Decision |
 |---|---|---|
-| Q1 | Unit for alarms | ✅ A unit and mode selector on the Monitor tab, passed to `result_view()` for the anomaly test. Channels keep their target unit (default: sensor EU) as the record unit |
-| Q2 | Crest factor and kurtosis | ✅ Revised: on a result card, in the unit of that card's spectrum chart, never averaged. The trend stores the record-unit values |
-| Q3 | Peaks table and result cards | ✅ One card for each (spectrum chart, channel), in the chart's unit, mode and averaging. A channel on two spectrum charts has two cards |
-| Q4 | Polar in phase 1 | ✅ Deferred to R24 |
-| Q5 | XY selection | ✅ Two ordered selectors and a swap button |
-| Q6 | Chart edits during a recording | ✅ Locked, like all acquisition windows. The locked controls must look disabled (reported bug, S0b) |
-| Q7 | Envelope checkbox | ✅ Retired; an envelope chart replaces it |
-| Q8 | Averaged data for alarms | ✅ Never. Alarms use unaveraged results; the sustain time is the debounce |
-| — | Averaging state | ✅ The chart owns the setting (on, N); the collector derives the history from the frame cache. `history` leaves the public `result_view()` (3.2.1) |
-| Q9 | Result cards of spectrum charts not on screen | ✅ Always shown and updated, peaks table included (3.3, 3.4). Fallback if too slow: a one-line summary |
-| Q11 | Chart layout and file load | ✅ Stored in every data file; a load sets the layout. New file versions; older versions are refused with a message to use an older Rev80. Release as 1.0.0 (3.9.2) |
-| Q12 | Averaging on non-contiguous frames | ✅ Contiguous frames only (3.11.2) |
-| Q13 | Rebuild loaded trends from the stored frames | ✅ Yes, tachometer trends included (3.11.1) |
-| Q14 | An edit in the Charts tab while a file is loaded: what does it change? | Open. Recommended: the layout in effect only, so the view changes and a later Save of the measurement stores it; `charts.yaml` does not change. A "Use for live data" button copies the file's layout to `charts.yaml`, for the case where the user wants it |
-| Q15 | Headless writes session files but has no charts. Which layout does it store? | Open. Recommended: `charts.yaml` from its config directory if there is one, else `ChartSet.default_for(config)`. Then a session from a Raspberry Pi opens in the GUI with a sensible layout, and a user can copy a `charts.yaml` to the Pi to set it |
-| Q16 | A file newer than this build: warn and load (as now), or refuse? | Open. Recommended: refuse, with "written by Rev80 <rev80_version>; update Rev80". A newer file can hold a chart type or a channel role this build cannot draw correctly, and the warning is easy to miss |
-| Q10 | Sustain time for the fixed-limit alarm | ✅ Yes: its own `fixed_s`, default 0 s (one frame, as now) |
-| — | Anomaly triggers as a table (like the Charts table): add a trigger type, set it up in a row; fixed triggers as one type with > or < | Not in this work. Tracked as R68 |
+| Q1 | Unit for alarms | Each hook has its own unit and mode (revised in rev 7, C1). Channels keep the record unit |
+| Q2 | Crest factor and kurtosis | Cards: chart unit, never averaged. Trend: record unit |
+| Q3 | Peaks table and cards | One card for each (spectrum chart, channel), chart unit |
+| Q4 | Polar | Deferred to R24 |
+| Q5 | XY selection | Two ordered selectors and a swap button |
+| Q6 | Chart edits during a recording | Locked; locked controls look disabled (A1) |
+| Q7 | Envelope checkbox | Retired; an envelope chart replaces it |
+| Q8 | Averaged data for alarms | Never |
+| — | Averaging state | Chart owns the setting; the collector derives history from the snapshot |
+| Q9 | Cards of charts not on screen | Always shown and updated; collapsing header per chart |
+| Q10 | Fixed-limit sustain time | `fixed_s`, default 0 s |
+| — | Anomaly-trigger table | R68, not in this work |
+| Q11 | Layout in data files | Stored; a load sets it; old versions refused |
+| Q12 | Averaging on non-contiguous frames | Contiguous only (A4) |
+| Q13 | Loaded trends from frames | Yes, shaft speed included; sessions and bursts only (A3) |
+| Q14 | Charts-tab edits with a file loaded | Layout in effect only; "Use for live data" copies to `charts.yaml` |
+| Q15 | Default and headless layout | Default: one time waveform and one spectrum, all vibration channels. Headless: `charts.yaml` if present, else the default |
+| Q16 | Newer file | Refused |
+| — | Stale state | A new `DataCollector` for every load and connect (A2) |
+| — | 0.x files | `scripts/convert-0x` with the default layout (E3) |
+| — | Releases | A, B, C → 0.1.5; D, E → 1.0.0 |
 
-## 7. Risks
+## 12. Risks
 
-- `gui.py` is about 5200 lines (R61). This work touches most plot code;
-  `gui_charts.py` takes the new code.
-- dearpygui can drop legends when series are added and removed. Rebuilding
-  whole tabs makes this more likely; test it.
-- Deleting the selected tab can leave the tab bar with no selection.
-- Session load time with the trend rebuilt from frames (Q13) is not
-  measured. If it is too slow for a long session, version 7 is the time to
-  add the five mV orders for each capture to the file, because the format
-  changes anyway. Measure before S6b is merged, so that the format is
-  decided once.
-- Users with 0.x data files must keep 0.1.4 installed to open them. The
-  1.0.0 release notes and the README must say so.
-- A second `process_samples()` call for the alarm unit costs stage 2 for
-  each channel during a recording. Measure it before S3 merges.
-- `DataCollector` has no lock (R59). The view cache is used on the render
-  thread only. The session reprocess thread (R50) must not touch it.
+- **A2 touches every load and connect path.** 259 references to
+  `self.collector` in `gui.py`; any code that keeps a reference across a
+  swap is a defect. Search for bound collector methods passed as callbacks
+  and for module-level references.
+- **Part B changes the measurement path in a patch release.** The equality
+  tests are the guard. The vibration-engineer review and the field test on
+  `develop` are mandatory before `v0.1.5`.
+- **Part C changes alarm behaviour in a patch release** only where a user
+  sets a new key; empty keys must give today's results bit for bit.
+- **A3 memory and load time** are not measured; measure before A3 merges.
+- **Part C cost on a Raspberry Pi 3**: one extra view set for each hook
+  unit for each frame. Measure with 8 channels.
+- `gui.py` is about 5200 lines (R61); new code goes to `gui_charts.py`.
+- dearpygui can drop legends when series are added and removed; test the
+  tab rebuild.
+- Users with 0.x files need 0.1.5 or the converter; the 1.0.0 notes and
+  the README say so.

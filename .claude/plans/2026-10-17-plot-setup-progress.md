@@ -1,69 +1,77 @@
 # Plot setup — progress tracker
 
-Plan: `.claude/plans/2026-10-17-plot-setup.md` (revision 6, 2026-10-19). Release: Rev80 1.0.0.
+Plan: `.claude/plans/2026-10-17-plot-setup.md` (revision 7, 2026-10-20).
+Review: `.claude/plans/2026-10-19-plot-setup-review.md`.
 Branch: `feat/plot-setup`. Requirement: R67 in `doc/PROGRESS.md`.
 
-This file gives the status of each step of the plan. Update it in the same
-commit as the step. Status: 🔲 TODO, 🔄 In progress, ✅ Done, ⏸ Blocked.
+Update this file in the same commit as each step. Status: 🔲 TODO,
+🔄 In progress, ✅ Done, ⏸ Blocked.
 
-## Steps
+## Release 0.1.5 — parts A, B, C
 
 | Step | Content | Status | Commit | Verification |
 |---|---|---|---|---|
-| S0 | Branch, plan, tracker, R67 | ✅ Done | `e3ec953`, revisions 2 and 3 | — |
-| S0b | Fix: locked controls look disabled during a recording | 🔲 TODO | | lock and unlock test |
-| S1 | `charts.py` model, validation, `charts.yaml` | 🔲 TODO | | |
-| S2 | `result_view()` as the one path; `process_sample()` removed; unaveraged `process_samples(unit, mode)`; unit-parameterised trend; view cache | 🔲 TODO | | equality test; off-bin conversion test; revert check |
-| S2b | Loaded trends from stored frames (all units, NaN gaps, tachometer trends); `tach_trend` cleared on load; contiguous-frame averaging | 🔲 TODO | | zero-trend reproduction, then fix; load time measured |
-| S3 | Alarm unit and mode on the Monitor tab; fixed-limit sustain time `fixed_s` (default 0 s); both `_build_anomaly_hook` copies; headless | 🔲 TODO | | hook-build defaults agree |
-| S4 | Dynamic tab bar; bottom time-series removed; waveform, spectrum, trend renderers; result cards for each (spectrum chart, channel); on-screen-only rendering | 🔲 TODO | | profiling table before and after |
-| S5 | Charts tab in the configuration dialog; XY selectors with swap | 🔲 TODO | | |
-| S6 | Envelope and averaging controls off the Acquisition tab; settings fields removed; `acquisition.yaml` migration | 🔲 TODO | | old YAML loads |
-| S6b | Chart layout in data files; measurement v6, session v7; old versions refused; headless writes a layout | ⏸ Q14, Q15, Q16; load-time measurement | | round trip; refusal leaves state unchanged; revert check |
-| S7 | Envelope chart | 🔲 TODO | | |
-| S8 | Trend y2: shaft speed | 🔲 TODO | | |
-| S9 | XY chart | 🔲 TODO | | |
-| S10 | Profiling evidence, README, CONTRIBUTING, CLAUDE.md, CHANGELOG | 🔲 TODO | | technical-writer audit; vibration-engineer review |
-| — | Polar chart and 1x phase measurement | Deferred to R24 | | |
-| — | Anomaly triggers as a configurable table (trigger type per row; fixed triggers with > or <) | Later work, R68; not in this branch | | |
+| A1 | Visible disabled state for locked controls | 🔲 TODO | | lock and unlock test |
+| A2 | A new `DataCollector` for every load and connect; `_on_data_source_changed()` | 🔲 TODO | | no stale state; refused load leaves state |
+| A3 | Session and burst trends from stored frames (no stage-1 arrays kept); NaN; RPM trend | 🔲 TODO | | zero-trend reproduction, then fix; load time and memory |
+| A4 | Averaging on contiguous frames only | 🔲 TODO | | session k = 1 |
+| B1 | `FrameSnapshot`; `current_rpm(snapshot)` | 🔲 TODO | | append between calls |
+| B2 | `advance_frame()`, `results_for()`; `process_samples()` removed | 🔲 TODO | | one trend point per tick |
+| B3 | `result_view()`, tick memo, unit-parameterised trend | 🔲 TODO | | equality; off-bin conversion; revert check |
+| C1 | `ResultViews`; RMS hook unit and mode; fixed-limit modes; capture stores the record view | 🔲 TODO | | stored record unit; empty keys bit for bit |
+| C2 | Fixed-limit sustain time `fixed_s` (default 0 s) | 🔲 TODO | | 0 s = one frame |
+| C3 | Monitor-tab controls; both hook builders; headless | 🔲 TODO | | defaults agree; Pi 3 cost |
+| R1 | Docs, vibration-engineer review (A3, A4, B, C), technical-writer audit | 🔲 TODO | | |
+| R2 | Merge to `develop`; field test | 🔲 TODO | | field-test notes |
+| R3 | Merge to `main`; tag `v0.1.5` | 🔲 TODO | | draft release built |
+
+## Release 1.0.0 — parts D, E
+
+| Step | Content | Status | Commit | Verification |
+|---|---|---|---|---|
+| D1 | `charts.py`; default layout = time waveform + spectrum | 🔲 TODO | | |
+| D2 | Main window from `chart_set`; cards with collapsing headers; `gui_charts.py`; ARM pattern | 🔲 TODO | | profiling before and after |
+| D3 | Charts tab; XY swap; file-loaded edits and "Use for live data" | 🔲 TODO | | |
+| D4 | Acquisition-tab controls and fields removed; YAML migration | 🔲 TODO | | |
+| D5 | Envelope chart with SI scale and mode | 🔲 TODO | | |
+| D6 | Trend y2: shaft speed | 🔲 TODO | | |
+| D7 | XY chart | 🔲 TODO | | |
+| E1 | Layout in data files; versions 6 and 7; headless layout | 🔲 TODO | | round trip |
+| E2 | Exact-version reading; older and newer refused; old reader removed | 🔲 TODO | | revert checks |
+| E3 | `scripts/convert-0x` | 🔲 TODO | | converted files equal; source unchanged |
+| R4 | Docs, reviews, merge chain, tag `v1.0.0` | 🔲 TODO | | |
+
+## Not in this work
+
+| Item | Tracked as |
+|---|---|
+| Polar chart and 1x phase measurement | R24 |
+| Anomaly triggers as a configurable table (trigger type per row; fixed triggers with > or <) | R68 |
+| Split panes, more than one chart on screen | R33 |
 
 ## Decisions
 
-| # | Question | Decision | Date |
-|---|---|---|---|
-| Q1 | Unit for alarms | Alarm unit and mode on the Monitor tab, passed to `result_view()`. Channels keep their target unit (default: sensor EU) | 2026-10-19 |
-| Q2 | Crest factor and kurtosis | On each card, in its spectrum chart's unit, never averaged; trend stores record-unit values | 2026-10-19 (revised) |
-| Q3 | Peaks table and result cards | One card for each (spectrum chart, channel), in the chart's unit | 2026-10-19 |
-| Q4 | Polar in phase 1 | Deferred to R24 | 2026-10-19 |
-| Q5 | XY selection | Two ordered selectors and a swap button | 2026-10-19 |
-| Q6 | Chart edits during a recording | Locked; locked controls must look disabled (S0b) | 2026-10-19 |
-| Q7 | Envelope checkbox | Retired; an envelope chart replaces it | 2026-10-19 |
-| Q8 | Averaged data for alarms | Never; the sustain time is the debounce | 2026-10-19 |
-| — | Spectrum averaging | Setting on each spectrum chart (checkbox and N); history derived by the collector from the frame cache; no `history` argument in `result_view()` | 2026-10-19 |
-| Q9 | Cards of spectrum charts not on screen | Always shown and updated; fallback to a one-line summary if measured too slow | 2026-10-19 |
-| Q10 | Sustain time for `FixedThresholdHook` | Yes: `fixed_s`, default 0 s (one frame) | 2026-10-19 |
-| — | Anomaly-trigger table | Out of scope; R68 | 2026-10-19 |
-| Q11 | Chart layout and file load | Stored in every data file; a load sets it; new versions, old ones refused (use Rev80 0.1.4); release 1.0.0 | 2026-10-19 |
-| Q12 | Averaging on non-contiguous frames | Contiguous frames only | 2026-10-19 |
-| Q13 | Rebuild loaded trends from stored frames | Yes, tachometer trends included | 2026-10-19 |
-| Q14 | Charts-tab edits while a file is loaded | Open (recommended: change the layout in effect only; a "Use for live data" button) | |
-| Q15 | Layout stored by headless sessions | Open (recommended: `charts.yaml` if present, else the default set) | |
-| Q16 | A file newer than this build | Open (recommended: refuse, naming the writer's version) | |
+All open questions are decided. The list is section 11 of the plan.
+
+| Date | Decisions |
+|---|---|
+| 2026-10-19 | Q1 to Q13 |
+| 2026-10-20 | Q14 to Q16; review findings: C1, C2, C3, C5, C6 fixed in the plan; C4 replaced by a unit for each hook; D1 a new collector for each load and connect; D2 accepted as work in progress; D3 and D4 chart-driven units; D5 to D8 fixed; D9 converter; releases 0.1.5 (A, B, C) and 1.0.0 (D, E) |
 
 ## Measurements
 
-Record each measurement here with the method (hardware model, AWG loopback,
-or `SimulatedSensor`), then move the final table to CONTRIBUTING.md,
+Record each one with the method (hardware model, AWG loopback, or
+`SimulatedSensor`), then move the final table to CONTRIBUTING.md,
 section 5.
 
 | Date | What | Method | Result |
 |---|---|---|---|
-| | GUI time for each frame, 1 to 8 channels, before S4 | `scripts/profile-pipeline` | |
-| | GUI time for each frame, 6 charts, 1 on screen, after S4 | `scripts/profile-pipeline` | |
-| | Extra time for the alarm-unit view during a recording | `scripts/profile-pipeline` | |
-| 2026-10-19 | Session trend rebuilt from `overall_json`, accelerometer 100 mV/g, recorded in in/s, shown in in/s / g / mil | synthetic trend, `get_trend_for_display()` (scratchpad `trendcols.py`) | 273.0, 283.9, 278.5 / 0.0 x3 / 0.0 x3: defect, 3.11.1 |
-| | Session load time with the trend rebuilt from frames, 1440 captures, 4 channels | `SimulatedSensor` session | |
-| | Extra time for the cards of spectrum charts not on screen (full views with peaks), 2 spectrum charts, 8 channels | `scripts/profile-pipeline` | |
+| 2026-10-19 | Session trend rebuilt from `overall_json`, accelerometer 100 mV/g, recorded in in/s, shown in in/s / g / mil | synthetic trend, `get_trend_for_display()` (scratchpad `trendcols.py`) | 273.0, 283.9, 278.5 / 0.0 x3 / 0.0 x3: defect, A3 |
+| | Session load time and peak memory, 1440 captures, 4 channels, before and after A3 | `SimulatedSensor` session | |
+| | Extra time for the hook views during a recording, 8 channels | Raspberry Pi 3 headless; GUI PC | |
+| | GUI time for each frame, 1 to 8 channels, before D2 | `scripts/profile-pipeline` | |
+| | GUI time for each frame, 6 charts, 1 on screen, after D2 | `scripts/profile-pipeline` | |
+| | Cards of 2 spectrum charts × 8 channels | `scripts/profile-pipeline` | |
 
 ## Notes
 
