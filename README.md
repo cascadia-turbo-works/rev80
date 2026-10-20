@@ -851,15 +851,16 @@ baseline.
 | Baseline time constant | EWMA time (s) | `rms_ewma_time` | 60 s (GUI) |
 | Baseline factor | (none) | `rms_alpha` | 0.97 |
 | Warm-up | Warmup frames | `warmup` | 10 frames |
-| Unit | Unit | `rms_unit` | Channel (`''`) |
-| Amplitude mode | Amplitude | `rms_amplitude_mode` | Channel (`''`) |
+| Unit | Unit | `rms_unit` | `in/s` |
+| Amplitude mode | Amplitude | `rms_amplitude_mode` | `0-P` |
 
-**Unit** and **Amplitude** set the overall that the baseline follows.
-**Channel** is the unit and mode of each channel. Use another unit to make
-the detector sensitive to a different defect: in `g`, a high-frequency
-defect changes the overall much more than in `in/s`. The recording stores
-the overall in the channel unit in all cases. A channel that cannot give
-the unit (no sensor) is not checked, and the log records a warning once.
+**Unit** and **Amplitude** set the overall that the baseline follows, for
+all channels. Select both: there is no "same as the channel" choice. Use
+another unit to make the detector sensitive to a different defect: in `g`,
+a high-frequency defect changes the overall much more than in `in/s`. The
+recording stores the overall in the channel unit in all cases. A channel
+that cannot give the unit is not checked, and the log records a warning
+once. A channel with no sensor gives `mV` only: select `mV` to check it.
 
 `rms_ewma_time` is in seconds. When it is present, it replaces `rms_alpha`.
 The GUI writes `rms_ewma_time`. Why 50 %: a 3.2 % speed change can move the
@@ -894,8 +895,9 @@ baseline. It triggers when **any** bin in the band deviates by more than
 
 The fixed-level trigger fires when the overall crosses a level. It has no
 baseline and no warm-up. **Upper limit** and **Lower limit** are
-independent. Each limit has a unit combo and an amplitude-mode combo;
-**Channel** in the mode combo is the mode of each channel.
+independent. Each limit has a unit combo and an amplitude-mode combo. Select
+both to agree with the standard that you use: for example, ISO 20816 zone
+limits are RMS values. Rev80 does not select a mode for you.
 
 **Sustained (s)** (`fixed_s`, default 0 s) is the time that the overall
 must stay beyond a limit. Rev80 converts it to `round(fixed_s / period) + 1`
@@ -1113,7 +1115,7 @@ saves.
 | `rms_s` | s | 3.0 | Sustained (s) |
 | `rms_alpha` | | 0.97 | YAML only |
 | `rms_ewma_time` | s | (none) | EWMA time (s); replaces `rms_alpha` |
-| `rms_unit`, `rms_amplitude_mode` | | `''`, `''` | Unit, Amplitude (`''` = Channel) |
+| `rms_unit`, `rms_amplitude_mode` | | `in/s`, `0-P` | Unit, Amplitude |
 | `spec_pct` | % | 50.0 | Headless only |
 | `spec_n` | frames | 10 | Headless only |
 | `spec_alpha` | | 0.995 | Headless only |
@@ -1121,9 +1123,11 @@ saves.
 | `spec_fmin`, `spec_fmax` | Hz | `null` | Headless only |
 | `fixed_upper_enabled`, `fixed_upper_value`, `fixed_upper_unit` | | `false`, 1.0, `in/s` | Upper limit |
 | `fixed_lower_enabled`, `fixed_lower_value`, `fixed_lower_unit` | | `false`, 0.05, `in/s` | Lower limit |
-| `fixed_upper_mode`, `fixed_lower_mode` | | `''`, `''` | Mode combo of each limit (`''` = Channel) |
+| `fixed_upper_mode`, `fixed_lower_mode` | | `0-P`, `0-P` | Mode combo of each limit |
 | `fixed_s` | s | 0.0 | Sustained (s), fixed level |
 | `cooldown_enabled`, `cooldown_s` | s | `false`, 300 | Cooldown, Cooldown period (s) |
+
+An empty or unknown unit or mode in these keys reads as the seeded value.
 
 If the file holds `hook_type: spectral` or `both`, the GUI shows RMS but
 keeps the stored value when it saves.

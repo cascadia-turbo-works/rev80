@@ -21,8 +21,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   has **Unit** and **Amplitude** combos (`rms_unit`, `rms_amplitude_mode`).
   Each fixed limit has a mode combo beside its unit (`fixed_upper_mode`,
   `fixed_lower_mode`), and the fixed level has **Sustained (s)**
-  (`fixed_s`, default 0 s). `''`, shown as **Channel**, is each channel's
-  own unit or mode. Both hook builders (GUI and headless) read the keys;
+  (`fixed_s`, default 0 s). The user selects every unit and mode; there is
+  no "same as the channel" choice. The seeds are `in/s` and `0-P`, and an
+  empty or unknown value reads as the seed. The RMS detector thus checks
+  `in/s` 0-P by default: a channel with no sensor (`mV` only) is not
+  checked until the user selects `mV`. Both hook builders (GUI and headless) read the keys;
   `frames_for_seconds()` converts `rms_s` and `fixed_s` to frames for both.
   The headless start summary shows the RMS view and a `Fixed` line.
   Cost on the PC (i7-1260P, 8 channels, 0.5 s frames, rate 25591.8 Hz): the

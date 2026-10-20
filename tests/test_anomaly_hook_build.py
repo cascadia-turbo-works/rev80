@@ -205,12 +205,12 @@ def _seeded(key):
 
 
 def test_hook_view_defaults_agree_between_front_ends():
-    """No view keys: both copies read the record view (the seed is '')."""
+    """No view keys: both copies use the seeded unit and mode, never ''."""
     (gui_rms,) = _flatten(_gui_build('rms'))
     (hl_rms,) = _flatten(headless_build(_anom('rms'), _cfg(), pre_buffer_s=60.0))
     assert (gui_rms._unit, gui_rms._mode) == (hl_rms._unit, hl_rms._mode)
     assert (gui_rms._unit, gui_rms._mode) == (_seeded('rms_unit'), _seeded('rms_amplitude_mode'))
-    assert gui_rms._unit == ''
+    assert (gui_rms._unit, gui_rms._mode) == ('in/s', '0-P')
 
 
 def _fixed_of(hook):
@@ -219,13 +219,14 @@ def _fixed_of(hook):
 
 
 def test_fixed_defaults_agree_between_front_ends():
-    """Upper limit on, no mode and no fixed_s: both copies fire on one frame."""
+    """Upper limit on, no mode and no fixed_s: 0-P, and one frame."""
     import rev80.gui as gui_module
     ui = gui_module.ui
     gui = _fixed_of(_gui_build('rms', {ui.MON_ANOM_FIXED_UPPER_ENABLED: True}))
     hl = _fixed_of(headless_build(_anom('rms', fixed_upper_enabled=True), _cfg(),
                                   pre_buffer_s=60.0))
-    assert (gui._upper_mode, gui._lower_mode) == (hl._upper_mode, hl._lower_mode) == ('', '')
+    assert (gui._upper_mode, gui._lower_mode) == (hl._upper_mode, hl._lower_mode) == ('0-P', '0-P')
+    assert gui._upper_mode == _seeded('fixed_upper_mode')
     assert gui._sustain_frames == hl._sustain_frames == 1
     assert _seeded('fixed_s') == 0.0
 
