@@ -905,6 +905,11 @@ Click **Load Session** to open the session browser.
 
 > **Caution:** **Save Config** changes the session file.
 
+A load (a file, a session or a burst) stops acquisition and closes the
+device, as **Load** does. A file that does not load leaves the display
+unchanged. A device connect after a load uses the settings in
+`acquisition.yaml`, not the settings of the loaded file.
+
 ---
 
 ## Headless datalogger

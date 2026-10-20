@@ -315,6 +315,7 @@ def apply_tach_claim(collector, channel, implicit_enabled, settings=None):
 class GUI:
     collector: rev80.DataCollector
     found_sensors: list
+    _pending_collector: 'rev80.DataCollector | None' = None
 
     def __init__(self):
         self.context = None
@@ -323,6 +324,9 @@ class GUI:
         self._consecutive_render_errors: int = 0
         self._cleaned_up: bool = False
         self.collector = rev80.DataCollector()
+        # A collector that a worker thread loaded; the render thread swaps it
+        # in on its next tick. See _replace_collector.
+        self._pending_collector = None
         self.registry = ScopeSensorRegistry()
         self._editing_scope_sensor_id: str | None = None
         # Channel the Tachometer tab switched on implicitly when it was
@@ -1455,6 +1459,10 @@ class GUI:
         # It early-returns when its dialog is not on screen.
         self._update_tach_tab()
         self._check_status_timeout()
+        pending, self._pending_collector = self._pending_collector, None
+        if pending is not None:
+            # A collector built on a worker thread; swap it on this thread.
+            self._replace_collector(pending)
         if not self.collector.new_frame_event.is_set():
             return
         self.collector.new_frame_event.clear()
@@ -1925,13 +1933,15 @@ class GUI:
             return
         self._on_load_file(Path(path_str))
 
-    def _wire_session_sensors(self) -> None:
+    def _wire_session_sensors(self, collector: 'rev80.DataCollector | None' = None) -> None:
         """Register any unknown sensors from the loaded session/file and wire them to channels.
 
         Must be called after load_monitor_session() or load_data() so that
         _loaded_scope_sensors and _loaded_channel_sensor_configs are populated.
+        `collector` defaults to the one on screen.
         """
-        for sid, sensor_dict in self.collector._loaded_scope_sensors.items():
+        collector = collector if collector is not None else self.collector
+        for sid, sensor_dict in collector._loaded_scope_sensors.items():
             if self.registry.find_by_id(sid) is None:
                 try:
                     sensor = ScopeSensor.from_dict(sensor_dict)
@@ -1939,55 +1949,151 @@ class GUI:
                     log.info(f"Added sensor to registry from file: {sensor.name!r} ({sid})")
                 except Exception as exc:
                     log.warning(f"_wire_session_sensors: could not add sensor {sid!r}: {exc}")
-        for ch, sensor_cfg in self.collector._loaded_channel_sensor_configs.items():
+        for ch, sensor_cfg in collector._loaded_channel_sensor_configs.items():
             sid    = sensor_cfg.get("id")
             sensor = self.registry.find_by_id(sid) if sid else None
-            self.collector.set_scope_sensor(ch, sensor)
+            collector.set_scope_sensor(ch, sensor)
 
-    def _on_load_file(self, path: Path):
-        """Load an h5 file and sync all GUI state to the loaded data."""
+    # ------------------------------------------------------------------
+    # Data source: a new collector for each load and each connect
+    # ------------------------------------------------------------------
+
+    def _release_device(self) -> None:
+        """Stop the stream and close the device of the collector on screen.
+
+        Close it before another collector opens a device: a device left open
+        makes the next open fail with PICO_NOT_FOUND.
+        """
         if self.collector.is_streaming:
             self._stop_stream()
-
-        # Disconnect any attached hardware so file channels are unambiguously active
         if self.collector.sensor is not None:
             self.collector.disconnect_sensor()
             self._set_device_status("disconnected")
 
-        self.collector.load_data(path)
-        self._browse_context = {'type': 'file', 'name': path.stem}
+    def _replace_collector(self, new: 'rev80.DataCollector', setup=None) -> bool:
+        """Put `new` on screen. The one place `self.collector` changes after __init__.
 
-        cache = self.collector.data["frame_cache"]
-        if not cache:
-            return
+        A new collector for each load and connect, so no state of the old
+        data source (speed reference, RPM trend, stage-1 caches, cache depth,
+        cursor) can survive. Refused while a recording runs. Closes the old
+        device, assigns, runs `setup()` if given, then calls
+        `_on_data_source_changed()`. No GUI code may keep a reference to the
+        old collector, its `data` dict or its cache.
+        """
+        if self._refuse_while_recording("A change of data source"):
+            return False
+        if new is not self.collector:
+            self._release_device()
+            self.collector = new
+        try:
+            if setup is not None:
+                setup()
+        finally:
+            self._on_data_source_changed()
+        return True
 
-        # Determine channels present in the loaded data
-        loaded_channels: set[int] = set()
-        for frame in cache:
-            loaded_channels.update(k for k in frame if isinstance(k, int))
+    def _load_into_new_collector(self, load, what: str) -> 'rev80.DataCollector | None':
+        """Load a file into a new collector; None if the load fails or is empty.
 
-        # Update _num_channels from file data (mirrors what device connect does from hardware)
-        if loaded_channels:
-            self._num_channels = max(loaded_channels) + 1
+        `load(collector)` reads the file. The collector on screen is not
+        touched, so a refused or failed file leaves the screen unchanged.
+        """
+        new = rev80.DataCollector()
+        try:
+            load(new)
+        except Exception as exc:
+            log.error("%s: load failed: %s", what, exc)
+            return None
+        if not new.data["frame_cache"]:
+            log.error("%s: no frames loaded; the display is unchanged", what)
+            return None
+        self._wire_session_sensors(new)
+        return new
 
-        # Remove stale series and trend cursor, then create series for loaded channels
+    def _on_data_source_changed(self) -> None:
+        """Bring the widgets in line with the collector on screen, after a swap."""
+        collector = self.collector
+        if collector.sensor is not None:
+            self._num_channels = collector.sensor.num_channels
+        else:
+            loaded: set[int] = set()
+            for frame in collector.data["frame_cache"]:
+                loaded.update(k for k in frame if isinstance(k, int))
+            if loaded:
+                self._num_channels = max(loaded) + 1
+        # Remove stale series and the trend cursor, then add the series again.
         for ch in range(_MAX_CHANNELS):
             self._remove_channel_series(ch)
         if dpg.does_item_exist(ui.PLT_TREND_CURSOR):
             dpg.delete_item(ui.PLT_TREND_CURSOR)
-        for ch in sorted(loaded_channels):
-            self._add_channel_series(ch)
-
-        self._wire_session_sensors()
-
+        for ch in sorted(collector.config.enabled_channels):
+            if ch < self._num_channels:
+                self._add_channel_series(ch)
         self._update_axis_assignment()
         self._update_results_section_visibility()
         self._update_connection_summary()
         self._update_spectrum_info()
+        self._update_browse_label()
         if dpg.does_item_exist(ui.ACQ_NOTES):
-            dpg.set_value(ui.ACQ_NOTES, self.collector.notes)
+            dpg.set_value(ui.ACQ_NOTES, collector.notes)
         self._autoscale_pending = True
-        self.collector.reprocess_last_block()
+        collector.reprocess_last_block()
+
+    def _build_live_collector(self, sensor) -> 'rev80.DataCollector':
+        """A new collector with the acquisition.yaml settings, connected to `sensor`."""
+        acq_dict = _cfg.load_acquisition_config().get("acquisition", {})
+        config = AcquisitionSettings.from_dict(acq_dict) if acq_dict else None
+        new = rev80.DataCollector(config=config)
+        new.connect_sensor(sensor)
+        return new
+
+    def _connect_device(self, sensor) -> bool:
+        """Close the old device, then connect `sensor` in a new collector.
+
+        Restores the device YAML (channels, siggen), the sensors from the
+        registry and the tachometer settings. On failure the new device is
+        closed and the indicator shows disconnected.
+        """
+        if self._refuse_while_recording("Device connect"):
+            return False
+        self._release_device()
+        try:
+            new = self._build_live_collector(sensor)
+        except Exception as e:
+            log.warning(f"Device connect failed: {e}")
+            self._set_device_status("disconnected")
+            return False
+
+        def _setup():
+            try:
+                self._num_channels = sensor.num_channels
+                self.collector.reset_channel_config(sensor.num_channels)
+                device_cfg = _cfg.load_device_config(sensor.model_name, sensor.serial_number)
+                self._restore_channel_assignments(device_cfg)
+                self.collector.reconnect_stream()
+                self._set_device_status("connected")
+            except Exception as e:
+                log.warning(f"Device connect failed: {e}")
+                self.collector.disconnect_sensor()
+                self._set_device_status("disconnected")
+
+        return self._replace_collector(new, setup=_setup)
+
+    def _on_load_file(self, path: Path) -> bool:
+        """Load an h5 file into a new collector and put it on screen.
+
+        Closes any device, so the file channels are the only ones active. A
+        file that does not load leaves the screen unchanged.
+        """
+        if self._refuse_while_recording("File load"):
+            return False
+        new = self._load_into_new_collector(lambda c: c.load_data(path), path.name)
+        if new is None:
+            return False
+        if not self._replace_collector(new):
+            return False
+        self._browse_context = {'type': 'file', 'name': path.stem}
+        return True
 
     # ------------------------------------------------------------------
     # Device Setup Dialog
@@ -2071,29 +2177,16 @@ class GUI:
         sensor = sensors[0]
         log.info(f"Autoconnect: found {sensor.model_name} (S/N {sensor.serial_number})")
 
-        try:
-            self.collector.connect_sensor(sensor)
-            self._num_channels = sensor.num_channels
-            for ch in range(_MAX_CHANNELS):
-                self._remove_channel_series(ch)
-            self.collector.reset_channel_config(sensor.num_channels)
-            device_cfg = _cfg.load_device_config(sensor.model_name, sensor.serial_number)
-            self._restore_channel_assignments(device_cfg)
-            self.collector.reconnect_stream()
-            self._set_device_status("connected")
-            log.info(f"Autoconnect: connected to {sensor.model_name}")
-        except Exception as e:
-            log.warning(f"Autoconnect failed: {e}")
-            self.collector.disconnect_sensor()
-            self._set_device_status("disconnected")
+        if self.collector.sensor is not None:
+            log.info("Autoconnect: a device is already connected")
             return
+        if not self._connect_device(sensor) or self.collector.sensor is None:
+            log.warning("Autoconnect failed")
+            return
+        log.info(f"Autoconnect: connected to {sensor.model_name}")
 
         self._repopulate_device_list()
         self._rebuild_device_channel_rows()
-        self._update_connection_summary()
-        self._update_axis_assignment()
-        self._update_results_section_visibility()
-        self._update_spectrum_info()
 
     def _repopulate_device_list(self):
         """Rebuild the detected-device rows inside the Device Setup dialog."""
@@ -2284,22 +2377,7 @@ class GUI:
             self._set_device_status("disconnected")
             self._set_stream_status("idle")
         else:
-            if self.collector.sensor is not None:
-                self.collector.disconnect_sensor()
-            try:
-                self.collector.connect_sensor(sensor)
-                self._num_channels = sensor.num_channels
-                # Purge all stale series before config reset so no ghost traces remain
-                for _ch in range(_MAX_CHANNELS):
-                    self._remove_channel_series(_ch)
-                self.collector.reset_channel_config(sensor.num_channels)
-                device_cfg = _cfg.load_device_config(sensor.model_name, sensor.serial_number)
-                self._restore_channel_assignments(device_cfg)
-                self.collector.reconnect_stream()
-                self._set_device_status("connected")
-            except Exception as e:
-                log.warning(f"Device connect failed: {e}")
-                self.collector.disconnect_sensor()
+            self._connect_device(sensor)
         self._repopulate_device_list()
         self._rebuild_device_channel_rows()
 
@@ -2578,31 +2656,13 @@ class GUI:
             'n_bursts':    entry.get('n_bursts',   '—'),
         }
 
-        # Clear stale plot series before loading (prevents color cycle accumulation)
-        for ch in range(_MAX_CHANNELS):
-            self._remove_channel_series(ch)
-        if dpg.does_item_exist(ui.PLT_TREND_CURSOR):
-            dpg.delete_item(ui.PLT_TREND_CURSOR)
-
-        # Load all interval frames immediately; guard against corrupt/old H5 files
-        try:
-            self.collector.load_monitor_session(session_h5)
-        except Exception as exc:
-            log.error(f'session browser: failed to load session {session_h5}: {exc}')
-
-        # Wire scope sensors from file metadata — registers unknown sensors and
-        # populates collector.scope_sensors for get_trend_for_display() / process_sample().
-        self._wire_session_sensors()
-        self.collector.reprocess_last_block()
-
-        # Re-add series and sync display state — mirrors _on_load_file post-load steps
-        for ch in sorted(self.collector.config.enabled_channels):
-            self._add_channel_series(ch)
-        self._update_axis_assignment()
-        self._update_results_section_visibility()
-        self._update_connection_summary()
-
-        self._autoscale_plots()
+        # Load all interval frames into a new collector. A corrupt or old
+        # file leaves the screen unchanged.
+        new = self._load_into_new_collector(
+            lambda c: c.load_monitor_session(session_h5), f'session {session_h5}')
+        if new is not None:
+            self._replace_collector(new)
+            self._autoscale_plots()
 
         # Populate burst listbox
         burst_list: list = []
@@ -2720,21 +2780,25 @@ class GUI:
                 dpg.configure_item('_SB_REPROCESS_BTN', label=f'{i} / {n}')
 
         def _run() -> None:
+            # This thread never touches the collector on screen. It works on
+            # its own collector, loaded from the patched session file, and
+            # hands a freshly loaded one to the render thread.
             try:
-                self.collector.reprocess_session_trend(session_h5, progress_cb=_progress)
+                work = self._load_into_new_collector(
+                    lambda c: c.load_monitor_session(session_h5), f'reprocess {session_h5}')
+                if work is not None:
+                    work.reprocess_session_trend(session_h5, progress_cb=_progress)
             except Exception as exc:
                 log.error(f"_on_sb_reprocess: failed: {exc}")
             finally:
                 if dpg.does_item_exist('_SB_REPROCESS_BTN'):
                     dpg.configure_item('_SB_REPROCESS_BTN', enabled=True,
                                        label=f'{icons.IC["refresh"]}  Reprocess')
-            # Reload session to display updated trend
-            try:
-                self.collector.load_monitor_session(session_h5)
-                self._wire_session_sensors()
-                self.collector.reprocess_last_block()
-            except Exception as exc:
-                log.error(f"_on_sb_reprocess: reload failed: {exc}")
+            # Reload the session to show the updated trend.
+            fresh = self._load_into_new_collector(
+                lambda c: c.load_monitor_session(session_h5), f'reload {session_h5}')
+            if fresh is not None:
+                self._pending_collector = fresh
 
         threading.Thread(target=_run, daemon=True, name='SBReprocess').start()
 
@@ -2759,15 +2823,11 @@ class GUI:
         except Exception:
             pass
 
-        for ch in range(_MAX_CHANNELS):
-            self._remove_channel_series(ch)
-        if dpg.does_item_exist(ui.PLT_TREND_CURSOR):
-            dpg.delete_item(ui.PLT_TREND_CURSOR)
-
-        try:
-            self.collector.load_monitor_burst(session_h5, burst_id)
-        except Exception as exc:
-            log.error(f'session browser: failed to load burst {burst_id} from {session_h5}: {exc}')
+        new = self._load_into_new_collector(
+            lambda c: c.load_monitor_burst(session_h5, burst_id),
+            f'burst {burst_id} from {session_h5}')
+        if new is None or not self._replace_collector(new):
+            return
 
         se = self._current_session_entry
         self._browse_context = {
@@ -2780,11 +2840,6 @@ class GUI:
             'n_captures':   se.get('n_captures', '—'),
             'n_bursts':     se.get('n_bursts',   '—'),
         }
-        self._wire_session_sensors()
-        for ch in sorted(self.collector.config.enabled_channels):
-            self._add_channel_series(ch)
-        self._update_axis_assignment()
-        self._update_results_section_visibility()
         self._update_browse_label()
 
         self._autoscale_plots()
@@ -5103,22 +5158,11 @@ class GUI:
 
         log.info(f"--from-file: loading {'monitor session' if is_monitor else 'measurement'} {p}")
         if is_monitor:
-            for ch in range(_MAX_CHANNELS):
-                self._remove_channel_series(ch)
-            if dpg.does_item_exist(ui.PLT_TREND_CURSOR):
-                dpg.delete_item(ui.PLT_TREND_CURSOR)
-            try:
-                self.collector.load_monitor_session(p)
-            except Exception as exc:
-                log.error(f"--from-file: load_monitor_session failed: {exc}")
+            new = self._load_into_new_collector(
+                lambda c: c.load_monitor_session(p), f"--from-file {p}")
+            if new is None or not self._replace_collector(new):
                 return
             self._current_session_h5 = p
-            self._wire_session_sensors()
-            self.collector.reprocess_last_block()
-            for ch in sorted(self.collector.config.enabled_channels):
-                self._add_channel_series(ch)
-            self._update_axis_assignment()
-            self._update_results_section_visibility()
             self._autoscale_plots()
         else:
             self._on_load_file(p)

@@ -11,8 +11,8 @@ Update this file in the same commit as each step. Status: 🔲 TODO,
 
 | Step | Content | Status | Commit | Verification |
 |---|---|---|---|---|
-| A1 | Visible disabled state for locked controls | ✅ Done | A1 | lock and unlock test (`test_gui_locked_controls.py`) |
-| A2 | A new `DataCollector` for every load and connect; `_on_data_source_changed()` | 🔲 TODO | | no stale state; refused load leaves state |
+| A1 | Visible disabled state for locked controls | ✅ Done | 85d630c | lock and unlock test (`test_gui_locked_controls.py`) |
+| A2 | A new `DataCollector` for every load and connect; `_on_data_source_changed()` | ✅ Done | A2 | no stale state; refused load leaves state; connect uses `acquisition.yaml`; revert check (`test_gui_collector_swap.py`) |
 | A3 | Session and burst trends from stored frames (no stage-1 arrays kept); NaN; RPM trend | 🔲 TODO | | zero-trend reproduction, then fix; load time and memory |
 | A4 | Averaging on contiguous frames only | 🔲 TODO | | session k = 1 |
 | B1 | `FrameSnapshot`; `current_rpm(snapshot)` | 🔲 TODO | | append between calls |

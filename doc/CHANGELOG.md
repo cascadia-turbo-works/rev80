@@ -19,6 +19,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   disabled buttons, combos, checkboxes, input fields and sliders in muted
   colours, and each locked control has the tooltip "Stop the recording to
   change this." while the lock is on.
+- **State of the old data source survived a load or a connect.** The GUI
+  made one `DataCollector` and used it for every load and connect, so the
+  latched speed-gate reference, the RPM trend, the stage-1 caches, the cache
+  depth and the cursor of the previous source stayed. Each load and each
+  connect now makes a new collector (`GUI._replace_collector()`, the one
+  place `self.collector` changes). A file loads into a new collector first;
+  a file that does not load leaves the display unchanged (before, the cache
+  was cleared first). A connect closes the old device, then builds the new
+  collector from `acquisition.yaml` (`_build_live_collector()`), so a
+  connect after a file load no longer keeps the file's settings until the
+  device YAML restore. `_on_data_source_changed()` is the one widget update
+  after a swap; six copies of it are removed.
+- **A session or burst load while streaming mixed live frames into the
+  loaded cache.** The session browser loaded into the streaming collector
+  and did not stop the stream. It now stops acquisition and closes the
+  device, as **Load** does.
+- **The session reprocess thread changed the collector on screen** while the
+  render loop read it. The thread now loads its own collector and the render
+  thread swaps the result in (part of R50).
 
 ## [0.1.4] - 2026-09-30
 
