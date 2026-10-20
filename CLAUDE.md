@@ -255,8 +255,11 @@ The evidence is in CONTRIBUTING.md, "E21. Device loss".
   the frames that a render stall skipped their live overalls, because a
   burst can store them. "E22. Loaded trends from the stored frames".
 - `DataCollector._FILE_VERSION` = 6 (measurement files);
-  `monitor.writer._FILE_VERSION` = 7 (`session.h5`). Each loader checks its
-  own limit (`_restore_metadata(f, max_version=...)`).
+  `monitor.writer._FILE_VERSION` = 7 (`session.h5`). **Each type is read at
+  exactly its own version.** Every reader calls
+  `check_file_version(f, kind)` before it changes any state or writes; an
+  older or newer file raises `FileVersionError`. Do not add a reader for an
+  old layout: `scripts/convert-0x` converts 0.x files.
 - `None` in the acquisition attributes is stored as `''` and read back as
   `None`.
 - **`acquisition.yaml` holds all acquisition settings and the `monitor:`

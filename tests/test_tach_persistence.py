@@ -184,35 +184,21 @@ def test_a_file_with_no_tach_still_round_trips(tmp_path):
 
 # --- version handling ----------------------------------------------------
 
-def test_a_v4_file_loads_with_every_channel_as_vibration(tmp_path):
-    """A v4 file has no role attribute, so every channel loads as 'vibration'.
+def test_an_older_or_newer_file_version_is_refused(tmp_path):
+    """A build reads its own file version only.
 
-    v4 files contain no tachometer channels.
-    """
-    _, path = _saved(tmp_path)
-    with h5py.File(path, 'r+') as f:
-        f['metadata'].attrs['version'] = 4
-        for ch in ('0', '1'):
-            del f[f'metadata/channels/{ch}'].attrs['role']
-    dc2 = vc.DataCollector(config=vc.AcquisitionSettings())
-    dc2.load_data(path)
-    assert dc2.config.role_for(0) == 'vibration'
-    assert dc2.config.role_for(1) == 'vibration'
-
-
-def test_a_newer_file_version_warns_rather_than_misreading(tmp_path, caplog):
-    """A file version newer than this build logs a warning.
-
-    A build that misreads a newer layout could, for example, restore a tach
+    A build that misreads another layout could, for example, restore a tach
     channel as a vibration channel and compute an overall on a square wave.
+    The full rules are in test_file_version_check.py.
     """
     _, path = _saved(tmp_path)
-    with h5py.File(path, 'r+') as f:
-        f['metadata'].attrs['version'] = 99
-    dc2 = vc.DataCollector(config=vc.AcquisitionSettings())
-    with caplog.at_level('WARNING'):
-        dc2.load_data(path)
-    assert any('version' in r.message.lower() for r in caplog.records)
+    for version in (4, 99):
+        with h5py.File(path, 'r+') as f:
+            f['metadata'].attrs['version'] = version
+        dc2 = vc.DataCollector(config=vc.AcquisitionSettings())
+        with pytest.raises(vc.FileVersionError):
+            dc2.load_data(path)
+        assert len(dc2.data['frame_cache']) == 0
 
 
 # --- duty cycle ----------------------------------------------------------

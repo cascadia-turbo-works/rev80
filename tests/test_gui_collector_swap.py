@@ -271,3 +271,84 @@ def test_connect_moves_the_old_chart_settings_to_charts_yaml(app):
     assert cfg_mod.charts_config_path().exists()
     assert 'envelope_enabled' not in cfg_mod.load_acquisition_config()['acquisition']
     app.collector.disconnect_sensor()
+
+
+# --- data files of another version (E2) ------------------------------------
+
+def _set_file_version(path, version):
+    import h5py
+    with h5py.File(path, 'a') as f:
+        attrs = f['metadata'].attrs
+        attrs['version' if 'version' in attrs else 'file_version'] = version
+        if 'rev80_version' in attrs:
+            del attrs['rev80_version']
+
+
+def test_an_older_measurement_file_is_refused_with_its_message(app, tmp_path, caplog):
+    path = _measurement_file(tmp_path)
+    _set_file_version(path, 5)
+    old = _streamed(app)
+    with caplog.at_level('ERROR'):
+        assert app._on_load_file(path) is False
+    assert app.collector is old
+    msg = ' '.join(r.getMessage() for r in caplog.records if r.levelname == 'ERROR')
+    assert 'Rev80 0.1.5' in msg and 'convert' in msg
+    assert 'load failed' not in msg                 # the message stands alone
+
+
+@pytest.fixture
+def sessions_root(app, tmp_path, monkeypatch):
+    """Two sessions under data_dir()/monitor: an old one (newer name) and a current one."""
+    import shutil
+    from test_monitor_session_load import _make_session, _record_session
+    root = tmp_path / 'data'
+    monkeypatch.setattr(rev80, 'data_dir', lambda: root)
+    src = _make_session(tmp_path / 'src')
+    _record_session(src, n_intervals=3, n_bursts=1)
+    for name in ('2026-10-01_current', '2026-10-02_old'):
+        shutil.copytree(src.session_dir, root / 'monitor' / name)
+    _set_file_version(root / 'monitor' / '2026-10-02_old' / 'session.h5', 6)
+    return root / 'monitor'
+
+
+def test_the_session_browser_lists_an_old_session_with_its_reason(app, sessions_root):
+    sessions = app._scan_session_dirs()
+    by_id = {s['session_id']: s for s in sessions}
+    assert set(by_id) == {'2026-10-01_current', '2026-10-02_old'}
+    assert by_id['2026-10-01_current']['version_error'] == ''
+    assert 'Rev80 0.1.5, or convert a copy' in by_id['2026-10-02_old']['version_error']
+
+
+def test_selecting_an_old_session_changes_nothing(app, sessions_root, monkeypatch):
+    old = _streamed(app)
+    app._current_session_h5 = None
+    app._sb_session_sel_ids = []
+    app._sb_burst_sel_ids = []
+    app._session_browser_burst_list = ['untouched']
+    entry = {s['session_id']: s for s in app._scan_session_dirs()}['2026-10-02_old']
+    app._on_session_list_select(user_data=entry)
+    assert app.collector is old
+    assert app._current_session_h5 is None          # Save config cannot reach it
+    assert app._session_browser_burst_list == ['untouched']
+
+
+def test_selecting_a_current_session_loads_it(app, sessions_root, monkeypatch):
+    _streamed(app)
+    app._current_session_h5 = None
+    app._sb_session_sel_ids = []
+    app._sb_burst_sel_ids = []
+    monkeypatch.setattr(app, '_autoscale_plots', lambda *a, **k: None)
+    monkeypatch.setattr(app, '_wire_session_sensors', lambda c: None)
+    entry = {s['session_id']: s for s in app._scan_session_dirs()}['2026-10-01_current']
+    app._on_session_list_select(user_data=entry)
+    assert app._current_session_h5 == entry['session_h5']
+    assert len(app.collector.data['frame_cache']) == 3
+
+
+def test_save_config_never_patches_an_old_session(app, sessions_root):
+    import hashlib
+    h5 = sessions_root / '2026-10-02_old' / 'session.h5'
+    sha = hashlib.sha256(h5.read_bytes()).hexdigest()
+    app._current_session_h5 = h5
+    app._on_sb_save_config()
+    assert hashlib.sha256(h5.read_bytes()).hexdigest() == sha

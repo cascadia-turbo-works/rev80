@@ -9,6 +9,7 @@ import pytest
 
 import rev80.gui as gui_module
 from rev80.collector import DataCollector
+from rev80.monitor import writer
 from rev80.gui import GUI
 from rev80.sample import AcquisitionSettings
 from rev80.scope_sensor import ScopeSensor
@@ -21,6 +22,16 @@ def test_gui_module_imports_h5py_at_module_scope():
         'references h5py.File() outside any function-local import'
     )
     assert gui_module.h5py is h5py
+
+
+def _empty_session(session_h5):
+    """A session file of the current version with no captures.
+
+    Save Config refuses a file of another version, so the stub carries one.
+    """
+    with h5py.File(session_h5, 'w') as f:
+        f.require_group('metadata').attrs['file_version'] = writer._FILE_VERSION
+        f.require_group('monitor')
 
 
 def _make_gui_stub(session_h5, tmp_path):
@@ -46,8 +57,7 @@ def _make_gui_stub(session_h5, tmp_path):
 def test_save_config_writes_metadata_groups(tmp_path):
     """The method writes channel and sensor metadata groups into the file."""
     session_h5 = tmp_path / 'session.h5'
-    with h5py.File(session_h5, 'w') as f:
-        f.require_group('metadata')
+    _empty_session(session_h5)
 
     app = _make_gui_stub(session_h5, tmp_path)
     app._on_sb_save_config()
@@ -77,8 +87,7 @@ def test_save_config_does_not_swallow_programming_errors(tmp_path):
     A broad except would report a programming error as a disk failure.
     """
     session_h5 = tmp_path / 'session.h5'
-    with h5py.File(session_h5, 'w') as f:
-        f.require_group('metadata')
+    _empty_session(session_h5)
 
     app = _make_gui_stub(session_h5, tmp_path)
 

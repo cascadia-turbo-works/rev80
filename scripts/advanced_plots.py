@@ -19,6 +19,8 @@ import rev80
 DATAFILE = Path("<paste path here>")
 
 # %% Load
+# A file of another data-file version raises rev80.FileVersionError; its
+# message says which Rev80 reads it, or how to convert it.
 with h5py.File(DATAFILE, "r") as f:
     is_monitor_session = "monitor" in f
 

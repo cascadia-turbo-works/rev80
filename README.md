@@ -1117,8 +1117,8 @@ During the run:
 
   Use systemd `Restart=on-failure` to start it again.
 
-Headless writes a v6 `session.h5`. Open it with the GUI session browser or
-with `rev80 --from-file`.
+Headless writes a version-7 `session.h5`. Open it with the GUI session
+browser or with `rev80 --from-file`.
 
 ### Channels
 
@@ -1434,6 +1434,17 @@ again. Rev80 stores the achieved sample rate as a float.
 
 > **Note for programs that read the files:** A tachometer channel has no
 > `data` dataset. Test for `data` before you read it.
+
+**File versions.** Rev80 1.0.0 reads measurement files of version 6 and
+monitor sessions of version 7 only. It refuses a file of another version,
+logs the reason, and does not change the data on screen.
+
+- A file from Rev80 0.x (measurement version 5 or earlier, session
+  version 6 or earlier): open it with Rev80 0.1.5.
+- A file from a newer Rev80: update Rev80.
+- The session browser lists a session of another version with
+  "(other version)". Hover over it to see the reason. Select it, and
+  nothing loads. **Save Config** does not write into it.
 
 ### Measurement files (version 6)
 

@@ -434,8 +434,13 @@ in the vibration path gives a plausible wrong result, not an error. Thus:
   `role_of_sample(sample)`. Pass `role=` at every `_write_channel_group` call:
   the parameter defaults to `'vibration'`.
 - Measurement files: `DataCollector._FILE_VERSION` = 6. Monitor sessions:
-  `monitor.writer._FILE_VERSION` = 7. Each loader checks a file against its
-  own version limit (`_restore_metadata(f, max_version=...)`).
+  `monitor.writer._FILE_VERSION` = 7. `check_file_version(f, kind)` accepts
+  exactly the version of its type and raises `FileVersionError` for any
+  other, with a message that names the file and what to do. Every reader
+  calls it first: the four loaders, `reprocess_session_trend()`, the
+  session browser scan and its **Save Config**. A refused load changes no
+  state; in the GUI it also loads into a new collector (A2), so the screen
+  does not change.
 - `None` in the acquisition attributes is stored as `''` and read back as
   `None`.
 - The full file layouts are in README.md, "Data files".

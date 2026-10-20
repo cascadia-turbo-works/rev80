@@ -63,6 +63,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   or `charts.yaml`. The last chart cannot be removed.
 
 #### Fixed
+- **A refused session no longer becomes the current session.** When the
+  session browser could not load a session, it still made it current:
+  it filled the burst table, drew its burst lines on the trend of the data
+  on screen, and **Save Config** then wrote into that file. Now a refused
+  session changes nothing.
 - **A loaded session or burst trend equals the live overall.** Each
   stored capture and burst frame holds the five live mV orders of each
   vibration channel (`orders_mv`, from the stateful high-pass), and a load
@@ -84,6 +89,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   loaded file keeps the stored overalls.
 
 #### Changed
+- **Each data file is read at exactly its own version.** Rev80 reads
+  measurement files of version 6 and sessions of version 7 only.
+  `check_file_version(f, kind)` raises `FileVersionError` for an older or a
+  newer file, and for a session given to the measurement loader (or the
+  reverse), before any state changes. The message names the file, the
+  version and the Rev80 that wrote it, and says what to do: open a 0.x file
+  with Rev80 0.1.5 or convert a copy, update Rev80 for a newer file. Before,
+  a newer file loaded with a warning and an older file loaded through the
+  reader code for versions 3 to 5; that code is removed
+  (`_loaded_channel_units()`, the unit of v3 frames, the v3 trend). The
+  session browser lists a session of another version as "(other version)",
+  with the reason in a tooltip, and does not load it on first open.
+  `reprocess_session_trend()` and **Save Config** refuse to write into
+  one.
 - **Envelope and averaging belong to the charts.** The Acquisition-tab
   controls "Average spectrum", "Averages", "Avg. Window" and
   "Envelope/Demodulation" are removed, and `AcquisitionSettings` has no

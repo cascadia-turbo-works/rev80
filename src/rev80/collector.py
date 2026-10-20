@@ -212,6 +212,58 @@ def _session_file_version() -> int:
     return _FILE_VERSION
 
 
+class FileVersionError(ValueError):
+    """A data file that this build does not read. The message says what to do."""
+
+
+#: The newest version of each file type that Rev80 0.x wrote, and the 0.x
+#: versions that scripts/convert-0x converts.
+_LAST_0X_VERSION = {'measurement': 5, 'session': 6}
+_CONVERTIBLE_0X = {'measurement': (4, 5), 'session': (6,)}
+
+
+def check_file_version(f: 'h5py.File', kind: str) -> int:
+    """Return the version of an open data file, or raise FileVersionError.
+
+    `kind` is 'measurement' or 'session'. Each type is read at exactly the
+    version this build writes: there is no reader for older or newer
+    layouts, and a newer file can hold a chart type or channel role that
+    this build would draw wrongly. Call it before any state is changed.
+    """
+    name = Path(f.filename).name
+    expected = (DataCollector._FILE_VERSION if kind == 'measurement'
+                else _session_file_version())
+    is_session = 'monitor' in f
+    if is_session != (kind == 'session'):
+        other = 'a monitor session' if is_session else 'a measurement file'
+        raise FileVersionError(
+            f'{name} is {other}, not a {kind} file. Open it from the '
+            f"{'session browser' if is_session else 'File menu'}.")
+    meta = f.get('metadata')
+    if meta is None:
+        raise FileVersionError(f'{name} has no /metadata group: not a Rev80 data file.')
+    version = int(meta.attrs.get('version', meta.attrs.get('file_version', 3)))
+    if version == expected:
+        return version
+    writer = meta.attrs.get('rev80_version', None)
+    if isinstance(writer, bytes):
+        writer = writer.decode()
+    this = f'Rev80 {rev80.__version__} reads {kind} files of version {expected} only.'
+    if version > expected:
+        by = f'Rev80 {writer}' if writer else 'a newer Rev80'
+        raise FileVersionError(
+            f'{name}: data file version {version} was written by {by}. {this} '
+            'Update Rev80 to open it.')
+    by = f'Rev80 {writer}' if writer else 'Rev80 0.x'
+    action = 'Open it with Rev80 0.1.5'
+    if version in _CONVERTIBLE_0X[kind]:
+        action += ', or convert a copy with scripts/convert-0x'
+    elif version <= _LAST_0X_VERSION[kind] and kind == 'measurement':
+        action += ' and save it again, then convert the copy with scripts/convert-0x'
+    raise FileVersionError(
+        f'{name}: data file version {version} was written by {by}. {this} {action}.')
+
+
 @dataclasses.dataclass(frozen=True)
 class FrameSnapshot:
     """The frames of one render tick, and which one is displayed.
@@ -1734,10 +1786,8 @@ class DataCollector:
     # Persistence
     # ------------------------------------------------------------------
 
-    # Measurement-file version written by save_data. v3: structured
-    # /metadata, shared trend time axis, frames in the recorded unit. v4:
-    # frames in mV, per-channel trend with an (M, 5) orders matrix. v5:
-    # channel role; tachometer channels store edge times, no 'data'.
+    # Measurement-file version written by save_data, and the only version
+    # load_data reads (check_file_version). Layout: README.md, "Data files".
     _FILE_VERSION = 6
 
     def save_data(self, target: Path):
@@ -1855,10 +1905,16 @@ class DataCollector:
         log.info(f"Saved {len(frames)} frames to {target}")
 
     def load_data(self, target: Path):
-        """Load frame cache and trend from an HDF5 file, then reprocess."""
+        """Load frame cache and trend from an HDF5 measurement file, then reprocess.
+
+        Raises FileVersionError, before any state changes, for a file that is
+        not a measurement file of `_FILE_VERSION`.
+        """
         if not target.is_file():
             log.error(f"load_data: file does not exist: {target}")
             return
+        with h5py.File(target, "r") as f:
+            check_file_version(f, 'measurement')
 
         log.info(f"Reading snapshot {target.name}")
         self.data["frame_cache"].clear()
@@ -1867,13 +1923,12 @@ class DataCollector:
         self._loaded_scope_sensors = {}
 
         with h5py.File(target, "r") as f:
-            version  = self._restore_metadata(f)
-            ch_units = self._loaded_channel_units(f)
+            self._restore_metadata(f)
 
-            # Frames — v4+ always mV; v3 used the recorded unit
+            # Frames, in mV
             if "frames" in f:
                 for idx in sorted(f["frames"].keys(), key=int):
-                    frame = self._read_frame_group(f["frames"][idx], ch_units, version)
+                    frame = self._read_frame_group(f["frames"][idx])
                     self.data["frame_cache"].append(frame)
 
             # Trend
@@ -1889,72 +1944,33 @@ class DataCollector:
                     }
 
             if "trend" in f:
-                trend_grp = f["trend"]
-                if version >= 4:
-                    # Per-channel (M,5) orders matrix
-                    for ch_str, cg in trend_grp.items():
-                        if not ch_str.isdigit():
-                            continue
-                        ch = int(ch_str)
-                        rel_times = np.array(cg["rel_times"][()], dtype=np.float64)
-                        td = {
-                            "rel_times": rel_times,
-                            "orders":    np.array(cg["orders"][()], dtype=np.float64),
-                        }
-                        # Absent in files written before the scalars existed;
-                        # NaN reads as "not recorded" and plots as a gap rather
-                        # than as a zero the analyst would read as a value.
-                        for key in ("crest_factor", "kurtosis"):
-                            td[key] = (np.array(cg[key][()], dtype=np.float64)
-                                       if key in cg
-                                       else np.full(len(rel_times), np.nan))
-                        self.trend[ch] = td
-                else:
-                    # Shared time axis + per-channel scalar overalls; promote to (M,5)
-                    shared_rel_times: list = []
-                    if "rel_times" in trend_grp:
-                        shared_rel_times = list(np.array(trend_grp["rel_times"][()]))
-                    for ch_str, tg in trend_grp.items():
-                        if not ch_str.isdigit():
-                            continue
-                        overall = list(np.array(tg["data"][()]))
-                        if overall:
-                            M      = len(overall)
-                            orders = np.zeros((M, 5))
-                            orders[:, 2] = np.array(overall)  # col 2 = order 0
-                            self.trend[int(ch_str)] = {
-                                "rel_times":    np.array(shared_rel_times),
-                                "orders":       orders,
-                                "crest_factor": np.full(M, np.nan),
-                                "kurtosis":     np.full(M, np.nan),
-                            }
+                # Per-channel (M, 5) orders matrix, in mV
+                for ch_str, cg in f["trend"].items():
+                    if not ch_str.isdigit():
+                        continue
+                    rel_times = np.array(cg["rel_times"][()], dtype=np.float64)
+                    td = {"rel_times": rel_times,
+                          "orders":    np.array(cg["orders"][()], dtype=np.float64)}
+                    # save_data() leaves a scalar out when its length does not
+                    # match. NaN is "not recorded": a gap, not a zero.
+                    for key in ("crest_factor", "kurtosis"):
+                        td[key] = (np.array(cg[key][()], dtype=np.float64)
+                                   if key in cg else np.full(len(rel_times), np.nan))
+                    self.trend[int(ch_str)] = td
 
         self._post_load()
         log.info(f"Loaded {len(self.data['frame_cache'])} frames from {target.name}")
 
-    def _restore_metadata(self, f: 'h5py.File',
-                          max_version: int | None = None) -> int:
+    def _restore_metadata(self, f: 'h5py.File') -> None:
         """Restore AcquisitionSettings and sensor config from /metadata in an open HDF5 file.
 
-        ``max_version`` is the newest version this build writes for this file
-        type. ``None`` means a measurement file (``_FILE_VERSION``). Session
-        loaders pass the session writer's version. A newer file logs a warning.
-        Returns the file version. Sets self.config, self.notes,
+        Call `check_file_version()` first: this reads the layout of the
+        current version only. Sets self.config, self.notes, self.chart_set,
         self._loaded_scope_sensors and self._loaded_channel_sensor_configs.
         """
         def decode(x):
             return x.decode() if isinstance(x, bytes) else str(x)
 
-        version  = int(f["metadata"].attrs.get("version",
-                       f["metadata"].attrs.get("file_version", 3)))
-        if max_version is None:
-            max_version = self._FILE_VERSION
-        if version > max_version:
-            # An older build reads unknown channels as vibration channels and
-            # computes a wrong overall on them.
-            log.warning(
-                "File version %d is newer than this build supports (%d); "
-                "some channels may be misinterpreted.", version, max_version)
         meta_grp = f["metadata"]
         self.notes = decode(meta_grp.attrs.get("notes", ""))
 
@@ -2025,19 +2041,6 @@ class DataCollector:
         # when the loaded channels are known.
         self.chart_set = read_layout_attr(meta_grp, Path(f.filename).name)
         self._default_layout_pending = self.chart_set is None
-        return version
-
-    def _loaded_channel_units(self, f: 'h5py.File') -> dict[int, str]:
-        """Return per-channel unit strings from /metadata/channels in an open file."""
-        def decode(x):
-            return x.decode() if isinstance(x, bytes) else str(x)
-
-        ch_units: dict[int, str] = {}
-        meta_grp = f.get("metadata")
-        if meta_grp is not None and "channels" in meta_grp:
-            for ch_str, cg in meta_grp["channels"].items():
-                ch_units[int(ch_str)] = decode(cg.attrs.get("unit", "mV"))
-        return ch_units
 
     def _tach_sample_from_group(self, cg, ch: int, timestamp, samplerate: float,
                                 status: str, rel_time: float) -> 'rev80.VibeSample':
@@ -2069,8 +2072,7 @@ class DataCollector:
         )
         return sample
 
-    def _read_frame_group(self, fg: 'h5py.Group', ch_units: dict[int, str],
-                          version: int) -> dict[int, 'rev80.VibeSample']:
+    def _read_frame_group(self, fg: 'h5py.Group') -> dict[int, 'rev80.VibeSample']:
         """Read one HDF5 frame group into a dict[int, VibeSample]."""
         def decode(x):
             return x.decode() if isinstance(x, bytes) else str(x)
@@ -2090,7 +2092,7 @@ class DataCollector:
                 continue
             ch   = int(ch_str)
             if "data" not in cg:
-                # Tachometer channel (v5 and later): edge times, no waveform.
+                # Tachometer channel: edge times, no waveform.
                 # It is still a VibeSample, with empty data and a TachResult,
                 # because every frame-cache consumer expects VibeSamples.
                 if "edge_times" in cg:
@@ -2098,14 +2100,13 @@ class DataCollector:
                         cg, ch, timestamp, samplerate, status, rel_time)
                 continue
             data = np.ascontiguousarray(cg["data"][()], dtype=np.float64)
-            unit = "mV" if version >= 4 else ch_units.get(ch, "mV")
             # Read the validity flags back; files without them read as False.
             overflow = bool(cg.attrs.get("overflow", False))
             degraded = bool(cg.attrs.get("degraded", False))
             orders, orders_key = _read_stored_orders(cg)
             frame_samples[ch] = rev80.VibeSample(
                 status=status, _timestamp=timestamp, samplerate=samplerate,
-                unit=unit, overflow=overflow, degraded=degraded,
+                unit="mV", overflow=overflow, degraded=degraded,
                 data=data, rel_time=rel_time,
                 stored_orders_mv=orders, stored_orders_key=orders_key,
             )
@@ -2150,6 +2151,9 @@ class DataCollector:
             return
 
         log.info(f"Reading monitor session {session_h5.name}")
+        with h5py.File(session_h5, "r") as f:
+            check_file_version(f, 'session')
+
         self.data["frame_cache"].clear()
         self.trend = {}
         self._loaded_channel_sensor_configs = {}
@@ -2158,8 +2162,7 @@ class DataCollector:
         scalars: list[dict] = []
 
         with h5py.File(session_h5, "r") as f:
-            version  = self._restore_metadata(f, _session_file_version())
-            ch_units = self._loaded_channel_units(f)
+            self._restore_metadata(f)
 
             mon_grp = f.get("monitor")
             if mon_grp is None:
@@ -2170,7 +2173,7 @@ class DataCollector:
             self.resize_frame_cache(max(len(keys), 1))  # expand deque to hold all N captures
             for key in keys:
                 grp = mon_grp[key]
-                frame = self._read_frame_group(grp, ch_units, version)
+                frame = self._read_frame_group(grp)
                 self.data["frame_cache"].append(frame)
                 scalars.append(self._stored_scalars(grp))
 
@@ -2192,14 +2195,16 @@ class DataCollector:
 
         log.info(f"Loading capture {capture_index} from {session_h5.name}")
 
+        with h5py.File(session_h5, "r") as f:
+            check_file_version(f, 'session')
+
         self.data["frame_cache"].clear()
         self.trend = {}
         self._loaded_channel_sensor_configs = {}
         self._loaded_scope_sensors = {}
 
         with h5py.File(session_h5, "r") as f:
-            version  = self._restore_metadata(f, _session_file_version())
-            ch_units = self._loaded_channel_units(f)
+            self._restore_metadata(f)
 
             mon_grp = f.get("monitor")
             if mon_grp is None:
@@ -2213,7 +2218,7 @@ class DataCollector:
                 )
                 return
 
-            frame = self._read_frame_group(mon_grp[key], ch_units, version)
+            frame = self._read_frame_group(mon_grp[key])
             self.data["frame_cache"].append(frame)
 
         log.debug(f"Loaded monitor capture {capture_index} from {session_h5}")
@@ -2230,6 +2235,9 @@ class DataCollector:
 
         log.info(f"Loading burst {burst_id!r} from {session_h5.name}")
 
+        with h5py.File(session_h5, "r") as f:
+            check_file_version(f, 'session')
+
         self.data["frame_cache"].clear()
         self.trend = {}
         self._loaded_channel_sensor_configs = {}
@@ -2238,8 +2246,7 @@ class DataCollector:
         scalars: list[dict] = []
 
         with h5py.File(session_h5, "r") as f:
-            version  = self._restore_metadata(f, _session_file_version())
-            ch_units = self._loaded_channel_units(f)
+            self._restore_metadata(f)
 
             burst_grp = f.get("burst")
             if burst_grp is None:
@@ -2274,7 +2281,7 @@ class DataCollector:
                 fi_grp = bid_grp.get(str(fi))
                 if fi_grp is None:
                     continue
-                frame = self._read_frame_group(fi_grp, ch_units, version)
+                frame = self._read_frame_group(fi_grp)
                 # Rebase each VibeSample's rel_time to trigger=0 so the browse
                 # cursor (which reads v.rel_time) aligns with the rebased trend.
                 raw_rel_t_f = float(fi_grp.attrs.get("rel_time", 0.0))
@@ -2309,6 +2316,9 @@ class DataCollector:
         from datetime import datetime as _dt, timezone as _tz
 
         log.info(f"Reprocessing session trend in {session_h5.name}")
+        # Never write into a file of another version: raises FileVersionError.
+        with h5py.File(session_h5, "r") as f:
+            check_file_version(f, 'session')
         with h5py.File(session_h5, "a") as f:
             mon_grp = f.get("monitor")
             if mon_grp is None:

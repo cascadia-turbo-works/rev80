@@ -1430,6 +1430,10 @@ class GUI:
         new = rev80.DataCollector()
         try:
             load(new)
+        except rev80.FileVersionError as exc:
+            # The message names the file and says what to do.
+            log.error("%s", exc)
+            return None
         except Exception as exc:
             log.error("%s: load failed: %s", what, exc)
             return None
@@ -2022,8 +2026,13 @@ class GUI:
             h5 = d / 'session.h5'
             if not h5.exists():
                 continue
+            version_error = ''
             try:
                 with h5py.File(str(h5), 'r') as f:
+                    try:
+                        rev80.check_file_version(f, 'session')
+                    except rev80.FileVersionError as exc:
+                        version_error = str(exc)
                     meta       = f.get('metadata', {})
                     start_time = str(meta.attrs.get('start_time', d.name) if meta else d.name)
                     interval_s = float(meta.attrs.get('interval_s', 0.0)) if meta else 0.0
@@ -2058,6 +2067,9 @@ class GUI:
                 'n_channels':  n_channels,
                 'n_captures':  n_captures,
                 'n_bursts':    n_bursts,
+                # Not empty: this build does not read the session. Listed,
+                # so the user can see it and the reason.
+                'version_error': version_error,
             })
 
         self._session_browser_sessions = sessions
@@ -2077,6 +2089,14 @@ class GUI:
         self._sb_burst_sel_ids.clear()
         session_dir = entry['session_dir']
         session_h5  = entry['session_h5']
+
+        # Load all interval frames into a new collector. A refused, corrupt
+        # or empty file leaves the screen and the current session unchanged:
+        # no burst list, no burst lines, and Save config cannot reach it.
+        new = self._load_into_new_collector(
+            lambda c: c.load_monitor_session(session_h5), f'session {session_h5}')
+        if new is None:
+            return
         self._session_browser_selected_session_dir = session_dir
         self._current_session_h5    = session_h5
         self._current_session_id    = entry.get('session_id', '')
@@ -2089,14 +2109,8 @@ class GUI:
             'n_captures':  entry.get('n_captures', '—'),
             'n_bursts':    entry.get('n_bursts',   '—'),
         }
-
-        # Load all interval frames into a new collector. A corrupt or old
-        # file leaves the screen unchanged.
-        new = self._load_into_new_collector(
-            lambda c: c.load_monitor_session(session_h5), f'session {session_h5}')
-        if new is not None:
-            self._replace_collector(new)
-            self._autoscale_plots()
+        self._replace_collector(new)
+        self._autoscale_plots()
 
         # Populate burst listbox
         burst_list: list = []
@@ -2154,6 +2168,13 @@ class GUI:
         session_h5 = self._current_session_h5
         if session_h5 is None:
             log.warning("_on_sb_save_config: no session loaded")
+            return
+        # Never patch a file of another version.
+        try:
+            with h5py.File(str(session_h5), 'r') as f:
+                rev80.check_file_version(f, 'session')
+        except (rev80.FileVersionError, OSError) as exc:
+            log.error("Save config: %s", exc)
             return
         try:
             with h5py.File(str(session_h5), 'a') as f:
@@ -2295,12 +2316,15 @@ class GUI:
                 dpg.delete_item(child)
             for s in sessions:
                 with dpg.table_row(parent='_SB_SESSION_TABLE'):
+                    old = bool(s.get('version_error'))
                     sel_id = dpg.add_selectable(
-                        label=s['date'],
+                        label=s['date'] + ('  (other version)' if old else ''),
                         span_columns=True,
                         callback=self._on_session_list_select,
                         user_data=s,
                     )
+                    if old:
+                        self._tooltip(sel_id, s['version_error'])
                     self._sb_session_sel_ids.append(sel_id)
                     dpg.add_text(s['time'])
                     dpg.add_text(str(s['n_channels']))
@@ -2323,7 +2347,10 @@ class GUI:
                         dpg.set_value(self._sb_session_sel_ids[i], True)
                         break
             else:
-                self._on_session_list_select(user_data=sessions[0])
+                # The newest session this build reads; an old one is only listed.
+                first = next((s for s in sessions if not s.get('version_error')), None)
+                if first is not None:
+                    self._on_session_list_select(user_data=first)
 
     # ------------------------------------------------------------------
 
