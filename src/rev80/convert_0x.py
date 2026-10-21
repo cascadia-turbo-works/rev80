@@ -1,8 +1,7 @@
-#!/usr/bin/env python3
-"""convert-0x — copy a Rev80 0.x data file into the format that Rev80 1.0 reads.
+"""`rev80 convert-0x`: copy a Rev80 0.x data file into the format that Rev80 1.0 reads.
 
 Rev80 1.0 reads measurement files of version 6 and monitor sessions of
-version 7 only. This script writes a converted COPY of a 0.x file and never
+version 7 only. This writes a converted COPY of a 0.x file and never
 changes the source:
 
     measurement version 4 or 5  ->  <name>.v6.h5 beside it (or in --out)
@@ -11,26 +10,18 @@ changes the source:
 
 The data does not change. The copy gets the new version number,
 `rev80_version` = "convert-0x <version>", and `chart_layout_json` = the
-default chart layout: one time waveform and one spectrum with every
-vibration channel, in the record unit and mode of the first. That is the
-layout Rev80 1.0 gives a file with no stored layout.
+default chart layout of `charts.default_layout()` with
+`charts.record_view()`: the layout Rev80 1.0 gives a file with no stored
+layout. A version-3 measurement file stores frames in the recorded unit,
+not mV: save it again in Rev80 0.1.5 first.
 
-A version-3 measurement file stores frames in the recorded unit, not mV:
-open it in Rev80 0.1.5, save it again (version 5), then convert that copy.
-
-Usage
------
-    ./scripts/convert-0x ~/Documents/Rev80/data/run.h5
-    ./scripts/convert-0x ~/Documents/Rev80/data/monitor/2026-09-30-101500
-    ./scripts/convert-0x old/*.h5 --out converted/
-
-Exit code 0 when every path converted, 1 when one or more did not.
+Results go to the log (console and ~/Documents/Rev80/logs/), so a windowed
+Windows install also records them.
 """
 
 import argparse
 import json
 import shutil
-import sys
 from pathlib import Path
 
 import h5py
@@ -38,6 +29,8 @@ import h5py
 import rev80
 from rev80 import charts
 from rev80.collector import _CONVERTIBLE_0X, DataCollector, _session_file_version
+
+log = rev80.get_logger('convert_0x')
 
 WRITER = f'convert-0x {rev80.__version__}'
 
@@ -118,7 +111,7 @@ def _plan(path: Path, out_dir: Path | None) -> tuple[str, int, Path, Path, Path]
     if version == current:
         raise ConvertError(f'{h5}: already version {version}; Rev80 1.0 reads it')
     if version > current:
-        raise ConvertError(f'{h5}: version {version} is newer than this script knows')
+        raise ConvertError(f'{h5}: version {version} is newer than this Rev80 knows')
     if version not in _CONVERTIBLE_0X[kind]:
         hint = (' Open it in Rev80 0.1.5, save it again, then convert that copy.'
                 if kind == 'measurement' else ' Open it with Rev80 0.1.5.')
@@ -161,25 +154,39 @@ def convert(path: Path, out_dir: Path | None = None) -> Path:
     return dest
 
 
-def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(
-        description='Copy Rev80 0.x data files into the format that Rev80 1.0 reads.')
-    ap.add_argument('paths', nargs='+', type=Path,
-                    help='measurement .h5 files, session directories or session.h5 files')
-    ap.add_argument('--out', type=Path, default=None,
-                    help='directory for the copies (default: beside each source)')
-    args = ap.parse_args(argv)
+def build_option_parser() -> argparse.ArgumentParser:
+    """The options of `rev80 convert-0x`, as a parent parser (no -h of its own)."""
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument('paths', nargs='+', type=Path,
+                   help='measurement .h5 files, session directories or session.h5 files')
+    p.add_argument('--out', type=Path, default=None,
+                   help='directory for the copies (default: beside each source)')
+    return p
+
+
+def run(args: argparse.Namespace) -> int:
+    """Convert each path of `args`. Exit code 0 when all converted, else 1."""
+    out_dir = args.out.expanduser() if args.out else None
     failed = 0
     for path in args.paths:
         try:
-            dest = convert(path.expanduser(), args.out.expanduser() if args.out else None)
+            dest = convert(path.expanduser(), out_dir)
         except (ConvertError, OSError) as exc:
-            print(f'not converted: {exc}', file=sys.stderr)
+            log.error('not converted: %s', exc)
             failed += 1
         else:
-            print(f'{path} -> {dest}')
+            log.info('converted: %s -> %s', path, dest)
     return 1 if failed else 0
 
 
+def main(argv=None) -> int:
+    """Run as `python -m rev80.convert_0x`; `rev80 convert-0x` is the same."""
+    parser = argparse.ArgumentParser(
+        prog='rev80 convert-0x', parents=[build_option_parser()],
+        description='Copy Rev80 0.x data files into the format that Rev80 1.0 reads.')
+    rev80.setup_logging()
+    return run(parser.parse_args(argv))
+
+
 if __name__ == '__main__':
-    sys.exit(main())
+    raise SystemExit(main())

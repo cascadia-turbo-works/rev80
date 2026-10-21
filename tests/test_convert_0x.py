@@ -1,4 +1,4 @@
-"""scripts/convert-0x copies a 0.x data file into the format Rev80 1.0 reads.
+"""`rev80 convert-0x` copies a 0.x data file into the format Rev80 1.0 reads.
 
 The 0.x files are made by the current writers and then taken back to the
 0.x layout: the version number, and no `rev80_version`, `chart_layout_json`,
@@ -8,34 +8,21 @@ the source must not change.
 """
 
 import hashlib
-import importlib.machinery
-import importlib.util
-from pathlib import Path
 
 import h5py
 import numpy as np
 import pytest
 
 import rev80 as vc
-from rev80 import charts
+from rev80 import charts, convert_0x
+from rev80.__main__ import main as rev80_main
 from rev80.monitor import writer
 
 from test_file_layout import _feed, _live
 from test_monitor_session_load import N_CHANNELS, _make_collector, _make_session, _record_session
 from pipeline_helpers import tick
 
-_SCRIPT = Path(__file__).resolve().parents[1] / 'scripts' / 'convert-0x'
-
-
-def _load_script():
-    loader = importlib.machinery.SourceFileLoader('convert_0x', str(_SCRIPT))
-    spec = importlib.util.spec_from_loader('convert_0x', loader)
-    module = importlib.util.module_from_spec(spec)
-    loader.exec_module(module)
-    return module
-
-
-cv = _load_script()
+cv = convert_0x
 
 
 def _to_0x(h5, version):
@@ -219,11 +206,25 @@ def test_an_older_session_version_is_refused(old_session):
 
 # --- command line -------------------------------------------------------------
 
-def test_main_reports_each_path(tmp_path, capsys):
+def test_rev80_convert_0x_reports_each_path(tmp_path, monkeypatch, caplog):
+    """`rev80 convert-0x` converts each path, logs each result, exits 1 on a failure."""
+    monkeypatch.setattr(convert_0x.rev80, 'setup_logging', lambda *a, **k: None)
     good = _measurement(tmp_path, 5)
     missing = tmp_path / 'missing.h5'
-    assert cv.main([str(good), str(missing)]) == 1
-    out, err = capsys.readouterr()
-    assert 'run.v6.h5' in out
-    assert 'not converted' in err and 'missing.h5' in err
-    assert cv.main([str(tmp_path / 'run.h5'), '--out', str(tmp_path / 'again')]) == 0
+    monkeypatch.setattr('sys.argv', ['rev80', 'convert-0x', str(good), str(missing)])
+    with caplog.at_level('INFO'), pytest.raises(SystemExit) as code:
+        rev80_main()
+    assert code.value.code == 1
+    assert (tmp_path / 'run.v6.h5').exists()
+    assert 'not converted' in caplog.text and 'missing.h5' in caplog.text
+    monkeypatch.setattr('sys.argv', ['rev80', 'convert-0x', str(good),
+                                     '--out', str(tmp_path / 'again')])
+    with pytest.raises(SystemExit) as code:
+        rev80_main()
+    assert code.value.code == 0
+    assert (tmp_path / 'again' / 'run.v6.h5').exists()
+
+
+def test_the_module_runs_alone(tmp_path, monkeypatch):
+    monkeypatch.setattr(convert_0x.rev80, 'setup_logging', lambda *a, **k: None)
+    assert convert_0x.main([str(_measurement(tmp_path, 5))]) == 0

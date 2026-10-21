@@ -1533,15 +1533,18 @@ logs a warning.
 
 ### Converting a file from Rev80 0.x
 
-`scripts/convert-0x` writes a copy of a 0.x file in the format that Rev80
-1.0 reads. It never changes the source. Run it from a source checkout with
-the `rev80` package installed:
+`rev80 convert-0x` writes a copy of a 0.x file in the format that Rev80
+1.0 reads. It never changes the source.
 
 ```bash
-./scripts/convert-0x ~/Documents/Rev80/data/run.h5
-./scripts/convert-0x ~/Documents/Rev80/data/monitor/2026-09-30-101500
-./scripts/convert-0x old/*.h5 --out converted/
+rev80 convert-0x ~/Documents/Rev80/data/run.h5
+rev80 convert-0x ~/Documents/Rev80/data/monitor/2026-09-30-101500
+rev80 convert-0x old/*.h5 --out converted/
 ```
+
+On Windows, run `rev80.exe convert-0x ...` from a command prompt in the
+install folder. That program has no console window, so it shows nothing:
+read the result in `main.log` and `error.log` in `Documents\Rev80\logs\`.
 
 | Source | Copy |
 |---|---|

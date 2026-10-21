@@ -217,7 +217,7 @@ class FileVersionError(ValueError):
 
 
 #: The newest version of each file type that Rev80 0.x wrote, and the 0.x
-#: versions that scripts/convert-0x converts.
+#: versions that `rev80 convert-0x` converts.
 _LAST_0X_VERSION = {'measurement': 5, 'session': 6}
 _CONVERTIBLE_0X = {'measurement': (4, 5), 'session': (6,)}
 
@@ -257,9 +257,9 @@ def check_file_version(f: 'h5py.File', kind: str) -> int:
     by = f'Rev80 {writer}' if writer else 'Rev80 0.x'
     action = 'Open it with Rev80 0.1.5'
     if version in _CONVERTIBLE_0X[kind]:
-        action += ', or convert a copy with scripts/convert-0x'
+        action += ', or convert a copy with `rev80 convert-0x`'
     elif version <= _LAST_0X_VERSION[kind] and kind == 'measurement':
-        action += ' and save it again, then convert the copy with scripts/convert-0x'
+        action += ' and save it again, then convert the copy with `rev80 convert-0x`'
     raise FileVersionError(
         f'{name}: data file version {version} was written by {by}. {this} {action}.')
 

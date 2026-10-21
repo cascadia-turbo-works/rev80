@@ -90,7 +90,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   loaded file keeps the stored overalls.
 
 #### Added
-- **`scripts/convert-0x`: convert a copy of a 0.x data file.** A
+- **`rev80 convert-0x`: convert a copy of a 0.x data file.** A
   measurement file of version 4 or 5 becomes `<name>.v6.h5`, a version-6
   session directory becomes `<directory>.v7/`, beside the source or in
   `--out`. The data does not change; the copy gets the new version,
@@ -99,6 +99,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   app). It never changes the source, never overwrites a copy, and removes
   a partial copy after an error. A version-3 file is refused: open it in
   Rev80 0.1.5 and save it again first.
+  It is a subcommand of the `rev80` program (`rev80/convert_0x.py`), so a
+  pip install and the Windows installer have it. It reports to the log:
+  the installed Windows program has no console.
 
 #### Changed
 - **Each data file is read at exactly its own version.** Rev80 reads

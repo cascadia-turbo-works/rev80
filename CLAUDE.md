@@ -259,7 +259,7 @@ The evidence is in CONTRIBUTING.md, "E21. Device loss".
   exactly its own version.** Every reader calls
   `check_file_version(f, kind)` before it changes any state or writes; an
   older or newer file raises `FileVersionError`. Do not add a reader for an
-  old layout: `scripts/convert-0x` converts 0.x files.
+  old layout: `rev80 convert-0x` (`convert_0x.py`) converts 0.x files.
 - `None` in the acquisition attributes is stored as `''` and read back as
   `None`.
 - **`acquisition.yaml` holds all acquisition settings and the `monitor:`

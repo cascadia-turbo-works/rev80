@@ -152,7 +152,6 @@ scripts/
   render_md.sh             Renders one Markdown file to PDF
   render_docs.sh           Renders the four published docs to doc/*.pdf
   profile-pipeline         Per-stage timing sweep; see section 7
-  convert-0x               Copies a Rev80 0.x data file into the 1.0 format
   validate-streaming-capacity  Continuous-streaming stress test on hardware
   advanced_plots.py        Cell-by-cell exploration of an .h5 file
   runtimes.ipynb           Notebook of run-time measurements
@@ -172,7 +171,7 @@ doc/
 
 | Module | Responsibility |
 |---|---|
-| `__main__.py` | `rev80` console script: info commands, `--version`, the `headless` subcommand, GUI start with `try/finally` around `run()` |
+| `__main__.py` | `rev80` console script: info commands, `--version`, the `headless` and `convert-0x` subcommands, GUI start with `try/finally` around `run()` |
 | `__init__.py` | Package exports and `__version__` |
 | `_paths.py` | Path resolution for an editable checkout, a pip install and a frozen bundle: `resource_path()`, `project_path()`, `data_dir()`, `log_dir()` |
 | `_pico_loader.py` | Windows only: adds the PicoSDK DLL directory to the search path before `picosdk` is imported |
@@ -188,6 +187,7 @@ doc/
 | `scope_sensor.py` | `ScopeSensor`: IEPE sensor name, sensitivity (mV per EU), engineering units, UUID, notes |
 | `scope_sensor_registry.py` | `ScopeSensorRegistry`: the YAML sensor library |
 | `charts.py` | The chart layout: `ChartSpec`, `ChartSet`, the unit rule `unit_reachable()` (also used by the collector views), `problems()`, `default_layout()`, `charts.yaml` load and save. No dearpygui import |
+| `convert_0x.py` | `rev80 convert-0x`: a converted copy of a 0.x data file, with the default chart layout. Reads with `h5py` only; the app has no reader for the 0.x layouts |
 | `config.py` | Config directory, YAML load and save (atomic), built-in defaults, `channel_role_state()`, `charts_config_path()` |
 | `sample.py` | `AcquisitionSettings`, `VibeSample`, `ChannelResult` |
 | `collector.py` | `DataCollector`: stream lifecycle, ingestion, high-pass, frame cache, processing, trend, HDF5 save and load; `decimate_to_rate()`; `_write_channel_group()` |

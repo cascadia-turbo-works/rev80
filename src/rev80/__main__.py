@@ -21,6 +21,7 @@ def _init_config() -> int:
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    from rev80 import convert_0x
     from rev80.headless import build_option_parser
 
     parser = argparse.ArgumentParser(
@@ -69,6 +70,13 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Rev80 interval datalogger — no GUI required",
         help="Run the interval datalogger with no GUI (same options as rev80-headless)",
     )
+    subparsers.add_parser(
+        "convert-0x",
+        parents=[convert_0x.build_option_parser()],
+        description="Copy Rev80 0.x data files into the format that Rev80 1.0 reads. "
+                    "The source never changes.",
+        help="Convert a copy of a Rev80 0.x measurement file or session",
+    )
 
     return parser
 
@@ -84,6 +92,11 @@ def main():
     if args.command == "headless":
         from rev80.headless import run_headless
         sys.exit(run_headless(args))
+    if args.command == "convert-0x":
+        from rev80 import convert_0x
+        # Results go to the log: a windowed Windows install has no console.
+        rev80.setup_logging()
+        sys.exit(convert_0x.run(args))
 
     if args.init_config:
         sys.exit(_init_config())

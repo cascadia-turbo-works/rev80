@@ -512,7 +512,7 @@ in/s"). Never mV under an engineering-unit axis.
   its file type.
 - Older (Q11): refuse, ERROR: "<name>: data file version 5 was written by
   Rev80 0.x. Rev80 1.0.0 reads version 6. Open it with Rev80 0.1.5, or
-  convert it with `scripts/convert-0x`."
+  convert it with `rev80 convert-0x`."
 - Newer (Q16): refuse, ERROR: "<name>: data file version 7 was written by
   Rev80 <rev80_version>. Update Rev80."
 - A refused file changes nothing: it loads into a new collector (A2) that
@@ -530,8 +530,8 @@ in/s"). Never mV under an engineering-unit axis.
 
 ### E3. Converter for 0.x files (review D9)
 
-`scripts/convert-0x <file or session dir> [--out DIR]`. A script, not app
-code.
+`rev80 convert-0x <file or session dir> [--out DIR]` (`rev80/convert_0x.py`;
+first a script, a subcommand since 2026-10-21 so installed users have it).
 
 - Reads with `h5py` only, and writes a **copy**, never in place: a
   measurement `<name>.v6.h5`; a session directory copy with `session.h5`
@@ -612,7 +612,7 @@ CHANGELOG, PROGRESS and README in the same commit.
 | D7 | XY chart | two traces, same span; same unit |
 | E1 | Layout and `rev80_version` written; versions 6 and 7; headless layout | round trip |
 | E2 | Exact-version reading, older and newer refused, old reader code removed, every reader | messages; state unchanged; revert checks |
-| E3 | `scripts/convert-0x` | converted files load equal; source unchanged; v3 refused |
+| E3 | `rev80 convert-0x` | converted files load equal; source unchanged; v3 refused |
 | — | Release 1.0.0: profiling table (E19), README (Charts tab, Data files v6 and v7, converter), CONTRIBUTING, CLAUDE.md (file versions, collector replacement, snapshot rule), CHANGELOG with a Breaking section; reviews; merge chain; tag `v1.0.0` | |
 
 ## 11. Decisions
@@ -638,7 +638,7 @@ CHANGELOG, PROGRESS and README in the same commit.
 | Q15 | Default and headless layout | Default: one time waveform and one spectrum, all vibration channels. Headless: `charts.yaml` if present, else the default |
 | Q16 | Newer file | Refused |
 | — | Stale state | A new `DataCollector` for every load and connect (A2) |
-| — | 0.x files | `scripts/convert-0x` with the default layout (E3) |
+| — | 0.x files | `rev80 convert-0x` with the default layout (E3) |
 | — | Releases | A, B, C → 0.1.5; D, E → 1.0.0 |
 
 ## 12. Risks
