@@ -69,11 +69,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   showed an empty series with a "cannot show mV" note. It now takes the
   record view from the sensor stored in the file (`charts.record_view()`,
   one rule for the collector, this case and `convert-0x`).
-- **A refused session no longer becomes the current session.** When the
-  session browser could not load a session, it still made it current:
-  it filled the burst table, drew its burst lines on the trend of the data
-  on screen, and **Save Config** then wrote into that file. Now a refused
-  session changes nothing.
 - **A loaded session or burst trend equals the live overall.** Each
   stored capture and burst frame holds the five live mV orders of each
   vibration channel (`orders_mv`, from the stateful high-pass), and a load
@@ -252,6 +247,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   converted.
 
 #### Fixed
+- **A session that does not load no longer becomes the current session.**
+  When the session browser could not load a session (a corrupt file, or
+  one with no captures), it still made it the current session: it filled
+  the burst table, drew the session's burst lines on the trend of the data
+  on screen, and **Save Config** then wrote into that file. Now the
+  selection changes nothing.
 - **A locked control looked enabled.** `_set_recording_lock()` disabled the
   controls, but no theme had a component for the disabled state, so a
   disabled button looked enabled. A user pressed the acquisition setup

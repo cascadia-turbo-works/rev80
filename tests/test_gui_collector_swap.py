@@ -352,3 +352,30 @@ def test_save_config_never_patches_an_old_session(app, sessions_root):
     app._current_session_h5 = h5
     app._on_sb_save_config()
     assert hashlib.sha256(h5.read_bytes()).hexdigest() == sha
+
+
+@pytest.mark.parametrize('content', ['corrupt', 'no captures'])
+def test_selecting_a_session_that_does_not_load_changes_nothing(app, tmp_path, content):
+    import h5py
+    old = _streamed(app)
+    session_dir = tmp_path / 'monitor' / '2026-10-01_bad'
+    session_dir.mkdir(parents=True)
+    h5 = session_dir / 'session.h5'
+    if content == 'corrupt':
+        h5.write_bytes(b'not an hdf5 file')
+    else:
+        with h5py.File(h5, 'w') as f:
+            from rev80.monitor import writer
+            f.require_group('metadata').attrs['file_version'] = writer._FILE_VERSION
+            f.require_group('monitor')
+            f.require_group('burst').attrs['burst_list'] = '[{"rel_time": 1.0}]'
+    app._current_session_h5 = None
+    app._sb_session_sel_ids = []
+    app._sb_burst_sel_ids = []
+    app._session_browser_burst_list = ['untouched']
+    entry = {'session_id': session_dir.name, 'session_dir': session_dir,
+             'session_h5': h5, 'start_time': '2026-10-01 10:00:00'}
+    app._on_session_list_select(user_data=entry)
+    assert app.collector is old
+    assert app._current_session_h5 is None          # Save config cannot reach it
+    assert app._session_browser_burst_list == ['untouched']
