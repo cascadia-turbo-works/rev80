@@ -74,6 +74,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   converted.
 
 #### Fixed
+- **A session that does not load no longer becomes the current session.**
+  When the session browser could not load a session (a corrupt file, or
+  one with no captures), it still made it the current session: it filled
+  the burst table, drew the session's burst lines on the trend of the data
+  on screen, and **Save Config** then wrote into that file. Now the
+  selection changes nothing.
 - **A locked control looked enabled.** `_set_recording_lock()` disabled the
   controls, but no theme had a component for the disabled state, so a
   disabled button looked enabled. A user pressed the acquisition setup

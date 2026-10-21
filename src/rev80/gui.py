@@ -2726,6 +2726,15 @@ class GUI:
         self._sb_burst_sel_ids.clear()
         session_dir = entry['session_dir']
         session_h5  = entry['session_h5']
+
+        # Load all interval frames into a new collector. A corrupt, empty or
+        # unreadable file leaves the screen and the current session
+        # unchanged: no burst list, no burst lines, and Save config cannot
+        # reach it.
+        new = self._load_into_new_collector(
+            lambda c: c.load_monitor_session(session_h5), f'session {session_h5}')
+        if new is None:
+            return
         self._session_browser_selected_session_dir = session_dir
         self._current_session_h5    = session_h5
         self._current_session_id    = entry.get('session_id', '')
@@ -2738,14 +2747,8 @@ class GUI:
             'n_captures':  entry.get('n_captures', '—'),
             'n_bursts':    entry.get('n_bursts',   '—'),
         }
-
-        # Load all interval frames into a new collector. A corrupt or old
-        # file leaves the screen unchanged.
-        new = self._load_into_new_collector(
-            lambda c: c.load_monitor_session(session_h5), f'session {session_h5}')
-        if new is not None:
-            self._replace_collector(new)
-            self._autoscale_plots()
+        self._replace_collector(new)
+        self._autoscale_plots()
 
         # Populate burst listbox
         burst_list: list = []
