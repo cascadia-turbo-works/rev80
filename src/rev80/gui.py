@@ -461,9 +461,13 @@ class GUI:
         return ui.PLT_FREQ_AX_ACCEL
 
     def _get_unit_groups(self) -> list:
-        """Group enabled channels by effective target unit."""
+        """Group the vibration channels by effective target unit.
+
+        A tachometer channel draws nothing on these plots. Its unit is 'mV'
+        (it has no sensor), so grouping it would add an empty mV axis.
+        """
         groups: dict = {}
-        for ch in sorted(self.collector.config.enabled_channels):
+        for ch in self.collector.config.vibration_channels:
             unit = self.collector.get_active_eu(ch)
             groups.setdefault(unit, []).append(ch)
         return list(groups.items())
@@ -486,12 +490,16 @@ class GUI:
             overflow = [ch for _, chs in groups[2:] for ch in chs]
             groups = [groups[0], (groups[1][0], groups[1][1] + overflow)]
 
+        # A channel can become a tachometer after its series were added.
+        for ch in self.collector.config.tach_channels:
+            self._remove_channel_series(ch)
+
         if len(groups) <= 1:
             # ── Single unit: hide all secondary axes ─────────────────────
             dpg.hide_item(ui.PLT_FREQ_AX_2)
             dpg.hide_item(ui.PLT_SAMPLE_AX_ACCEL_2)
             dpg.hide_item(ui.PLT_TREND_AX_OVERALL_2)
-            for ch in self.collector.config.enabled_channels:
+            for ch in self.collector.config.vibration_channels:
                 self._reassign_series_to_axis(ch, ui.PLT_FREQ_AX_ACCEL, ui.PLT_SAMPLE_AX_ACCEL, ui.PLT_TREND_AX_OVERALL)
             unit = groups[0][0] if groups else "mV"
             chs = groups[0][1] if groups else []
@@ -539,7 +547,15 @@ class GUI:
         time_axis: str,
         trend_axis: str = ui.PLT_TREND_AX_OVERALL,
     ):
-        """If a channel's series are on wrong axes, delete and recreate them."""
+        """If a channel's series are on wrong axes, delete and recreate them.
+
+        Missing series are added: a channel released from the tachometer
+        role has none.
+        """
+        if not dpg.does_item_exist(ui.plt_freq_series(ch)):
+            if ch < self._num_channels:
+                self._add_channel_series(ch, freq_axis=freq_axis, time_axis=time_axis, trend_axis=trend_axis)
+            return
         wrong = False
         for tag, axis in [
             (ui.plt_freq_series(ch), freq_axis),
@@ -1571,6 +1587,10 @@ class GUI:
         time_axis: str = ui.PLT_SAMPLE_AX_ACCEL,
         trend_axis: str = ui.PLT_TREND_AX_OVERALL,
     ):
+        # A tachometer channel has no spectrum, waveform view or overall
+        # trend; a series for it is an empty legend entry.
+        if self.collector.config.role_for(ch) == 'tachometer':
+            return
         ch_label = self.collector.config.name_for(ch)
         theme = self._channel_themes[ch % len(self._channel_themes)]
         for tag, axis in [
@@ -1610,6 +1630,22 @@ class GUI:
     def _has_loaded_data(self) -> bool:
         """True when frame_cache has data but no device is connected."""
         return self.collector.sensor is None and len(self.collector.data["frame_cache"]) > 0
+
+    def _channel_summary_text(self, ch: int) -> str:
+        """One line of the Channels card: name, sensor and unit.
+
+        A tachometer channel has no sensor and no engineering unit, so it
+        shows its rotation unit: 'Tach A : RPM'. A name the user gave the
+        channel is kept.
+        """
+        cfg = self.collector.config
+        if cfg.role_for(ch) == 'tachometer':
+            name = cfg.channel_names.get(ch) or f"Tach {chr(65 + ch)}"
+            unit = cfg.rotation_unit or DEFAULT_ROTATION_UNIT
+            return f"{name} : {ROTATION_UNIT_LABELS.get(unit, unit)}"
+        scope_s = self.collector.scope_sensors.get(ch)
+        sname = scope_s.name if scope_s else "(none)"
+        return f"{cfg.name_for(ch)} : {sname} : {self.collector.get_active_eu(ch)}"
 
     def _update_connection_summary(self):
         """Refresh device info and per-channel lines in the left panel."""
@@ -1667,18 +1703,13 @@ class GUI:
             dpg.delete_item(ui.CONN_CHANNEL_SUMMARY, children_only=True)
             if show_channels:
                 for ch in sorted(self.collector.config.enabled_channels):
-                    scope_s = self.collector.scope_sensors.get(ch)
-                    sname = scope_s.name if scope_s else "(none)"
-                    tunit = self.collector.get_active_eu(ch)
                     ch_color = _CH_COLORS[ch % len(_CH_COLORS)]
                     with dpg.group(horizontal=True, parent=ui.CONN_CHANNEL_SUMMARY):
                         with dpg.drawlist(width=12, height=12):
                             dpg.draw_rectangle(
                                 pmin=(1, 1), pmax=(11, 11), fill=ch_color, color=(0, 0, 0, 0), rounding=2
                             )
-                        dpg.add_text(
-                            f" {self.collector.config.name_for(ch)} : {sname} : {tunit}",
-                        )
+                        dpg.add_text(f" {self._channel_summary_text(ch)}")
                 # Signal generator summary line (only when device connected)
                 if sensor is not None:
                     sigcfg = self.collector.siggen_config
