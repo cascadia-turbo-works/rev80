@@ -74,6 +74,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   converted.
 
 #### Fixed
+- **A tachometer channel on the main window.** The Channels card showed a
+  tachometer channel as `Ch A : (none) : mV`; it now shows its name and
+  rotation unit, `Tach A : RPM` (a name the user gave is kept). The
+  Spectrum, Envelope, Trend and Time Series plots had an empty legend entry
+  for it, and its `mV` opened an empty second Y axis beside a channel in
+  an engineering unit. It now has no series and opens no axis; a channel
+  released from the role gets its series again.
 - **A session that does not load no longer becomes the current session.**
   When the session browser could not load a session (a corrupt file, or
   one with no captures), it still made it the current session: it filled

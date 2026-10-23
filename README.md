@@ -258,7 +258,7 @@ The main window has three columns.
 | Card | Controls |
 |---|---|
 | Device | **Setup** opens the Device tab. A colored square shows **Connected** (green), **File Loaded** (yellow) or **Not Connected** (red). |
-| Channels | **Setup** opens the Channels tab. **Sensor** opens the Sensors tab. One line for each enabled channel: name, sensor, unit. The **Gen** line shows the signal generator state. |
+| Channels | **Setup** opens the Channels tab. **Sensor** opens the Sensors tab. One line for each enabled channel: name, sensor, unit. A tachometer channel shows its name and rotation unit, for example `Tach A : RPM`. The **Gen** line shows the signal generator state. |
 | Acquisition | **Setup** opens the Acquisition tab. The large button starts and stops the stream: **Stopped** (red), **Waiting** (yellow), **Running** (green). **Single** captures one frame. **Autoscale** fits all plot axes. **Clear Cache** deletes the frame cache and the trend. **Browse Waveforms** steps through the cached frames when the stream is stopped. **Spectrum Setup** shows F_max, bin size, lines, display rate, frame time, window and high-pass. A red "rate degraded" line shows when the USB stream delivers less than the requested rate. |
 | Monitor Mode | **Setup** opens the Monitor tab. **Monitor** starts and stops a recording. **Reset Baseline** restarts the anomaly baseline. **Record Burst** starts a manual burst. The status text shows elapsed time, captures, bursts and the time to the next capture. **Load Session** opens the session browser. |
 | File | **Save** writes the frame cache to an `.h5` file. **Load** opens an `.h5` file. **Measurement Notes** is saved in the file. |
@@ -275,8 +275,12 @@ The main window has three columns.
 - **Time Series** plot (below the tabs): the band-limited waveform in the
   display unit.
 
-When two channels have different units, the plots use a second Y axis. Rev80
-supports two units on screen. A third unit shares the second axis, and the
+A tachometer channel has no series on the Spectrum, Envelope, Trend and
+Time Series plots. Its shaft rate is on its result card and in the
+Tachometer tab.
+
+When two vibration channels have different units, the plots use a second Y
+axis. Rev80 supports two units on screen. A third unit shares the second axis, and the
 log records a warning.
 
 **Right column (results):**
