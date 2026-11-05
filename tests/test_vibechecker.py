@@ -203,6 +203,42 @@ def test_load_offline_configures_channels():
     fname.unlink(missing_ok=True)
 
 
+def test_load_keeps_every_frame_beyond_the_default_cache():
+    """A file with more frames than the loading collector's cache loads whole.
+
+    The loading collector is made with the default cache depth; the file holds
+    more frames than that. Every frame must come back, in order.
+    """
+    from collections import deque
+    n_frames = AcquisitionSettings().cache_frames + 8
+
+    collector = DataCollector(sim_sensor, acq_settings)
+    result = collector.collect_sample()
+    collector.disconnect_sensor()
+    template = next(v for k, v in result.items() if isinstance(k, int))
+    frames = []
+    for i in range(n_frames):
+        frames.append({0: VibeSample(
+            status=template.status, _timestamp=template._timestamp,
+            samplerate=template.samplerate, unit='mV', overflow=False,
+            data=np.full(256, float(i)), rel_time=float(i))})
+    collector.data['frame_cache'] = deque(frames, maxlen=n_frames)
+
+    DATADIR.mkdir(parents=True, exist_ok=True)
+    fname = DATADIR / 'pytest_many_frames.h5'
+    fname.unlink(missing_ok=True)
+    collector.save_data(fname)
+
+    loaded = DataCollector()
+    assert loaded.data['frame_cache'].maxlen < n_frames
+    loaded.load_data(fname)
+
+    cache = loaded.data['frame_cache']
+    assert len(cache) == n_frames
+    assert [f[0].data[0] for f in cache] == [float(i) for i in range(n_frames)]
+    fname.unlink(missing_ok=True)
+
+
 def test_load_offline_restores_maxfreq_from_file_metadata():
     """Loading a file restores the maxfreq it was captured with.
 

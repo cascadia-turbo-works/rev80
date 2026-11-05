@@ -33,6 +33,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   in 0-P add 4.5 ms, 0.9 % of one core. Not measured on a Raspberry Pi 3.
 
 #### Changed
+- **The browse frame number is editable.** In **Browse Waveforms**, the
+  frame number in `Frame N / M` is an input field: type a number and press
+  Enter, or leave the field, to go to that frame. A number out of range goes
+  to the first or last frame. The field is locked while the stream runs, as
+  the arrow buttons are, and Left/Right in it move the text caret instead of
+  stepping frames. Before, a frame deep in a 3000-frame file was reached only
+  by stepping. `DataCollector.seek_frame()` does the seek.
 - **A burst ends the sustained count of every detector.** Before, the RMS
   and the spectral detector kept the count of frames beyond the threshold
   across a burst, so one frame after the burst could complete a streak that
@@ -74,6 +81,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   converted.
 
 #### Fixed
+- **A measurement file loads all its frames.** `load_data()` appended the
+  frames into the cache of the loading collector, made with the default
+  depth of 32 frames, so a file with more frames than that kept only its
+  last 32. The cache is now sized to the file's frame count before the
+  frames are read, as the session and burst loaders already did. A field
+  file of 3000 frames on 2 channels (12800 samples each) loads in 7.2 s
+  with a peak RSS of 870 MB on the PC; a much longer file would want lazy
+  loading.
 - **A tachometer channel on the main window.** The Channels card showed a
   tachometer channel as `Ch A : (none) : mV`; it now shows its name and
   rotation unit, `Tach A : RPM` (a name the user gave is kept). The
