@@ -686,16 +686,22 @@ class GUI:
         cache = self.collector.data["frame_cache"]
         n = len(cache)
         cursor = self.collector._cache_cursor
-        label = f"Frame {n - cursor} / {n}" if n else "No frames"
-        dpg.set_value(ui.ACQ_BROWSE_LABEL, label)
-        # configure_item only on an actual transition. This is four calls per
-        # frame pushing a value that changes twice in a session -- once when
-        # streaming starts and once when it stops.
+        # The denominator is the cache depth, not the frame count, so the row
+        # reads "Frame 0 / M" on an empty cache and the user sees how many
+        # frames the cache will hold.
+        if dpg.does_item_exist(ui.ACQ_BROWSE_TOTAL):
+            dpg.set_value(ui.ACQ_BROWSE_TOTAL, f"/ {cache.maxlen}")
+        # Do not overwrite a number the user is typing.
+        if dpg.does_item_exist(ui.ACQ_BROWSE_INPUT) and not self._browse_input_active():
+            dpg.set_value(ui.ACQ_BROWSE_INPUT, n - cursor if n else 0)
+        # configure_item only on an actual transition: this runs once per
+        # frame while streaming, and this state changes a few times a session.
         can_browse = (not self.collector.is_streaming) and n > 1
         if can_browse != self._browse_enabled:
             self._browse_enabled = can_browse
             for tag in [ui.ACQ_BROWSE_FIRST, ui.ACQ_BROWSE_PREV,
-                        ui.ACQ_BROWSE_NEXT, ui.ACQ_BROWSE_LAST]:
+                        ui.ACQ_BROWSE_NEXT, ui.ACQ_BROWSE_LAST,
+                        ui.ACQ_BROWSE_INPUT]:
                 if dpg.does_item_exist(tag):
                     dpg.configure_item(tag, enabled=can_browse)
 
@@ -1036,6 +1042,22 @@ class GUI:
         """True when frame_cache has data but no device is connected."""
         return self.collector.sensor is None and len(self.collector.data["frame_cache"]) > 0
 
+    def _channel_summary_text(self, ch: int) -> str:
+        """One line of the Channels card: name, sensor and unit.
+
+        A tachometer channel has no sensor and no engineering unit, so it
+        shows its rotation unit: 'Tach A : RPM'. A name the user gave the
+        channel is kept.
+        """
+        cfg = self.collector.config
+        if cfg.role_for(ch) == 'tachometer':
+            name = cfg.channel_names.get(ch) or f"Tach {chr(65 + ch)}"
+            unit = cfg.rotation_unit or DEFAULT_ROTATION_UNIT
+            return f"{name} : {ROTATION_UNIT_LABELS.get(unit, unit)}"
+        scope_s = self.collector.scope_sensors.get(ch)
+        sname = scope_s.name if scope_s else "(none)"
+        return f"{cfg.name_for(ch)} : {sname} : {self.collector.get_active_eu(ch)}"
+
     def _update_connection_summary(self):
         """Refresh device info and per-channel lines in the left panel."""
         sensor = self.collector.sensor
@@ -1092,18 +1114,13 @@ class GUI:
             dpg.delete_item(ui.CONN_CHANNEL_SUMMARY, children_only=True)
             if show_channels:
                 for ch in sorted(self.collector.config.enabled_channels):
-                    scope_s = self.collector.scope_sensors.get(ch)
-                    sname = scope_s.name if scope_s else "(none)"
-                    tunit = self.collector.get_active_eu(ch)
                     ch_color = _CH_COLORS[ch % len(_CH_COLORS)]
                     with dpg.group(horizontal=True, parent=ui.CONN_CHANNEL_SUMMARY):
                         with dpg.drawlist(width=12, height=12):
                             dpg.draw_rectangle(
                                 pmin=(1, 1), pmax=(11, 11), fill=ch_color, color=(0, 0, 0, 0), rounding=2
                             )
-                        dpg.add_text(
-                            f" {self.collector.config.name_for(ch)} : {sname} : {tunit}",
-                        )
+                        dpg.add_text(f" {self._channel_summary_text(ch)}")
                 # Signal generator summary line (only when device connected)
                 if sensor is not None:
                     sigcfg = self.collector.siggen_config
@@ -1292,6 +1309,25 @@ class GUI:
         elif tag == ui.ACQ_BROWSE_LAST:
             self.collector._cache_cursor = 0
             self.collector.reprocess_last_block()
+
+    def _browse_input_active(self) -> bool:
+        """True while the user is editing the frame-number field."""
+        return (dpg.does_item_exist(ui.ACQ_BROWSE_INPUT)
+                and dpg.is_item_active(ui.ACQ_BROWSE_INPUT))
+
+    def _on_browse_seek(self, sender=None, data=None):
+        """Go to the frame number typed in the browse field.
+
+        Enter and leaving the field both call this; the second call finds the
+        frame already shown and does nothing. A number out of range goes to
+        the nearest end, and the field shows the frame actually shown.
+        """
+        if self.collector.is_streaming or not dpg.does_item_exist(ui.ACQ_BROWSE_INPUT):
+            return
+        shown = self.collector.seek_frame(dpg.get_value(ui.ACQ_BROWSE_INPUT))
+        if shown:
+            dpg.set_value(ui.ACQ_BROWSE_INPUT, shown)
+        self._update_browse_label()
 
     # Default time-series window: ~10 cycles at 60 Hz ≈ 167 ms, rounded to 300 ms
     # so a typical 60 Hz fundamental fills the trace legibly on autoscale.
@@ -4095,7 +4131,15 @@ class GUI:
                             dpg.add_button(
                                 label=icons.IC['navigate_before'], tag=ui.ACQ_BROWSE_PREV, callback=self._on_browse, width=28, enabled=False
                             )
-                            dpg.add_text("No frames", tag=ui.ACQ_BROWSE_LABEL)
+                            dpg.add_text("Frame", tag=ui.ACQ_BROWSE_LABEL)
+                            # The frame number is editable: Enter, or leaving
+                            # the field, goes to the frame typed.
+                            dpg.add_input_int(
+                                tag=ui.ACQ_BROWSE_INPUT, default_value=0, step=0,
+                                width=52, on_enter=True, enabled=False,
+                                callback=self._on_browse_seek,
+                            )
+                            dpg.add_text("", tag=ui.ACQ_BROWSE_TOTAL)
                             dpg.add_button(
                                 label=icons.IC['navigate_next'], tag=ui.ACQ_BROWSE_NEXT, callback=self._on_browse, width=28, enabled=False
                             )
@@ -4391,6 +4435,14 @@ class GUI:
         """
         with dpg.handler_registry():
             dpg.add_key_press_handler(callback=self._on_key_press)
+        # Leaving the frame-number field after an edit also seeks, so a
+        # number typed and then clicked away from is not left on screen
+        # as if it were the frame shown.
+        if dpg.does_item_exist(ui.ACQ_BROWSE_INPUT):
+            with dpg.item_handler_registry(tag=ui.ACQ_BROWSE_HANDLERS):
+                dpg.add_item_deactivated_after_edit_handler(
+                    callback=lambda s, a: self._on_browse_seek())
+            dpg.bind_item_handler_registry(ui.ACQ_BROWSE_INPUT, ui.ACQ_BROWSE_HANDLERS)
 
     def _on_key_press(self, sender, app_data) -> None:
         key = app_data
@@ -4413,7 +4465,8 @@ class GUI:
                 self._on_load_click()
             elif key == dpg.mvKey_Q:
                 dpg.stop_dearpygui()
-        elif not self.collector.is_streaming:
+        elif not self.collector.is_streaming and not self._browse_input_active():
+            # Left/Right in the frame-number field move the text caret.
             if key == dpg.mvKey_Left:
                 self.collector.browse_frame(+1)
             elif key == dpg.mvKey_Right:

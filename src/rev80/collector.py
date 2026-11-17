@@ -771,6 +771,24 @@ class DataCollector:
         self._cache_cursor = max(0, min(self._cache_cursor + delta, len(cache) - 1))
         self.reprocess_last_block()
 
+    def seek_frame(self, number: int) -> int:
+        """Go to frame `number` and redisplay; return the frame number shown.
+
+        Frames are numbered as the browse label shows them: 1 is the oldest
+        frame in the cache, len(cache) the newest. A number out of range goes
+        to the nearest end. A seek to the frame already shown does nothing.
+        """
+        cache = self.data["frame_cache"]
+        n = len(cache)
+        if not n:
+            return 0
+        number = max(1, min(int(number), n))
+        cursor = n - number
+        if cursor != self._cache_cursor:
+            self._cache_cursor = cursor
+            self.reprocess_last_block()
+        return number
+
     # ------------------------------------------------------------------
     # Sensor connection
     # ------------------------------------------------------------------
@@ -1945,7 +1963,12 @@ class DataCollector:
 
             # Frames, in mV
             if "frames" in f:
-                for idx in sorted(f["frames"].keys(), key=int):
+                keys = sorted(f["frames"].keys(), key=int)
+                # Size the cache to the file before the append loop. The
+                # deque still has the maxlen of the collector's construction
+                # config, so a file longer than that kept only its last frames.
+                self.resize_frame_cache(max(len(keys), 1))
+                for idx in keys:
                     frame = self._read_frame_group(f["frames"][idx])
                     self.data["frame_cache"].append(frame)
 

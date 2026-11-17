@@ -308,6 +308,30 @@ class TestFrameCache:
         collector.browse_frame(+100)
         assert collector._cache_cursor == 2   # clamped to len-1
 
+    def test_seek_frame_numbers_oldest_first(self):
+        """Frame 1 is the oldest (cursor n-1); frame n the newest (cursor 0)."""
+        collector = DataCollector()
+        collector.config.highpass_enabled = False
+        self._push(collector, n_blocks=5)
+        assert collector.seek_frame(2) == 2
+        assert collector._cache_cursor == 3
+        assert collector.seek_frame(5) == 5
+        assert collector._cache_cursor == 0
+
+    def test_seek_frame_clamps_and_signals(self):
+        collector = DataCollector()
+        collector.config.highpass_enabled = False
+        self._push(collector, n_blocks=5)
+        collector.new_frame_event.clear()
+        assert collector.seek_frame(999) == 5     # already shown: no redisplay
+        assert not collector.new_frame_event.is_set()
+        assert collector.seek_frame(-3) == 1
+        assert collector._cache_cursor == 4
+        assert collector.new_frame_event.is_set()
+
+    def test_seek_frame_empty_cache(self):
+        assert DataCollector().seek_frame(3) == 0
+
     def test_new_block_resets_cursor(self):
         collector = DataCollector()
         collector.config.highpass_enabled = False
