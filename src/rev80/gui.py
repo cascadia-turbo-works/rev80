@@ -352,7 +352,6 @@ class GUI:
         # Last values pushed for two widgets whose state changes far less often
         # than once per frame. See _update_browse_label / _update_frame_info.
         self._browse_enabled: bool | None = None
-        self._browse_has_frames: bool | None = None
         self._frame_info_height: int | None = None
         self._peaks_table_state: dict[int, tuple] = {}
         self._num_channels: int = _DEFAULT_NUM_CHANNELS
@@ -1171,21 +1170,16 @@ class GUI:
         cache = self.collector.data["frame_cache"]
         n = len(cache)
         cursor = self.collector._cache_cursor
+        # The denominator is the cache depth, not the frame count, so the row
+        # reads "Frame 0 / M" on an empty cache and the user sees how many
+        # frames the cache will hold.
+        if dpg.does_item_exist(ui.ACQ_BROWSE_TOTAL):
+            dpg.set_value(ui.ACQ_BROWSE_TOTAL, f"/ {cache.maxlen}")
+        # Do not overwrite a number the user is typing.
+        if dpg.does_item_exist(ui.ACQ_BROWSE_INPUT) and not self._browse_input_active():
+            dpg.set_value(ui.ACQ_BROWSE_INPUT, n - cursor if n else 0)
         # configure_item only on an actual transition: this runs once per
-        # frame while streaming, and these states change a few times a session.
-        has_frames = n > 0
-        if has_frames != self._browse_has_frames:
-            self._browse_has_frames = has_frames
-            dpg.set_value(ui.ACQ_BROWSE_LABEL, "Frame" if has_frames else "No frames")
-            for tag in (ui.ACQ_BROWSE_INPUT, ui.ACQ_BROWSE_TOTAL):
-                if dpg.does_item_exist(tag):
-                    dpg.configure_item(tag, show=has_frames)
-        if has_frames:
-            if dpg.does_item_exist(ui.ACQ_BROWSE_TOTAL):
-                dpg.set_value(ui.ACQ_BROWSE_TOTAL, f"/ {n}")
-            # Do not overwrite a number the user is typing.
-            if dpg.does_item_exist(ui.ACQ_BROWSE_INPUT) and not self._browse_input_active():
-                dpg.set_value(ui.ACQ_BROWSE_INPUT, n - cursor)
+        # frame while streaming, and this state changes a few times a session.
         can_browse = (not self.collector.is_streaming) and n > 1
         if can_browse != self._browse_enabled:
             self._browse_enabled = can_browse
@@ -4859,15 +4853,15 @@ class GUI:
                             dpg.add_button(
                                 label=icons.IC['navigate_before'], tag=ui.ACQ_BROWSE_PREV, callback=self._on_browse, width=28, enabled=False
                             )
-                            dpg.add_text("No frames", tag=ui.ACQ_BROWSE_LABEL)
+                            dpg.add_text("Frame", tag=ui.ACQ_BROWSE_LABEL)
                             # The frame number is editable: Enter, or leaving
                             # the field, goes to the frame typed.
                             dpg.add_input_int(
                                 tag=ui.ACQ_BROWSE_INPUT, default_value=0, step=0,
-                                width=52, on_enter=True, enabled=False, show=False,
+                                width=52, on_enter=True, enabled=False,
                                 callback=self._on_browse_seek,
                             )
-                            dpg.add_text("", tag=ui.ACQ_BROWSE_TOTAL, show=False)
+                            dpg.add_text("", tag=ui.ACQ_BROWSE_TOTAL)
                             dpg.add_button(
                                 label=icons.IC['navigate_next'], tag=ui.ACQ_BROWSE_NEXT, callback=self._on_browse, width=28, enabled=False
                             )

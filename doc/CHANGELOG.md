@@ -39,7 +39,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   to the first or last frame. The field is locked while the stream runs, as
   the arrow buttons are, and Left/Right in it move the text caret instead of
   stepping frames. Before, a frame deep in a 3000-frame file was reached only
-  by stepping. `DataCollector.seek_frame()` does the seek.
+  by stepping. `DataCollector.seek_frame()` does the seek. M is the cache
+  depth, not the number of frames held, so the row shows how full the cache
+  is; an empty cache reads `Frame 0 / M` in place of `No frames`.
 - **A burst ends the sustained count of every detector.** Before, the RMS
   and the spectral detector kept the count of frames beyond the threshold
   across a burst, so one frame after the burst could complete a streak that

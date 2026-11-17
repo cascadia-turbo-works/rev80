@@ -329,9 +329,9 @@ class UI_Elements:
     ACQ_BROWSE_PREV    = 'ACQ_BROWSE_PREV'     # < older frame
     ACQ_BROWSE_NEXT    = 'ACQ_BROWSE_NEXT'     # > newer frame
     ACQ_BROWSE_LAST    = 'ACQ_BROWSE_LAST'     # >> newest frame
-    ACQ_BROWSE_LABEL   = 'ACQ_BROWSE_LABEL'    # "Frame" / "No frames" text
+    ACQ_BROWSE_LABEL   = 'ACQ_BROWSE_LABEL'    # "Frame" text
     ACQ_BROWSE_INPUT   = 'ACQ_BROWSE_INPUT'    # editable frame number N
-    ACQ_BROWSE_TOTAL   = 'ACQ_BROWSE_TOTAL'    # "/ M" text
+    ACQ_BROWSE_TOTAL   = 'ACQ_BROWSE_TOTAL'    # "/ M" text, M = cache depth
     ACQ_BROWSE_HANDLERS = 'ACQ_BROWSE_HANDLERS'  # item handlers of the frame number
 
     # ── File Handling section ──────────────────────────────────────────────

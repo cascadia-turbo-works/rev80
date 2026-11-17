@@ -38,12 +38,11 @@ def app():
         for tag in (ui.ACQ_BROWSE_FIRST, ui.ACQ_BROWSE_PREV,
                     ui.ACQ_BROWSE_NEXT, ui.ACQ_BROWSE_LAST):
             dpg.add_button(tag=tag)
-        dpg.add_text("No frames", tag=ui.ACQ_BROWSE_LABEL)
-        dpg.add_input_int(tag=ui.ACQ_BROWSE_INPUT, step=0, show=False, enabled=False)
-        dpg.add_text("", tag=ui.ACQ_BROWSE_TOTAL, show=False)
+        dpg.add_text("Frame", tag=ui.ACQ_BROWSE_LABEL)
+        dpg.add_input_int(tag=ui.ACQ_BROWSE_INPUT, step=0, enabled=False)
+        dpg.add_text("", tag=ui.ACQ_BROWSE_TOTAL)
     a = GUI.__new__(GUI)
     a._browse_enabled = None
-    a._browse_has_frames = None
     a._update_trend_cursor = lambda: None
     a.collector = collector
     yield a
@@ -87,8 +86,26 @@ def test_no_seek_while_streaming(app, monkeypatch):
     assert not dpg.get_item_configuration(ui.ACQ_BROWSE_INPUT)["enabled"]
 
 
-def test_empty_cache_hides_the_field(app):
+def test_empty_cache_reads_zero_of_cache_depth(app):
     app.collector = rev80.DataCollector()
+    depth = app.collector.data["frame_cache"].maxlen
     app._update_browse_label()
-    assert dpg.get_value(ui.ACQ_BROWSE_LABEL) == "No frames"
-    assert not dpg.get_item_configuration(ui.ACQ_BROWSE_INPUT)["show"]
+    assert dpg.get_value(ui.ACQ_BROWSE_LABEL) == "Frame"
+    assert dpg.get_value(ui.ACQ_BROWSE_INPUT) == 0
+    assert dpg.get_value(ui.ACQ_BROWSE_TOTAL) == f"/ {depth}"
+    assert dpg.get_item_configuration(ui.ACQ_BROWSE_INPUT)["show"]
+    assert not dpg.get_item_configuration(ui.ACQ_BROWSE_INPUT)["enabled"]
+
+
+def test_denominator_is_cache_depth_not_frame_count(app):
+    c = _collector(5)
+    c.resize_frame_cache(N_FRAMES)
+    app.collector = c
+    app._update_browse_label()
+    assert dpg.get_value(ui.ACQ_BROWSE_INPUT) == 5
+    assert dpg.get_value(ui.ACQ_BROWSE_TOTAL) == f"/ {N_FRAMES}"
+    # A typed number past the frames held goes to the newest frame.
+    dpg.set_value(ui.ACQ_BROWSE_INPUT, 20)
+    app._on_browse_seek()
+    assert app.collector._cache_cursor == 0
+    assert dpg.get_value(ui.ACQ_BROWSE_INPUT) == 5
