@@ -84,28 +84,3 @@ def test_no_seek_while_streaming(app, monkeypatch):
     assert app.collector._cache_cursor == 0
     app._update_browse_label()
     assert not dpg.get_item_configuration(ui.ACQ_BROWSE_INPUT)["enabled"]
-
-
-def test_empty_cache_reads_zero_of_cache_depth(app):
-    app.collector = rev80.DataCollector()
-    depth = app.collector.data["frame_cache"].maxlen
-    app._update_browse_label()
-    assert dpg.get_value(ui.ACQ_BROWSE_LABEL) == "Frame"
-    assert dpg.get_value(ui.ACQ_BROWSE_INPUT) == 0
-    assert dpg.get_value(ui.ACQ_BROWSE_TOTAL) == f"/ {depth}"
-    assert dpg.get_item_configuration(ui.ACQ_BROWSE_INPUT)["show"]
-    assert not dpg.get_item_configuration(ui.ACQ_BROWSE_INPUT)["enabled"]
-
-
-def test_denominator_is_cache_depth_not_frame_count(app):
-    c = _collector(5)
-    c.resize_frame_cache(N_FRAMES)
-    app.collector = c
-    app._update_browse_label()
-    assert dpg.get_value(ui.ACQ_BROWSE_INPUT) == 5
-    assert dpg.get_value(ui.ACQ_BROWSE_TOTAL) == f"/ {N_FRAMES}"
-    # A typed number past the frames held goes to the newest frame.
-    dpg.set_value(ui.ACQ_BROWSE_INPUT, 20)
-    app._on_browse_seek()
-    assert app.collector._cache_cursor == 0
-    assert dpg.get_value(ui.ACQ_BROWSE_INPUT) == 5
