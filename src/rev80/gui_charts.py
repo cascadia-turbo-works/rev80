@@ -119,6 +119,8 @@ class ChartsView:
         self._time_x0_ms: dict[str, float] = {}
         self._env_auto_band: dict[tuple, tuple] = {}
         self._burst_times: list[float] = []
+        # _build_key() of the widgets on screen; None before the first build.
+        self._built_key: tuple | None = None
 
     @property
     def collector(self):
@@ -128,11 +130,35 @@ class ChartsView:
     # Build
     # ------------------------------------------------------------------
 
+    def _build_key(self) -> tuple:
+        """Everything that the tabs, series labels, axis labels and cards show.
+
+        Two equal keys give the same widgets. Over-inclusion costs only an
+        unnecessary build; a missing input leaves a label stale.
+        """
+        cfg = self.collector.config
+        layout = self.collector.chart_layout()
+        roles, eus = self._channel_context()
+        channels = sorted({ch for spec in layout.charts for ch in spec.channels}
+                          | {spec.tach_channel for spec in layout.charts
+                             if spec.tach_channel is not None})
+        return (id(self.collector), layout,
+                tuple(sorted(roles.items())), tuple(sorted(eus.items())),
+                tuple((ch, cfg.name_for(ch), cfg.role_for(ch)) for ch in channels),
+                self.host._band_suffix(), cfg.rotation_unit)
+
     def rebuild(self) -> None:
         """Build the tabs and the cards again from the layout in effect.
 
+        When nothing that the widgets show has changed, keep them: a new plot
+        starts at axes 0 to 1, and the user's zoom is lost. Otherwise build
+        them again and autoscale on the next frame. Both request a redraw.
         The selected chart stays selected if it is still in the layout.
         """
+        key = self._build_key()
+        if key == self._built_key:
+            self.host._redraw()
+            return
         selected = self.selected_chart_id()
         self.layout = self.collector.chart_layout()
         self._peak_rows.clear()
@@ -155,6 +181,10 @@ class ChartsView:
                 if spec.chart_type == 'spectrum':
                     self._build_cards(spec, roles, eus)
         self.set_burst_lines(self._burst_times)
+        if dpg.does_item_exist(ui.MAIN_CHART_TAB_BAR):
+            self._built_key = key
+            # New plots start at axes 0 to 1: scale them to the data.
+            self.host._autoscale_pending = True
         # The new series and cards are empty: draw the frame on screen again.
         self.host._redraw()
 
