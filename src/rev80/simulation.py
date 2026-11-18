@@ -404,10 +404,12 @@ class SimulatedSensor:
         """
         self._running = True
         try:
-            next_due = time.monotonic()
+            # rel_time is the time since the stream start, as on the PicoScope.
+            t_start = time.monotonic()
+            next_due = t_start
             while self._running:
                 self.callback(self._sample(), self.config.raw_blocksize,
-                              time.monotonic(), 'OKAY')
+                              time.monotonic() - t_start, 'OKAY')
                 # Emit blocks at the rate real hardware would. Sleeping the
                 # remaining time rather than a fixed interval keeps the block
                 # rate honest when generation itself is slow.

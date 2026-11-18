@@ -75,7 +75,7 @@ def test_a_failed_start_shows_the_reason():
         collector.disconnect_sensor()
 
     collector.start_stream = start_stream
-    collector.clear_trend = lambda: None
+    app._charts = SimpleNamespace(clear=lambda: None)
     app._start_stream()
     assert app._device_fault == 'PicoScope TEST/0001 not connected'
     assert shown[-2:] == ['idle', ('summary', 'PicoScope TEST/0001 not connected')]

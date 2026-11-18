@@ -63,6 +63,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   or `charts.yaml`. The last chart cannot be removed.
 
 #### Fixed
+- **A stream start clears the frame cache and the trends.** Each start sets
+  a new `rel_time` zero, but the cache and the RPM trend kept the frames of
+  the previous stream. The trends then stepped back in time, and the browse
+  cursor crossed two streams. `DataCollector.start_stream()` now calls
+  `reset_data_store()` before the stream starts. This applies to Start,
+  Single, a restart after a channel change and `reconnect_stream()`; a
+  recovery inside a running stream keeps its time base and its cache.
+  The start keeps the current cache depth, so a cache that Monitor Mode
+  enlarged for the pre-trigger frames of a burst does not shrink.
+  `reset_data_store()` and `clear_trend()` now also clear the RPM trend, so
+  Clear Cache empties it. The GUI also empties the chart series on a start.
+  A Single shot now replaces the cache: it is a new stream with its own
+  zero. Test: `tests/test_stream_restart_clears.py`.
+- **`SimulatedSensor` gives `rel_time` from the stream start**, as the
+  PicoScope stream does. It gave the absolute `time.monotonic()` value
+  (about 362000 s on the test host).
 - **The default layout of a file with no stored layout uses the file's
   sensors.** The load made the default before the front end assigned the
   file's sensors, so every chart was in mV, and a channel with a sensor

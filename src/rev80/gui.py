@@ -1262,7 +1262,10 @@ class GUI:
         self._set_stream_status("waiting")
         self._autoscale_pending = True
         self._browse_context = {'type': 'live'}
-        self.collector.clear_trend()  # reset rel_time so trend starts at t=0
+        # start_stream() clears the cache and the trends (a new rel_time
+        # zero); empty the series that were drawn from them.
+        if not self.collector.is_streaming:
+            self._charts.clear()
         self.collector.start_stream()
         if self.collector.stream is None:
             # The start failed and the collector disconnected the device.
