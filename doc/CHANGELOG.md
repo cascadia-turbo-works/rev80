@@ -79,6 +79,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **`SimulatedSensor` gives `rel_time` from the stream start**, as the
   PicoScope stream does. It gave the absolute `time.monotonic()` value
   (about 362000 s on the test host).
+- **A settings change no longer resets the chart axes to 0 to 1.**
+  `ChartsView.rebuild()` deleted and made again every chart on each close
+  of the configuration dialog, on Apply, and on a channel or sensor change.
+  A new plot starts at axes 0 to 1, and only a data-source change
+  autoscaled after it. `rebuild()` now compares a build key (the layout,
+  the collector, the channel roles, names and sensor units, the band and
+  the rotation unit). With an equal key it keeps the widgets, so the zoom
+  stays, and only redraws. Otherwise it builds and autoscales on the next
+  frame. Tests: `tests/test_gui_charts.py`, "Axes over a rebuild".
 - **The default layout of a file with no stored layout uses the file's
   sensors.** The load made the default before the front end assigned the
   file's sensors, so every chart was in mV, and a channel with a sensor

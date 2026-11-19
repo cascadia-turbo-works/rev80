@@ -37,6 +37,7 @@ class _Host:
         self._sect_theme = None
         self._channel_colors = [(255, 0, 0, 255), (0, 255, 0, 255)]
         self.redraws = 0
+        self._autoscale_pending = False
 
     @staticmethod
     def _tooltip(target, text, wrap=320):
@@ -540,3 +541,66 @@ def test_xy_in_an_integrated_unit_has_the_same_span_and_equal_axes(view, monkeyp
     assert dpg.get_item_configuration(ui.chart_plot('c4'))['equal_aspects'] is True
     assert dpg.get_item_label(ui.chart_axis('c4', 'x')).endswith(', in/s')
     assert dpg.get_item_label(ui.chart_axis('c4', 'y')).endswith(', in/s')
+
+
+# ---------------------------------------------------------------------------
+# Axes over a rebuild: keep an unchanged chart, autoscale a new build
+# ---------------------------------------------------------------------------
+
+def _plot_id(cid):
+    return dpg.get_alias_id(ui.chart_plot(cid))
+
+
+def test_a_rebuild_with_no_change_keeps_the_plots_and_their_axes(view):
+    before = _plot_id('c1')
+    view.host._autoscale_pending = False
+    view.rebuild()
+    assert _plot_id('c1') == before
+    assert view.host._autoscale_pending is False
+
+
+def test_a_rebuild_with_no_change_still_redraws(view):
+    before = view.host.redraws
+    view.rebuild()
+    assert view.host.redraws == before + 1
+
+
+def test_a_layout_change_builds_again_and_autoscales(view):
+    before = _plot_id('c1')
+    view.host._autoscale_pending = False
+    view.collector.chart_set = _layout(
+        ChartSpec('c4', 'spectrum', 'Second', channels=(0,), unit='in/s',
+                  amplitude_mode='RMS'))
+    view.rebuild()
+    assert _plot_id('c1') != before
+    assert view.host._autoscale_pending is True
+
+
+def test_a_channel_name_change_builds_again(view):
+    before = _plot_id('c1')
+    view.collector.config.channel_names = {0: 'Motor DE'}
+    view.rebuild()
+    assert _plot_id('c1') != before
+    assert dpg.get_item_label(ui.chart_series('c1', 0)) == 'Motor DE'
+
+
+def test_a_sensor_unit_change_builds_again(view):
+    before = _plot_id('c1')
+    view.collector.set_scope_sensor(1, ScopeSensor(name='acc2', engineering_units='g',
+                                                   sensitivity=100.0))
+    view.rebuild()
+    assert _plot_id('c1') != before
+
+
+def test_a_band_change_builds_again(view, monkeypatch):
+    before = _plot_id('c3')
+    monkeypatch.setattr(view.host, '_band_suffix', lambda: '  10-1000 Hz')
+    view.rebuild()
+    assert _plot_id('c3') != before
+
+
+def test_a_new_collector_builds_again(view):
+    before = _plot_id('c1')
+    view.host.collector = _collector(frames=1)
+    view.rebuild()
+    assert _plot_id('c1') != before
