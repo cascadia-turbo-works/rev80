@@ -463,13 +463,22 @@ class DataCollector:
     # Data store
     # ------------------------------------------------------------------
 
-    def reset_data_store(self):
+    def reset_data_store(self, cache_depth: 'int | None' = None):
+        """Empty the frame cache and the trends.
+
+        `cache_depth` None gives `config.cache_frames`; pass the current
+        depth to keep a cache that `resize_frame_cache()` enlarged.
+        """
+        depth = self.config.cache_frames if cache_depth is None else int(cache_depth)
         self.data = {
-            "frame_cache": deque(maxlen=self.config.cache_frames),  # dict[int, VibeSample]
+            "frame_cache": deque(maxlen=depth),  # dict[int, VibeSample]
             "frame_count": 0,
         }
         self.trend: dict[int, dict[str, np.ndarray]] = {}
+        self.tach_trend = {}
         self._cache_cursor = 0
+        self._advanced_frame = None
+        self._last_frame_t = None
         self.init_trend_channels()
         log.info("Reset data store.")
 
@@ -698,6 +707,8 @@ class DataCollector:
         """Wipe all accumulated trend data."""
         for ch in self.trend:
             self.trend[ch] = self._empty_trend()
+        for ch in self.tach_trend:
+            self.tach_trend[ch] = self._empty_tach_trend()
         log.debug("Trend data cleared.")
 
     def get_trend_for_display(self, unit: 'str | None' = None,
@@ -835,6 +846,12 @@ class DataCollector:
         # A new stream is a new continuous signal — drop any filter state
         # carried over from the previous one.
         self.reset_filter_state()
+        # A new stream also has a new rel_time zero. Frames and trend points
+        # of the previous stream are on another time base: they would plot as
+        # a step back in time and the browse cursor would cross two streams.
+        # Clear before the stream starts: the acquisition thread then appends.
+        # Keep the depth: Monitor Mode enlarges it for the pre-trigger frames.
+        self.reset_data_store(cache_depth=self.data["frame_cache"].maxlen)
         self.start_error = None
         try:
             self.stream.start()

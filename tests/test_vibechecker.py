@@ -455,9 +455,13 @@ def test_reset_data_store_uses_cache_frames():
 def test_resize_frame_cache_preserves_last_n_frames():
     """resize_frame_cache(n) keeps the most recent n frames when shrinking."""
     collector = DataCollector(sim_sensor, acq_settings)
-    # Collect multiple frames
-    for _ in range(4):
-        collector.collect_sample()   # populates frame_cache; return value unused
+    # Stream several frames. Each collect_sample() is a new stream, which
+    # clears the cache, so single shots do not accumulate.
+    collector.start_stream()
+    deadline = time.monotonic() + acq_settings.acquisition_period * 10
+    while len(collector.data['frame_cache']) < 3 and time.monotonic() < deadline:
+        time.sleep(acq_settings.acquisition_period / 4)
+    collector.stop_stream()
     collector.disconnect_sensor()
 
     cache_before = list(collector.data['frame_cache'])
