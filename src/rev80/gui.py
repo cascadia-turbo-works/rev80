@@ -14,6 +14,7 @@ from rev80.gui_charts import (  # noqa: F401 (envelope_search_fmax: re-export)
     DEFAULT_PEAK_DISPLAY_CAP, ChartsView, envelope_search_fmax,
 )
 from rev80.gui_charts_tab import ChartsTab
+from rev80.gui_geometry import proportional_rect
 from rev80 import charts as rev80_charts
 from rev80 import peaks as rev80_peaks
 import rev80.config as _cfg
@@ -53,6 +54,10 @@ RESULTS_WIDTH = 300
 # Config dialog dimensions — referenced wherever the dialog is built or positioned
 _DLG_CFG_W = 720
 _DLG_CFG_H = 840
+# The configuration dialog opens over these fractions of the viewport
+# client area: (left, right) and (top, bottom).
+DLG_CFG_BOUNDS_X = (0.2, 0.8)
+DLG_CFG_BOUNDS_Y = (0.2, 0.7)
 # Field widths inside the config dialog (golden-ratio of dialog width)
 _DLG_FIELD_W = int(_DLG_CFG_W * 0.618)  # ~444 px  — full-width text/combo
 _SREG_LIST_W = 200  # sensor registry list pane
@@ -1607,10 +1612,8 @@ class GUI:
         if self._was_streaming_before_config:
             self._stop_stream()
 
-        dpg.configure_item(
-            ui.DLG_CONFIG,
-            pos=((WINDOW_WIDTH - _DLG_CFG_W) // 2, (WINDOW_HEIGHT - _DLG_CFG_H) // 2),
-        )
+        x, y, w, h = self._config_dialog_rect()
+        dpg.configure_item(ui.DLG_CONFIG, pos=(x, y), width=w, height=h)
         dpg.show_item(ui.DLG_CONFIG)
         dpg.set_value(ui.CONFIG_TAB_BAR, tab_tag)
         # Always sync spectrum widgets so they reflect current config
@@ -1627,6 +1630,17 @@ class GUI:
             self._populate_siggen_tab()
         elif tab_tag == ui.CONFIG_TAB_MONITOR:
             self._populate_monitor_tab()
+
+    @staticmethod
+    def _config_dialog_rect() -> tuple[int, int, int, int]:
+        """(x, y, width, height) of the configuration dialog in the viewport.
+
+        Before the first frame the client size can read 0: use the default
+        window size then.
+        """
+        cw = dpg.get_viewport_client_width() or WINDOW_WIDTH
+        ch = dpg.get_viewport_client_height() or WINDOW_HEIGHT
+        return proportional_rect(cw, ch, DLG_CFG_BOUNDS_X, DLG_CFG_BOUNDS_Y)
 
     def _start_device_discovery(self, sender=None, data=None):
         """Clear device list, show placeholder, then discover in a background thread."""
@@ -4537,8 +4551,10 @@ class GUI:
 
     def run(self, initial_file: str | None = None, autodetect: bool = True):
         log.info("Launch app window")
+        # WINDOW_WIDTH x WINDOW_HEIGHT is the restore size; open maximized.
         dpg.create_viewport(title="Rev80", width=WINDOW_WIDTH, height=WINDOW_HEIGHT)
         dpg.show_viewport()
+        dpg.maximize_viewport()
         dpg.set_primary_window(ui.PRIMARY_WINDOW, True)
         if autodetect:
             threading.Thread(target=self._autoconnect, daemon=True).start()

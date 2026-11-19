@@ -324,6 +324,8 @@ Rev80 draws its chart at once from the frame on screen.
 ### Configuration dialog
 
 The dialog has eight tabs. When you open the dialog, Rev80 stops the stream.
+The dialog opens over the centre of the main window: 20 % to 80 % of its
+width and 20 % to 70 % of its height. The main window opens maximized.
 **Close** (or `Esc`) applies all tabs, saves them, reconnects the device
 once, and starts the stream again if it was running.
 

@@ -129,6 +129,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   the installed Windows program has no console.
 
 #### Changed
+- **The main window opens maximized, and the configuration dialog opens at
+  proportional bounds.** `GUI.run()` calls `dpg.maximize_viewport()` after
+  `show_viewport()`; 1500 x 1000 px stays the restore size. Each open of
+  the configuration dialog sets it to 0.2 to 0.8 of the viewport client
+  width and 0.2 to 0.7 of its height (`DLG_CFG_BOUNDS_X`,
+  `DLG_CFG_BOUNDS_Y`), from `gui_geometry.proportional_rect()`. It was a
+  fixed 720 x 840 px, centred on the default window size. Each tab scrolls,
+  so a lower dialog cuts nothing. Tests: `tests/test_gui_geometry.py`.
 - **Each data file is read at exactly its own version.** Rev80 reads
   measurement files of version 6 and sessions of version 7 only.
   `check_file_version(f, kind)` raises `FileVersionError` for an older or a

@@ -196,6 +196,7 @@ doc/
 | `envelope.py` | Envelope (demodulation) spectrum and `suggest_band()` |
 | `gui.py` | `GUI`: dearpygui layout, render loop, dialogs, file I/O, monitor card, session browser |
 | `gui_charts_tab.py` | `ChartsTab`: the Charts tab of the configuration dialog; edits a working copy of the layout, applied at Close |
+| `gui_geometry.py` | `proportional_rect()`: pixel position and size from proportional bounds of the viewport; no dearpygui import |
 | `gui_charts.py` | `ChartsView`: one main-window tab for each chart of `DataCollector.chart_layout()`, the result cards of each spectrum chart, the renderers for each chart type, the envelope band controls |
 | `headless.py` | `rev80 headless` / `rev80-headless`: the interval datalogger with no GUI |
 | `monitor/session.py` | `MonitorSession` and the shared session factory: `session_from()`, `channel_snapshot_for()`, `sensor_snapshot_for()`, `pre_buffer_frames_for()`, `required_cache_frames()` |
